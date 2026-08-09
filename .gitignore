@@ -42,3 +42,6 @@ venv/
 
 # graphify working output (not part of this arc's scope)
 graphify-out/
+
+# Subagent-driven-development scratch workspace (ledgers, briefs, review packages)
+.superpowers/
