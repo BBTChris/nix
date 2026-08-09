@@ -1,0 +1,31 @@
+# Encrypted broker credential material (Fernet-encrypted JSON per elements_v2.md §1.2)
+*credentials*.json
+*creds*.json
+
+# Non-Plane artifacts only (logs/ per directory_structure.md) — never commit these anyway
+logs/*
+!logs/.gitkeep
+
+# pg_dump staging / auxiliary DB files (databases/ per directory_structure.md)
+databases/*
+!databases/.gitkeep
+
+# Env / master-password material
+*.env
+.env
+*master_password*
+*master-password*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# macOS cruft (not part of the tracked tree)
+.DS_Store
+._*
+
+# graphify working output (not part of this arc's scope)
+graphify-out/
