@@ -1,0 +1,11 @@
+[tool.bandit]
+# databases/schema/ holds verbatim-extracted DB-spec artifacts (source of truth is the
+# .docx; Check A in validate_schemas.sh enforces byte-identity) — never lint-fixed here.
+exclude_dirs = [".venv", "graphify-out", "databases/schema"]
+
+[tool.ruff]
+target-version = "py314"
+
+[tool.mypy]
+python_version = "3.14"
+ignore_missing_imports = true
