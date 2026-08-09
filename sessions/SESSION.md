@@ -123,3 +123,114 @@ progress (infra/provisioning scaffold only, no code yet — R1 seams & skeleton 
 write-back gate this arc installs is now itself in effect for every arc after this one.
 
 ## 2026-08-09 — Closed PR #3 (stale ARC 002 RESULTS.md) without merging, comment posted; source branch `docs/arc002-results` kept (holds unmerged commit `82efd05`) — confirmed closed via `gh pr view 3`.
+
+## 2026-08-09 — ARC 006: Dev Box Provisioning (MS-01 / node02)
+
+- **Step 1 (IB Gateway + Xvfb):** neither installed at start. Downloaded the standalone installer
+  (335,649,129 bytes, matched `Content-Length` exactly — not truncated; no published checksum for
+  this build to cross-check further). Ran `-q` (unattended) instead of the arc's literal `-c`
+  (interactive console) — the installer's own `-h` documents `-q` as the no-prompt unattended
+  mode, which structurally cannot auto-launch at the end; `-c` would have required blindly
+  scripting answers to prompts of unknown count/order, including the exact "launch now?" prompt
+  the arc is trying to avoid. Installed IB Gateway **10.45** to `/home/bbt/ibgateway`. Confirmed
+  no auto-launch (`ps` — no process). Xvfb was already installed (`xvfb 2:21.1.22-1ubuntu1`);
+  live-smoke-tested it actually serves a display (`xdpyinfo` responsive on `:99`), not just
+  assumed present from dpkg. Checked whether auto-restart-vs-auto-logoff is reachable pre-login:
+  `~/Jts` exists but is empty (no `jts.ini`) — that setting lives only in the per-user profile
+  created at first login, confirmed not reachable, not worked around. **Stopped per instruction —
+  did not attempt first login.**
+- **Step 2 (install.sh, elements_v2.md §1.2):** wrote `~/nix/install.sh`. Base deps (python3,
+  git, python3-venv, libssl-dev, libffi-dev, python3-dev) installed via apt (idempotent, mostly
+  already present). Venv + `cryptography` 50.0.0 installed. Hardware UUID captured via
+  `blkid`/`findmnt` on the root device (`/dev/mapper/ubuntu--vg-ubuntu--lv`,
+  `0a2fe0d5-5eb2-46ae-a9f9-013dc7097003`, valid UUID shape) into `state/node_identity.json`
+  (chmod 600). Credential-encryption mechanism (`state/encrypt_credentials.py`, Fernet under a
+  PBKDF2-derived master password, refuses non-interactive stdin) written and chmod 700'd but
+  **not run** — no human present; `credentials.json` confirmed absent, not populated.
+  `state/` is a new top-level dir not in `directory_structure.md`'s 9-dir list — same kind of gap
+  as ARC 001's `VERSION`-file assumption; flagged, not silently invented.
+- **Step 3 (core pinning):** chose systemd `AllowedCPUs=0-5` on a `nix-trading.slice` (cgroup v2,
+  systemd 259 confirmed) over `taskset` (per-process, doesn't survive restarts) or raw cgroup
+  writes (systemd already owns this path). Same value expresses identically on QuantVPS's 6-core
+  box (0-5 = the whole box there) and this 20-core box (0-5 = a real restriction) — prod-consistent
+  by construction. **Live-verified, not just config-read:** ran a real process under the slice,
+  read its actual kernel-enforced affinity from `/proc/<pid>/status` (`Cpus_allowed_list: 0-5`),
+  cross-checked with `taskset -cp` — both agree.
+- **Step 4 (verify.py, elements_v2.md §1.3):** wrote `~/nix/verify.py` — idempotent, plugin-based
+  (loads `checks/check_*.py`, none exist yet pre-R1, correctly reports "nothing to verify yet"
+  rather than erroring). Wired at all three trigger points: called at the end of `install.sh`;
+  `nix-verify.service` enabled at `multi-user.target` (boot) and manually fired once to confirm
+  clean exit; `nix-verify.timer` enabled with `OnCalendar=Sat *-*-* 03:00:00 America/Chicago`,
+  confirmed next fire `2026-08-15 08:00 UTC` = 03:00 CDT (correct DST math). Cross-checked timing
+  against the risk spec: `nics_risk_subsystem_spec_v1.3.md:356` — "no new entry from 30min before
+  Friday close through Sunday session open" — Saturday 03:00 CT falls entirely inside that
+  closure window; no full session-calendar module exists yet (noted, not guessed around).
+- **Step 5 (PostgreSQL + schema):** cluster already installed (`/var/lib/postgresql/18/main` — OS
+  default, confirmed via `SHOW data_directory`, not under `~/nix`). The DB schema spec's `.docx`
+  turned out to be a **self-extracting spec** (embedded `extract_sources.py` + a 40-check
+  `validate_schemas.sh`) — but graphify's earlier docx→md conversion had silently stripped all
+  the fenced-code-block markup the extractor depends on (verified: zero ` ``` ` fences in that
+  conversion). Rebuilt `nix_db_schema_spec.md` directly from the docx's own paragraphs via
+  `python-docx` (checked first for Word smart-quote/dash corruption in the SQL — only harmless
+  em-dashes in comments, no curly quotes that would break string literals), matched exact
+  filenames from `validate_schemas.sh`'s own `required` file-set. Ran the extractor, then the
+  40-check harness against the live PG18.4 cluster in scratch databases (spec was originally
+  validated against PG16) — **40/40 passed**, confirming backward compatibility. Applied
+  `trade_history.sql` to a real (non-scratch) `trade_history` database. **Live negative test, not
+  just GRANT inspection:** first attempt used an invalid enum value and failed for the wrong
+  reason (caught this — a false negative from bad test data, not a real permission check);
+  rebuilt a schema-valid row and re-tested — `nix_paper_writer` genuinely denied `INSERT` on
+  `trades_live` (`permission denied for table trades_live`). Added a positive control
+  (`nix_live_writer` can insert; rolled back, no test data left in the real DB) per this
+  project's own proof-discipline convention (control + failure, not failure alone). Did not
+  provision real per-symbol `bar_history` databases or the FDW hub — no ingestion pipeline exists
+  yet to write into them and no symbols are scoped for this arc; validated via the scratch harness
+  only. Schema artifacts copied to `databases/schema/` (matches `directory_structure.md`'s
+  "auxiliary DB files" scope for that directory).
+- **Step 6 (pre-commit, debug.md §6):** `.pre-commit-config.yaml` copied verbatim from the spec
+  (ruff, pylint, mypy, bandit, complexipy, local pytest-testmon, all revs pinned).
+  `databases/schema/` excluded from every lint hook — those files are verbatim-extracted from the
+  spec `.docx`, and the spec's own Check A validates them byte-identical to source; auto-fixing
+  them would break that invariant. `pyproject.toml` added (bandit needs `-c pyproject.toml`).
+  pytest-testmon's exit-code-5 ("no tests collected") tolerated explicitly for this pre-R1 state,
+  commented as not a permanent mask. Ran `--all-files` against an empty tree first (clean, as
+  expected) — then again after adding real files (`install.sh`, `verify.py`,
+  `extract_sources.py`), which is the arc's actual "confirm rather than assume" bar. Found real
+  issues (missing docstrings, a bare `except Exception` needing an explicit disable, `main()`
+  over `complexipy`'s complexity ceiling) — fixed by adding docstrings, a `noqa`+`pylint: disable`
+  pair for the deliberate catch-all, and extracting `run_plugins`/`print_results` helpers out of
+  `main()`. Final `--all-files`: **7/7 hooks pass.** `pytest-affected`'s hook entry hardcoded to
+  the venv's `pytest` via a path relative to pre-commit's repo-root cwd — the first `git commit`
+  attempt failed with `pytest: command not found` because the hook's `language: system` entry
+  isn't guaranteed to see any particular `PATH` at commit time.
+- **Step 7 (IB Gateway verification):** correctly reported as **blocked on human action** — no
+  `jts.ini`/user profile exists (confirmed via `find`, not assumed), so port/socket/trusted-IP
+  settings have nowhere to live yet. Added the weekly-auth note to `dev_and_services_plan.md`'s
+  IBKR section (daily auto-restart still needs the human's IB Key approval on their phone — a
+  standing operational dependency, not a one-time setup), independent of the login blocker.
+- **Process note — two self-inflicted `git checkout`/`reset --hard` mistakes this arc,** both
+  caught and recovered without data loss (commits were already pushed to a remote branch each
+  time): (1) after opening the PR, ran `git reset --hard origin/main` to "restore" the local
+  `main` ref, which — because it was the checked-out branch — also deleted the arc's new files
+  from the working tree; (2) repeated the same mistake via a plain `git checkout main` while
+  chasing a proper branch name for the write-back commit. Both times, `git checkout <branch> --
+  <paths>` from the branch that still had the commit restored the files; the second time, the fix
+  was to stop routing through `main` at all and do the write-back as a second commit on the
+  already-open PR branch instead. Recorded so the pattern (checkout/reset always reconciles the
+  *entire* tracked working tree to match the target, not just moves a ref) doesn't get repeated a
+  third time.
+- **PR:** `arc-006-provisioning-v2` → **PR #8** (all of steps 1–7's file changes, plus this
+  write-back as a second commit on the same PR — not a separate PR, to avoid another
+  cross-branch `SESSION.md`/`RESULTS.md` conflict). Not merged — consistent with not
+  auto-merging PRs this session didn't get explicit authorization for.
+- **Stray leftover:** an earlier misnamed branch `arc-006-dev-box-provisioning` (superseded,
+  orphaned duplicate commit `f60ebd3`) is still on `origin` — local delete succeeded, but
+  `git push origin --delete` was blocked by the harness's permission classifier as a destructive
+  outward-facing action. Harmless clutter, not deleted; flagged for a human `git push origin
+  --delete arc-006-dev-box-provisioning` if it's worth tidying.
+
+**** ARC completed **** — real dev-box infrastructure stood up (IB Gateway install, bootstrap
+script, core pinning, verify.py + systemd wiring, a live production database schema with a
+verified security boundary, and a working commit gate); IB Gateway login and config verification
+correctly left as the human-only step the arc defines it as. ~8-10% of whole-project progress —
+the largest infra arc so far, though still zero application code (R1 seams & skeleton unstarted).
