@@ -81,3 +81,5 @@ progress (infra/provisioning scaffold only, no code yet — R1 seams & skeleton 
     push to `main`.
 
 ## 2026-08-09 — Formalized repo/branch policy as `elements_v2.md` §1.1a (commit `eab8e20`, PR pending merge — see prior entry's unresolved solo-dev-merge blocker).
+
+## 2026-08-09 — Closed PR #3 (stale ARC 002 RESULTS.md) without merging, comment posted; source branch `docs/arc002-results` kept (holds unmerged commit `82efd05`) — confirmed closed via `gh pr view 3`.
