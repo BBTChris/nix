@@ -1,5 +1,6 @@
 """Venv check — the first repairable check (§3)."""
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -63,17 +64,66 @@ def test_correct_mode_refuses_to_rebuild_its_own_interpreter(
 ) -> None:
     """§9.5: the engine must never rebuild the venv it is running from.
 
-    Simulates the engine having been invoked as `.venv/bin/python3
-    verify.py` against a degraded venv: sys.executable resolves inside the
-    very venv CORRECT would otherwise rebuild.
+    Builds a REAL venv so `bin/python3` is a genuine symlink to the system
+    interpreter, exactly as every real venv is. A guard built on
+    `Path.resolve()` alone follows that symlink straight out of the venv to
+    e.g. `/usr/bin/python3.14` and never notices it was "inside" anything —
+    this is the bug the guard exists to catch, so the fixture must model
+    the real filesystem shape or the test proves nothing. (An earlier
+    version of this test replaced the symlink with a plain file to force a
+    probe failure — that destroys the exact symlink-escaping shape the
+    guard has to survive and made the test pass against the buggy code for
+    the wrong reason.)
+
+    The venv's answer is broken by re-pointing the symlink at a
+    *nonexistent* target rather than removing the symlink — it stays a
+    symlink (`is_symlink()` True) but is dangling (`exists()` False), so
+    the probe still fails and CORRECT still reaches the rebuild path, while
+    `Path.resolve()` still chases it to a path outside the venv exactly as
+    a live symlink would. `sys.prefix`/`sys.executable` are monkeypatched
+    to simulate the engine having been invoked as `.venv/bin/python3
+    verify.py` against its own degraded venv.
     """
     venv = tmp_path / ".venv"
-    (venv / "bin").mkdir(parents=True)
-    fake_python = venv / "bin" / "python3"
-    fake_python.write_text("", encoding="utf-8")  # present but does not answer
-    monkeypatch.setattr(sys, "executable", str(fake_python))
+    subprocess.run(  # nosec B603 - fixed argv, shell=False, test fixture
+        [sys.executable, "-m", "venv", str(venv)],
+        check=True,
+        timeout=300,
+    )
+    interpreter = venv / "bin" / "python3"
+    assert interpreter.is_symlink(), "fixture must model the real venv symlink layout"
+
+    interpreter.unlink()
+    interpreter.symlink_to("/nonexistent/python3")
+    assert interpreter.is_symlink()
+    assert not interpreter.exists()  # dangling: probe fails, resolve() still escapes
+
+    monkeypatch.setattr(sys, "prefix", str(venv))
+    monkeypatch.setattr(sys, "executable", str(interpreter))
 
     result = _run(Mode.CORRECT, tmp_path)
 
     assert result.status is Status.FAIL_NEEDS_OPERATOR
     assert result.site == str(venv)
+
+
+def test_correct_mode_rebuilds_when_running_from_the_system_interpreter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The self-rebuild guard must not block legitimate repair.
+
+    Models the correct, expected invocation shape explicitly (rather than
+    relying on however this test happens to be invoked) — engine running
+    from the system interpreter, against an unrelated tmp_path venv — and
+    asserts CORRECT actually rebuilds it. A guard that fires too eagerly
+    here would block all real repair, which is a worse failure than the
+    self-rebuild bug it exists to prevent.
+    """
+    monkeypatch.setattr(sys, "executable", "/usr/bin/python3")
+    monkeypatch.setattr(sys, "prefix", "/usr")
+
+    result = _run(Mode.CORRECT, tmp_path)
+
+    assert result.status is Status.PASS
+    assert "created" in result.action
+    assert (tmp_path / ".venv" / "bin" / "python3").exists()

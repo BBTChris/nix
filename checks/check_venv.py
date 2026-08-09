@@ -26,19 +26,33 @@ def _interpreter(venv: Path) -> Path:
 
 
 def _running_from(venv: Path) -> bool:
-    """True if the current interpreter lives inside the given venv (§9.5).
+    """True if the current interpreter belongs to the given venv (§9.5).
 
     A check rebuilding `.venv` while executing on `.venv`'s own interpreter
     deletes the interpreter beneath itself. The engine invariant is "runs
     from /usr/bin/python3", but nothing stops a human invoking it via
     `.venv/bin/python3 verify.py` by hand — this makes the invariant
     self-enforcing rather than a documented hope.
+
+    `venv/bin/python3` is a symlink to the system interpreter in every real
+    venv, so `Path(sys.executable).resolve()` chases it straight back out
+    to e.g. `/usr/bin/python3.14` — the exact opposite of what "inside the
+    venv" means here. Two signals instead, either sufficient:
+
+    1. `sys.prefix` is the venv root itself for any process running under a
+       venv's interpreter, and is not derived by resolving the interpreter
+       path, so it never chases that symlink.
+    2. Containment of the *unresolved* executable path under the venv
+       directory — a second, independent signal for layouts where
+       `sys.prefix` is unusual.
     """
     try:
-        Path(sys.executable).resolve().relative_to(venv.resolve())
-    except ValueError:
+        venv_resolved = venv.resolve()
+        if Path(sys.prefix).resolve() == venv_resolved:
+            return True
+        return venv_resolved in Path(sys.executable).absolute().parents
+    except OSError:
         return False
-    return True
 
 
 def _probe(python: Path) -> str:
