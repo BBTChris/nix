@@ -28,8 +28,10 @@ def _parse_block(raw: Any, index: int) -> Block:
     """Validate one block entry."""
     if not isinstance(raw, dict):
         raise ManifestError(f"block {index}: not an object")
-    name = raw.get("name", f"block-{index}")
+    name = str(raw.get("name", f"block-{index}"))
     checks = raw.get("checks", [])
+    if not isinstance(checks, list):
+        raise ManifestError(f"block {name!r}: checks must be a list")
     if not checks:
         raise ManifestError(f"block {name!r}: empty — a block must list checks")
     on_fail = raw.get("on_fail", "continue")
@@ -63,6 +65,10 @@ def load_manifest(path: Path) -> tuple[Block, ...]:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ManifestError(f"invalid JSON in {path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ManifestError(
+            f"{path}: top-level JSON must be an object, got {type(payload).__name__}"
+        )
     raw_blocks = payload.get("blocks", [])
     if not raw_blocks:
         raise ManifestError(f"{path}: no blocks declared")

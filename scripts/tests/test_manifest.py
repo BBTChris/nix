@@ -8,6 +8,7 @@ from nixverify.manifest import ManifestError, load_manifest
 
 
 def _write(tmp_path: Path, payload: dict) -> Path:
+    """Write a JSON manifest file to a temporary path and return its path."""
     path = tmp_path / "verify_manifest.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
@@ -91,4 +92,33 @@ def test_bad_on_fail_value_raises(tmp_path: Path) -> None:
         },
     )
     with pytest.raises(ManifestError, match="on_fail"):
+        load_manifest(path)
+
+
+def test_non_dict_json_array_raises(tmp_path: Path) -> None:
+    """Test that JSON array at top level raises ManifestError."""
+    path = tmp_path / "verify_manifest.json"
+    path.write_text("[]", encoding="utf-8")
+    with pytest.raises(ManifestError, match="object"):
+        load_manifest(path)
+
+
+def test_non_dict_json_null_raises(tmp_path: Path) -> None:
+    """Test that JSON null at top level raises ManifestError."""
+    path = tmp_path / "verify_manifest.json"
+    path.write_text("null", encoding="utf-8")
+    with pytest.raises(ManifestError, match="object"):
+        load_manifest(path)
+
+
+def test_checks_not_list_raises(tmp_path: Path) -> None:
+    """Test that checks field as string (not list) raises ManifestError."""
+    path = _write(
+        tmp_path,
+        {
+            "manifest_version": "1.0.0",
+            "blocks": [{"name": "b", "checks": "abc"}],
+        },
+    )
+    with pytest.raises(ManifestError, match="list"):
         load_manifest(path)
