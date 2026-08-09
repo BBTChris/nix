@@ -30,6 +30,13 @@ spec's §12A semantics, physically laid out as per-module JSON per CLAUDE.md**. 
 stamped into the Plane-1 boot event per v1.3 §12.11 — the two mechanisms are complementary: the
 boot event anchors the audit trail, the per-line stamp makes any grep self-identifying.
 
+### 1.1a Repository & Branch Policy
+- **Remote:** `github.com/BBTChris/nix`, public (required for free branch protection; no proprietary edge is assumed to live in the code itself — see SESSION.md Arc 001/002 for the decision record).
+- **Branching:** trunk-based, `main` only. No `develop` or long-lived feature branches while this remains single-dev + cc. Revisit only if concurrent arcs genuinely need isolation.
+- **Protection on `main`:** PR review required before merge; no direct pushes; no force-push.
+- **Commit gate:** governed by `debug.md`'s three-tier model — Tier 2 (all 5 stages) is wired into `pre-commit` and blocks `git commit` on failure. `git commit --no-verify` is permitted only with the bypass disclosed in the commit message and a follow-up opened; an undisclosed bypass is treated as the gate never having run.
+- **CI/CD:** not yet implemented — explicitly out of scope until R1 (seams & skeleton) lands.
+
 ### 1.2 Bootstrapping & Installation
 Fresh headless Ubuntu node, secure download-verify-execute:
 - Administrator downloads and runs the `install.sh` bootstrap manually (`curl -sSLO`).

@@ -79,3 +79,5 @@ progress (infra/provisioning scaffold only, no code yet — R1 seams & skeleton 
     fixed unilaterally here since the request was for the literal rule set, not a
     solo-dev-workable variant — flagging for an explicit decision before the next arc needs to
     push to `main`.
+
+## 2026-08-09 — Formalized repo/branch policy as `elements_v2.md` §1.1a (commit `eab8e20`, PR pending merge — see prior entry's unresolved solo-dev-merge blocker).
