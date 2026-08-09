@@ -13,3 +13,10 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 pythonpath = ["scripts"]
 testpaths = ["scripts/tests"]
+
+[tool.pylint.MAIN]
+# checks/*.py import nixverify from scripts/ via checks/_preamble.py at runtime.
+# pylint does static resolution and cannot see that, so a commit touching only
+# checks/ files failed E0401 while the code was correct. Mirrors pytest's
+# pythonpath = ["scripts"] above. pre-commit runs hooks from the repo root.
+init-hook = 'import sys; sys.path.insert(0, "scripts")'
