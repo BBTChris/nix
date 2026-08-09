@@ -45,7 +45,12 @@ def _execute(checks_dir: Path, name: str, ctx: Context) -> CheckResult:
     reason = _gate(loaded, ctx)
     if reason:
         return _skip(name, reason)
-    assert loaded.run is not None
+    if loaded.run is None:
+        return CheckResult(
+            name=name,
+            status=Status.CANNOT_MEASURE,
+            detail="loaded check has no run callable",
+        )
     try:
         result = loaded.run(ctx.mode, ctx)
     except Exception as exc:  # noqa: BLE001 pylint: disable=broad-exception-caught
@@ -78,18 +83,18 @@ def run_blocks(
 ) -> list[CheckResult]:
     """Execute blocks in order, honouring on_fail policy."""
     results: list[CheckResult] = []
-    halted = False
+    halted_by: str = ""
     for block in blocks:
-        if halted:
+        if halted_by:
             results.extend(
-                _skip(name, f"halted by earlier block {block.name!r}")
+                _skip(name, f"halted by earlier block {halted_by!r}")
                 for name in block.checks
             )
             continue
         block_results = _run_block(block, checks_dir, ctx)
         results.extend(block_results)
         if block.on_fail == "halt" and any(r.status in FAILURES for r in block_results):
-            halted = True
+            halted_by = block.name
     return results
 
 

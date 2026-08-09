@@ -59,6 +59,8 @@ def test_halt_skips_all_later_blocks(tmp_path: Path) -> None:
     )
     assert results[0].status is Status.FAIL_REPAIRABLE
     assert results[1].status is Status.SKIPPED
+    assert "floor" in results[1].detail
+    assert "rest" not in results[1].detail
 
 
 def test_continue_runs_later_blocks(tmp_path: Path) -> None:
@@ -76,10 +78,28 @@ def test_continue_runs_later_blocks(tmp_path: Path) -> None:
     assert results[1].status is Status.PASS
 
 
+def _sleeping_check(seconds: float) -> str:
+    """A passing check body that sleeps first, to stagger completion order."""
+    return (
+        "def run(mode, ctx):\n"
+        "    import time\n"
+        f"    time.sleep({seconds})\n"
+        "    from nixverify.contract import CheckResult, Status\n"
+        "    return CheckResult(name='x', status=Status.PASS, evidence='measured')\n"
+    )
+
+
 def test_parallel_block_reports_in_manifest_order(tmp_path: Path) -> None:
-    """§6: completion order must never leak into output — runs must diff."""
-    for name in ("check_a", "check_b", "check_c"):
-        _plugin(tmp_path, name, PASSING)
+    """§6: completion order must never leak into output — runs must diff.
+
+    Durations are staggered so that completion order is the exact reverse of
+    manifest order (check_a finishes last, check_c finishes first). A version
+    that reads results via as_completed() instead of submission order would
+    report [check_c, check_b, check_a] here and fail.
+    """
+    _plugin(tmp_path, "check_a", _sleeping_check(0.15))
+    _plugin(tmp_path, "check_b", _sleeping_check(0.05))
+    _plugin(tmp_path, "check_c", _sleeping_check(0.0))
     results = run_blocks(
         (Block(name="p", checks=("check_a", "check_b", "check_c"), parallel=True),),
         tmp_path,
