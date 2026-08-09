@@ -51,7 +51,7 @@ def _probe(python: Path) -> str:
             timeout=15,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):  # fmt: skip
+    except OSError, subprocess.SubprocessError:
         return ""
     return proc.stdout.strip() or proc.stderr.strip()
 
