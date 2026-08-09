@@ -77,10 +77,11 @@ def test_failed_import_does_not_pollute_sys_modules(tmp_path: Path) -> None:
 
 
 def test_metadata_getattr_error_captured(tmp_path: Path) -> None:
-    """PEP 562 module.__getattr__ exceptions are captured, not raised.
+    """PEP 562 module.__getattr__ exceptions during metadata reads are captured.
 
-    Protects against modules that define __getattr__ raising something
-    other than AttributeError during metadata reads.
+    This test does NOT exercise the run lookup gap (see next test) because
+    run is defined, so getattr finds it via normal lookup and never calls __getattr__.
+    Kept to verify metadata read protection works.
     """
     _plugin(
         tmp_path,
@@ -92,5 +93,25 @@ def test_metadata_getattr_error_captured(tmp_path: Path) -> None:
     loaded = load_check(tmp_path, "check_getattr_error")
     # run() itself is found and callable, but metadata reads will hit __getattr__
     assert loaded.run is None  # Metadata read failed, so run is not returned
-    assert "metadata read failed" in loaded.load_error
+    assert "attribute read failed" in loaded.load_error
     assert "RuntimeError" in loaded.load_error
+
+
+def test_run_lookup_error_captured(tmp_path: Path) -> None:
+    """PEP 562 module.__getattr__ exceptions during run lookup are captured.
+
+    This test exercises the actual gap: a module with NO run attribute that
+    defines __getattr__ raising a non-AttributeError. The getattr(module, "run", None)
+    call must NOT propagate the exception, but instead return it as load_error.
+    """
+    _plugin(
+        tmp_path,
+        "check_no_run_getattr",
+        "def __getattr__(name):\n    raise RuntimeError(f'boom {name}')\n",
+    )
+    # This must not raise — load_check must never raise
+    loaded = load_check(tmp_path, "check_no_run_getattr")
+    assert loaded.run is None
+    assert "attribute read failed" in loaded.load_error
+    assert "RuntimeError" in loaded.load_error
+    assert "boom run" in loaded.load_error

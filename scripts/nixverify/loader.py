@@ -49,15 +49,15 @@ def load_check(checks_dir: Path, name: str) -> LoadedCheck:
         module = _import_module(path, name)
     except Exception as exc:  # noqa: BLE001 pylint: disable=broad-exception-caught
         return LoadedCheck(name=name, load_error=f"import failed: {exc!r}")
-    runner = getattr(module, "run", None)
-    if not callable(runner):
-        return LoadedCheck(name=name, load_error=f"{name}: no run() callable")
     try:
+        runner = getattr(module, "run", None)
+        if not callable(runner):
+            return LoadedCheck(name=name, load_error=f"{name}: no run() callable")
         privilege = str(getattr(module, "PRIVILEGE", "user"))
         interactive = bool(getattr(module, "INTERACTIVE", False))
         disruptive = bool(getattr(module, "DISRUPTIVE", False))
     except Exception as exc:  # noqa: BLE001 pylint: disable=broad-exception-caught
-        return LoadedCheck(name=name, load_error=f"metadata read failed: {exc!r}")
+        return LoadedCheck(name=name, load_error=f"attribute read failed: {exc!r}")
     return LoadedCheck(
         name=name,
         run=runner,
