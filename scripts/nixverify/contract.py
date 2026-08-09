@@ -73,12 +73,17 @@ def validate_result(result: CheckResult) -> CheckResult:
     what is wrong. Both are downgraded to CANNOT_MEASURE — the honest answer
     is 'unknown', never a false assurance.
     """
+    reason = ""
     if result.status is Status.PASS and not result.evidence.strip():
-        result.status = Status.CANNOT_MEASURE
-        result.detail = "engine: PASS rejected — no evidence recorded (§5)"
+        reason = "engine: PASS rejected — no evidence recorded (§5)"
     elif result.status in FAILURES and not result.site.strip():
+        reason = "engine: FAIL rejected — no site named (§5)"
+    if reason:
         result.status = Status.CANNOT_MEASURE
-        result.detail = "engine: FAIL rejected — no site named (§5)"
+        # Append, never replace: the downgrade path is exactly where an
+        # operator most needs the check's own account of why it is uncertain.
+        said = result.detail.strip()
+        result.detail = f"{reason}; check said: {said}" if said else reason
     return result
 
 
