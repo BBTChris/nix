@@ -97,6 +97,28 @@ def test_metadata_getattr_error_captured(tmp_path: Path) -> None:
     assert "RuntimeError" in loaded.load_error
 
 
+def test_check_can_import_a_sibling_module_in_the_same_directory(
+    tmp_path: Path,
+) -> None:
+    """A check's own directory must be importable, mirroring standalone execution.
+
+    `python3 checks/check_x.py` auto-adds checks/ to sys.path[0] (CPython
+    interpreter startup behaviour). load_check must replicate that so a check
+    importing a sibling helper (e.g. `checks/_preamble.py`) behaves the same
+    whether run under the engine or standalone.
+    """
+    _plugin(tmp_path, "_helper", "VALUE = 'from helper'\n")
+    _plugin(
+        tmp_path,
+        "check_uses_sibling",
+        "import _helper  # noqa: F401\ndef run(mode, ctx):\n    return _helper.VALUE\n",
+    )
+    sys.modules.pop("_helper", None)
+    loaded = load_check(tmp_path, "check_uses_sibling")
+    assert loaded.run is not None, loaded.load_error
+    assert loaded.run(None, None) == "from helper"
+
+
 def test_run_lookup_error_captured(tmp_path: Path) -> None:
     """PEP 562 module.__getattr__ exceptions during run lookup are captured.
 
