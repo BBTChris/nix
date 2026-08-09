@@ -18,25 +18,20 @@ and comms back to claude.ai.
   commit currently exists.
 - **Confirmed via `gh pr view 3`:** `state: CLOSED`.
 
-### Context worth surfacing (discovered during this arc, not something this arc's instructions asked me to fix)
+### Context surfaced during this arc (resolved by the follow-up arc that merged this file)
 
-`origin/main`'s `SESSION.md` and `RESULTS.md` are **currently behind** the work already done:
-- `SESSION.md` on `main` ends at the §1.1a entry — it does not yet contain the ARC 003 entry
-  (CLAUDE.md write-back gate, `enforce_admins` fix, PR #1+#2 merge), because that content only
-  ever landed in **PR #5** (`docs/arc003-writeback`), which is still open.
-- `RESULTS.md` on `main` is still the **ARC 001** version — neither ARC 002's nor ARC 003's
-  overwrite ever merged (PR #3 carried ARC 002's, now closed unmerged by this arc's own
-  instruction; PR #5 carries ARC 003's, still open).
-
-This arc's own write-back (this file, and the one-line `SESSION.md` entry) is being committed
-directly on top of that same un-merged-forward `main`, per this arc's explicit instructions —
-not held back pending PR #5.
+At the time this section was originally written, `origin/main`'s `SESSION.md`/`RESULTS.md` were
+behind — PR #5 (ARC 003's write-back) was still open. That gap has since been closed: PR #5 and
+this arc's own PR #6 were both merged (via admin override, resolving the resulting `SESSION.md`/
+`RESULTS.md` conflict by chronological concatenation for `SESSION.md` and taking this file's
+newest-arc version for `RESULTS.md`, consistent with its own "overwritten per arc" definition).
+See the ARC 003 entry in `SESSION.md` for that arc's full detail — this file's overwrite
+semantics mean it no longer restates ARC 003's content verbatim here.
 
 ## Out of scope (confirmed unchanged)
 
 - No code (`scripts/`) — R1 seams & skeleton is a separate arc.
 - No CI/CD.
 - No secrets loaded into GitHub.
-- PR #5 merge — not requested this arc, left open.
 
 **** ARC completed **** — housekeeping arc, no code; <1% of whole-project progress.
