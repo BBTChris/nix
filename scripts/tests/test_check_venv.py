@@ -105,6 +105,13 @@ def test_correct_mode_refuses_to_rebuild_its_own_interpreter(
 
     assert result.status is Status.FAIL_NEEDS_OPERATOR
     assert result.site == str(venv)
+    # Direct proof the venv was not rebuilt, not an inference from status —
+    # a reordering that reached _create() before this guard would still
+    # report FAIL_NEEDS_OPERATOR-shaped-looking failures in other ways, but
+    # would not leave the fixture's exact dangling symlink untouched.
+    assert interpreter.is_symlink()
+    assert interpreter.readlink() == Path("/nonexistent/python3")
+    assert not interpreter.exists()
 
 
 def test_correct_mode_rebuilds_when_running_from_the_system_interpreter(
@@ -127,3 +134,40 @@ def test_correct_mode_rebuilds_when_running_from_the_system_interpreter(
     assert result.status is Status.PASS
     assert "created" in result.action
     assert (tmp_path / ".venv" / "bin" / "python3").exists()
+
+
+def test_running_from_fails_closed_when_location_is_undeterminable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CLAUDE.md directive 4: fail closed and loud.
+
+    An OSError from Path.resolve() (permission denied on an intermediate
+    component, ELOOP on a symlink cycle) must make the guard *refuse*, not
+    *permit*. The two costs are asymmetric: refusing wrongly costs the
+    operator a re-invocation; permitting wrongly rebuilds the interpreter
+    executing the check — the exact catastrophe the guard exists to
+    prevent. "I cannot tell where I am running from" must resolve toward
+    "assume I am running from the venv", never the opposite.
+
+    Path.resolve() is deliberately non-strict and, verified directly, does
+    not raise for either a symlink cycle or a permission-denied
+    intermediate directory on this system (`os.path.realpath`'s
+    best-effort design swallows both). Contriving a real filesystem
+    condition that reliably raises is impractical, so this patches
+    Path.resolve directly to force the branch under test — applied only
+    after load_check() has already imported the module (loader.py itself
+    calls path.resolve() while locating the check file).
+    """
+    loaded = load_check(CHECKS, "check_venv")
+    assert loaded.run is not None, loaded.load_error
+
+    def _raise(self: Path, *_args: object, **_kwargs: object) -> Path:
+        raise OSError(f"simulated: cannot resolve {self}")
+
+    monkeypatch.setattr(Path, "resolve", _raise)
+
+    result = loaded.run(Mode.CORRECT, Context(nix_home=tmp_path, mode=Mode.CORRECT))
+
+    assert result.status is Status.FAIL_NEEDS_OPERATOR
+    assert result.site == str(tmp_path / ".venv")
+    assert not (tmp_path / ".venv").exists()  # refused before ever attempting _create()

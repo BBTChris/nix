@@ -45,6 +45,15 @@ def _running_from(venv: Path) -> bool:
     2. Containment of the *unresolved* executable path under the venv
        directory — a second, independent signal for layouts where
        `sys.prefix` is unusual.
+
+    On `OSError` (permission denied on an intermediate component, a symlink
+    cycle) the two possible mistakes are not symmetric: refusing wrongly
+    costs the operator a re-invocation from the system interpreter;
+    permitting wrongly rebuilds the interpreter executing this check — the
+    exact catastrophe this guard exists to prevent (CLAUDE.md directive 4,
+    fail closed and loud). So an inability to determine where we are
+    running from must be treated as "assume we are running from it" and
+    return `True`, never `False` — do not "simplify" this back to `False`.
     """
     try:
         venv_resolved = venv.resolve()
@@ -52,7 +61,7 @@ def _running_from(venv: Path) -> bool:
             return True
         return venv_resolved in Path(sys.executable).absolute().parents
     except OSError:
-        return False
+        return True
 
 
 def _probe(python: Path) -> str:
