@@ -24,6 +24,20 @@ in the GUI after first login, since these live in the per-user `Jts` profile tha
 until then. Auto-restart-vs-auto-logoff is likewise a post-login GUI setting — unreachable before
 the first human login creates the profile.
 
+**`clientId` allocation scheme (ARC 008 — a decision being recorded here, not a value discovered
+from the environment):** the TWS API keys every concurrent session by `clientId`; two processes
+sharing one id collide, and id `0` additionally binds to manually-placed TWS orders, which is
+exactly the order-ownership ambiguity the mission scope forbids. The space is therefore allocated
+deliberately, not first-come.
+
+| `clientId` | reserved for | status |
+|---|---|---|
+| `0` | never used — implicit adoption of manual/TWS-placed orders | permanently excluded |
+| `1` | the live Risk Engine process | **reserved — not yet built; connect nothing else on `1`** |
+| `905` | diagnostics / tooling (`check_ibgateway_config.py` and ad-hoc connection probes) | allocated |
+
+Ids outside this table are unallocated: assign one here before using it, not at the call site.
+
 # Transition to DataBento and Tradovate
 Once the system is near release-candidate stage, we transition to the final stream and broker
 providers, DataBento and Tradovate. At this point the user funds a live account so we have

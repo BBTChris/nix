@@ -12,12 +12,14 @@ echo "== install.sh: base dependencies (before any interactive prompt) =="
 sudo apt-get update -qq
 sudo apt-get install -y python3 python3-venv python3-pip git libssl-dev libffi-dev python3-dev
 
-echo "== install.sh: python venv + cryptography =="
+echo "== install.sh: python venv + pinned deps =="
 if [ ! -d "$NIX_HOME/.venv" ]; then
     python3 -m venv "$NIX_HOME/.venv"
 fi
 "$NIX_HOME/.venv/bin/pip" install --quiet --upgrade pip
-"$NIX_HOME/.venv/bin/pip" install --quiet cryptography
+# Pinned: ib_async is the TWS API client the broker seam will use (ARC 008). Pinned rather
+# than floating because a vendor-API client version bump can silently change wire behavior.
+"$NIX_HOME/.venv/bin/pip" install --quiet cryptography "ib_async==2.1.0"
 
 echo "== install.sh: hardware identity (v4 full UUID, primary partition) =="
 ROOT_DEV=$(findmnt -n -o SOURCE /)
