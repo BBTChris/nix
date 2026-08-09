@@ -1,6 +1,7 @@
 """Manifest parsing per VERIFY-AND-CHECKS.md §6."""
 
 import json
+import os
 from pathlib import Path
 
 import pytest  # pylint: disable=import-error
@@ -121,4 +122,27 @@ def test_checks_not_list_raises(tmp_path: Path) -> None:
         },
     )
     with pytest.raises(ManifestError, match="list"):
+        load_manifest(path)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores permission bits")
+def test_unreadable_file_raises_manifest_error_not_oserror(tmp_path: Path) -> None:
+    """A permission-denied manifest is unmeasurable (§4.1), not a crash."""
+    path = _write(
+        tmp_path,
+        {"manifest_version": "1.0.0", "blocks": [{"name": "b", "checks": ["check_a"]}]},
+    )
+    path.chmod(0o000)
+    try:
+        with pytest.raises(ManifestError, match="cannot read"):
+            load_manifest(path)
+    finally:
+        path.chmod(0o644)
+
+
+def test_directory_in_place_of_file_raises_manifest_error(tmp_path: Path) -> None:
+    """A directory where a manifest file is expected is unmeasurable, not a crash."""
+    path = tmp_path / "verify_manifest.json"
+    path.mkdir()
+    with pytest.raises(ManifestError):
         load_manifest(path)

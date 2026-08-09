@@ -2,11 +2,13 @@
 
 import ast
 import json
+import os
 import subprocess
 import sys
 import textwrap
 from pathlib import Path
 
+import pytest  # pylint: disable=import-error
 import verify
 
 REPO = Path(__file__).resolve().parents[2]
@@ -45,6 +47,17 @@ def test_all_passing_exits_zero(tmp_path: Path) -> None:
 def test_missing_manifest_exits_two_not_one(tmp_path: Path) -> None:
     """A manifest we cannot read is unmeasurable, not a failed check."""
     assert verify.main(["--manifest", str(tmp_path / "absent.json")]) == 2
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores permission bits")
+def test_permission_denied_manifest_exits_two_not_a_traceback(tmp_path: Path) -> None:
+    """A manifest that exists but cannot be read must not crash the CLI (exit 2)."""
+    manifest = _fixture(tmp_path, PASSING)
+    manifest.chmod(0o000)
+    try:
+        assert verify.main(["--manifest", str(manifest)]) == 2
+    finally:
+        manifest.chmod(0o644)
 
 
 def test_engine_runs_under_system_python_without_the_venv(tmp_path: Path) -> None:
@@ -102,24 +115,66 @@ def test_engine_imports_no_third_party_modules() -> None:
     assert proc.returncode == 0, f"third-party imports in engine: {proc.stdout}"
 
 
+def _sys_aliases(tree: ast.Module) -> set[str]:
+    """Every name `sys` is reachable under, including `import sys as X`."""
+    aliases = {"sys"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            aliases.update(
+                alias.asname
+                for alias in node.names
+                if alias.name == "sys" and alias.asname
+            )
+    return aliases
+
+
+def _imports_stdin_directly(tree: ast.Module) -> bool:
+    """True for `from sys import stdin`, which needs no `sys.` prefix at all."""
+    return any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "sys"
+        and any(alias.name == "stdin" for alias in node.names)
+        for node in ast.walk(tree)
+    )
+
+
+def _calls_input(node: ast.AST) -> bool:
+    """True if `node` is a call to the bare builtin `input`."""
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "input"
+    )
+
+
+def _accesses_stdin(node: ast.AST, sys_aliases: set[str]) -> bool:
+    """True if `node` is `<sys-alias>.stdin`."""
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "stdin"
+        and isinstance(node.value, ast.Name)
+        and node.value.id in sys_aliases
+    )
+
+
 def _reads_stdin(path: Path) -> bool:
     """True if `path` contains a real `input()` call or `sys.stdin` access.
 
     Parses with `ast` rather than substring-matching so prose mentioning
     "stdin" in a docstring or comment cannot trip the check — only actual
-    code usage counts.
+    code usage counts. Also resolves `import sys as <alias>` bindings (so
+    `alias.stdin` is caught, not just the literal name `sys`) and treats
+    `from sys import stdin` as a direct hit, since that form makes `stdin`
+    usable without ever writing `sys.stdin` again.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            func = node.func
-            if isinstance(func, ast.Name) and func.id == "input":
-                return True
-        if isinstance(node, ast.Attribute) and node.attr == "stdin":
-            value = node.value
-            if isinstance(value, ast.Name) and value.id == "sys":
-                return True
-    return False
+    if _imports_stdin_directly(tree):
+        return True
+    sys_aliases = _sys_aliases(tree)
+    return any(
+        _calls_input(node) or _accesses_stdin(node, sys_aliases)
+        for node in ast.walk(tree)
+    )
 
 
 def test_engine_source_never_reads_stdin() -> None:
@@ -134,6 +189,48 @@ def test_engine_source_never_reads_stdin() -> None:
         *(REPO / "scripts" / "nixverify").glob("*.py"),
     ):
         assert not _reads_stdin(path), f"{path} reads stdin"
+
+
+def test_reads_stdin_ignores_docstring_prose(tmp_path: Path) -> None:
+    """A docstring that merely mentions "stdin" is not code usage."""
+    path = tmp_path / "mod.py"
+    path.write_text('"""Never reads stdin (§9.2)."""\n', encoding="utf-8")
+    assert not _reads_stdin(path)
+
+
+def test_reads_stdin_ignores_unrelated_name(tmp_path: Path) -> None:
+    """A variable merely named `stdin` is not `sys.stdin`."""
+    path = tmp_path / "mod.py"
+    path.write_text("stdin = 1\nprint(stdin)\n", encoding="utf-8")
+    assert not _reads_stdin(path)
+
+
+def test_reads_stdin_catches_bare_input_call(tmp_path: Path) -> None:
+    """A direct `input()` call is the exact hazard this check exists for."""
+    path = tmp_path / "mod.py"
+    path.write_text("x = input()\n", encoding="utf-8")
+    assert _reads_stdin(path)
+
+
+def test_reads_stdin_catches_sys_stdin_attribute(tmp_path: Path) -> None:
+    """`sys.stdin.read()` is the other direct hazard."""
+    path = tmp_path / "mod.py"
+    path.write_text("import sys\nx = sys.stdin.read()\n", encoding="utf-8")
+    assert _reads_stdin(path)
+
+
+def test_reads_stdin_catches_aliased_sys_import(tmp_path: Path) -> None:
+    """`import sys as s` must not let `s.stdin` evade the check."""
+    path = tmp_path / "mod.py"
+    path.write_text("import sys as s\nx = s.stdin.read()\n", encoding="utf-8")
+    assert _reads_stdin(path)
+
+
+def test_reads_stdin_catches_from_sys_import_stdin(tmp_path: Path) -> None:
+    """`from sys import stdin` must not let a direct-import form evade the check."""
+    path = tmp_path / "mod.py"
+    path.write_text("from sys import stdin\nx = stdin.read()\n", encoding="utf-8")
+    assert _reads_stdin(path)
 
 
 def test_old_root_verify_is_gone() -> None:

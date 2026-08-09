@@ -62,7 +62,11 @@ def load_manifest(path: Path) -> tuple[Block, ...]:
     if not path.is_file():
         raise ManifestError(f"manifest not found: {path}")
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ManifestError(f"cannot read {path}: {exc}") from exc
+    try:
+        payload = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise ManifestError(f"invalid JSON in {path}: {exc}") from exc
     if not isinstance(payload, dict):
