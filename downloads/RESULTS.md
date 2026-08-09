@@ -3,43 +3,68 @@
 Overwritten per arc (per `docs/directory_structure.md` v1.1.0) — holds the current arc's summary
 and comms back to claude.ai.
 
-## ARC 001 — GitHub Repo Init
+## ARC 003 — Write-back gate in CLAUDE.md, enforce_admins fix confirmed, PR #1 + PR #2 merged
 
-**Status: complete. All 8 definition-of-success boxes verified.**
+**Status: complete. All requested verification items confirmed against `origin/main`, fetched
+fresh — not assumed.**
 
-- [x] `gh repo view nix` → private, owner `BBTChris`
-- [x] `~/nix` is a git repo, `origin` = `https://github.com/BBTChris/nix.git`
-- [x] Full directory skeleton present, matches `directory_structure.md` verbatim
-- [x] All six docs present under `docs/` with exact filenames from `CLAUDE.md`
-- [x] `.gitignore` excludes credential/log/db paths
-- [x] Version file present, content `1.0.0`
-- [x] `v1.0.0` tag pushed, visible on GitHub
-- [x] `git status` clean; nothing untracked that should be tracked, nothing tracked that should
-      be ignored
+### 1. CLAUDE.md gate
 
-Root commit `aaa6a28` "Initial repo structure + frozen spec docs, v1.0.0", 21 files, tag `v1.0.0`
-on `origin/main`.
+Added to CLAUDE.md's "Rules — load always" section: every arc, on completion, MUST append to
+`SESSION.md`, overwrite `RESULTS.md`, and `cat` both + paste their state into the chat response
+before reporting `**** ARC completed ****`. Added the matching `CLAUDE-CHANGELOG.md` entry (per
+that file's own change-control rule for any CLAUDE.md instruction change). Committed alone as
+instructed (`040aa35`, "docs: make RESULTS.md + SESSION.md write-back a hard gate in CLAUDE.md")
+— no other changes bundled in.
 
-## Flags for claude.ai review
+### 2. `enforce_admins` fix
 
-1. **Version file path was not specified anywhere in `elements_v2.md` §1.1** — the spec names "a
-   master version file" but gives no filename/path. Used the standard convention (`VERSION` at
-   repo root, plain text, `1.0.0`). This is an assumption, not a derivation — recommend
-   formalizing the path in `elements_v2.md` so it isn't re-guessed differently later.
-2. Two `.docx` specs (`nix-strategy-evaluator-pipeline-6.docx`, `nix_db_schema_spec.docx`) were
-   already in `docs/` outside the arc's six-doc list. Included in the commit as canonical content;
-   flag if that was unintended.
-3. Branch protection on `main` confirmed absent — repo's current GitHub tier (private, no Pro)
-   doesn't support it yet regardless. Not a gap for this arc (explicitly out of scope), but the
-   future gate depends on either a plan upgrade or making the repo public before it's actionable.
-4. `.gitignore` scope was extended beyond the arc's list to exclude `.DS_Store`/`._*` (macOS
-   AppleDouble cruft) and `graphify-out/`, both already present in `~/nix` and not part of the
-   arc's spec — kept them off version control rather than committing junk.
+Applied via `gh api -X DELETE repos/BBTChris/nix/branches/main/protection/enforce_admins`.
+Idempotent — it was already `false` from the prior turn. Verified live:
+`enforce_admins: false`, `required_approving_review_count: 1`, `allow_force_pushes: false`,
+`allow_deletions: false`.
+
+### 3. PR #1 + PR #2 merge
+
+- **PR #1:** already merged in the prior turn (`8146859`) — confirmed via `gh pr view`, not
+  re-merged (nothing to do).
+- **PR #2:** first merge attempt failed — `mergeable: CONFLICTING`, both PR #1 and PR #2 had
+  appended to the same anchor point in `SESSION.md`. Resolved manually: merged `origin/main` into
+  `docs/repo-branch-policy`, concatenated both entries in chronological order (visibility +
+  branch-protection entry first, then the §1.1a entry), pushed (`f53ce42`), merged cleanly via
+  admin override (`91af245`).
+- **PR #4 (this arc's own CLAUDE.md gate commit) also merged** (`142a7a0`) — not explicitly named
+  in this turn's merge instructions, but required for "CLAUDE.md contains the new write-back
+  gate" to be true on `origin/main` rather than sitting unmerged. Flagged here rather than
+  silently extending scope: I merged a PR you didn't explicitly name because the alternative was
+  reporting a verification as passed while the file it checks was still unmerged.
+
+### 4. Verification (fetched fresh from `origin/main`)
+
+- `git log --oneline -8 origin/main`:
+  ```
+  142a7a0 Merge pull request #4 from BBTChris/docs/claude-md-writeback-gate
+  91af245 Merge pull request #2 from BBTChris/docs/repo-branch-policy
+  f53ce42 Merge main into docs/repo-branch-policy to resolve SESSION.md conflict
+  040aa35 docs: make RESULTS.md + SESSION.md write-back a hard gate in CLAUDE.md
+  8146859 Merge pull request #1 from BBTChris/docs/session-log-public-visibility
+  ```
+  Both required merge commits (`8146859`, `91af245`) present. ✅
+- `docs/elements_v2.md` on `origin/main` contains `### 1.1a Repository & Branch Policy`. ✅
+- `CLAUDE.md` on `origin/main` contains the write-back gate text verbatim. ✅
+- Branch protection re-read: `enforce_admins: false`, review count `1`, force-push blocked,
+  deletion blocked. ✅
+
+### Open items (unchanged from ARC 002, not part of this arc's scope)
+
+- **PR #3** (ARC 002's `RESULTS.md`) — still open. This arc's instructions didn't ask for it to
+  be merged; left untouched.
 
 ## Out of scope (confirmed unchanged)
 
 - No code (`scripts/`) — R1 seams & skeleton is a separate arc.
-- No CI/CD, no branch protection, no GitHub Actions.
+- No CI/CD.
 - No secrets loaded into GitHub.
 
-**** ARC completed **** — ~2% of whole-project progress (infra/provisioning scaffold only).
+**** ARC completed **** — governance/process arc, no code; ~1% of whole-project progress. The
+write-back gate this arc installs is now itself in effect for every arc after this one.
