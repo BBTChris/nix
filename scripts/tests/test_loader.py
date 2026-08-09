@@ -6,6 +6,7 @@ from nixverify.loader import load_check
 
 
 def _plugin(tmp_path: Path, name: str, body: str) -> Path:
+    """Write a test check module to tmp_path and return the directory."""
     (tmp_path / f"{name}.py").write_text(body, encoding="utf-8")
     return tmp_path
 
