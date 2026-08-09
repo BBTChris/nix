@@ -1,15 +1,17 @@
 """Venv check — the first repairable check (§3)."""
 
+import sys
 from pathlib import Path
 
-from nixverify.contract import Context, Mode, Status
+import pytest  # pylint: disable=import-error
+from nixverify.contract import CheckResult, Context, Mode, Status
 from nixverify.loader import load_check
 
 REPO = Path(__file__).resolve().parents[2]
 CHECKS = REPO / "checks"
 
 
-def _run(mode: Mode, home: Path):
+def _run(mode: Mode, home: Path) -> CheckResult:
     loaded = load_check(CHECKS, "check_venv")
     assert loaded.run is not None, loaded.load_error
     return loaded.run(mode, Context(nix_home=home, mode=mode))
@@ -48,5 +50,30 @@ def test_correct_mode_is_idempotent(tmp_path: Path) -> None:
     marker.write_text("preserved", encoding="utf-8")
     result = _run(Mode.CORRECT, tmp_path)
     assert result.status is Status.PASS
+    # `marker` surviving does not by itself prove no rebuild happened — a bare
+    # `python -m venv` (no --clear) on an existing directory would leave it
+    # untouched either way. `action == ""` is the assertion that actually
+    # detects an unconditional rebuild; see task-8-report.md's mutation test.
     assert marker.read_text(encoding="utf-8") == "preserved"
     assert result.action == ""
+
+
+def test_correct_mode_refuses_to_rebuild_its_own_interpreter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§9.5: the engine must never rebuild the venv it is running from.
+
+    Simulates the engine having been invoked as `.venv/bin/python3
+    verify.py` against a degraded venv: sys.executable resolves inside the
+    very venv CORRECT would otherwise rebuild.
+    """
+    venv = tmp_path / ".venv"
+    (venv / "bin").mkdir(parents=True)
+    fake_python = venv / "bin" / "python3"
+    fake_python.write_text("", encoding="utf-8")  # present but does not answer
+    monkeypatch.setattr(sys, "executable", str(fake_python))
+
+    result = _run(Mode.CORRECT, tmp_path)
+
+    assert result.status is Status.FAIL_NEEDS_OPERATOR
+    assert result.site == str(venv)

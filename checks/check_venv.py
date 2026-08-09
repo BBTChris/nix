@@ -25,6 +25,22 @@ def _interpreter(venv: Path) -> Path:
     return venv / "bin" / "python3"
 
 
+def _running_from(venv: Path) -> bool:
+    """True if the current interpreter lives inside the given venv (§9.5).
+
+    A check rebuilding `.venv` while executing on `.venv`'s own interpreter
+    deletes the interpreter beneath itself. The engine invariant is "runs
+    from /usr/bin/python3", but nothing stops a human invoking it via
+    `.venv/bin/python3 verify.py` by hand — this makes the invariant
+    self-enforcing rather than a documented hope.
+    """
+    try:
+        Path(sys.executable).resolve().relative_to(venv.resolve())
+    except ValueError:
+        return False
+    return True
+
+
 def _probe(python: Path) -> str:
     """Return the venv interpreter's version, or '' if it does not answer."""
     try:
@@ -35,7 +51,7 @@ def _probe(python: Path) -> str:
             timeout=15,
             check=False,
         )
-    except OSError, subprocess.SubprocessError:
+    except (OSError, subprocess.SubprocessError):  # fmt: skip
         return ""
     return proc.stdout.strip() or proc.stderr.strip()
 
@@ -70,6 +86,17 @@ def run(mode: Mode, ctx: Context) -> CheckResult:
             status=Status.FAIL_REPAIRABLE,
             site=str(venv),
             detail="virtualenv absent or its interpreter does not answer",
+        )
+    if _running_from(venv):
+        return CheckResult(
+            name=NAME,
+            status=Status.FAIL_NEEDS_OPERATOR,
+            site=str(venv),
+            detail=(
+                f"engine is running from {sys.executable}, inside the venv it "
+                "would rebuild — re-invoke from the system interpreter "
+                "(/usr/bin/python3), not .venv/bin/python3 (§9.5)"
+            ),
         )
     failure = _create(venv)
     if failure:
