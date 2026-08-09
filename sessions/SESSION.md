@@ -123,3 +123,38 @@ progress (infra/provisioning scaffold only, no code yet — R1 seams & skeleton 
 write-back gate this arc installs is now itself in effect for every arc after this one.
 
 ## 2026-08-09 — Closed PR #3 (stale ARC 002 RESULTS.md) without merging, comment posted; source branch `docs/arc002-results` kept (holds unmerged commit `82efd05`) — confirmed closed via `gh pr view 3`.
+
+## 2026-08-09 — ARC 005: PR #5 + PR #6 catch-up merge, elemets.md / dev_and_services_paln.md investigation
+
+- **Fresh `gh pr list` (per instruction, not assumed):** found two open PRs, not the one gap
+  previously reported — **#5** (`docs/arc003-writeback`) and **#6** (`docs/arc004-close-pr3`,
+  ARC 004's own write-back, opened last turn and not flagged as still-open at the time).
+- **PR #5 merged** cleanly (`b5e04ff`) — no conflict, since PR #6 wasn't merged yet.
+- **PR #6 then conflicted** (`mergeable: CONFLICTING`) against the just-merged PR #5 — both had
+  appended to the same `SESSION.md`/`RESULTS.md` anchor point. Resolved manually: merged
+  `origin/main` into `docs/arc004-close-pr3`, concatenated the `SESSION.md` entries in
+  chronological order (ARC 003 entry, authored 08:47, before ARC 004's, authored 08:49), and for
+  `RESULTS.md` — which is "overwritten per arc," not cumulative — kept the newer (ARC 004)
+  version rather than concatenating, consistent with the file's own definition. Pushed
+  (`fd84ffd`), merged cleanly via admin override (`3f62471`).
+- **Verified fresh against `origin/main`:** `git log` shows both merge commits (`b5e04ff`,
+  `3f62471`); `SESSION.md` has the ARC 003 entry then the ARC 004 entry, in that order;
+  `RESULTS.md` shows `## ARC 004`, not still ARC 001.
+- **Task 1 (elemets.md ambiguity):** confirmed via `find` — neither `elemets.md` nor
+  `elemet_structure.md` exists anywhere under `~/nix`, and `.claude/rules/` doesn't exist.
+  Checked the live `CLAUDE.md` text the task described replacing ("purpose unconfirmed; see open
+  objective below", an "Open objective" paragraph) — **neither string exists in the file.**
+  `CLAUDE-CHANGELOG.md`'s own second entry documents this was already resolved before this
+  session: the rules table was already stripped to a status note, the open-objective paragraph
+  already dropped. **No-op — no edit, no commit.** Reported rather than fabricated a change to
+  force the expected second commit.
+- **Task 2 (dev_and_services_paln.md):** confirmed `dev_and_services_paln.md` does not exist —
+  only `dev_and_services_plan.md` is present. The "Stale artifact" paragraph the task described
+  removing is also already gone, replaced by the "Doc audit (2026-08-09)" confirmation line
+  (`CLAUDE-CHANGELOG.md`'s first entry documents this same replacement). **No-op — no edit, no
+  commit.**
+- **Net result:** both tasks' premises predate this session's actual `CLAUDE.md` state; verified
+  on-disk/in-file truth over the brief, per standing directive. Only the PR #5/#6 catch-up merge
+  produced changes this arc.
+
+**** ARC completed **** — mostly catch-up + verification, no code; <1% of whole-project progress.
