@@ -36,3 +36,5 @@ into per-date or per-arc files.
 
 **** ARC completed **** — ARC 001 moved GitHub Repo Init to 100% done; ~2% of whole-project
 progress (infra/provisioning scaffold only, no code yet — R1 seams & skeleton is next).
+
+## 2026-08-09 — Formalized repo/branch policy as `elements_v2.md` §1.1a (commit `eab8e20`, PR pending merge — see prior entry's unresolved solo-dev-merge blocker).
