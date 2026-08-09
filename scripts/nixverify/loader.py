@@ -30,8 +30,8 @@ def _import_module(path: Path, name: str) -> ModuleType:
     if spec is None or spec.loader is None:
         raise ImportError(f"no import spec for {path}")
     module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
     spec.loader.exec_module(module)
+    sys.modules[name] = module
     return module
 
 
@@ -52,10 +52,16 @@ def load_check(checks_dir: Path, name: str) -> LoadedCheck:
     runner = getattr(module, "run", None)
     if not callable(runner):
         return LoadedCheck(name=name, load_error=f"{name}: no run() callable")
+    try:
+        privilege = str(getattr(module, "PRIVILEGE", "user"))
+        interactive = bool(getattr(module, "INTERACTIVE", False))
+        disruptive = bool(getattr(module, "DISRUPTIVE", False))
+    except Exception as exc:  # noqa: BLE001 pylint: disable=broad-exception-caught
+        return LoadedCheck(name=name, load_error=f"metadata read failed: {exc!r}")
     return LoadedCheck(
         name=name,
         run=runner,
-        privilege=str(getattr(module, "PRIVILEGE", "user")),
-        interactive=bool(getattr(module, "INTERACTIVE", False)),
-        disruptive=bool(getattr(module, "DISRUPTIVE", False)),
+        privilege=privilege,
+        interactive=interactive,
+        disruptive=disruptive,
     )

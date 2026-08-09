@@ -1,5 +1,6 @@
 """Plugin loading isolation per VERIFY-AND-CHECKS.md §9.3-§9.4."""
 
+import sys
 from pathlib import Path
 
 from nixverify.loader import load_check
@@ -57,3 +58,39 @@ def test_metadata_is_read_from_the_module(tmp_path: Path) -> None:
     assert loaded.privilege == "root"
     assert loaded.interactive is True
     assert loaded.disruptive is True
+
+
+def test_failed_import_does_not_pollute_sys_modules(tmp_path: Path) -> None:
+    """sys.modules must not retain stale modules after failed import.
+
+    Ensures load_check registers the module in sys.modules only after
+    successful exec_module, preventing process-wide pollution when exec fails.
+    """
+    _plugin(tmp_path, "check_stale", "import a_package_that_does_not_exist\n")
+    # Remove any prior pollution
+    sys.modules.pop("check_stale", None)
+    loaded = load_check(tmp_path, "check_stale")
+    assert loaded.run is None
+    assert "a_package_that_does_not_exist" in loaded.load_error
+    # Verify the stale module was never registered
+    assert "check_stale" not in sys.modules
+
+
+def test_metadata_getattr_error_captured(tmp_path: Path) -> None:
+    """PEP 562 module.__getattr__ exceptions are captured, not raised.
+
+    Protects against modules that define __getattr__ raising something
+    other than AttributeError during metadata reads.
+    """
+    _plugin(
+        tmp_path,
+        "check_getattr_error",
+        "def run(mode, ctx):\n    return None\n"
+        "def __getattr__(name):\n"
+        "    raise RuntimeError(f'custom getattr error for {name}')\n",
+    )
+    loaded = load_check(tmp_path, "check_getattr_error")
+    # run() itself is found and callable, but metadata reads will hit __getattr__
+    assert loaded.run is None  # Metadata read failed, so run is not returned
+    assert "metadata read failed" in loaded.load_error
+    assert "RuntimeError" in loaded.load_error
