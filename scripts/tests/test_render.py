@@ -1,6 +1,7 @@
 """Output rendering per VERIFY-AND-CHECKS.md §12."""
 
 import io
+import re
 
 from nixverify.contract import CheckResult, Status
 from nixverify.render import render_results, render_summary, theme_for
@@ -83,3 +84,77 @@ def test_summary_counts_each_state_and_shows_exit() -> None:
     assert "1 cannot measure" in text
     assert "1 skipped" in text
     assert "exit 1" in text
+
+
+def test_ascii_output_is_purity_encodable() -> None:
+    """ASCII theme output must be ASCII-encodable (no mojibake in logs)."""
+    theme = theme_for(io.StringIO(), {"LANG": "C"})
+    results = [
+        CheckResult(
+            "check",
+            Status.FAIL_REPAIRABLE,
+            site="jts.ini:ReadOnlyApi",
+            detail="on",
+            evidence="1.2.3",
+            action="restart",
+            upstream_available="2.0.0",
+        ),
+    ]
+    text = render_results(results, theme, True)
+    text += render_summary(results, 1, theme)
+    # Must not raise UnicodeEncodeError
+    text.encode("ascii")
+
+
+def test_lc_all_overrides_lang_for_utf8() -> None:
+    """LC_ALL overrides LANG (POSIX precedence): LC_ALL=C with UTF-8 LANG → ASCII."""
+    theme = theme_for(_Tty(), {"LC_ALL": "C", "LANG": "en_US.UTF-8"})
+    assert theme.unicode is False
+
+
+def test_lang_used_when_lc_all_not_set() -> None:
+    """When LC_ALL is not set, LANG determines UTF-8 mode."""
+    theme = theme_for(_Tty(), {"LANG": "en_US.UTF-8"})
+    assert theme.unicode is True
+
+
+def test_lc_all_utf8_overrides_lang_ascii() -> None:
+    """LC_ALL=en_US.UTF-8 with LANG=C → Unicode (LC_ALL precedence)."""
+    theme = theme_for(_Tty(), {"LC_ALL": "en_US.UTF-8", "LANG": "C"})
+    assert theme.unicode is True
+
+
+def test_summary_colours_failed_count_on_tty() -> None:
+    """Failed count is coloured on a TTY when failures present."""
+    theme = theme_for(_Tty(), {"LANG": "en_US.UTF-8"})
+    results = [
+        CheckResult("a", Status.PASS),
+        CheckResult("b", Status.FAIL_REPAIRABLE, site="s"),
+    ]
+    text = render_summary(results, 1, theme)
+    assert "\x1b[" in text  # Colour codes present
+    assert "1 failed" in text
+
+
+def test_summary_no_colour_on_non_tty() -> None:
+    """Failed count is not coloured on a non-TTY even with failures."""
+    theme = theme_for(io.StringIO(), {"LANG": "en_US.UTF-8"})
+    results = [
+        CheckResult("a", Status.PASS),
+        CheckResult("b", Status.FAIL_REPAIRABLE, site="s"),
+    ]
+    text = render_summary(results, 1, theme)
+    assert "\x1b[" not in text
+    assert "1 failed" in text
+
+
+def test_summary_no_colour_when_no_failures() -> None:
+    """Failed count is not coloured when there are no failures (even on TTY)."""
+    theme = theme_for(_Tty(), {"LANG": "en_US.UTF-8"})
+    results = [CheckResult("a", Status.PASS)]
+    text = render_summary(results, 0, theme)
+    # "0 failed" should not be coloured
+    assert "0 failed" in text
+    # The colour code should not appear for the failed segment
+    # Check that there's no colour code immediately around "failed"
+    assert not re.search(r"\x1b\[.*0 failed", text)

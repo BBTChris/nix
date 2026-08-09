@@ -50,12 +50,22 @@ class Theme:
             return text
         return f"{_COLOURS[status]}{text}{_RESET}"
 
+    @property
+    def detail_sep(self) -> str:
+        """Separator between site and detail (em dash for Unicode, hyphen for ASCII)."""
+        return "—" if self.unicode else "-"
+
+    @property
+    def separator(self) -> str:
+        """Separator for summary segments (middle dot for Unicode, pipe for ASCII)."""
+        return "·" if self.unicode else "|"
+
 
 def theme_for(stream: IO[str], env: Mapping[str, str]) -> Theme:
     """Degrade for pipes, NO_COLOR, and non-UTF-8 locales."""
     tty = bool(getattr(stream, "isatty", lambda: False)())
     colour = tty and "NO_COLOR" not in env
-    lang = f"{env.get('LC_ALL', '')}{env.get('LANG', '')}".upper()
+    lang = (env.get("LC_ALL") or env.get("LANG") or "").upper()
     return Theme(colour=colour, unicode=tty and "UTF-8" in lang)
 
 
@@ -66,13 +76,15 @@ def _line(result: CheckResult, theme: Theme, verbose: bool) -> str:
     if result.site:
         parts.append(result.site)
     if result.detail:
-        parts.append(f"— {result.detail}" if result.site else result.detail)
+        parts.append(
+            f"{theme.detail_sep} {result.detail}" if result.site else result.detail
+        )
     if result.upstream_available:
         parts.append(f"(upstream {result.upstream_available} available)")
     if result.action:
         parts.append(f"[{result.action}]")
     if verbose and result.evidence:
-        parts.append(f"· {result.evidence}")
+        parts.append(f"{theme.separator} {result.evidence}")
     return " ".join(parts).rstrip()
 
 
@@ -81,19 +93,20 @@ def render_results(results: list[CheckResult], theme: Theme, verbose: bool) -> s
     return "\n".join(_line(r, theme, verbose) for r in results)
 
 
-def render_summary(  # pylint: disable=unused-argument
-    results: list[CheckResult], exit_code: int, theme: Theme
-) -> str:
+def render_summary(results: list[CheckResult], exit_code: int, theme: Theme) -> str:
     """Counts per state plus the process exit code."""
     counts = {status: 0 for status in Status}
     for result in results:
         counts[result.status] += 1
     failed = counts[Status.FAIL_REPAIRABLE] + counts[Status.FAIL_NEEDS_OPERATOR]
+    failed_text = f"{failed} failed"
+    if failed > 0:
+        failed_text = theme.paint(Status.FAIL_REPAIRABLE, failed_text)
     segments = [
         f"{counts[Status.PASS]} passed",
-        f"{failed} failed",
+        failed_text,
         f"{counts[Status.CANNOT_MEASURE]} cannot measure",
         f"{counts[Status.SKIPPED]} skipped",
     ]
-    body = " · ".join(segments)
+    body = f" {theme.separator} ".join(segments)
     return f"\n  {body}{'':<10}exit {exit_code}"
