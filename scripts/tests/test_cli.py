@@ -60,6 +60,13 @@ def test_permission_denied_manifest_exits_two_not_a_traceback(tmp_path: Path) ->
         manifest.chmod(0o644)
 
 
+def test_undecodable_manifest_exits_two_not_a_traceback(tmp_path: Path) -> None:
+    """Undecodable bytes (truncated write, wrong encoding) must not crash the CLI."""
+    manifest = tmp_path / "verify_manifest.json"
+    manifest.write_bytes(b'{"a": "\xff\xfe"}')
+    assert verify.main(["--manifest", str(manifest)]) == 2
+
+
 def test_engine_runs_under_system_python_without_the_venv(tmp_path: Path) -> None:
     """§9.1: the engine must work before .venv exists."""
     manifest = _fixture(tmp_path, PASSING)

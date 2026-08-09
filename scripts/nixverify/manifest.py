@@ -63,7 +63,7 @@ def load_manifest(path: Path) -> tuple[Block, ...]:
         raise ManifestError(f"manifest not found: {path}")
     try:
         raw = path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         raise ManifestError(f"cannot read {path}: {exc}") from exc
     try:
         payload = json.loads(raw)
