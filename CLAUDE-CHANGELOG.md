@@ -50,3 +50,14 @@ roles/ownership, directory-layout enforcement, debug-tier gates) has no
 rule-layer document — only the `docs/*.md` specs they'd have derived from.
 This is a real capability gap, not just a stale reference; someone should
 decide whether/when to author these rule files.
+
+## 2026-08-09 — SESSION.md/RESULTS.md write-back made a hard gate
+
+Added to the "Rules — load always" section: every arc, on completion, MUST
+append its summary to `~/nix/sessions/SESSION.md` and overwrite (not append)
+`~/nix/downloads/RESULTS.md` with that arc's full results, and must `cat`
+both files and paste their confirmed state into the chat response before
+reporting `**** ARC completed ****`. Prompted by the prior arc (public
+visibility + branch protection) where RESULTS.md was skipped on first pass
+and only caught retroactively — this closes that gap mechanically rather
+than relying on memory.
