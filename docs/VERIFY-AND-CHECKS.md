@@ -414,8 +414,14 @@ read as one product.
      ⚠  ibgateway_config   CANNOT MEASURE — no listener on 127.0.0.1:4002
      ✖  sealed_credentials FAIL — broker_api_key absent from credstore
 
-     12 passed · 1 failed · 1 cannot measure          exit 1
+     12 passed · 1 failed · 1 cannot measure · 0 skipped     exit 1
 ```
+
+All four counts always print, including zeros. A stable column set is what makes
+consecutive runs diffable — the same reason §6 fixes result ordering. Decorative
+punctuation degrades with everything else: the `·` separator becomes `|` and the
+`—` before a detail becomes `-` under an ASCII theme, so piped output is genuinely
+ASCII rather than merely glyph-free.
 
 Requirements:
 
