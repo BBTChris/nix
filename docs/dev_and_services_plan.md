@@ -13,6 +13,17 @@ abstracted behind the vendor-neutral seam. This carries the majority of module d
 Dev engineer will set up the account and provide account credentials and API key.
 Never trust strategy results from the IBKR phase — plumbing only.
 
+**IB Gateway auth expectation (ARC 006, so it's not tribal knowledge):** IBKR does not support
+headless first-auth — the initial GUI login + IB Key 2FA approval on the human operator's phone
+is a hard vendor constraint, not a tooling gap, and cannot be scripted or worked around. After
+that first login, Gateway auto-restarts **daily**, but each auto-restart still requires the
+human's IB Key approval on their phone — this is not a one-time setup, it's a standing daily
+operational dependency on the operator being reachable. Paper socket port is 4002 (live is 4001,
+not used at Stage 0); "Enable ActiveX and Socket Clients" and trusted IP `127.0.0.1` must be set
+in the GUI after first login, since these live in the per-user `Jts` profile that doesn't exist
+until then. Auto-restart-vs-auto-logoff is likewise a post-login GUI setting — unreachable before
+the first human login creates the profile.
+
 # Transition to DataBento and Tradovate
 Once the system is near release-candidate stage, we transition to the final stream and broker
 providers, DataBento and Tradovate. At this point the user funds a live account so we have

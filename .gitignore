@@ -6,9 +6,21 @@
 logs/*
 !logs/.gitkeep
 
-# pg_dump staging / auxiliary DB files (databases/ per directory_structure.md)
-databases/*
-!databases/.gitkeep
+# pg_dump staging (Backblaze pipeline) — binary/compressed backup artifacts only.
+# databases/schema/ (extracted DDL — the source-of-truth schema artifacts) IS tracked;
+# directory_structure.md explicitly scopes "auxiliary DB files" into this directory,
+# and a blanket databases/* rule silently defeated that. Never the PG cluster itself
+# (that lives at the OS-default location per elements_v2.md, outside ~/nix entirely).
+databases/*.dump
+databases/*.sql.gz
+databases/*.tar
+databases/backups/
+
+# Node-identity / runtime state (state/ — hardware UUID, credential JSON). Not for a
+# public repo: the hardware UUID is machine-fingerprinting info, not a secret exactly,
+# but not something to publish either. credentials.json is already covered above by
+# *credentials*.json but state/ is excluded wholesale for defense in depth.
+state/
 
 # Env / master-password material
 *.env
@@ -22,6 +34,7 @@ __pycache__/
 *.pyo
 .venv/
 venv/
+.testmondata
 
 # macOS cruft (not part of the tracked tree)
 .DS_Store
