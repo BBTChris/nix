@@ -121,3 +121,5 @@ progress (infra/provisioning scaffold only, no code yet — R1 seams & skeleton 
 
 **** ARC completed **** — governance/process arc, no code; ~1% of whole-project progress. The
 write-back gate this arc installs is now itself in effect for every arc after this one.
+
+## 2026-08-09 — Closed PR #3 (stale ARC 002 RESULTS.md) without merging, comment posted; source branch `docs/arc002-results` kept (holds unmerged commit `82efd05`) — confirmed closed via `gh pr view 3`.
