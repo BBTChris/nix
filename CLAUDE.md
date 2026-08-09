@@ -19,6 +19,8 @@ Nix is BlackBox Trading LLC's autonomous **futures** trading platform. Greenfiel
 
 **Derivation invariant (holds once rules exist):** when a source spec version-bumps, the derived rule is regenerated in the same arc. A derived rule may narrow or operationalize its spec; it may never contradict it.
 
+Every arc, on completion, MUST: (1) append its summary to the end of `~/nix/sessions/SESSION.md`, (2) overwrite (not append) `~/nix/downloads/RESULTS.md` with that arc's full results. Do not report "**** ARC completed ****" until both are verified done — cat both files as the last action before reporting completion, and paste confirmation of their state into the chat response.
+
 ## Specs — read on demand (`~/nix/docs/`)
 
 Not auto-loaded. Read the ones an arc touches; they cost nothing until opened. Filenames exact.
