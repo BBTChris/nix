@@ -1,14 +1,24 @@
 # DEBUG AND PROOF — OPERATING DOCTRINE
 
-**Version 1.1.0.** Supersedes v1.0.0 (`71821507…`), which must not be used — it described two tiers
-where this protocol has three, omitted PyLint, and graduated rigour only by *when* you were working
-rather than by *what you were touching*.
+**Version 1.2.0.** Supersedes v1.1.0, which lacked §7.12 — the standing question now required of
+every gate at the point it is built. Supersedes v1.0.0 (`71821507…`), which must not be used — it
+described two tiers where this protocol has three, omitted PyLint, and graduated rigour only by
+*when* you were working rather than by *what you were touching*.
 
 **Audience:** an AI agent writing, reviewing, or verifying code in this codebase.
 **Assumes:** nothing. Read it end to end before your first patch.
 **Status:** training and reference material. It does **not** supersede any rules file already
 installed in the repository; where the two disagree, the installed rule wins and you report the
 divergence rather than resolving it yourself.
+
+### What changed in v1.2.0
+
+1. **§7.12 added — the standing question.** *"What would have to be true for this to pass while
+   measuring nothing?"* Now required of every new gate, **answered in writing at the point the gate
+   is built**. Promoted out of the Nix check-debt ledger (ARC 016) after the seventh recorded
+   instance of one failure class. See §7.12 for the evidence base.
+2. **Failure-mode #14 added** to the §8 catalogue: *scope set by an external mutable list*.
+3. **§9 operating checklist** gains the standing question under the per-instrument block.
 
 ### What changed in v1.1.0
 
@@ -30,6 +40,7 @@ divergence rather than resolving it yourself.
 | about to `git commit` | **Tier 2** — all five stages | §4 |
 | declaring a module done | **Tier 3** — exhaustive certification | §5 |
 | writing or editing **any instrument** | §7 in full, regardless of tier | §7 |
+| **building a new gate** | **§7.12 — answer the standing question in writing, beside the gate** | §7.12 |
 
 **The ten-second classification test:**
 
@@ -665,6 +676,66 @@ touches an irreversible seam.** Classify in writing, before starting.
 
 ---
 
+### 7.12 THE STANDING QUESTION — answer it in writing, at the point the gate is built
+
+**Of every gate, before it is trusted, ask:**
+
+> ### *What would have to be true for this to pass while measuring nothing?*
+
+**Write the answer down where the gate is defined.** Not in an arc report, not in a commit message,
+not in the reviewer's head — beside the gate, where the next person to edit it will read it. A gate
+whose vacuity conditions are undocumented is one refactor away from meeting them silently.
+
+This is the inverse of §11's question and the two are complementary. §11 asks *what would have made
+this fail* — it interrogates a **result**. §7.12 asks what would let the gate pass **having examined
+nothing** — it interrogates the **instrument's scope**. A gate can answer §11 convincingly and still
+be reading zero files.
+
+#### Why this is a principle and not a caution
+
+**It is this project's characteristic failure mode.** Seven independent instances are on record, no
+two found the same way, and every one was a green light that measured nothing:
+
+| # | instance | what it measured | how it stayed green |
+|---|---|---|---|
+| 1 | `bandit` scanning nothing since ARC 006 | 0 of 27 files | 1.8.6 died per-file on Python 3.14, recorded "exception while scanning file", and **exited 0** |
+| 2 | `CHECK-DEBT` series hand-miscounted, **twice** | a number the table already determines | prose restating a derived fact; nothing compared the two |
+| 3 | the 10-minute feed delay sitting unread in ARC 010's **own output** | it was measured and printed | nobody asserted on it, so the value was produced and discarded |
+| 4 | `check_structural_conformance` passing `async` against a **sync**-declared port | method presence only | `callable()` is true for `async def` too — right shape, un-awaited coroutine returned |
+| 5 | `avg_price` invisible to a polite `FakeIB` | per-unit vs notional | the fake had no `multiplier`, so both units were **numerically identical** |
+| 6 | `pre-commit run --all-files` over `scripts/broker/` | all *git-tracked* files | the files were **untracked**, so the gate's scope silently excluded them |
+| 7 | an **order** sink passed into the **datafeed** port | nothing | invariant 3 says the contracts are disjoint; no feed event was ever driven through it |
+
+Read the right-hand column as a set. These are not seven unrelated mistakes — they are seven ways of
+arriving at the same place: **the instrument ran, the instrument was green, and the subject was never
+in scope.** Instances 1 and 6 are scope defects, 4 and 5 are representational defects (the instrument
+could not *express* the difference it was asked to detect), 2 and 3 are measurement-without-assertion,
+and 7 is a type error that only a behavioural drive would surface.
+
+**A run of one is luck. A run of seven is a mechanism.** Treat any new gate as belonging to this
+family until its answer to the standing question is written down.
+
+#### The eighth, found by applying it
+
+ARC 016 added a pytest control asserting `HollowBrokerOrder` still fails behaviourally. It passed.
+Driven against a *working* adapter it **also** passed — because the adapter emitted into one
+`RecordingSink` while the assertions read a different one, so the suite was observing a sink nothing
+had ever written to. It would have stayed green through the exact regression it existed to catch.
+Caught within minutes by a can-fail run, i.e. by asking the standing question of a brand-new gate
+rather than of an old one. **The discipline pays on first use, not eventually.**
+
+#### What a written answer looks like
+
+Name the specific conditions, in a form you could plant:
+
+- ✅ *"Passes vacuously if `git ls-files` stops returning `scripts/broker/` — i.e. if the files are
+  untracked. Non-vacuity is asserted by listing the scope before the plant."*
+- ✅ *"Passes vacuously if the fake's `multiplier` is absent or 1, because notional and per-unit
+  coincide. The fake therefore carries a real multiplier."*
+- ❌ *"Thoroughly tested."* — names no condition, so it cannot be planted, so it was not answered.
+
+**If you cannot name a condition, you have not examined the gate — you have admired it.**
+
 ## 8. FAILURE-MODE CATALOGUE
 
 Every entry is a real defect found in this codebase, and each initially looked like a defect in
@@ -685,6 +756,7 @@ something else.
 | 11 | Silent refusal | Correct rejection with no observable |
 | 12 | Environment-shaped result | A proof taken in one environment presented as a claim about another |
 | 13 | Under-classified surface | An irreversible change took the light path because the diff was small |
+| 14 | Scope set by an external mutable list | The gate reads its file list from something a person edits — a tracked-file set, an allowlist, a registry — so *omitting* the subject silences it without touching the gate |
 
 **On #12:** record the environment that produced every result *in the evidence itself*. A proof taken
 against a simulator is not a proof about production, and by the time that matters the narrative will
@@ -692,6 +764,13 @@ not be nearby.
 
 **On #13 — new in v1.1.0.** This is the failure mode §2.2 exists to prevent, and the one most likely to
 be committed deliberately, under time pressure, with a good reason.
+
+**On #14 — new in v1.2.0.** Distinct from #2 (vacuous scope) in *where the defect lives*: in #2 the
+gate is misconfigured, in #14 the gate is configured exactly as intended and the **list it consults**
+is what moved. Nothing about the gate looks wrong, and no diff to the gate ever appears. The measured
+instance is §7.12's #6 — `pre-commit run --all-files` means all *git-tracked* files, so two arcs of
+code sat inside the repository, outside the gate, under a permanent green. **Naming the path in the
+invocation is not the repair; putting the subject in the list the gate derives its scope from is.**
 
 ---
 
@@ -727,6 +806,9 @@ be committed deliberately, under time pressure, with a good reason.
 - [ ] **Every covering instrument re-verified against §7**
 
 **For every instrument you wrote or touched, at any tier:**
+- [ ] **§7.12 — the standing question answered IN WRITING, beside the gate:** *what would have to be
+      true for this to pass while measuring nothing?* Name conditions you could plant, or it is not
+      an answer
 - [ ] Non-vacuity asserted before any plant
 - [ ] Can-fail demonstrated; the failure names the site
 - [ ] CONTROL run, passes clean
@@ -767,3 +849,7 @@ If you cannot name the thing — specifically, concretely, and in a form you cou
 verified anything. You have observed an absence of complaint.**
 
 That question is the whole doctrine. The tiers and tools exist to make answering it routine.
+
+**And its twin, §7.12, asked of the gate rather than the result:** *what would have to be true for
+this to pass while measuring nothing?* Seven recorded instances say that is where this codebase
+actually loses. Answer it in writing, beside the gate, on the day you build it.

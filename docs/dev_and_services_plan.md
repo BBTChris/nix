@@ -11,7 +11,9 @@ credentials.
 **Stage 0** — IBKR is the initial data feed and test broker, since both broker libraries are
 abstracted behind the vendor-neutral seam. This carries the majority of module development.
 Dev engineer will set up the account and provide account credentials and API key.
-Never trust strategy results from the IBKR phase — plumbing only.
+Never trust strategy results from the IBKR phase — plumbing only. **See the Stage 0 data decision
+below for what that forbids concretely, and why: Stage 0 runs on a measured 10-minute delayed
+feed.**
 
 **IB Gateway auth expectation (ARC 006, so it's not tribal knowledge):** IBKR does not support
 headless first-auth — the initial GUI login + IB Key 2FA approval on the human operator's phone
@@ -36,24 +38,110 @@ localhost-only flag are in the encrypted store. Note the trap: `jts.ini`'s
 expected values are therefore declared in `checks/ibgateway_expected.json` and asserted against
 reality.
 
-**Market data: no CME futures tick stream on this account at all (ARC 010 on ES, ARC 012 on MES).**
-`reqTickByTickData` returns **Err 10189 — "No market data permissions for CME FUT"** on *both* ES
-and MES. `reqHistoricalTicks` works for both and is the only path.
+**Market data: no *real-time* CME futures stream; a *delayed* stream does flow, at a measured
+10 minutes (ARC 010 on ES, ARC 012 on MES, ARC 013 on all three market-data modes).**
 
-> **This is not solvable by instrument selection or by code.** 10189 names the *product class*
-> (`CME FUT`), not the contract. MES is CME FUT exactly as ES is, so a smaller contract does not
-> dodge it — ARC 012 measured this rather than assuming it. It is an **account-level market-data
-> subscription**, and the only place it can change is IBKR Account Management.
->
-> **Whether to pay for CME data on this account is a human decision, and is deliberately left
-> open here.** IBKR is permanently paper-only Stage 0 and Tradovate is the live broker at cutover,
-> so a subscription bought here is thrown away at that boundary — but so is the ability to test
-> any streaming path before then. Surfaced as a decision, not a recommendation.
+> **Correction of record — the earlier claim was too broad, and this is why it changed.**
+> ARC 010 and ARC 012 concluded *"no CME futures tick stream is available on this account at
+> all."* That was **accurate for what those arcs measured** — `reqTickByTickData`, which is a
+> **real-time-only** request path. Delayed data never arrives on it, which is precisely why
+> `Err 10189` was the answer. ARC 013 tested the path those arcs never used —
+> `reqMarketDataType(n)` then `reqMktData` — and found a delayed stream that works. The earlier
+> statement is **narrowed to real-time**, not overturned: no measurement has been contradicted,
+> only extended.
 
-Consequence for the broker-datafeed spec, unchanged by ARC 012 and now confirmed across two
-instruments: the feed is **polled, not streamed**, so **bar immutability is an obligation Nix must
-enforce itself**, not a property inherited from the feed. Polled history is re-requestable and can
-return revised values, so the bar builder needs its own seal-and-never-rewrite rule.
+Measured on `MESU6` (conId 793356217), 2026-08-10 12:05–12:07 UTC, **CME confirmed open** (Globex
+segment `20260809:1700-20260810:1600` CT; outside RTH, which begins 08:30 CT):
+
+| requested | **granted by IBKR** | ticks / 40s | error (verbatim) | measured lag |
+|---|---|---|---|---|
+| 1 real-time | **none — no grant callback at all** | **0** | `354: Requested market data is not subscribed. … Delayed market data is available. MES SEP'26 (MESU6) /TOP/ALL` | n/a |
+| 3 delayed | **3 delayed** | 18 | `10167: Requested market data is not subscribed. Displaying delayed market data.` | **600.0–601.9 s** (mean 600.3 s, spread 1.9 s, n=8) |
+| 4 delayed-frozen | **3 delayed — silently downgraded** | 19 | `10167` (as above) | **600.1–604.9 s** (mean 600.6 s, spread 4.8 s, n=9) |
+
+Four things in that table are load-bearing and easy to get wrong:
+
+1. **Report the granted type, never the requested one.** Mode 4 was silently downgraded to 3.
+   Asking for delayed-frozen and assuming you got it would misdescribe the feed.
+2. **Mode 1 receives no grant at all.** `ib_async`'s `Ticker.marketDataType` *defaults* to `1`, so
+   a naive read reports "granted real-time" for a subscription that returned zero ticks and error
+   354. Verified by sentinelling the field to `0` after subscribing: for mode 1 it never moved, so
+   IBKR sent no `marketDataType` callback. For modes 3 and 4 it moved to `3`.
+3. **The lag is 10 minutes, not the documented 15–20.** Measured from the exchange timestamp the
+   feed itself carries (tick 88 → `delayedLastTimestamp`) against wall clock at receipt, across
+   distinct timestamps rather than one sample. The spread of **1.9 s over 8 samples** is what
+   makes it a steady pipeline delay rather than a stale first tick.
+4. **`reqHistoricalTicks` is delayed by the same ~10 minutes** — it is not a real-time back door.
+   This was visible in ARC 010's own output and went unread: its newest historical tick was
+   `09:29:30` against a connection time of `09:39:54`, i.e. **624 s = 10.4 min** old. ARC 013
+   re-measured 604 s. The "polled fallback" both earlier arcs relied on is a *delayed* polled
+   fallback.
+
+**Still not solvable by instrument selection or by code.** `10189` names the *product class*
+(`CME FUT`), not the contract; MES is CME FUT exactly as ES is. Real-time is an account-level
+subscription and the only place it changes is IBKR Account Management. See the Stage 0 data
+decision below — that question is now closed, not open.
+
+Consequence for the broker-datafeed spec, and it is **sharper** than ARC 012 recorded: the Stage 0
+feed is **delayed and polled**. Bar immutability remains an obligation Nix must enforce itself —
+polled history is re-requestable and can return revised values, so the bar builder needs its own
+seal-and-never-rewrite rule regardless of feed.
+
+## DECISION — Stage 0 runs on IBKR's free market data (ARC 013, settled)
+
+**No market-data subscription will be purchased for IBKR. This is decided, not open.** Earlier
+records in this file surfaced it as a pending human decision; it has been made, and this section
+supersedes those. Do not reopen it without new information about the *Tradovate* cutover, which is
+the only thing that could change the reasoning.
+
+**Reasoning.** IBKR is permanently paper-only Stage 0; Tradovate is the live broker at cutover. Any
+subscription bought here is discarded at that boundary. This file has said since ARC 006 that
+strategy results from the IBKR phase are not to be trusted — paying for data does not change that,
+because the constraint is the *phase*, not the data quality.
+
+### What this forbids — a constraint, not a footnote
+
+Stage 0 runs on a **10-minute delayed, polled** feed. On that feed the following are **meaningless
+and must not be produced, cited, or carried forward**:
+
+- **Latency measurements** of any kind — tick-to-signal, signal-to-order, round-trip. The feed's
+  own 10-minute delay dominates every number by three orders of magnitude.
+- **Fill realism, slippage, or spread-capture estimates.** Fills are simulated against prices that
+  are ten minutes stale; the market being modelled no longer exists at the moment of the decision.
+- **Strategy performance figures** — P&L, Sharpe, hit rate, drawdown, expectancy — from any Stage 0
+  backtest or paper run.
+- **Any claim about *edge*.** Not "weak evidence of edge", not "directionally encouraging". None.
+
+**What Stage 0 *is* for:** exercising the **plumbing**. Connection handling, reconnect and session
+recovery, bar construction, persistence, the shape of the broker-datafeed interface, gate and
+risk-path wiring, order lifecycle mechanics against a paper account. These are all fully
+exercisable on delayed data, because they are about *structure and correctness*, not about price.
+
+> **If you are reading this because a document you are holding cites a Stage 0 backtest or paper
+> P&L as evidence of anything — that document is misusing it.** The number is not weak evidence; it
+> is not evidence. The feed it was computed from was ten minutes behind the market, measured, on
+> 2026-08-10. Discard the conclusion, keep the plumbing lesson.
+
+The Crucible pipeline's scoring gates (`nix-strategy-evaluator-pipeline-6.docx`) therefore cannot
+be run to a *verdict* at Stage 0. They can be run to prove the pipeline mechanically executes.
+
+### What it means for broker-datafeed's design
+
+Carried forward explicitly, because these outlive Stage 0:
+
+1. **Build against the feed that actually exists**: delayed (`reqMarketDataType(3)` → `reqMktData`)
+   plus polled history (`reqHistoricalTicks`, itself ~10 min delayed). That is the Stage 0 shape.
+2. **Bar immutability is Nix's own obligation, regardless of feed.** Polled history is
+   re-requestable and can return revised values, so the bar builder needs its own
+   seal-and-never-rewrite rule. This does not become unnecessary when a real-time feed arrives.
+3. **The vendor-neutral interface must encode no assumption that holds only for a delayed or
+   polled feed.** Tradovate's shape is expected to differ — real-time, push-based. Anything in the
+   seam that assumes "data arrives late", "data arrives on request", or "timestamps trail wall
+   clock by a constant" is a Stage 0 artifact leaking into a permanent interface, and is a defect.
+4. **Never infer the market-data mode from what was requested.** ARC 013 measured a request for
+   delayed-frozen (4) being silently granted as delayed (3), and a request for real-time (1)
+   returning no grant callback at all while the client library's field still read `1` by default.
+   The feed module must read and record the *granted* type and treat a downgrade as a real event.
 
 **Margin: MES is affordable, ES is not (ARC 012, measured via `whatIfOrderAsync`).**
 Account DUR250018, net liquidation **20,344.34 USD**:

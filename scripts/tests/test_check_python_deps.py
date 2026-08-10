@@ -111,6 +111,27 @@ def test_load_pins_rejects_malformed_entries(tmp_path: Path) -> None:
         mod.load_pins(tmp_path)
 
 
+def _expected_print_pins() -> str:
+    """What `--print-pins` must emit, DERIVED from the pins file.
+
+    ARC 015: these two tests previously hardcoded "ib_async==2.1.0", which restated a
+    mutable fact the pins file owns (CLAUDE.md directive 3) — so adding the
+    pytest-asyncio pin broke two tests that were not measuring anything about
+    pytest-asyncio. Deriving keeps them honest: the assertion is about the FORMAT and
+    ORDERING install.sh's `$PINS` expansion depends on, and about the output covering
+    every declared pin, neither of which weakens when a pin is added.
+
+    Non-vacuity: `test_pins_file_lists_ib_async_at_the_arc_008_version` above is the test
+    that pins the actual version, and it still hardcodes on purpose. Deriving here does
+    not leave the version unasserted anywhere.
+    """
+    pins = json.loads((CHECKS / "pinned_deps.json").read_text(encoding="utf-8"))
+    return "\n".join(
+        f"{name.lower()}=={version}"
+        for name, version in sorted(pins["packages"].items())
+    )
+
+
 def test_print_pins_emits_validated_specs_one_per_line() -> None:
     """Task 9 review round 2, Finding A: install.sh must consume this
     output rather than re-parsing pinned_deps.json itself, so the pins
@@ -124,7 +145,14 @@ def test_print_pins_emits_validated_specs_one_per_line() -> None:
         check=False,
     )
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() == "ib_async==2.1.0"
+    expected = _expected_print_pins()
+    assert proc.stdout.strip() == expected
+    # The shape install.sh relies on, asserted independently of the contents: one
+    # `name==version` spec per line, no blanks, no stray whitespace to word-split on.
+    lines = proc.stdout.strip().splitlines()
+    assert lines == sorted(lines)
+    assert all(line.count("==") == 1 and " " not in line for line in lines), lines
+    assert len(lines) >= 2, "pins collapsed to fewer than the two declared packages"
 
 
 def test_print_pins_works_under_system_python_with_no_venv() -> None:
@@ -137,7 +165,15 @@ def test_print_pins_works_under_system_python_with_no_venv() -> None:
         check=False,
     )
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() == "ib_async==2.1.0"
+    assert proc.stdout.strip() == _expected_print_pins()
+
+
+def test_pins_file_lists_pytest_asyncio() -> None:
+    """ARC 015 Part 3: the query verbs became coroutines, so the suite that drives them
+    needs pytest-asyncio — and anything the venv must contain is pinned here or
+    check_python_deps cannot see it drift (§7)."""
+    pins = json.loads((CHECKS / "pinned_deps.json").read_text(encoding="utf-8"))
+    assert pins["packages"]["pytest-asyncio"] == "1.4.0"
 
 
 def test_declares_disruptive_because_repair_swaps_the_order_placing_client() -> None:

@@ -34,7 +34,13 @@ __pycache__/
 *.pyo
 .venv/
 venv/
+# testmon's SQLite database and its WAL/shared-memory sidecars. The bare name alone
+# did NOT cover the sidecars, and ARC 016 caught `.testmondata-shm` / `.testmondata-wal`
+# being staged by a `git add -A`. Committing them would put a machine-local, constantly
+# rewritten binary cache into history and make every commit conflict on it.
 .testmondata
+.testmondata-shm
+.testmondata-wal
 
 # macOS cruft (not part of the tracked tree)
 .DS_Store
@@ -48,3 +54,14 @@ graphify-out/
 
 # Local Claude Code launcher (operator convenience, never published)
 scripts/cl.sh
+
+# Inbound CODE drafts delivered into downloads/ by claude.ai. The arc briefs
+# (downloads/arc_*.md) ARE tracked — they are the design authority for an arc and
+# history should hold them. The .py drafts are NOT: every one of them has since been
+# landed under scripts/ and evolved well past the delivered version (ARC 016 measured
+# broker_seam 626 -> 790 lines, simulate 258 -> 525, test_broker_order 489 -> 1270).
+# Committing them would put a second, stale copy of live code in the tree — a
+# derive-never-restate violation (CLAUDE.md directive 3) that the gate would then lint
+# as if it were real, and that a future reader could mistake for the implementation.
+# The landed file under scripts/ is the single source of truth.
+downloads/*.py

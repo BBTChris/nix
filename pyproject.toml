@@ -11,8 +11,25 @@ python_version = "3.14"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-pythonpath = ["scripts"]
+# "scripts/broker" added in ARC 014: the §2A broker seam and its IBKR adapter live in
+# scripts/broker/ and import each other flat (`from broker_seam import ...`). Adding the
+# directory here rather than a module-level sys.path insert in the test keeps conftest's
+# session-wide "sys.path unchanged at session end" guard intact.
+pythonpath = ["scripts", "scripts/broker"]
 testpaths = ["scripts/tests"]
+# ARC 015: the §2A order port is now half coroutines (connect/query_positions/
+# query_balance/get_margin — see BrokerOrderPort), so the suite that drives it needs to
+# run on an event loop. pytest-asyncio is the industry-standard plugin for that and is
+# pinned in checks/pinned_deps.json so check_python_deps covers it.
+#
+# strict mode, NOT auto, deliberately: auto silently coerces every `async def test_*` on
+# to a loop, so a test that was meant to be sync — or one whose async-ness was an
+# accident — runs anyway and nobody is asked the question. strict requires the explicit
+# @pytest.mark.asyncio, which makes "this test runs on the loop" a written decision. It
+# also means a missing marker fails loudly instead of the test being silently skipped as
+# an un-awaited coroutine, which is the same class of defect check_await_conformance()
+# exists to catch one layer down.
+asyncio_mode = "strict"
 
 [tool.pylint.MAIN]
 # checks/*.py import nixverify from scripts/ via checks/_preamble.py at runtime.
@@ -30,4 +47,4 @@ testpaths = ["scripts/tests"]
 # pre-commit invocation (pylint's per-run module search path depends on which
 # files are in that run's batch) — a latent fragility, not something the test
 # changes themselves introduced.
-init-hook = 'import sys; sys.path.insert(0, "scripts"); sys.path.insert(0, "checks")'
+init-hook = 'import sys; sys.path.insert(0, "scripts"); sys.path.insert(0, "checks"); sys.path.insert(0, "scripts/broker")'
