@@ -23,6 +23,14 @@
         "check_ibgateway_config",
         "check_ibgateway_service"
       ]
+    },
+    {
+      "name": "code-invariants",
+      "comment": "ARC 017. Static/offline gates over the repo's own code and its banked numbers. Deliberately last and deliberately not on_fail:halt — neither is a bootstrap floor component, and a code-invariant breach must not stop the environment checks that follow from being measured. check_derived_claims spawns `pytest --collect-only` (~2-4 s), which lengthens the boot unit; accepted because verify.py runs at boot and weekly Saturday 03:00, both outside any trading session.",
+      "checks": [
+        "check_order_path_bans",
+        "check_derived_claims"
+      ]
     }
   ]
 }

@@ -25,7 +25,7 @@ arc whose own scope forbids the fix is furniture.
 | 2026-08-10 | ARC 014 | 25 | **0** — *row reconstructed ARC 016; ARC 014 recorded none.* Landed `scripts/broker/` and the adapter suite; opened no debt and discharged none |
 | 2026-08-10 | ARC 015 | 26 | **+1** — *row reconstructed ARC 016; ARC 015 recorded none.* D1.15 opened; D3.2 split into D3.2/D3.3/D3.4 with D3.2 and D3.3 **discharged**, leaving D3 at one open row either side, so the split is net zero |
 | 2026-08-10 | ARC 016 | 27 | **+1** — D1.15 **discharged** (seam simulation now in the pytest suite); D1.16 and D1.17 opened (`state/encrypt_credentials.py` invisible to every gate; one `disconnect()` emits two `on_session(DOWN)`, measured live). The vacuous-pass class was **promoted to `debug.md` §7.12**, which removes no row: a doctrine principle is not a discharged debt |
-| 2026-08-10 | ARC 017 | 28 | **+1** — sub-agent B portion, mechanically recounted (rule below). D3.4 `pytest --testmon` **discharged**; D3.6 `bandit (tests)` **opened and discharged** in the same arc (split out of D3.1, which had wrongly claimed its coverage since ARC 010); D3.5 `ruff-format` **opened and left open** — caught but did not name the site, so a formatter rather than a gate; D2.13 opened (the runtime hook reports GREEN having selected zero tests, exit 0 not 5). Net +1: two opened, one discharged, one opened-and-discharged. **Not final for this arc** — sub-agents A and C may owe rows and are forbidden to write this file; Phase 4 re-derives |
+| 2026-08-10 | ARC 017 | 30 | **+3** — six opened, three discharged. D2.8 **discharged** (the derive-never-restate harness, open since ARC 010); D3.4 `pytest --testmon` **discharged**; D3.6 `bandit (tests)` **opened and discharged** in the same arc (split out of D3.1, which had wrongly claimed its coverage since ARC 010); D3.5 `ruff-format` **opened and left open** — caught but did not name the site, so a formatter rather than a gate; D2.13 opened (the runtime hook reports GREEN having selected zero tests, exit 0 not 5). Phase 4 then added the rows sub-agents A and C owed but were forbidden to write: D1.18 (an IBKR error integer still crosses the seam inside `on_ack(reason)`), D2.14 (a hand-rolled retry loop is banned by §2.1 and undetected by the new gate), D2.15 (the new gate scans one directory and nothing guards that the order path still lives there). Net +4: five opened, one discharged, one opened-and-discharged. **This row was itself corrected by the harness it belongs to** — see below |
 
 > **Count corrected ARC 012.** The ARC 010 and ARC 011 rows originally read 22 and 21. Both were
 > wrong: I hand-counted the rows and got it wrong twice in a row. Counted mechanically the figures
@@ -67,6 +67,27 @@ arc whose own scope forbids the fix is furniture.
 >    brief expected to find were already closed by ARC 016's reconstruction. Verified mechanically by
 >    extracting `ARC (\d+)` from the series rows and diffing against the closed range. Reported rather
 >    than silently accepted, because the brief and the disk disagreed and **the disk wins**.
+>
+> **D2.8 is discharged, and its first act was to correct this table.** `checks/check_derived_claims.py`
+> (ARC 017) implements the rule of record above and cross-checks it against this series row. In Phase 4
+> the ledger was edited to add D1.18, D2.14 and D2.15 and the series row was **deliberately left stale**
+> at 28 to see whether the harness would notice. It did, unprompted, naming both sides:
+>
+> ```
+> detail: derived_claims.json:check_debt_open_items: sources disagree
+>         — derived:ledger_rows=31, stated:series_table_latest_row=28
+> GATE_EXIT=1
+> ```
+>
+> It then caught the *correction* too. Discharging D2.8 itself removed a row, so the freshly-written
+> 31 was stale the moment it was written — and the gate said so on the next run
+> (`derived:ledger_rows=30, stated:series_table_latest_row=31`) rather than accepting a number that had
+> been correct sixty seconds earlier. The row reads **30** because the harness derived 30, not because
+> anyone counted. This is the first
+> time in the series that the number in this table was produced by a machine rather than asserted by a
+> person, and it closes the loop the ARC 012 note above opened: *"discharging D2.8 with a harness that
+> counts the rows and asserts the latest series figure would have caught this on the first commit."*
+> It would have, and now it does. **The harness is the authority; this prose is not** (ARC 017 §7.3).
 
 ---
 
@@ -96,6 +117,7 @@ Discharged: `.venv` (`check_venv`), `python3` (`check_python_runtime`), node ide
 (`check_node_identity`), `ib_async` pin (`check_python_deps`), IB Gateway API configuration
 (`check_ibgateway_config`, ARC 010), Xvfb + IB Gateway boot persistence
 (`check_ibgateway_service`, ARC 011).
+| D1.18 | **The order-rejection ack carries an IBKR numeric error code across the seam** | ARC 014 code, found ARC 017 | unassigned. `_on_ib_error` calls `self._ack_once(cid, REJECTED, reason=f"{errorCode}: {errorString}")`, so a vendor integer reaches the seam inside `on_ack(reason)`. Invariant 2 says no IBKR code crosses the seam; ARC 017 enforced that on the **session** event (1100/1101/1102 removed from every session `reason` and moved to adapter-internal logging) but deliberately did **not** extend it to acks, because the parent scoped the change to the session path and because `on_ack(reason)` is the declared human-readable provenance channel where error 201's margin figure has real diagnostic value. So this is a genuine tension between invariant 2 and the provenance channel, not an oversight. Discharge alongside the Limiter, which is the first component that will actually consume an ack reason and can settle whether a structured rejection cause is owed the way `UP_DATA_LOSS` was owed for sessions. **Reported rather than substituting a decision** |
 
 ## D2 — Doctrine rules Nix does not yet satisfy
 
@@ -110,12 +132,14 @@ From `nix_check_contract.md` §15.3.
 | D2.5 | B.3 | no `known-red` marker mechanism, so an unexpected RED cannot be discriminated from an expected one | unassigned |
 | D2.6 | B.6 | no `prove_*` harnesses (determinism, live/replay byte-identity, clock purity, crash-safety) | unassigned — blocked until a trading core exists |
 | D2.7 | B.6 | nothing is baselined on a pristine tree before an arc begins. **ARC 010 is the measured instance:** bandit had been scanning nothing since ARC 006 and no baseline existed to catch it | unassigned |
-| D2.8 | B.7 | no harness parses a constant out of a document and asserts the code equals it. Nearest owed instance: §8's runner table vs `install.sh`'s real invocations | unassigned — **still open**; see the ARC 016 note below, this is *not* the item that was promoted |
+| D2.8 | B.7 | **discharged ARC 017** — `checks/check_derived_claims.py` + `checks/derived_claims.json`. Seven claims, each a set of **commands that compute a number at run time**; the registry stores **no integer anywhere**, because banking "16" beside the claim that §2A has 16 elements would rebuild the defect the instrument exists to catch. Every claim needs ≥2 sources and the gate is CANNOT-MEASURE (exit 2) if a claim has one source or two sources that are the same computation. Can-fail demonstrated three ways, each naming claim/stated/derived: a wrong series figure, a spec-vs-code drift firing two claims at once in both B.7 directions, and a missing file (**FAIL, not skip**). Its first live act was to correct this ledger's own series row — see the note above. **Known limit, stated beside the gate rather than papered over:** it proves every *registered* number is right and cannot prove the registry covers the numbers that matter (failure mode #14, inherent to a registry-driven instrument). The ARC 016 note below remains correct — D2.8 was never the item promoted to §7.12 | — |
 | D2.9 | C.5 | the stdlib-only scan is textual, not proof-by-absence over the import closure | unassigned |
 | D2.10 | C.6 | no verdict-by-verdict comparison harness | unassigned — nothing to compare yet |
 | D2.11 | C.10 | no named owner for shared global measurements (tree-wide complexity, lint state) | unassigned |
 | D2.12 | D.6 | `test_runner_coverage.py` proves every registered check is *reachable*, not that a registered gate which should fail actually reddens a real run end to end. **A suite that silently skips a gate reports GREEN** | unassigned |
 | D2.13 | §7.12 / D.6 | **D2.12's measured live instance, standing in `.pre-commit-config.yaml` today.** The `pytest-affected` hook ("Stage 3 — runtime pass") reports GREEN having executed **zero** tests whenever testmon's dependency graph is unchanged — which is the normal steady state. Measured ARC 017, pytest 9.1.1 + testmon 2.2.0: a warm `--testmon` run prints `testmon: changed files: 0, unchanged files: 36`, `collected 0 items`, `no tests ran`, and **exits 0**. The hook's own comment claimed this was closed by removing exit-5 tolerance; it is not, because testmon's empty run never returns 5 — exit 5 belongs to the deselect path (`pytest -q -k zzz…` → `159 deselected` → exit 5). Compounding it, the gate's scope lives in `.testmondata`, which `.gitignore:41` excludes: an untracked, per-machine, reviewer-invisible file sets what the runtime gate measures — failure mode #14 one layer below the tracked-file instance. Repair is a behaviour change (a second non-incremental full-suite hook, or a floor assertion on collected count), so ARC 017 recorded it rather than making it | unassigned |
+| D2.14 | §2.1 / B.4 | **A hand-rolled retry loop on the order path is banned and undetected.** `checks/check_order_path_bans.py` (ARC 017) proves *no retry **library*** (`tenacity`/`backoff`/`retrying`) and *no loop-blocking **call***; it does **not** prove nothing retries. `for _ in range(3): self.place_order(...)` passes both arms. §2.1 exists because a retry on the order path turns one intended order into two, and that is a semantic property, not an import. A PASS from that gate must be read as exactly what it measures — the gate's own docstring says so under §7.12 condition 6, and this row is the ledger half of that admission. Discharge needs a semantic instrument (call-graph reachability from `place_order` back to itself, or an AST loop-containing-a-send analysis), which is a different and harder gate | unassigned |
+| D2.15 | C.10 / §7.4 | **`check_order_path_bans` scans one directory, and nothing guards that the order path still lives there.** Scope derives at run time from `ORDER_PATH_DIRS = ("scripts/broker",)` via `rglob`, so a *new file* under `scripts/broker/` is covered automatically — the moving-value trap the gate was written to avoid. But a new *home* is not: an adapter added at `scripts/risk/` or `scripts/limiter/` is silently outside the scan while both required members remain present and non-vacuity still passes, so the gate stays green having never looked. §7.12 condition 4 beside the gate, unguarded and named there. This is the same shape as D2.11 (no owner for shared global measurements) but concrete. Discharge with whichever arc first puts order-path code outside `scripts/broker/`, which is also the moment it becomes discoverable | unassigned |
 
 ### Promoted to doctrine — ARC 016
 
