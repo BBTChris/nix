@@ -185,6 +185,19 @@ def test_disruptive_check_downgraded_outside_maintenance(tmp_path: Path) -> None
     assert not (tmp_path / "mutated.txt").exists()
 
 
+def test_disruptive_check_downgraded_pass_has_no_withheld_note(tmp_path: Path) -> None:
+    """Task 9 second review, Finding B: the withheld note describes a repair
+    that was held back. Appending it to a PASS — where no repair was ever
+    contemplated because nothing was wrong — reads as though something was
+    withheld when nothing was.
+    """
+    _plugin(tmp_path, "check_restart", "DISRUPTIVE = True\n" + PASSING)
+    ctx = Context(nix_home=tmp_path, mode=Mode.CORRECT, maintenance=False)
+    results = run_blocks((Block(name="b", checks=("check_restart",)),), tmp_path, ctx)
+    assert results[0].status is Status.PASS
+    assert results[0].detail == ""
+
+
 def test_disruptive_check_runs_in_maintenance(tmp_path: Path) -> None:
     """The maintenance window is what permits a disruptive repair to fire."""
     _plugin(tmp_path, "check_restart", "DISRUPTIVE = True\n" + PASSING)

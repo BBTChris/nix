@@ -78,7 +78,11 @@ def _execute(checks_dir: Path, name: str, ctx: Context) -> CheckResult:
             status=Status.CANNOT_MEASURE,
             detail=f"check returned {type(result).__name__}, not CheckResult",
         )
-    if withheld:
+    # Task 9 second review, Finding B: only note the withheld repair on a
+    # status the repair would actually have acted on. A PASS never reached
+    # the repair branch in the first place — noting it there would read as
+    # something held back when nothing was wrong.
+    if withheld and result.status in FAILURES:
         result.detail = (
             f"{result.detail}; {_WITHHELD_NOTE}" if result.detail else _WITHHELD_NOTE
         )

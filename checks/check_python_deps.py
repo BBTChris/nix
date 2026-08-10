@@ -172,6 +172,17 @@ def run(mode: Mode, ctx: Context) -> CheckResult:
 # contract (§4.2) requires each module be independently runnable, so this
 # block cannot be factored into a shared helper without breaking that.
 if __name__ == "__main__":  # pylint: disable=duplicate-code
+    # --print-pins (Task 9 review round 2, Finding A): the one validated
+    # reader of pinned_deps.json (load_pins, §7) — install.sh calls this
+    # instead of re-parsing the JSON itself, so the token guard actually
+    # reaches the shell-side `$PINS` expansion it exists to protect. Must
+    # work under the bare system interpreter with no .venv and nothing
+    # beyond stdlib: install.sh calls it before the venv exists.
+    if "--print-pins" in sys.argv[1:]:
+        for _pkg, _ver in sorted(load_pins(Path(__file__).resolve().parent).items()):
+            print(f"{_pkg}=={_ver}")
+        sys.exit(0)
+
     from nixverify.contract import exit_code_for
 
     HOME = Path(__file__).resolve().parent.parent

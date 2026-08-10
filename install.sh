@@ -18,12 +18,20 @@ if [ ! -d "$NIX_HOME/.venv" ]; then
 fi
 "$NIX_HOME/.venv/bin/pip" install --quiet --upgrade pip
 "$NIX_HOME/.venv/bin/pip" install --quiet cryptography
-# Pins live in checks/pinned_deps.json — the same file check_python_deps
-# verifies against, so install and verify can never disagree (CLAUDE.md
-# directive 3: derive from a single source of truth).
-PINS=$(python3 -c "import json,sys; d=json.load(open('$NIX_HOME/checks/pinned_deps.json'))['packages']; print(' '.join(f'{k}=={v}' for k,v in d.items()))")
-# shellcheck disable=SC2086
-"$NIX_HOME/.venv/bin/pip" install --quiet $PINS
+# Pins live in checks/pinned_deps.json. check_python_deps.py --print-pins is
+# the one validated reader of that file (VERIFY-AND-CHECKS.md §7) — its
+# token guard is what keeps a malformed entry from word-splitting or
+# globbing here, so install.sh must consume its output rather than
+# re-parsing the JSON itself (CLAUDE.md directive 3: one source of truth).
+# Runs under the system interpreter: the venv above has pip but not yet the
+# pins, and check_python_deps.py needs nothing beyond stdlib to print them.
+# Plain `VAR=$(...)` (not `< <(...)` process substitution) so a validation
+# failure aborts here under `set -e`, loud, instead of silently yielding an
+# empty PINS and deferring the failure to pip's own "nothing to install"
+# (CLAUDE.md directive 4: fail closed and loud).
+PINS_RAW="$(python3 "$NIX_HOME/checks/check_python_deps.py" --print-pins)"
+mapfile -t PINS <<< "$PINS_RAW"
+"$NIX_HOME/.venv/bin/pip" install --quiet "${PINS[@]}"
 
 echo "== install.sh: hardware identity (v4 full UUID, primary partition) =="
 ROOT_DEV=$(findmnt -n -o SOURCE /)

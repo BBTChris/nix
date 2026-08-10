@@ -1,6 +1,8 @@
 """Pin conformance per VERIFY-AND-CHECKS.md §7."""
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest  # pylint: disable=import-error
@@ -107,6 +109,35 @@ def test_load_pins_rejects_malformed_entries(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="-evil"):
         mod.load_pins(tmp_path)
+
+
+def test_print_pins_emits_validated_specs_one_per_line() -> None:
+    """Task 9 review round 2, Finding A: install.sh must consume this
+    output rather than re-parsing pinned_deps.json itself, so the pins
+    guard actually reaches the shell-side `$PINS` expansion it was written
+    to protect (§7). One implementation, one validator, one source.
+    """
+    proc = subprocess.run(
+        [sys.executable, str(CHECKS / "check_python_deps.py"), "--print-pins"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "ib_async==2.1.0"
+
+
+def test_print_pins_works_under_system_python_with_no_venv() -> None:
+    """install.sh runs before .venv exists (§9.1-adjacent): this mode must
+    not need anything beyond stdlib, or install.sh could never call it."""
+    proc = subprocess.run(
+        ["/usr/bin/python3", str(CHECKS / "check_python_deps.py"), "--print-pins"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "ib_async==2.1.0"
 
 
 def test_declares_disruptive_because_repair_swaps_the_order_placing_client() -> None:
