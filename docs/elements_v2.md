@@ -60,9 +60,12 @@ Idempotent, plugin-based inspection and remediation engine enforcing known-good 
   **Superseded by `VERIFY-AND-CHECKS.md` §4 — that file is the authority for the
   check contract; this section is a summary only.**
 - **Location:** `scripts/verify.py` per `directory_structure.md`.
-- **Correct/Install actions:** pulls repository updates, resolves missing dependencies, configures systemd
-  units, returns the node to known-good state. Note v1.3 §12.11: config changes take effect only
-  through restart — verify.py repairs the *environment*; it never hot-edits live tunables.
+- **Correct/Install actions:** resolves missing dependencies, configures systemd units, returns the
+  node to known-good state. No unattended `git pull` — verify.py never updates its own code; an
+  autonomous update to a trading node's codebase with no human review would be a §7-class hazard
+  (auto-chasing latest without a decision or test cycle). Note v1.3 §12.11: config changes take
+  effect only through restart — verify.py repairs the *environment*; it never hot-edits live
+  tunables.
 
 ## 2. Data Ingestion — implementation notes for the v1.3 price firehose
 v1.3 locks the design: the **sole** raw-shared-memory path is the per-tick price firehose,
