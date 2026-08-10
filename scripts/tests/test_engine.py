@@ -152,13 +152,37 @@ def test_interactive_check_runs_when_explicitly_allowed(tmp_path: Path) -> None:
     assert results[0].status is Status.PASS
 
 
-def test_disruptive_check_skipped_outside_maintenance(tmp_path: Path) -> None:
-    """§8: a boot can happen mid-session — disruptive repair must not fire."""
-    _plugin(tmp_path, "check_restart", "DISRUPTIVE = True\n" + PASSING)
+DISRUPTIVE_MUTATING = (
+    "DISRUPTIVE = True\n"
+    "def run(mode, ctx):\n"
+    "    from nixverify.contract import CheckResult, Status\n"
+    "    if mode == 'correct':\n"
+    "        (ctx.nix_home / 'mutated.txt').write_text('mutated', encoding='utf-8')\n"
+    "    return CheckResult(name='x', status=Status.FAIL_REPAIRABLE, site='s',"
+    " detail='would repair')\n"
+)
+
+
+def test_disruptive_check_downgraded_outside_maintenance(tmp_path: Path) -> None:
+    """§8: a boot can happen mid-session — the repair must not fire, but the
+    inspection must still run and report, or drift goes unseen until Saturday.
+
+    Task 9 review, Finding 1: the prior behaviour (SKIPPED) lost the report
+    along with the repair. DISRUPTIVE gates the repair only; inspecting
+    changes nothing, so it must run at Mode.VERIFY regardless of the
+    requested mode.
+    """
+    _plugin(tmp_path, "check_restart", DISRUPTIVE_MUTATING)
     ctx = Context(nix_home=tmp_path, mode=Mode.CORRECT, maintenance=False)
     results = run_blocks((Block(name="b", checks=("check_restart",)),), tmp_path, ctx)
-    assert results[0].status is Status.SKIPPED
+    assert results[0].status is Status.FAIL_REPAIRABLE
     assert "maintenance" in results[0].detail
+    # The discriminating proof: the fixture only mutates when it is actually
+    # invoked with mode == 'correct'. A downgrade that skipped instead, or
+    # that downgraded the report but not the actual mode passed to run(),
+    # would leave this assertion unable to tell the difference from a real
+    # repair having fired.
+    assert not (tmp_path / "mutated.txt").exists()
 
 
 def test_disruptive_check_runs_in_maintenance(tmp_path: Path) -> None:

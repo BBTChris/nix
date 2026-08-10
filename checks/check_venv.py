@@ -64,8 +64,19 @@ def _running_from(venv: Path) -> bool:
         return True
 
 
-def _probe(python: Path) -> str:
-    """Return the venv interpreter's version, or '' if it does not answer."""
+def _probe(python: Path) -> str | None:
+    """Return the venv interpreter's version.
+
+    `''` means the interpreter would not execute at all — genuinely
+    broken, a correct FAIL_REPAIRABLE. `None` means a timeout: we could
+    not tell whether it answers, which is not evidence that it is broken
+    (§4.1, Task 9 review Finding 3) — the interpreter might be fine but
+    slow or hung. `check=False` means the only exceptions this can raise
+    are an exec failure (OSError, e.g. missing/non-executable file) or a
+    timeout (subprocess.TimeoutExpired, a SubprocessError); a nonzero exit
+    code does not raise here, so the two exception types map cleanly onto
+    the two distinct meanings.
+    """
     try:
         proc = subprocess.run(  # nosec B603 - fixed argv, shell=False
             [str(python), "--version"],
@@ -74,7 +85,9 @@ def _probe(python: Path) -> str:
             timeout=15,
             check=False,
         )
-    except OSError, subprocess.SubprocessError:
+    except subprocess.TimeoutExpired:
+        return None
+    except OSError:
         return ""
     return proc.stdout.strip() or proc.stderr.strip()
 
@@ -94,14 +107,30 @@ def _create(venv: Path) -> str:
     return ""
 
 
-def run(mode: Mode, ctx: Context) -> CheckResult:
-    """Prove the venv answers; rebuild it when permitted."""
+def run(  # pylint: disable=too-many-return-statements
+    mode: Mode, ctx: Context
+) -> CheckResult:
+    """Prove the venv answers; rebuild it when permitted.
+
+    Eight returns is eight sequential guard clauses (probe once, act on
+    what it said; rebuild if permitted; probe again, act on that), not
+    branching complexity — each one a distinct, named outcome the check
+    contract requires (§4.1's five statuses, hit from two probe sites).
+    Collapsing them into fewer returns would trade a linear, easy-to-audit
+    shape for nested conditionals around a security-relevant repair path.
+    """
     venv = ctx.nix_home / ".venv"
     python = _interpreter(venv)
     version = _probe(python) if python.is_file() else ""
     if version:
         return CheckResult(
             name=NAME, status=Status.PASS, evidence=f"{python}: {version}"
+        )
+    if version is None:
+        return CheckResult(
+            name=NAME,
+            status=Status.CANNOT_MEASURE,
+            detail=f"{python}: probe timed out — could not measure (§4.1)",
         )
     if mode.rank < Mode.CORRECT.rank:
         return CheckResult(
@@ -130,6 +159,13 @@ def run(mode: Mode, ctx: Context) -> CheckResult:
             detail=f"venv creation failed: {failure}",
         )
     version = _probe(_interpreter(venv))
+    if version is None:
+        return CheckResult(
+            name=NAME,
+            status=Status.CANNOT_MEASURE,
+            detail=f"{_interpreter(venv)}: created, but the post-build probe "
+            "timed out — could not measure (§4.1)",
+        )
     if not version:
         return CheckResult(
             name=NAME,
@@ -145,7 +181,10 @@ def run(mode: Mode, ctx: Context) -> CheckResult:
     )
 
 
-if __name__ == "__main__":
+# Deliberately duplicated across every checks/check_*.py: the check
+# contract (§4.2) requires each module be independently runnable, so this
+# block cannot be factored into a shared helper without breaking that.
+if __name__ == "__main__":  # pylint: disable=duplicate-code
     from nixverify.contract import exit_code_for
 
     HOME = Path(__file__).resolve().parent.parent

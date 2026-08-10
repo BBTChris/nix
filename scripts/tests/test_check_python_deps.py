@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+import pytest  # pylint: disable=import-error
 from nixverify.contract import Context, Mode, Status
 from nixverify.loader import load_check
 
@@ -70,7 +71,47 @@ def test_matching_pin_passes_with_evidence() -> None:
     assert "2.1.0" in result.evidence
 
 
-def test_declares_non_disruptive_so_it_may_run_at_boot() -> None:
-    """§8: a pin-conformance repair is a package swap, but not a disruptive one here."""
+def test_query_failure_is_cannot_measure_not_absent(tmp_path: Path) -> None:
+    """Task 9 review, Finding 2 (§4.1): a subprocess that cannot answer must
+    never collapse into 'nothing is installed' — that would send --correct
+    into an unattended reinstall against a defect that may not exist.
+
+    The fake interpreter is a real, executable file that always exits
+    nonzero, so `installed_versions()` genuinely cannot parse a version
+    list out of it — this is not a mock standing in for the failure, it is
+    the failure.
+    """
+    venv_bin = tmp_path / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    fake_python = venv_bin / "python3"
+    fake_python.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    fake_python.chmod(0o755)
+
+    result = _run(Mode.VERIFY, tmp_path)
+
+    assert result.status is Status.CANNOT_MEASURE
+
+
+def test_load_pins_rejects_malformed_entries(tmp_path: Path) -> None:
+    """Minor finding: pinned_deps.json feeds this check's `pip install` argv
+    directly and install.sh's deliberately-unquoted `$PINS` shell expansion
+    (§7). A package name starting with `-` or a version with a space/glob
+    character would corrupt one side's argv and word-split/glob the other.
+    """
     loaded = load_check(CHECKS, "check_python_deps")
-    assert loaded.disruptive is False
+    assert loaded.run is not None, loaded.load_error
+    import check_python_deps as mod  # type: ignore[import-not-found]  # pylint: disable=import-outside-toplevel
+
+    (tmp_path / "pinned_deps.json").write_text(
+        json.dumps({"packages": {"-evil": "1.0.0"}}), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="-evil"):
+        mod.load_pins(tmp_path)
+
+
+def test_declares_disruptive_because_repair_swaps_the_order_placing_client() -> None:
+    """Task 9 review, Finding 1: repair() reinstalls ib_async — a package
+    swap is exactly §4's definition of disruptive. The engine (not this
+    check) is what keeps it inspectable at boot despite this (§8)."""
+    loaded = load_check(CHECKS, "check_python_deps")
+    assert loaded.disruptive is True

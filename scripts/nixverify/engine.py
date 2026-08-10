@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -23,16 +24,26 @@ def _skip(name: str, reason: str) -> CheckResult:
 
 
 def _gate(loaded: LoadedCheck, ctx: Context) -> str:
-    """Return a skip reason, or '' if this check may run in this context."""
+    """Return a skip reason, or '' if this check may run in this context.
+
+    DISRUPTIVE is deliberately not gated here (Task 9 review, Finding 1):
+    skipping loses the *report* along with the repair, so a boot outside
+    the maintenance window would never learn pins had drifted until the
+    weekly run. `_execute` downgrades a disruptive check's mode instead —
+    it still runs, still reports, only the repair is withheld (§8).
+    """
     if loaded.load_error:
         return ""
     if ctx.privilege not in ("all", loaded.privilege):
         return f"privilege: needs {loaded.privilege}, run is {ctx.privilege}"
     if loaded.interactive and not ctx.allow_interactive:
         return "interactive: runnable only from install.sh"
-    if loaded.disruptive and ctx.mode.rank > Mode.VERIFY.rank and not ctx.maintenance:
-        return "disruptive: permitted only in the maintenance window"
     return ""
+
+
+_WITHHELD_NOTE = (
+    "disruptive repair withheld outside maintenance window — inspected only (§8)"
+)
 
 
 def _execute(checks_dir: Path, name: str, ctx: Context) -> CheckResult:
@@ -51,8 +62,12 @@ def _execute(checks_dir: Path, name: str, ctx: Context) -> CheckResult:
             status=Status.CANNOT_MEASURE,
             detail="loaded check has no run callable",
         )
+    withheld = (
+        loaded.disruptive and ctx.mode.rank > Mode.VERIFY.rank and not ctx.maintenance
+    )
+    run_ctx = dataclasses.replace(ctx, mode=Mode.VERIFY) if withheld else ctx
     try:
-        result = loaded.run(ctx.mode, ctx)
+        result = loaded.run(run_ctx.mode, run_ctx)
     except Exception as exc:  # noqa: BLE001 pylint: disable=broad-exception-caught
         return CheckResult(
             name=name, status=Status.CANNOT_MEASURE, detail=f"check raised: {exc!r}"
@@ -62,6 +77,10 @@ def _execute(checks_dir: Path, name: str, ctx: Context) -> CheckResult:
             name=name,
             status=Status.CANNOT_MEASURE,
             detail=f"check returned {type(result).__name__}, not CheckResult",
+        )
+    if withheld:
+        result.detail = (
+            f"{result.detail}; {_WITHHELD_NOTE}" if result.detail else _WITHHELD_NOTE
         )
     result.name = name
     return validate_result(result)

@@ -171,3 +171,33 @@ def test_running_from_fails_closed_when_location_is_undeterminable(
     assert result.status is Status.FAIL_NEEDS_OPERATOR
     assert result.site == str(tmp_path / ".venv")
     assert not (tmp_path / ".venv").exists()  # refused before ever attempting _create()
+
+
+def test_probe_timeout_is_cannot_measure_not_broken(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Task 9 review, Finding 3 (§4.1): a timeout means we could not tell
+    whether the interpreter answers — it might be fine but slow or hung.
+    Collapsing that into "broken" (FAIL_REPAIRABLE) would send --correct
+    into a venv rebuild against an interpreter that may be perfectly
+    healthy. Only a genuine exec failure (missing/non-executable
+    interpreter) is a correct FAIL — that path is untouched by this test.
+    """
+    loaded = load_check(CHECKS, "check_venv")
+    assert loaded.run is not None, loaded.load_error
+    import check_venv as mod  # type: ignore[import-not-found]  # pylint: disable=import-outside-toplevel
+
+    venv = tmp_path / ".venv"
+    (venv / "bin").mkdir(parents=True)
+    interpreter = venv / "bin" / "python3"
+    interpreter.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    interpreter.chmod(0o755)
+
+    def _timeout(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess:
+        raise subprocess.TimeoutExpired(cmd="python3", timeout=15)
+
+    monkeypatch.setattr(mod.subprocess, "run", _timeout)
+
+    result = loaded.run(Mode.VERIFY, Context(nix_home=tmp_path, mode=Mode.VERIFY))
+
+    assert result.status is Status.CANNOT_MEASURE
