@@ -123,11 +123,13 @@ from broker_seam import (
     OrderStatus,
     OrderType,
     Position,
+    RejectCategory,
     SessionState,
     Side,
     Symbol,
     SymbolNotResolved,
     TimeInForce,
+    ack_category_violation,
 )
 
 log = logging.getLogger("nix.broker_order.ibkr")
@@ -152,6 +154,69 @@ IB_ERR_CONN_RESTORED_DATA_LOST = 1101
 IB_ERR_CONN_RESTORED_DATA_OK = 1102
 # Codes that are informational noise, not order rejections.
 IB_INFO_CODES = {2104, 2106, 2107, 2108, 2119, 2158, 1102}
+
+# ---------------------------------------------------------------------------
+# REJECTION TAXONOMY — the vendor half (ARC 018, D1.18)
+#
+# This is the ONLY place an IBKR error code is allowed to mean something. §2A: "Vendor
+# specifics ... live BELOW this line and never leak above it. All identifiers are
+# vendor-neutral; the adapter maps them to venue IDs internally." Mapping venue codes to
+# a neutral fact is precisely the adapter's job; what invariant 2 forbids is the code
+# itself travelling upward, which after this arc it no longer does.
+#
+# EVIDENCE-GATED BY CONSTRUCTION. Every code in IB_REJECT_RULES must also appear in
+# IB_REJECT_EVIDENCE with a citation to something measured on this system. A test asserts
+# that (test_broker_order.py), so a mapping cannot be added from memory of IBKR's
+# published error list — this project's rule is that a declaration is not evidence.
+# AS OF ARC 018 THE TABLE HAS EXACTLY ONE ENTRY. Three of RejectCategory's four members
+# have no mapped code at all, because only one order-rejection code has ever been measured
+# here. Everything else lands on UNKNOWN. That is the finding, not a placeholder.
+# ---------------------------------------------------------------------------
+
+IB_REJECT_EVIDENCE: dict[int, str] = {
+    201: (
+        "Measured live on clientId=905. ARC 010 established a whatIf order reaching "
+        "IBKR's margin engine returns err 201 (sessions/SESSION.md:457, "
+        "docs/CHECK-DEBT.md D1.11). ARC 012 measured the rejection text carrying the "
+        "margin figure — 'NET LIQ [20299.32] MUST EXCEED THE MARGIN REQ [35035.87]' — "
+        "and read the requirement back out of it (sessions/SESSION.md:569, :594; "
+        "docs/dev_and_services_plan.md:157 'contracts affordable 0 — rejected, err 201'). "
+        "Reproduced offline in test_broker_order.py::_section_rejection_paths."
+    ),
+}
+
+# (errorCode, required lowercase substrings of errorString, category).
+#
+# WHY THE TEXT IS PART OF THE RULE, AND WHY THAT IS NOT §7.4's DEFECT. IBKR's 201 is a
+# WRAPPER — literally "Order rejected - reason:<text>" — so the code alone does not name a
+# cause. Keying INSUFFICIENT_MARGIN on 201 by itself would make every 201, whatever its
+# text, read as a money problem: an unknown wearing a known's clothes, the exact failure
+# the UNKNOWN floor exists to prevent. So the substrings are load-bearing.
+#
+# debug.md §7.4 forbids anchoring on a literal that can move — and it is a rule about
+# CONSUMERS, above the seam, where venue prose is not supposed to be visible at all. Here
+# the anchor sits below the seam in the one component whose job is to know venue
+# spellings, and its drift behaviour is safe by construction: if IBKR rewords the message
+# the rule stops matching and the result is UNKNOWN. It degrades to "we cannot tell",
+# never to a confident wrong answer. Both substrings are taken from the measured sample
+# cited above; nothing here is generalised from IBKR documentation.
+IB_REJECT_RULES: tuple[tuple[int, tuple[str, ...], RejectCategory], ...] = (
+    (201, ("margin", "net liq"), RejectCategory.INSUFFICIENT_MARGIN),
+)
+
+
+def ib_reject_category(error_code: int, error_string: str) -> RejectCategory:
+    """Map an IBKR (code, text) rejection onto the neutral taxonomy. First rule wins.
+
+    Anything unmatched is UNKNOWN — never the nearest plausible member. The function is
+    module-level and pure so a test can drive it over a code set directly, rather than
+    only through the event path.
+    """
+    haystack = (error_string or "").lower()
+    for code, needles, category in IB_REJECT_RULES:
+        if error_code == code and all(n in haystack for n in needles):
+            return category
+    return RejectCategory.UNKNOWN
 
 
 class IBKRBrokerOrder:
@@ -214,6 +279,31 @@ class IBKRBrokerOrder:
         # data-loss restore, cleared when the re-read comes back. Observable state, not a
         # log line, because "is the protective path's input trustworthy" is a fact a test
         # and an operator both need to read (ARC 017 A1).
+        #
+        # ARC 018 B4 — NOTE FOR R2 (the Limiter). Re-confirmed observable and correct at
+        # all three write sites (init False; True the moment a data-loss restore arrives;
+        # `not rebuilt` after the re-read resolves), and read by three assertions in
+        # test_broker_order.py. It still has NO consumer, because the Limiter does not
+        # exist yet; this records what that consumer will be REQUIRED to do, written now
+        # rather than reconstructed later. `flatten()` is §2A's protective path and reads
+        # this mirror instead of the wire, so §14's "the exit path has zero wire
+        # dependency" is only as strong as the mirror behind it — `_mirror_stale is True`
+        # means the sizing input for a protective flatten may be missing a position, or
+        # holding one already closed. The consumer is therefore required to (1) treat True
+        # as a HALT-class condition for NEW entries — it is §4's uncertainty, and every
+        # uncertainty resolves toward flat; (2) NOT treat True as a reason to skip a
+        # protective flatten — firing against a suspect mirror still beats not firing, and
+        # §4's indeterminate path already reconciles against broker truth afterward and
+        # publishes the CONFIRMED state; (3) pair it with the `UP_DATA_LOSS` session event
+        # rather than substituting for it — the session member is the edge, this flag is
+        # the level, and only the level survives a missed event.
+        # KNOWN GAP, deliberately not fixed here (a behaviour change beyond ARC 018's
+        # scope): the flag LATCHES. `connect()` discards `_rebuild_mirror()`'s verdict and
+        # never touches `_mirror_stale`, so a re-read that failed once stays True across a
+        # full reconnect that did successfully rebuild. It fails toward "suspect", which is
+        # the safe direction, but a consumer that gates entries on it would never resume
+        # trading after one failed re-read. Whoever builds the consumer must fix the latch
+        # in the same motion or the gate is a one-way door.
         self._mirror_stale = False
         # Monotonic count of rebuild ATTEMPTS. Exists so "the mirror was re-read" is
         # directly measurable rather than inferred from the mirror's contents — which can
@@ -633,18 +723,36 @@ class IBKRBrokerOrder:
     # ------------------------------------------------------------------ ib events
 
     def _ack_once(
-        self, cid: ClientOrderId, status: AckStatus, reason: str | None = None
+        self,
+        cid: ClientOrderId,
+        status: AckStatus,
+        reason: str | None = None,
+        reject_category: RejectCategory | None = None,
     ) -> bool:
         """Emit at most one ack per order. Returns True if this call emitted it.
 
         The single gate every ack path goes through — the venue's own PreSubmitted/
         Submitted, the errorEvent rejection, and the §2c synthesis all land here and
         share one dedupe set, so no two of them can both fire for the same order.
+
+        ARC 018: it is also the single place the (status, reject_category) pairing is
+        enforced, so no emission path can bypass it. A REJECTED ack arriving without a
+        category is COERCED to UNKNOWN and logged at error level rather than raised:
+        `_on_ib_error` is a sync vendor callback dispatched from the event loop, and an
+        exception thrown out of it would take the event stream down on the order path to
+        punish a defect whose safe resolution is already defined. Fail loud, not fatal —
+        and the loud value is the honest one.
         """
         if cid in self._acked:
             return False
+        violation = ack_category_violation(status, reject_category)
+        if violation:
+            log.error("ack contract violated for %s: %s", cid, violation)
+            reject_category = (
+                RejectCategory.UNKNOWN if status is AckStatus.REJECTED else None
+            )
         self._acked.add(cid)
-        self._sink.on_ack(cid, status, reason=reason)
+        self._sink.on_ack(cid, status, reason=reason, reject_category=reject_category)
         return True
 
     def _ensure_acked(self, cid: ClientOrderId, trigger: str) -> None:
@@ -834,8 +942,18 @@ class IBKRBrokerOrder:
             # Same one-ack gate as the accept paths (§2c): whichever stream reaches an
             # order first owns its ack. A REJECTED here therefore blocks the synthesis of
             # a later ACCEPTED on an Inactive/Cancelled transition, and vice versa.
+            # TWO CHANNELS, ONE EVENT (ARC 018, D1.18).
+            #   reject_category — the FACT, vendor-neutral, structured, always present.
+            #     Readable with no reference to any IBKR spelling.
+            #   reason — the human channel, DELIBERATELY still carrying the venue's code
+            #     and text. 201's margin figures are the most useful diagnostic this path
+            #     produces and are not thrown away; the code simply stops being the only
+            #     way to learn why the order was refused.
             self._ack_once(
-                cid, AckStatus.REJECTED, reason=f"{errorCode}: {errorString}"
+                cid,
+                AckStatus.REJECTED,
+                reason=f"{errorCode}: {errorString}",
+                reject_category=ib_reject_category(errorCode, errorString),
             )
 
     # ---------------------------------------------------- data-loss self-reconciliation

@@ -79,6 +79,123 @@ class AckStatus(enum.Enum):
     REJECTED = "rejected"
 
 
+class RejectCategory(enum.Enum):
+    """WHY the venue refused an order, as STRUCTURED state. Declared Nix addition.
+
+    NIX ADDITION (ARC 018), flagged exactly as `feed_lag()`/`MarketDataMode`/
+    `SessionState.UP_DATA_LOSS` are. §2A declares `on_ack(client_order_id,
+    accepted|rejected, reason?)` — a two-valued status plus one free-text field — and the
+    frozen spec CANNOT express the refusal cause anywhere else. The frozen spec is NOT
+    edited; the seam declares the addition, names it as one, and §2A remains the authority
+    for the two things it does define.
+
+    WHY IT IS OWED (D1.18). Before this arc the IBKR adapter emitted
+    `reason=f"{errorCode}: {errorString}"`, so a vendor integer crossed the seam
+    (invariant 2: "no vendor type crosses the line"; §2A's framing sentence: "Vendor
+    specifics ... live BELOW this line and never leak above it"). The narrow defence —
+    an int inside a str is not a vendor *type* — fails on the evidence: the ack `reason`
+    is ALREADY consumed programmatically by substring match in this tree, so a consumer
+    needing the refusal cause has no structured way to get it and will match on venue
+    prose. debug.md §7.4 names that a stale literal anchor, and ARC 017 removed exactly
+    this shape from the session path (1100/1101/1102 -> `UP_DATA_LOSS`).
+
+    THE DIVISION OF LABOUR. This enum carries the FACT. `reason` keeps the full
+    human-readable text INCLUDING the venue code and any figures in it — error 201's
+    margin numbers have real diagnostic value and are not thrown away. `reason` simply
+    stops being the only carrier. No IBKR integer, code or spelling is required to
+    interpret any member below.
+
+    HOW THE MEMBERS WERE CHOSEN — this is a taxonomy of LIMITER BEHAVIOURS, not a
+    re-spelling of IBKR's error list. A category exists only where a consumer would do
+    something different; two venue codes leading to the same Limiter action share a
+    member. The four below are each anchored to a distinct spec-locked response.
+
+    ENUM IS SPEC-DERIVED; THE MAP IS EVIDENCE-DERIVED. The members are derived from §4's
+    Limiter behaviours. Which venue codes reach which member is a separate, strictly
+    evidence-gated question owned by the adapter below the seam (see
+    `broker_order_ibkr.IB_REJECT_RULES` / `IB_REJECT_EVIDENCE`). As of ARC 018 exactly ONE
+    order-rejection code has ever been measured on this system, so three of the four
+    members have no mapped code at all. That is reported, not hidden: a declared category
+    is not a measured one.
+
+    WHY UNKNOWN IS THE FLOOR AND NEVER `None`. Every REJECTED ack carries a member;
+    anything the adapter cannot evidence lands on `UNKNOWN`, never on the nearest
+    plausible match. An unknown that reads as a known is worse than an unknown that reads
+    as unknown, and it is the failure this structure exists to prevent. `None` is reserved
+    for "not a rejection at all" so that `reject_category is None` is exactly equivalent to
+    `status is AckStatus.ACCEPTED` — one fact, one spelling, mechanically asserted by
+    `ack_category_violation()` below.
+
+    WHY A MEMBER RATHER THAN A FLAG SET. Same reasoning `SessionState.UP_DATA_LOSS`
+    records: a defaulted boolean is silently ignorable by an unaware consumer. Here the
+    ignorable default reads as "no cause given", which is `UNKNOWN` — the loud, safe
+    direction — so the enum stays closed and every member has to be handled explicitly.
+    """
+
+    UNKNOWN = "unknown"
+    """The adapter cannot evidence a cause. THE FLOOR — never a nearest match.
+
+    LIMITER BEHAVIOUR: treat the refusal as indeterminate. It is not evidence about money,
+    about the instrument, or about the venue's availability, so none of the three specific
+    responses below may be taken on it. §4's uncertainty discipline applies: resolve toward
+    flat, free the in-flight slot, and surface it — a cause we cannot name is an operator
+    concern, not something to guess at."""
+
+    INSUFFICIENT_MARGIN = "insufficient_margin"
+    """The venue refused on money: the account cannot support the order as sized.
+
+    LIMITER BEHAVIOUR (distinct): our local balance/margin projection DISAGREES WITH VENUE
+    TRUTH. §4 (broker-authoritative balance) makes this the one category whose response is
+    a reconciliation — pull a direct broker balance + position poll, publish the
+    authoritative reading, and correct the projection. Crucially it also forbids the naive
+    response: the same trade must not be re-sized against the projection that just proved
+    wrong. Nothing about the instrument or the venue is faulty, so neither of the two
+    responses below applies."""
+
+    NOT_TRADABLE = "not_tradable"
+    """The order as specified cannot be placed here at all: unknown or expired contract,
+    an order type/TIF the venue will not take, an instrument this account may not trade.
+
+    LIMITER BEHAVIOUR (distinct): money is not the problem, so re-polling the balance
+    changes nothing and time will not fix it. The response is the not-tradable state §4
+    already defines for a symbol absent from the margin field set — deny the strategy for
+    that symbol and escalate, and for an expired contract hand it to the §7.5 roll path.
+    Re-sizing or waiting are both wrong."""
+
+    VENUE_UNAVAILABLE = "venue_unavailable"
+    """The venue will not accept orders AT THIS INSTANT: session closed, exchange halt,
+    order routing down. Time-varying, and not a statement about the account or the order.
+
+    LIMITER BEHAVIOUR (distinct): this is the condition §4's market-tradable guard is
+    written for — hold in HALT with a loud alert and act the instant the market is
+    tradable, rather than escalating a permanent fault or denying the symbol forever. It is
+    the only category whose correct response is "wait for the condition to clear".
+
+    THIS IS NOT A LICENCE TO RESEND. §4 and §12A are explicit that the system NEVER
+    auto-resends a placement; a pending timeout resolves through `query_order_status`. The
+    action taken when the market becomes tradable is the Limiter's own protective one
+    (§4's guarded flatten-to-flat), not a replay of the order the venue just refused."""
+
+
+def ack_category_violation(
+    status: AckStatus, reject_category: RejectCategory | None
+) -> str:
+    """Return '' if the (status, reject_category) pairing is legal, else the violation.
+
+    The pairing IS the contract: `reject_category is None` must be exactly equivalent to
+    `status is AckStatus.ACCEPTED`. Written as a function rather than left to each adapter
+    so there is one spelling of the rule, checkable by a test against every emission path
+    rather than re-derived per site."""
+    if status is AckStatus.REJECTED and reject_category is None:
+        return "REJECTED ack carries reject_category=None — UNKNOWN is the floor, never None"
+    if status is AckStatus.ACCEPTED and reject_category is not None:
+        return (
+            f"ACCEPTED ack carries reject_category={reject_category.value} — "
+            "None is the only legal value on an acceptance"
+        )
+    return ""
+
+
 class SessionState(enum.Enum):
     """Session lifecycle as seen ABOVE the seam. UP/DOWN are §2A. UP_DATA_LOSS is a
     declared Nix addition — see below.
@@ -302,7 +419,28 @@ class OrderEventSink(Protocol):
         client_order_id: ClientOrderId,
         status: AckStatus,
         reason: str | None = None,
-    ) -> None: ...
+        *,
+        reject_category: RejectCategory | None = None,
+    ) -> None:
+        """`status` and `reject_category` are the whole fact. `reason` is human-readable
+        colour ONLY — and, unlike the session path, it is deliberately NOT vendor-neutral:
+        it keeps the venue's own code and text because that is where error 201's margin
+        figures live and a debugger needs them.
+
+        ARC 018 (D1.18): a consumer must never have to read `reason` to learn anything it
+        acts on. Before this arc the refusal cause existed only inside that string, so a
+        consumer needing it had to substring-match venue prose — debug.md §7.4's stale
+        literal anchor, and the same defect ARC 017 removed from `on_session`.
+        `RejectCategory` carries the cause; `reason` is free to change wording, and free to
+        contain vendor spelling, without breaking anyone.
+
+        `reject_category` is keyword-only and additive on purpose: §2A's positional shape
+        `(client_order_id, accepted|rejected, reason?)` is untouched, so this is visibly a
+        Nix addition rather than a redefinition of the locked signature.
+
+        THE PAIRING IS PART OF THE CONTRACT: `reject_category is None` iff `status is
+        ACCEPTED`. Every rejection carries a category, `UNKNOWN` being the floor. See
+        `ack_category_violation()`."""
 
     def on_fill(
         self,
@@ -819,8 +957,12 @@ class RecordingSink:
     an adapter that emits the fill first would satisfy every per-stream assertion. The
     guarantee being proved is an ordering one, so the observable has to be an ordering."""
 
-    def on_ack(self, client_order_id, status, reason=None):
-        self.acks.append((client_order_id, status, reason))
+    def on_ack(self, client_order_id, status, reason=None, *, reject_category=None):
+        # APPENDED, not inserted (ARC 018): existing assertions read acks[i][1] for status
+        # and acks[i][2] for reason, here and in the two test suites. A four-tuple keeps
+        # every one of those indices meaning what it meant, so adding the structured field
+        # cannot quietly change what an old assertion is looking at.
+        self.acks.append((client_order_id, status, reason, reject_category))
         self.sequence.append("on_ack")
 
     def on_fill(
