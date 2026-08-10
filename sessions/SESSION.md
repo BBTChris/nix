@@ -351,3 +351,53 @@ resting on corrupted authoritative text. Part 3 fully done. ~2-3% of whole-proje
 was a merge/audit/hygiene arc, not new capability; its main value is the negative result (frozen
 docs confirmed clean) and catching a second live instance of the graphify fence-stripping bug
 before it could propagate.
+
+---
+
+## ARC 008 (partial) + verify.py v2 — 2026-08-09/10
+
+**ARC 008 is not complete.** Parts 2 (`ib_async==2.1.0`, pinned) and 4 (clientId scheme: 1=engine
+reserved, 905=diagnostic, 0 permanently excluded) are done. Parts 1, 3 and 5 remain blocked on the
+IB Gateway GUI login + IB Key 2FA. Re-measured twice, hours apart: no `jts.ini` anywhere on the
+filesystem, `~/Jts` empty, no Gateway/Xvfb process, nothing listening on 4001/4002/7496/7497.
+Byte-for-byte the state Arc 006 recorded at Step 7. The arc's premise that the login was done was
+false; its stated fallback (infer from a live connection) is blocked by the same cause. Part 5 is
+blocked twice over — §5.1's cycle needs two PASS legs, and with nothing listening every path
+returns exit 2.
+
+**`VERIFY-AND-CHECKS.md` did not exist.** Arc 008 Part 5 required following it exactly; a
+filesystem-wide search, all of git history, and `~/.claude` turned up only the arc's own citation.
+`checks/` was empty; no check had ever been written. Authored it (now v1.0.1 and indexed in
+CLAUDE.md's spec table, so it is an authority by the project's own rule), wrote a 13-task plan
+against it, and executed the plan with an independent review after every task.
+
+**Landed:** `scripts/verify.py` over `scripts/nixverify/{contract,manifest,loader,engine,render}`,
+four checks passing against real machine state, 126 tests, three systemd runners (boot user
+non-disruptive; weekly user maintenance; weekly root maintenance), `install.sh` installing all of
+them. Root `verify.py` deleted. The §5.1 FAIL-with-CONTROL cycle demonstrated verbatim with a
+planted pin drift and a clean control.
+
+**Load-bearing design decisions:** five-state results so a downed service is distinguishable from
+a broken one; non-vacuity enforced mechanically (a PASS with no `evidence` is downgraded, on both
+the plugin and standalone paths); disruptive gates the *repair* not the inspection, so drift is
+reported at boot and the mutation refused; `systemd-creds`+TPM2 recorded as superseding Fernet
+(TPM 2.0 confirmed present) with the migration explicitly **not** yet performed.
+
+**Two commit gates were found silently non-functional.** bandit has never scanned anything —
+bandit 1.8.6 uses `ast.Str.s`, removed in Python 3.12, so it AttributeErrors mid-parse, marks the
+file skipped, and exits 0; proven by watching it pass `subprocess.run(..., shell=True)`. Repo-wide
+since Arc 006, **still outstanding**. pylint could not resolve `nixverify` for check-only commits
+and its duplicate-code pragma was silently inert; both fixed and proven to fail on a planted
+defect before being trusted. The pytest hook's exit-5 tolerance was removed and proven to fail.
+
+**Process note worth keeping.** Nearly every real defect was in the *plan*, not the
+implementations — reviewers caught a `validate_result` that destroyed diagnostics, a loader
+leaking `sys.modules`, an ASCII fallback still emitting Unicode, a node-identity check reading a
+JSON key `install.sh` never writes (permanently failing on every correctly-provisioned node), and
+a `pip install` of the order-placing library that could fire unattended on any boot. The pattern
+that caught them was constructing the real artifact rather than a stand-in: reading pylint's
+source, injecting `import yaml`, running a guard from inside the venv it guards. Three controller
+verification errors were caught the same way — twice by building a probe that differed from the
+real thing in exactly the dimension under test.
+
+Branch `arc-009-verify-v2`, 52 commits off `arc-006-provisioning-v2`. Not merged.
