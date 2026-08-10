@@ -4,8 +4,11 @@
 #   "What would have to be true for `pre-commit run --all-files` to pass while
 #    measuring nothing?"
 #
-# Every answer below is a condition you could plant, and every number quoted is
-# from a pasted command (ARC 017), not from memory.
+# Every answer below is a condition you could plant. NO CURRENT-STATE NUMBER IS
+# RESTATED HERE (doctrine B.7 / CHECK-DEBT D2.8) — where a count is needed, the
+# command that derives it is given instead. Historical measurements appear only
+# with the arc and commit that produced them, which makes them evidence rather
+# than a claim about today.
 #
 # 1. THE SUBJECT IS NOT IN `git ls-files`.  `--all-files` means all *git-tracked*
 #    files, so anything untracked or gitignored is outside all seven file-scoped
@@ -18,51 +21,98 @@
 #    NUANCE, measured ARC 017 — pre-commit does NOT report a *totally* empty
 #    file-scoped hook as Passed; it prints "(no files to check) Skipped". So a
 #    scope collapse to ZERO is visible for the seven file-scoped hooks. What is
-#    invisible is a PARTIAL collapse — 36 files instead of 37 reads exactly like
-#    37 — and `pytest-affected` is exempt from the protection entirely, because
-#    `always_run: true` + `pass_filenames: false` means it is never "skipped for
-#    no files"; it reports **Passed** on zero tests. See answer 2.
+#    invisible is a PARTIAL collapse — one file fewer reads exactly like the full
+#    set. `pytest-affected` used to be exempt from the protection entirely,
+#    because `always_run: true` + `pass_filenames: false` means it is never
+#    "skipped for no files"; it reported **Passed** on zero tests. Answer 2 is
+#    the repair.
 #
-# 2. testmon SELECTED NOTHING — AND THAT IS EXIT 0.  Measured ARC 017, pytest
-#    9.1.1 + testmon 2.2.0 on this repo: a warm `--testmon` run with an unchanged
-#    dependency graph prints `testmon: changed files: 0, unchanged files: 36`,
-#    `collected 0 items`, `no tests ran`, and exits **0**. The exit-5 tolerance
-#    removed from the pytest-affected hook below does NOT cover this case: exit 5
-#    is what a `-k` deselect produces; testmon's empty run never reaches it. So
-#    "Stage 3 — runtime pass" is green having executed zero tests on every commit
-#    where nothing testmon can see has changed — the normal steady state.
+# 2. testmon SELECTED NOTHING — AND THAT USED TO BE EXIT 0.  Measured ARC 017 and
+#    re-measured ARC 018 (pytest 9.1.1 + testmon 2.2.0): a warm `--testmon` run
+#    with an unchanged dependency graph prints `changed files: 0`, `collected 0
+#    items`, `no tests ran`, and exits **0**. Exit-5 tolerance never covered it —
+#    exit 5 is the `-k` deselect path and testmon's empty run never reaches it.
+#    **CLOSED ARC 018 (CHECK-DEBT D2.13).** The hook no longer runs bare pytest;
+#    it runs the runtime-gate program spelled out in the `entry:` at the bottom
+#    of this file, which turns "selected nothing" into a named, non-green verdict
+#    and then escalates to a full non-incremental run so that the commit is
+#    measured rather than waved through. See the block above that entry for the
+#    verdict taxonomy and for what remains undetectable.
 #
 # 3. THE RUNTIME GATE'S SCOPE LIVES IN AN UNTRACKED FILE.  `.testmondata` is
-#    gitignored (`.gitignore:41`) and per-machine. Delete it and the next run is
-#    exhaustive; corrupt or stale it and the run is empty. No reviewer sees it and
-#    no commit records it. Failure mode #14 again, one layer down.
+#    gitignored (see `.gitignore`) and per-machine. Delete it and the next run is
+#    exhaustive; corrupt or stale it and the run can be empty. No reviewer sees
+#    it and no commit records it. Failure mode #14, one layer down.
+#    **NARROWED ARC 018, not closed.** The file is still untracked and still
+#    per-machine — tracking it was rejected (binary SQLite plus WAL sidecars is a
+#    second source of truth that goes stale on write; ARC 016 rejected the same
+#    shape for `downloads/*.py`). What changed is that its *state* is now an
+#    explicit input to the verdict and is printed on every run: `db=` absent /
+#    present / unreadable, `known_files=`, `uncovered=`, `drift=`, `alien_env=`.
+#    A missing database cannot narrow scope (it forces a cold exhaustive run), a
+#    foreign one is named, a stale one is caught by an independent recomputation
+#    of the very hashes it stores, and a partial one is listed file by file.
+#    MEASURED ARC 018, and this is the part that matters: the fsha of ONE file in
+#    `.testmondata` was overwritten with zeroes and testmon still reported
+#    `changed files: 0` / `collected 0 items` / exit 0. The selector did not
+#    notice its own corrupted record. The independent recomputation did.
 #
-# 4. A STALE HOOK ENVIRONMENT IS STILL ON DISK.  `~/.cache/pre-commit` currently
-#    holds TWO bandit envs. The pre-ARC-010 one (repo rev 2d0b675) still
-#    reproduces the original defect exactly — 18/19 files "exception while
-#    scanning file", zero findings, **exit 0**. Only the `rev:` pin below routes
-#    around it. Checking out any commit that moves that pin re-arms the ARC 006
-#    vacuum with no visible change to the gate.
+# 4. A STALE HOOK ENVIRONMENT IS STILL ON DISK.  `~/.cache/pre-commit` holds more
+#    than one bandit env. The pre-ARC-010 one (repo rev 2d0b675) still reproduces
+#    the original defect exactly. RE-MEASURED ARC 018 by invoking that cached
+#    env's own bandit against this tree: EVERY production file came back
+#    "exception while scanning file", zero findings, **exit 0** — and a file
+#    containing `subprocess.run(cmd, shell=True)` was skipped the same way and
+#    also passed, while the pinned 1.9.4 env flags it High and exits 1. Only the
+#    `rev:` pin below routes
+#    around it, and a pin is a declaration, not evidence. Checking out any commit
+#    that moves that pin re-arms the ARC 006 vacuum with no visible change to the
+#    gate. CHECK-DEBT D1.10 owns the missing assertion.
 #
-# 5. THE HOOK REPAIRED THE DEFECT INSTEAD OF REPORTING IT.  See the ruff-format
-#    ruling immediately below: run twice, the second run is green.
+# 5. THE HOOK REPAIRED THE DEFECT INSTEAD OF REPORTING IT.  **CLOSED for
+#    ruff-format ARC 018 (CHECK-DEBT D3.5)** — the hook now carries `--check`, so
+#    it reports `file:line` and leaves the file byte-identical instead of
+#    rewriting it and letting pre-commit infer a failure from a tree hash. Note
+#    the condition still holds for `ruff-check`, which keeps `--fix`; that is a
+#    deliberate, separate decision and not something this arc touched.
 #
 # 6. THE HOOK CANNOT REPORT ITS OWN SCOPE, so a collapse to zero is unobservable.
 #    As configured, `ruff-check` prints only "All checks passed!" and `pylint`
-#    prints only a 10.00/10 rating — neither emits a file count, though both can
-#    (`ruff check --show-files` -> 37; `pylint --reports=y` -> module 37). The
-#    other five self-report: ruff-format "37 files left unchanged", mypy "37
-#    source files", complexipy "37 files analyzed", bandit "Files skipped (0)" +
-#    LOC scanned, pytest "collected N items".
+#    prints only a rating — neither emits a file count, though both can
+#    (`ruff check --statistics` / `--show-files`; `pylint --reports=y`). The
+#    others self-report: ruff-format "N files already formatted", mypy "N source
+#    files", complexipy "N files analyzed", bandit "Files skipped" plus LOC
+#    scanned, and the runtime gate prints an explicit `SELECTED=` on every run.
 #
-# Per-hook scope, derived ARC 017 via pre-commit's own Classifier (not a
-# reimplementation) over `git.get_all_files()` = 87 files:
-#   ruff-check 37 · ruff-format 37 · pylint 37 · mypy 37 ·
-#   bandit(production) 18 · bandit(tests) 19 · complexipy 37 ·
-#   pytest-affected  always_run, pass_filenames=false — scope is testmon's graph,
-#                    NOT a file list; see answer 2.
-# None were zero. `git ls-files '*.py'` is 38; the 38th is
-# databases/schema/extract_sources.py, excluded by every `exclude:` below.
+# 7. THE GATE'S OWN LOGIC IS OUTSIDE EVERY GATE.  New with the ARC 018 repair and
+#    stated rather than hidden: the runtime-gate program lives in the `entry:`
+#    string below, so ruff, pylint, mypy, bandit, complexipy and pytest all see a
+#    YAML file and none of them see that Python. Its correct home is a tracked
+#    `scripts/runtime_gate.py` with its own tests; ARC 018's sub-agent A had no
+#    write access to `scripts/`. Recorded as CHECK-DEBT D2.16.
+#
+# Per-hook scope is DERIVED, never restated. Reproduce it with pre-commit's own
+# Classifier rather than a reimplementation:
+#
+#   .venv/bin/python - <<'PY'
+#   from pre_commit.clientlib import load_config
+#   from pre_commit.commands.run import Classifier
+#   from pre_commit.repository import all_hooks
+#   from pre_commit.store import Store
+#   from pre_commit import git
+#   files = git.get_all_files(); print("all_files", len(files))
+#   c = Classifier.from_config(files, "", "^$")
+#   for h in all_hooks(load_config(".pre-commit-config.yaml"), Store()):
+#       print(h.alias or h.id, len(list(c.filenames_for_hook(h))))
+#   PY
+#
+# HISTORY, because it is the point: ARC 017 banked that table as literal counts
+# in this header — all_files 87, four hooks at 37, bandit 18/19, complexipy 37,
+# `git ls-files '*.py'` 38. Every one of those was correct at commit 92f9f17 and
+# WRONG by commit b8ba7ff, because ARC 017's own commits added files. The numbers
+# went stale inside the arc that wrote them. That is CHECK-DEBT D2.8's failure
+# class living inside a gate's configuration for the second time, and it is why
+# the command above replaced the table instead of the table being updated.
 # =============================================================================
 
 repos:
@@ -73,28 +123,32 @@ repos:
         args: [--fix, --exit-non-zero-on-fix]
         exclude: ^databases/schema/
 
-      # RULING, ARC 017 — this is a FORMATTER, not a gate. Do not count it as
-      # one. FAIL-with-CONTROL was run (CONTROL -> PLANT -> CAN-FAIL -> RESTORE
-      # -> CONTROL, plant inside its own 37-file scope) and the outcome is
-      # CAUGHT BUT DID NOT NAME THE SITE. Recorded as CHECK-DEBT D3.5, and left
-      # OPEN rather than rounded up to a pass. What was measured:
+      # RULING, ARC 017 — this was a FORMATTER, not a gate. FAIL-with-CONTROL was
+      # run and the verdict was CAUGHT BUT DID NOT NAME THE SITE, recorded as
+      # CHECK-DEBT D3.5 and deliberately left OPEN rather than rounded up. What
+      # was measured then:
       #   - The hook entry is `ruff format --force-exclude`. It REWRITES the
       #     file. `ruff format` itself exits 0 — it succeeded at formatting.
-      #   - The exit 1 comes from pre-commit's own before/after tree hash, as
+      #   - The exit 1 came from pre-commit's own before/after tree hash, as
       #     "files were modified by this hook". That signal is attributed by
       #     tree-diff, not by causation: during ARC 017 a *concurrent* edit by
       #     another process made the **bandit** hook report "files were modified
-      #     by this hook" though bandit never writes a file.
-      #   - It names no file and no line: "1 file reformatted, 36 files left
-      #     unchanged".
-      #   - Run it twice and the second run PASSES — the defect is gone because
-      #     the gate consumed it (failure mode #7, and §7.12 answer 5 above).
-      # A reporting configuration EXISTS and was demonstrated: `ruff format
-      # --check` exits 1, modifies nothing (sha256 identical before/after), and
-      # names `scripts/tests/<file>.py:1:1` with a diff. Adopting it is a
-      # behaviour change (commits stop being auto-formatted) and was out of ARC
-      # 017's scope, so it is recorded as owed, not done.
+      #     by this hook" though bandit never writes a file. Any evidence resting
+      #     on that message is unreliable whichever hook it names.
+      #   - It named no file and no line, and running it twice made the second
+      #     run PASS, because the gate consumed its own subject (failure mode #7,
+      #     and §7.12 answer 5 above).
+      #
+      # ADOPTED ARC 018 — `args: [--check]` converts it from a repairer into a
+      # reporter, which is what doctrine C.2 and failure mode #7 require. It now
+      # exits 1, names `<file>:<line>:<col>`, prints the diff, and leaves the
+      # tree byte-identical, so the failure survives to be read instead of being
+      # silently consumed. The ergonomic cost is real and is accepted rather than
+      # hidden: commits are no longer auto-formatted, and the fix is to run
+      # `.venv/bin/ruff format <file>` by hand. `ruff-check` above keeps `--fix`,
+      # so that answer-5 condition is still live for that hook by choice.
       - id: ruff-format
+        args: [--check]
         exclude: ^databases/schema/
 
   - repo: https://github.com/pylint-dev/pylint
@@ -143,19 +197,15 @@ repos:
         # `./scripts/tests/test_systemd_units.py:77:4` and printing the line.
         # Restored byte-identical (sha256 85d2b8d0…bee9a before and after) and
         # the control re-passed. Non-vacuity first: bandit's own JSON metrics
-        # report 19 files / 3109 LOC / 0 errors here, matching the 19 files
-        # pre-commit's Classifier selects. D3.1's ARC 010 discharge covered
-        # bandit (production) ONLY — that plant landed in checks/check_venv.py,
-        # which this hook's `files: ^scripts/tests/` excludes.
+        # matched the file count pre-commit's Classifier selects for this hook.
+        # D3.1's ARC 010 discharge covered bandit (production) ONLY — that plant
+        # landed in checks/check_venv.py, which this hook's `files:` excludes.
         #   B101 assert_used  — asserts are pytest's assertion mechanism, and
         #                       zero of them is a defect. THE SITE COUNT IS
         #                       DELIBERATELY NOT RESTATED HERE (doctrine B.7 /
         #                       CHECK-DEBT D2.8). It used to read "126 tests,
-        #                       ~100 sites"; ARC 017 derived 159 tests and 318
-        #                       B101 sites — both restatements were stale, and
-        #                       this was the first D2.8 instance found inside a
-        #                       gate's own configuration rather than a document.
-        #                       Derive, do not read:
+        #                       ~100 sites"; ARC 017 derived different figures
+        #                       and both restatements were stale. Derive:
         #                         bandit -c pyproject.toml -f json \
         #                           $(git ls-files 'scripts/tests/*.py')
         #                       then count results with test_id == "B101".
@@ -177,45 +227,162 @@ repos:
     hooks:
       - id: pytest-affected
         name: Stage 3 — runtime pass
-        # Exit-5 ("no tests collected") tolerance removed (final whole-branch
-        # review, I6). It existed only for the pre-R1 window when scripts/ had
-        # no tests yet, with a comment promising removal once real tests
-        # existed. Real tests exist now. THE COUNT IS DELIBERATELY NOT RESTATED
-        # HERE (doctrine B.7 / CHECK-DEBT D2.8) — this line used to read "there
-        # are now 126" and was stale; derive it instead:
-        #   .venv/bin/pytest scripts/tests -q --collect-only
+        # ---------------------------------------------------------------------
+        # THE RUNTIME GATE — rebuilt ARC 018 to discharge CHECK-DEBT D2.13.
         #
-        # MEASURED CORRECTION, ARC 017 — removing the tolerance does NOT close
-        # the hole the sentence that followed it claimed to close. That sentence
-        # said a stale .testmondata could "collect zero tests and still pass the
-        # gate having run nothing". It still can, and exit 5 was never the route:
-        #   ./.venv/bin/pytest --testmon   (warm, nothing changed)
-        #     -> "testmon: changed files: 0, unchanged files: 36"
-        #     -> "collected 0 items" / "no tests ran"  -> EXIT 0
-        #   ./.venv/bin/pytest -q -k zzz_no_such_test  -> "159 deselected" -> EXIT 5
-        # Exit 5 belongs to the deselect path; testmon's empty run returns 0 and
-        # this gate reports GREEN having executed nothing. That is CHECK-DEBT
-        # D2.12 verbatim, standing in this file. Not repaired here because the
-        # repair is a behaviour change (a second, non-incremental full-suite
-        # hook, or a floor assertion on collected count) and ARC 017 scoped this
-        # sub-agent to demonstration and ledger truth. Recorded, not silently
-        # carried: CHECK-DEBT D2.13.
+        # WHAT WAS WRONG. The entry was `./.venv/bin/pytest --testmon`. A warm
+        # testmon graph selects nothing, prints `collected 0 items`, and exits 0,
+        # so pre-commit printed **Passed** for a run that executed no test. The
+        # defect is NOT that testmon selects nothing — selecting nothing is
+        # correct when nothing changed. The defect is that a run which measured
+        # nothing was indistinguishable from a run that measured everything and
+        # passed. Removing the old exit-5 tolerance never touched this: exit 5
+        # belongs to the `-k` deselect path.
         #
-        # CAN-FAIL DEMONSTRATED, ARC 017 (discharges D3.4). The plant must be
-        # proven SELECTED, not merely present, or it demonstrates nothing:
+        # WHAT REPLACED IT, and why this shape. Two rejected alternatives first,
+        # because the rejection is the argument:
+        #   - Sweep the whole suite every commit. Trades a silent-green defect
+        #     for a gate people route around, which §7.12 says is worse.
+        #   - Assert a floor on the collected count. A floor is a literal anchor
+        #     (failure mode #4) and it cannot tell "nothing changed" from "the
+        #     selector is broken".
+        # Instead the gate reads the state of `.testmondata` ITSELF, before and
+        # around the run, and makes that state part of the verdict. Zero
+        # selection stops being a terminal state: it is named, and then the gate
+        # escalates to a non-incremental run so the commit is actually measured.
+        # Incremental stays the fast path for the case it is good at — a commit
+        # that touched code testmon has a graph for.
+        #
+        # VERDICT TAXONOMY, printed verbatim on every run, PASS only at the end:
+        #   MEASURED-PASS     exit 0  SELECTED>0 and every selected test passed
+        #   FAIL              exit 1  pytest failed; pytest named the site above
+        #   SELECTOR-BROKEN   exit 1  nothing selected, yet the gate's own
+        #                             recomputation says the database's record
+        #                             disagrees with the tree, or the database
+        #                             records a failed test nobody re-ran
+        #   SCOPE-BLIND       exit 2  a file changed against HEAD that the
+        #                             database has no fingerprint for, so a
+        #                             change to it can select nothing
+        #   NOTHING-SELECTED  exit 2  nothing selected and nothing contradicts
+        #                             that — the legitimate "nothing changed"
+        #                             outcome, and it is CANNOT-MEASURE, not PASS
+        #   CANNOT-MEASURE    exit 2  database unreadable, or pytest produced no
+        #                             parsable report (exit 2 keeps this distinct
+        #                             from FAIL — failure mode #10, and Part B.2
+        #                             of VERIFY-AND-CHECKS)
+        # SCOPE-BLIND and NOTHING-SELECTED are only reachable when escalation is
+        # suppressed with NIX_RUNTIME_GATE=noescalate. That switch exists so the
+        # taxonomy is demonstrable — run it and the gate will tell you which of
+        # the three zero-selection worlds you are in. With escalation on (the
+        # default, and what a commit uses) those two states are repaired into a
+        # real measurement instead of being reported as a pass.
+        #
+        # HOW THE DATABASE IS AUDITED. `fsha` in testmon's `file_fp` table is a
+        # git blob hash of the file. The gate recomputes it from the working
+        # tree with hashlib and compares — it never asks testmon what changed,
+        # which is what makes the corroboration independent. Both of testmon's
+        # own spellings are accepted (`git ls-files --stage` index hash for a
+        # clean file, and testmon's character-length variant for a dirty one),
+        # so a non-ASCII file does not produce a false red.
+        #
+        # WHAT IS STILL UNDETECTABLE, stated rather than left to be discovered:
+        #   - A test that exists but was never in any database, in a file the
+        #     database has no fingerprint for, that is ALSO unchanged against
+        #     HEAD. Nothing selects it and nothing flags it. The escalated run
+        #     does execute it, so this is invisible only on the incremental path.
+        #   - testmon's method-level fingerprints are not re-verified; only the
+        #     per-file fsha is. A corrupted `method_checksums` blob that still
+        #     hashes to a valid file record would not be caught.
+        #   - The gate cannot prove the suite is adequate. It proves what ran.
+        #   - The gate's own program is not linted, typed or tested — answer 7
+        #     in the header, CHECK-DEBT D2.16.
+        #
+        # CAN-FAIL DEMONSTRATED, ARC 017 (discharges D3.4) and RE-RUN ARC 018
+        # after this change. The plant must be proven SELECTED, not merely
+        # present, or it demonstrates nothing:
         #   plant `assert 1 == 2` in scripts/tests/test_check_venv.py
-        #     -> "testmon: changed files: scripts/tests/test_check_venv.py,
-        #         unchanged files: 35"
-        #     -> "collected 9 items"  (not 0, not 159 — selection, not sweep)
-        #     -> FAILED scripts/tests/test_check_venv.py::test_arc017_plant_testmon
-        #        naming scripts/tests/test_check_venv.py:214  -> EXIT 1
-        #   restore -> sha256 fd5d4992…877b5 identical -> 8 passed -> EXIT 0
-        # (CLAUDE.md directive 4: fail closed and loud, not silently green on
-        # nothing.)
-        # pre-commit runs local hooks with cwd = repo top level, so this
-        # relative path to the venv is stable regardless of where `git commit`
-        # was invoked from.
-        entry: ./.venv/bin/pytest --testmon
+        #     -> testmon reports that file as the changed one
+        #     -> a selected count that is neither 0 nor the whole suite
+        #     -> FAILED ... naming the file and line, hook exit 1
+        #   restore -> sha256 identical -> control re-passes
+        # `__pycache__` is purged between plant and restore: CPython validates
+        # `.pyc` on (mtime, size), so a pure line swap can leave planted bytecode
+        # resident behind byte-identical source (ARC 017's seventh finding).
+        #
+        # pre-commit runs local hooks with cwd = repo top level, so the relative
+        # path to the venv is stable regardless of where `git commit` ran.
+        # ---------------------------------------------------------------------
+        entry: |
+          ./.venv/bin/python -c 'import hashlib, os, pathlib, sqlite3, subprocess, sys, tempfile, xml.etree.ElementTree as ET
+          ROOT = pathlib.Path.cwd(); DB = ROOT / ".testmondata"
+          def sha(p):
+              raw = p.read_bytes(); nrm = raw.replace(b"\f", b" ").replace(b"\r\n", b"\n")
+              a = hashlib.sha1(b"blob %u\0" % len(raw)); a.update(raw)
+              b = hashlib.sha1(b"blob %u\0" % len(nrm.decode("utf-8", "replace"))); b.update(nrm)
+              return {a.hexdigest(), b.hexdigest()}
+          def git(*a):
+              r = subprocess.run(("git",) + a, capture_output=True, text=True)
+              return r.stdout.split() if r.returncode == 0 else []
+          scope = [f for f in git("ls-files", "*.py") if not f.startswith("databases/schema/")]
+          staged = set(git("diff", "--name-only", "HEAD"))
+          state = "absent"; known = {}; envs = []; nrec = nfail = 0; uncov = []; drift = []
+          if DB.exists():
+              try:
+                  con = sqlite3.connect("file:%s?mode=ro" % DB, uri=True)
+                  for fn, fs in con.execute("select filename, fsha from file_fp"):
+                      known.setdefault(fn, set()).add(fs)
+                  envs = ["%s@%s" % r for r in con.execute("select environment_name, python_version from environment")]
+                  nrec, nfail = con.execute("select count(*), coalesce(sum(failed),0) from test_execution").fetchone()
+                  con.close(); state = "present"
+              except Exception as exc:
+                  state = "unreadable(%s)" % type(exc).__name__
+          if state == "present":
+              uncov = [f for f in scope if f not in known]
+              drift = [f for f in scope if f in known and not known[f] & sha(ROOT / f)]
+          alien = [e for e in envs if not e.endswith("@%d.%d.%d" % sys.version_info[:3])]
+          mode = "incremental"; n = -1
+          def run(extra):
+              fd, x = tempfile.mkstemp(suffix=".xml"); os.close(fd)
+              rc = subprocess.run([sys.executable, "-m", "pytest", "--junit-xml=" + x] + extra).returncode
+              t = b = -1
+              try:
+                  r = ET.parse(x).getroot(); s = r if r.tag == "testsuite" else r.find("testsuite")
+                  t = int(s.get("tests")); b = int(s.get("failures")) + int(s.get("errors"))
+              except Exception:
+                  pass
+              os.unlink(x); return rc, t, b
+          def out(v, code, why=""):
+              print("RUNTIME-GATE scope: db=%s known_files=%d in_scope_files=%d uncovered=%d drift=%d "
+                    "recorded_tests=%d recorded_failures=%d env=%s alien_env=%d mode=%s SELECTED=%d"
+                    % (state, len(known), len(scope), len(uncov), len(drift), nrec, nfail,
+                       ",".join(envs) or "-", len(alien), mode, n))
+              if uncov: print("RUNTIME-GATE uncovered (a change to these selects no test): " + " ".join(uncov))
+              if drift: print("RUNTIME-GATE drift (db record does not match tree content): " + " ".join(drift))
+              print("RUNTIME-GATE verdict: %s%s" % (v, (" - " + why) if why else ""))
+              raise SystemExit(code)
+          rc, n, bad = run(["--testmon"])
+          blind = sorted(set(uncov) & staged)
+          if n < 0:
+              out("CANNOT-MEASURE", 2, "pytest wrote no parsable report; the gate did not run")
+          if n == 0 or blind:
+              if state.startswith("unreadable"):
+                  out("CANNOT-MEASURE", 2, "testmon database present but unreadable, so scope is unknowable")
+              if n == 0 and drift:
+                  out("SELECTOR-BROKEN", 1, "%d in-scope file(s) differ from the db record yet nothing was selected" % len(drift))
+              if n == 0 and nfail:
+                  out("SELECTOR-BROKEN", 1, "db records %d failed test(s) yet nothing was selected" % nfail)
+              why = ("changed-but-uncovered:" + ",".join(blind)) if blind else "zero-selection"
+              if os.environ.get("NIX_RUNTIME_GATE") == "noescalate":
+                  out("SCOPE-BLIND" if blind else "NOTHING-SELECTED", 2,
+                      "%s; escalation suppressed by NIX_RUNTIME_GATE=noescalate; this run measured %d test(s)"
+                      % (why, max(n, 0)))
+              mode = "full-escalated(%s)" % why
+              rc, n, bad = run(["--testmon-noselect"])
+              if n <= 0:
+                  out("CANNOT-MEASURE", 2, "the escalated full run also selected nothing; the suite itself is empty")
+          if rc != 0 or bad:
+              out("FAIL", 1, "%d of %d selected test(s) failed; pytest named the site above" % (bad, n))
+          out("MEASURED-PASS", 0)'
         language: system
         pass_filenames: false
         always_run: true
