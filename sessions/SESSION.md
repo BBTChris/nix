@@ -588,3 +588,12 @@ table already determines — a `derive, never restate` violation, which is exact
 already on the books as debt D2.8. D2.8 now has a measured motivating instance.
 
 CHECK-DEBT 23 → 24 (D1.13 opened, nothing discharged). 153 tests, verify.py exit 0.
+
+**Correction, appended same-arc (ARC 012).** The entry above states that ARC 010 "recorded ES
+margin as UNDETERMINED where it was merely late." That is wrong. ARC 010's `whatIf` did come back
+empty, but it read the correct figure out of the **err 201 rejection text** and reported 35,067.37
+against net liq 20,344.34 — a sound conclusion from a sound source. The real lesson is narrower and
+more useful: the empty-`OrderState` trap is harmless on a **rejected** order, because the error
+itself carries the margin number, and only bites on an **affordable** one, where no error exists to
+correct it. That is exactly the MES case. Appended rather than edited above, per directive 6.
+(ARC 010 measured ES at 35,067.37, ARC 012 at 35,035.87 — IBKR margin moves intraday; both stand.)

@@ -197,8 +197,21 @@ POSITION YOUR NET LIQ [20299.32 USD] MUST EXCEED THE MARGIN REQ [35035.87 USD]
 a real result — its internal wait expires before IB answers, detectable because the ES rejection
 surfaced a whole section *later* in the same run, attributed to an unrelated request. Re-measured
 with `whatIfOrderAsync` awaited under an explicit 45s timeout, which is where every figure above
-comes from. **ARC 010 hit the same trap and recorded ES margin as "UNDETERMINED" where it was
-merely late.** Anyone repeating this must use the async form.
+comes from.
+
+**Correction to a claim made earlier in this arc:** I first wrote that ARC 010 "recorded ES margin
+as UNDETERMINED where it was merely late." That is wrong, and unfair to it. ARC 010's `whatIf` did
+also come back empty, but it recovered the correct figure from the **`err 201` rejection text** and
+reported 35,067.37 against net liq 20,344.34 — a sound conclusion from a sound source.
+
+The sharper point is *when the trap actually bites*: a **rejected** order leaves an error carrying
+the margin number, so the empty `OrderState` costs nothing. An **affordable** one does not — there
+is no error, so an empty `OrderState` reads as "undetermined" with nothing to correct it. That is
+precisely the MES case, and precisely why round one produced no MES figure. Anyone repeating this
+must use the async form.
+
+(ARC 010 measured ES at 35,067.37; today it measured 35,035.87. Both are correct — IBKR margin
+moves intraday. Neither contradicts the other.)
 
 ### Market data — Err 10189 RECURS on MES
 
