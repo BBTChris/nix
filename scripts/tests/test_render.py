@@ -1,4 +1,4 @@
-"""Output rendering per VERIFY-AND-CHECKS.md §12."""
+"""Output rendering per nix_check_contract.md §12."""
 
 import io
 import re

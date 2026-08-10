@@ -1,4 +1,4 @@
-"""Nix provisioning/verification engine — stdlib only (VERIFY-AND-CHECKS.md §9.1)."""
+"""Nix provisioning/verification engine — stdlib only (nix_check_contract.md §9.1)."""
 
 from nixverify.contract import (
     CheckResult,

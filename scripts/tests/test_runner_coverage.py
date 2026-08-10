@@ -27,7 +27,7 @@ from nixverify.loader import load_check
 
 REPO = Path(__file__).resolve().parents[2]
 CHECKS = REPO / "checks"
-MANIFEST = CHECKS / "verify_manifest.json"
+MANIFEST = CHECKS / "registry.json"
 INSTALL_SH = REPO / "install.sh"
 
 _INVOCATION = re.compile(r"--mode\s+(\S+)\s+--privilege\s+(\S+)([^\n]*)")
@@ -69,7 +69,7 @@ def _reachable(
 
 
 def test_every_manifest_check_is_reachable_by_a_configured_runner() -> None:
-    """Every check named in checks/verify_manifest.json must actually run —
+    """Every check named in checks/registry.json must actually run —
     and, if DISRUPTIVE, actually be repaired — under at least one of
     install.sh's configured verify.py invocations. Fails loudly if this
     class of gap (a check with no runner able to fully service it) recurs.

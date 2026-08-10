@@ -32,7 +32,9 @@ Not auto-loaded. Read the ones an arc touches; they cost nothing until opened. F
 | `debug.md` | **doctrine of record** (v1.1.0, three tiers) | changing gates or regenerating `debugging.md`. Supersedes any two-tier protocol found elsewhere |
 | `directory_structure.md` | canonical topology (v1.3.0) | adding artifacts or regenerating `directory-layout.md` |
 | `elements_v2.md` | **non-authoritative ops input** (v2.1) | provisioning, `install.sh`, credential encryption, `verify.py`, versioning, backup/DR. Risk spec wins wherever they meet |
-| `VERIFY-AND-CHECKS.md` | **authority — provisioning/verification layer** (v1.0.1) | any work on `install.sh`, `bootstrap.sh`, `scripts/verify.py`, or `checks/check_*.py`; the standing rule that every environment change owes a check |
+| `VERIFY-AND-CHECKS.md` | **doctrine — external, inherited; outranks `nix_check_contract.md`** | any work on a check or gate. Parts C and D are binding rules; Part A/B *inventory* describes the predecessor system's tree, not Nix's — inherit the lessons, never the inventory (see `nix_check_contract.md` §15.4) |
+| `nix_check_contract.md` | **derived implementation spec** (v1.1.0) — subordinate to `VERIFY-AND-CHECKS.md` | any work on `install.sh`, `bootstrap.sh`, `scripts/verify.py`, or `checks/check_*.py`. §15 is the doctrine conformance map: read it first when the two appear to disagree. Was itself named `VERIFY-AND-CHECKS.md` until ARC 010 |
+| `CHECK-DEBT.md` | ledger of owed-but-unwritten checks (doctrine A.4) | every arc that changes the environment: record the debt rather than blocking on it |
 | `dev_and_services_plan.md` | staging plan | vendor/account/stage questions: Stage 0–4 sequence, dev box, QuantVPS |
 | `nix-strategy-evaluator-pipeline-6.docx` | **Crucible pipeline design** (planning-stage, no code yet; supersedes pipeline-5) | strategy candidate scoring: static/contract/structural checks, historical scoring, WFO, holdout, AI council review, paper trading, live-promotion gate, monitoring, retirement (pipeline Gates 0–9 / scorer gates G1–G7) |
 | `nix_db_schema_spec.docx` | **source of truth** (v1.3.0, validated live against Postgres 16) | persistent storage: `trade_history` db, per-symbol `<symbol>_bar_history` dbs, FDW hub, symbol provisioning, `validate_schemas.sh` (40 checks) |
@@ -40,6 +42,8 @@ Not auto-loaded. Read the ones an arc touches; they cost nothing until opened. F
 **Not yet authored** (do not hunt; they do not exist): capture & transform · Nix-side bus implementation · vendor integration (IBKR/DataBento/Tradovate) · session calendar · contract roll · sim/replay harness · dashboard & operator auth. (Live-promotion gate has a planning-stage design in `nix-strategy-evaluator-pipeline-6.docx` — no implementation yet.)
 
 **Doc audit (2026-08-09):** confirmed every file above is present on disk with the exact filename listed, and spot-checked version numbers/section references against file contents — all accurate. `dev_and_services_paln.md` (misspelled duplicate) is gone; that cleanup is done.
+
+**ARC 010 correction (2026-08-10):** the real `VERIFY-AND-CHECKS.md` was delivered and now holds that filename. What this table previously indexed under that name was a self-authored reconstruction, written in ARC 008 when the real document was not on the machine; it is now `nix_check_contract.md` and is derived, not authoritative. Section citations in `checks/*.py` and `scripts/nixverify/*` refer to `nix_check_contract.md`; doctrine citations use the real document's Part/section letters (A.2, B.4, C.3 …).
 
 ## Core directives
 

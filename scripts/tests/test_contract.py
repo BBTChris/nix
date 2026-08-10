@@ -1,4 +1,4 @@
-"""Contract types and the non-vacuity rules of VERIFY-AND-CHECKS.md §5."""
+"""Contract types and the non-vacuity rules of nix_check_contract.md §5."""
 
 from nixverify.contract import (
     CheckResult,

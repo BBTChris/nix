@@ -1,4 +1,4 @@
-"""Engine execution semantics per VERIFY-AND-CHECKS.md §6, §8."""
+"""Engine execution semantics per nix_check_contract.md §6, §8."""
 
 from pathlib import Path
 

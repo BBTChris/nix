@@ -19,7 +19,7 @@ fi
 "$NIX_HOME/.venv/bin/pip" install --quiet --upgrade pip
 "$NIX_HOME/.venv/bin/pip" install --quiet cryptography
 # Pins live in checks/pinned_deps.json. check_python_deps.py --print-pins is
-# the one validated reader of that file (VERIFY-AND-CHECKS.md §7) — its
+# the one validated reader of that file (nix_check_contract.md §7) — its
 # token guard is what keeps a malformed entry from word-splitting or
 # globbing here, so install.sh must consume its output rather than
 # re-parsing the JSON itself (CLAUDE.md directive 3: one source of truth).
@@ -116,7 +116,7 @@ echo "== install.sh: systemd units (boot, weekly-root, weekly-user) =="
 sudo tee /etc/systemd/system/nix-verify.service > /dev/null << 'UNIT'
 [Unit]
 Description=Nix verify.py — boot-time inspection and non-disruptive repair
-Documentation=file:///home/bbt/nix/docs/VERIFY-AND-CHECKS.md
+Documentation=file:///home/bbt/nix/docs/nix_check_contract.md
 After=network-online.target postgresql.service
 Wants=network-online.target
 
@@ -138,7 +138,7 @@ UNIT
 sudo tee /etc/systemd/system/nix-verify-root.service > /dev/null << 'UNIT'
 [Unit]
 Description=Nix verify.py — weekly privileged verification and repair
-Documentation=file:///home/bbt/nix/docs/VERIFY-AND-CHECKS.md
+Documentation=file:///home/bbt/nix/docs/nix_check_contract.md
 
 [Service]
 Type=oneshot
@@ -150,7 +150,7 @@ UNIT
 sudo tee /etc/systemd/system/nix-verify-root.timer > /dev/null << 'UNIT'
 [Unit]
 Description=Weekly Nix privileged verification
-Documentation=file:///home/bbt/nix/docs/VERIFY-AND-CHECKS.md
+Documentation=file:///home/bbt/nix/docs/nix_check_contract.md
 
 [Timer]
 # Saturday 03:00 America/Chicago — no session at all, comfortably outside the
@@ -171,7 +171,7 @@ UNIT
 sudo tee /etc/systemd/system/nix-verify-weekly.service > /dev/null << 'UNIT'
 [Unit]
 Description=Nix verify.py — weekly user-privilege disruptive repair (e.g. pin drift)
-Documentation=file:///home/bbt/nix/docs/VERIFY-AND-CHECKS.md
+Documentation=file:///home/bbt/nix/docs/nix_check_contract.md
 
 [Service]
 Type=oneshot
@@ -184,7 +184,7 @@ UNIT
 sudo tee /etc/systemd/system/nix-verify-weekly.timer > /dev/null << 'UNIT'
 [Unit]
 Description=Weekly Nix user-privilege disruptive repair
-Documentation=file:///home/bbt/nix/docs/VERIFY-AND-CHECKS.md
+Documentation=file:///home/bbt/nix/docs/nix_check_contract.md
 
 [Timer]
 # Same window as nix-verify-root.timer (§8): Saturday 03:00 America/Chicago.

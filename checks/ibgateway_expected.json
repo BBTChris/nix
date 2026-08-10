@@ -1,0 +1,9 @@
+{
+  "comment": "Declared desired state for the IB Gateway API surface. Single source — check_ibgateway_config.py derives every expectation from here and hardcodes none of them (nix_check_contract.md §2.4, doctrine C.4). ARC 010 measured every value below against the live Gateway; see docs/CHECK-DEBT.md for what is NOT covered.",
+  "why_not_jts_ini": "ARC 010 measured this: ~/Jts/jts.ini carries only TrustedIPs and AutoRestart in plaintext. The API socket port, ReadOnlyApi, the localhost-only flag and the auto-restart TIME live in the IBGZENC-encrypted settings store and cannot be parsed. jts.ini's [IBGateway] LocalServerPort=4000 is NOT the API port — it is the SSL tunnel to ndc1.ibllc.com, and a check that read a port out of jts.ini would read that one and be wrong. The API port is therefore Nix's declared state, asserted against reality, which is what doctrine A.1 asks a check to do.",
+  "api_host": "127.0.0.1",
+  "api_port": 4002,
+  "trusted_ips": ["127.0.0.1"],
+  "auto_restart": true,
+  "localhost_only": true
+}

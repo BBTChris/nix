@@ -6,7 +6,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 VERIFY = REPO / "scripts" / "verify.py"
-MANIFEST = REPO / "checks" / "verify_manifest.json"
+MANIFEST = REPO / "checks" / "registry.json"
 
 
 def _run(args: list[str]) -> subprocess.CompletedProcess[str]:

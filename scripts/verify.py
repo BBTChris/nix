@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """verify.py — Nix provisioning/verification engine.
 
-Authority: docs/VERIFY-AND-CHECKS.md v1.0.0.
+Authority: docs/nix_check_contract.md v1.0.0.
 
 Stdlib only (§9.1) so it runs under system python3 before .venv exists.
 Never reads stdin (§9.2) — all interactivity belongs to install.sh.
@@ -67,7 +67,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument(
-        "--manifest", default=str(NIX_HOME / "checks" / "verify_manifest.json")
+        "--manifest", default=str(NIX_HOME / "checks" / "registry.json")
     )
     return parser.parse_args(argv)
 

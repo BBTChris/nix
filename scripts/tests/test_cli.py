@@ -25,7 +25,7 @@ def _fixture(tmp_path: Path, body: str) -> Path:
     checks = tmp_path / "checks"
     checks.mkdir()
     (checks / "check_one.py").write_text(body, encoding="utf-8")
-    manifest = checks / "verify_manifest.json"
+    manifest = checks / "registry.json"
     manifest.write_text(
         json.dumps(
             {
@@ -62,7 +62,7 @@ def test_permission_denied_manifest_exits_two_not_a_traceback(tmp_path: Path) ->
 
 def test_undecodable_manifest_exits_two_not_a_traceback(tmp_path: Path) -> None:
     """Undecodable bytes (truncated write, wrong encoding) must not crash the CLI."""
-    manifest = tmp_path / "verify_manifest.json"
+    manifest = tmp_path / "registry.json"
     manifest.write_bytes(b'{"a": "\xff\xfe"}')
     assert verify.main(["--manifest", str(manifest)]) == 2
 

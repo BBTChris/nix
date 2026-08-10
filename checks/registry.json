@@ -1,6 +1,6 @@
 {
   "manifest_version": "1.0.0",
-  "comment": "Ordering, parallelism, and failure policy only. What a check needs (privilege, interactive, disruptive) is declared in the check module \u2014 see VERIFY-AND-CHECKS.md \u00a76.",
+  "comment": "Single source of what is registered (VERIFY-AND-CHECKS.md D.5) plus ordering, parallelism, and failure policy. What a check needs (privilege, interactive, disruptive) is declared in the check module \u2014 see nix_check_contract.md \u00a76.",
   "blocks": [
     {
       "name": "bootstrap-floor",
@@ -19,7 +19,8 @@
     {
       "name": "trading-stack",
       "checks": [
-        "check_python_deps"
+        "check_python_deps",
+        "check_ibgateway_config"
       ]
     }
   ]

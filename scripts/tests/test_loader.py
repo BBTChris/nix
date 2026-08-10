@@ -1,4 +1,4 @@
-"""Plugin loading isolation per VERIFY-AND-CHECKS.md §9.3-§9.4."""
+"""Plugin loading isolation per nix_check_contract.md §9.3-§9.4."""
 
 import sys
 from pathlib import Path

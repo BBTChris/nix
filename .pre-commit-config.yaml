@@ -21,12 +21,39 @@ repos:
       - id: mypy
         exclude: ^databases/schema/
 
+  # 1.8.6 -> 1.9.4 (ARC 010). 1.8.6 dies on every file containing a string
+  # literal under Python 3.14: node_visitor.visit_Str does `node.s`, and 3.14
+  # removed the `.s` alias from ast.Constant. Bandit catches that per file,
+  # records "exception while scanning file", and exits 0 — so the gate had
+  # scanned 0 of 27 files, with a clean green, since ARC 006. Proven by
+  # planting `subprocess.run(cmd, shell=True)`: 1.8.6 passed it, 1.9.4 fails
+  # it as B602 and names the line. Two hook entries, not one, so the strict
+  # rule set stays whole over production code.
   - repo: https://github.com/PyCQA/bandit
-    rev: 1.8.6
+    rev: 1.9.4
     hooks:
       - id: bandit
+        name: bandit (production)
         args: ["-c", "pyproject.toml"]
-        exclude: ^databases/schema/
+        exclude: ^(databases/schema/|scripts/tests/)
+
+      - id: bandit
+        alias: bandit-tests
+        name: bandit (tests)
+        # Scoped skips, each measured against this repo rather than assumed.
+        # This narrows three *rules* over the test tree; it does not narrow the
+        # gate's *scope* — every file is still scanned, and every other rule
+        # (B602 shell=True included) stays live here. See nix_check_contract.md
+        # §5.2 on why scope exemptions are the wrong repair.
+        #   B101 assert_used  — asserts are pytest's assertion mechanism; 126
+        #                       tests, ~100 sites, zero of them a defect.
+        #   B404 import subprocess — informational "consider the implications";
+        #                       the suite must spawn interpreters to test the
+        #                       checks that spawn interpreters.
+        #   B603 subprocess-without-shell — fires on the *safe* list form. Every
+        #                       site is sys.executable with a literal argv.
+        args: ["-c", "pyproject.toml", "--skip", "B101,B404,B603"]
+        files: ^scripts/tests/
 
   - repo: https://github.com/rohaquinlop/complexipy-pre-commit
     rev: v3.0.0

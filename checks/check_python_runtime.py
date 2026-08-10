@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Verify the Python interpreter meets the floor.
 
-Floor component (VERIFY-AND-CHECKS.md §3): install.sh owns installation, so
+Floor component (nix_check_contract.md §3): install.sh owns installation, so
 this check detects drift and reports FAIL_NEEDS_OPERATOR — it never attempts
 a repair it cannot perform.
 """

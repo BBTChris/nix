@@ -401,3 +401,69 @@ verification errors were caught the same way — twice by building a probe that 
 real thing in exactly the dimension under test.
 
 Branch `arc-009-verify-v2`, 52 commits off `arc-006-provisioning-v2`. Not merged.
+
+---
+
+## ARC 010 — VERIFY-AND-CHECKS reconciliation · bandit repair · ARC 008 Parts 1/3/5 (2026-08-10)
+
+**Complete.** All seven success boxes checked.
+
+**The real `VERIFY-AND-CHECKS.md` arrived, and it is not a version of what I wrote.** It is an
+external doctrine document about a *different project's* verification machinery — its paths are
+`~/luna/`, its enforcement point is a `bank.sh` Nix does not have. My v1.0.1 was a Nix
+provisioning-engine spec. They overlap on principles and share almost nothing else, so the
+reconciliation was rule-by-rule, not line-by-line. Real doc installed at
+`docs/VERIFY-AND-CHECKS.md`; mine renamed `docs/nix_check_contract.md` and demoted to derived
+(v1.1.0) — it could not just be deleted, since every check and engine module cites its section
+numbers. 26 live references repointed; banked history left alone.
+
+**Corrections against the real doc:** `verify_manifest.json` → `checks/registry.json` (A.4/D.5);
+`docs/CHECK-DEBT.md` created (A.4); §1 restated from an implied build gate to a **ledger
+obligation** (A.7 warns explicitly against a "fully drained" gate against a series that rose
+95→190 over seventeen arcs and never fell); B.4, C.8, C.9 added as §5.2/§5.4/§5.5; C.3's real
+requirement — *scope contains subject*, which is not the same as "evidence is non-empty" — found
+missing and added as §5.3. Twelve doctrine rules Nix does not satisfy recorded rather than
+quietly skipped.
+
+**A claim from my last handoff is withdrawn.** I reported "amending §8 to match" the real doc's
+disruptive-repair rule. **The real document has no §8** and says nothing about disruptive actions,
+privilege, or maintenance windows. I was describing an amendment to my own file while implying
+alignment with one I had never read. The rule is retained, now labelled as a Nix addition with its
+own reasoning. Five-state `Status` and the three-runner split are likewise additions, not
+quotations — the doctrine specifies only three *exit codes*.
+
+**bandit had scanned nothing since ARC 006, and now cannot.** Python 3.14 removed `.s` from
+`ast.Constant`; bandit 1.8.6's `visit_Str` does `node.s`, so every file containing a string
+literal aborted mid-parse, was recorded "exception while scanning file", and the run exited **0**.
+27 of 27 files skipped, green. Bumped to 1.9.4 and put through the full can-fail cycle: 2667 lines
+now actually scanned (0 skipped), planted `subprocess.run(cmd, shell=True)` into a real production
+file, B602 HIGH at `check_venv.py:204:11`, old version green on the identical plant, unplanted
+byte-identical, control PASS reproduced. **My first bait file was self-suppressing** — the comment
+`# nosec-free: ... B602` parsed as a `nosec B602` directive. The instrument testing the instrument
+was itself defective, on the first try.
+
+**Gateway, finally measurable.** Connected clientId=905, account DUR250018, clean disconnect.
+**Err 10189 confirmed** — no market-data permission for CME FUT, zero tick-by-tick — and
+`reqHistoricalTicks` returns 20 ticks fine. This is the predecessor's outcome exactly: no true
+stream, so **bar immutability is a design obligation Nix must enforce, not a property of the
+feed.** Incidental: the paper account cannot afford one ES contract (margin 35,067 vs net liq
+20,344).
+
+**The arc's Part 3a premise was wrong and it changed the design.** `jts.ini` does **not** contain
+the socket port, `ReadOnlyApi`, or the localhost-only flag — this Gateway keeps them in an
+`IBGZENC`-encrypted store. Worse, its `LocalServerPort=4000` is the SSL tunnel, not the API port,
+so a check "reading the port from jts.ini" as instructed would read 4000 and be confidently wrong.
+Expected values moved to `checks/ibgateway_expected.json` as declared state. Read-only had to be
+established by watching a `whatIf` order reach IBKR's *margin engine* (err 201) rather than being
+refused; localhost-only by sourcing connections from the box's real LAN and Tailscale addresses
+and watching Gateway accept the TCP then close without answering. Auto-restart is enabled, but the
+**03:00 time is not verifiable** from outside the encrypted store and is reported as such.
+
+`check_ibgateway_config.py` does the IB v100+ handshake in **stdlib socket** — no `ib_async`, so
+it runs under the system interpreter before `.venv` exists. Full FAIL-with-CONTROL demonstrated,
+including the plant that proves an unreachable Gateway returns CANNOT_MEASURE and not FAIL. No
+plant ever touched `jts.ini` (sha identical throughout) and the authenticated session survived, so
+no 2FA was spent. 126 → 140 tests, all eight hooks green.
+
+PR #8 confirmed merged (`47ea580` on `origin/main`). `arc-009-verify-v2` is 55 ahead / 1 behind,
+that one commit *being* the merge commit — no conflict, no rebase needed, nothing pushed.

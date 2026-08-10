@@ -1,4 +1,4 @@
-"""Pin conformance per VERIFY-AND-CHECKS.md §7."""
+"""Pin conformance per nix_check_contract.md §7."""
 
 import json
 import subprocess

@@ -1,4 +1,4 @@
-"""Check contract per VERIFY-AND-CHECKS.md §4-§5."""
+"""Check contract per nix_check_contract.md §4-§5."""
 
 from __future__ import annotations
 
@@ -23,7 +23,11 @@ class Mode(StrEnum):
 class Status(StrEnum):
     """Five outcomes (§4.1). CANNOT_MEASURE is never a failure."""
 
-    PASS = "pass"
+    # nosec B105 - enum member value, not a credential. B105's heuristic keys
+    # on the literal "pass"; renaming it to satisfy the scanner would change
+    # the wire value every CheckResult and every exit-code mapping is written
+    # against. Named site, one line, rule stays live everywhere else.
+    PASS = "pass"  # nosec B105
     FAIL_REPAIRABLE = "fail_repairable"
     FAIL_NEEDS_OPERATOR = "fail_needs_operator"
     CANNOT_MEASURE = "cannot_measure"

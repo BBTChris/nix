@@ -1,4 +1,4 @@
-"""Unit wiring per VERIFY-AND-CHECKS.md §8, §9.5."""
+"""Unit wiring per nix_check_contract.md §8, §9.5."""
 
 from pathlib import Path
 

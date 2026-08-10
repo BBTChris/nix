@@ -47,7 +47,7 @@ Fresh headless Ubuntu node, secure download-verify-execute:
   to this node's TPM 2.0 and delivered to units via `LoadCredentialEncrypted=`.
   **Supersedes the Fernet-under-master-password mechanism** — that design could
   not decrypt at boot without a human present, contradicting the headless
-  self-healing invariant. See `VERIFY-AND-CHECKS.md` §11. This documents the
+  self-healing invariant. See `nix_check_contract.md` §11. This documents the
   decision; the migration itself is a separate plan, and until it lands,
   `install.sh` still contains the Fernet block.
 
@@ -57,7 +57,7 @@ Idempotent, plugin-based inspection and remediation engine enforcing known-good 
   ops schedule, outside trading sessions).
 - **Modes:** `verify` (detect and report), `correct` (verify + repair), `install`
   (correct + install what is absent, idempotent). `--verbose` is orthogonal to mode.
-  **Superseded by `VERIFY-AND-CHECKS.md` §4 — that file is the authority for the
+  **Superseded by `nix_check_contract.md` §4 — that file is the authority for the
   check contract; this section is a summary only.**
 - **Location:** `scripts/verify.py` per `directory_structure.md`.
 - **Correct/Install actions:** resolves missing dependencies, configures systemd units, returns the
