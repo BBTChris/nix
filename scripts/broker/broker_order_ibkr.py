@@ -247,10 +247,33 @@ class IBKRBrokerOrder:
         so it re-arms on every reconnect for free — no separate reconnect path to
         maintain, which matters given the Gateway restarts daily at 03:00.
 
-        Belt and braces at the source: fetchFields drops EXECUTIONS so the replay is not
-        requested in the first place. The gate is the guarantee; this only reduces what
-        has to be caught. Nothing here reads ib.fills()/ib.executions() — the adapter
-        keeps its own (order_id, exec_id) ledger — so dropping the fetch costs nothing.
+        At the source: fetchFields drops EXECUTIONS so the replay is not requested in the
+        first place. Nothing here reads ib.fills()/ib.executions() — the adapter keeps its
+        own (order_id, exec_id) ledger — so dropping the fetch costs nothing.
+
+        JOINT DEPENDENCY — READ BEFORE REMOVING EITHER (ARC 016 §2b). The gate and the
+        fetchFields narrowing are **jointly** sufficient and **individually are not**.
+        ARC 015 described the fetchFields half as "belt and braces over the gate"; that
+        framing is wrong and is corrected here, because it invites a future author to
+        restore EXECUTIONS on the belief that the gate still catches it. It does not.
+
+          The gate does not cover fetchFields. `_startup_complete` is set True the instant
+          connectAsync returns, and `_rebuild_mirror()` awaits AFTER that. So the whole of
+          the mirror rebuild runs with the gate OPEN. If EXECUTIONS were restored, the
+          venue's replayed reports are dispatched on execDetailsEvent as they arrive, and
+          any that land during that await meet an already-open gate. Worse, `_connected`
+          is also already True, so a concurrently-scheduled task can call `place_order`
+          inside the same window and populate `_from_ib` — and IBKR order ids RESET across
+          sessions, so a replayed HISTORICAL execution can carry an id that now matches a
+          live order. That is a phantom fill on the order path, reported to the Limiter.
+
+          The fetchFields narrowing does not cover the gate either. It suppresses one
+          known replay source by name. The gate is venue-agnostic and catches ANY startup
+          replay — including whatever a future ib_async version decides to fetch, and
+          including the reconnect case, since it is scoped to the call and re-arms for
+          free on every connect.
+
+        Neither is redundant. Removing either one opens a path the other does not close.
 
         WHY THE GATE OPENS BEFORE THE MIRROR REBUILD, not after: _rebuild_mirror() awaits
         reqPositionsAsync, and a GENUINE fill can land during that await (that is the D3
@@ -286,6 +309,10 @@ class IBKRBrokerOrder:
         )
         # No await between here and the gate opening — see the docstring.
         self._connected = True
+        # HALF OF A JOINT GUARANTEE (ARC 016 §2b). The gate is open from this line onward,
+        # INCLUDING across the _rebuild_mirror() await below. It therefore does NOT make
+        # the fetchFields narrowing redundant — see _startup_fetch_fields() and the JOINT
+        # DEPENDENCY section above before changing either.
         self._startup_complete = True
 
         await self._rebuild_mirror()
@@ -294,6 +321,12 @@ class IBKRBrokerOrder:
     @staticmethod
     def _startup_fetch_fields():
         """StartupFetchALL minus EXECUTIONS — see connect().
+
+        HALF OF A JOINT GUARANTEE. DO NOT RESTORE EXECUTIONS BELIEVING THE GATE COVERS IT.
+        This and `_startup_complete` are JOINTLY sufficient against startup execution
+        replay and INDIVIDUALLY are not. The gate does not cover this, because the gate is
+        already OPEN by the time `_rebuild_mirror()` awaits — see the WHY THE GATE OPENS
+        BEFORE THE MIRROR REBUILD and JOINT DEPENDENCY sections in connect().
 
         Imported lazily and by name so that if ib_async ever renames or removes the flag
         the failure is a loud ImportError at connect time, not a silently-restored
