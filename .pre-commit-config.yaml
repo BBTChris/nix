@@ -312,77 +312,7 @@ repos:
         # pre-commit runs local hooks with cwd = repo top level, so the relative
         # path to the venv is stable regardless of where `git commit` ran.
         # ---------------------------------------------------------------------
-        entry: |
-          ./.venv/bin/python -c 'import hashlib, os, pathlib, sqlite3, subprocess, sys, tempfile, xml.etree.ElementTree as ET
-          ROOT = pathlib.Path.cwd(); DB = ROOT / ".testmondata"
-          def sha(p):
-              raw = p.read_bytes(); nrm = raw.replace(b"\f", b" ").replace(b"\r\n", b"\n")
-              a = hashlib.sha1(b"blob %u\0" % len(raw)); a.update(raw)
-              b = hashlib.sha1(b"blob %u\0" % len(nrm.decode("utf-8", "replace"))); b.update(nrm)
-              return {a.hexdigest(), b.hexdigest()}
-          def git(*a):
-              r = subprocess.run(("git",) + a, capture_output=True, text=True)
-              return r.stdout.split() if r.returncode == 0 else []
-          scope = [f for f in git("ls-files", "*.py") if not f.startswith("databases/schema/")]
-          staged = set(git("diff", "--name-only", "HEAD"))
-          state = "absent"; known = {}; envs = []; nrec = nfail = 0; uncov = []; drift = []
-          if DB.exists():
-              try:
-                  con = sqlite3.connect("file:%s?mode=ro" % DB, uri=True)
-                  for fn, fs in con.execute("select filename, fsha from file_fp"):
-                      known.setdefault(fn, set()).add(fs)
-                  envs = ["%s@%s" % r for r in con.execute("select environment_name, python_version from environment")]
-                  nrec, nfail = con.execute("select count(*), coalesce(sum(failed),0) from test_execution").fetchone()
-                  con.close(); state = "present"
-              except Exception as exc:
-                  state = "unreadable(%s)" % type(exc).__name__
-          if state == "present":
-              uncov = [f for f in scope if f not in known]
-              drift = [f for f in scope if f in known and not known[f] & sha(ROOT / f)]
-          alien = [e for e in envs if not e.endswith("@%d.%d.%d" % sys.version_info[:3])]
-          mode = "incremental"; n = -1
-          def run(extra):
-              fd, x = tempfile.mkstemp(suffix=".xml"); os.close(fd)
-              rc = subprocess.run([sys.executable, "-m", "pytest", "--junit-xml=" + x] + extra).returncode
-              t = b = -1
-              try:
-                  r = ET.parse(x).getroot(); s = r if r.tag == "testsuite" else r.find("testsuite")
-                  t = int(s.get("tests")); b = int(s.get("failures")) + int(s.get("errors"))
-              except Exception:
-                  pass
-              os.unlink(x); return rc, t, b
-          def out(v, code, why=""):
-              print("RUNTIME-GATE scope: db=%s known_files=%d in_scope_files=%d uncovered=%d drift=%d "
-                    "recorded_tests=%d recorded_failures=%d env=%s alien_env=%d mode=%s SELECTED=%d"
-                    % (state, len(known), len(scope), len(uncov), len(drift), nrec, nfail,
-                       ",".join(envs) or "-", len(alien), mode, n))
-              if uncov: print("RUNTIME-GATE uncovered (a change to these selects no test): " + " ".join(uncov))
-              if drift: print("RUNTIME-GATE drift (db record does not match tree content): " + " ".join(drift))
-              print("RUNTIME-GATE verdict: %s%s" % (v, (" - " + why) if why else ""))
-              raise SystemExit(code)
-          rc, n, bad = run(["--testmon"])
-          blind = sorted(set(uncov) & staged)
-          if n < 0:
-              out("CANNOT-MEASURE", 2, "pytest wrote no parsable report; the gate did not run")
-          if n == 0 or blind:
-              if state.startswith("unreadable"):
-                  out("CANNOT-MEASURE", 2, "testmon database present but unreadable, so scope is unknowable")
-              if n == 0 and drift:
-                  out("SELECTOR-BROKEN", 1, "%d in-scope file(s) differ from the db record yet nothing was selected" % len(drift))
-              if n == 0 and nfail:
-                  out("SELECTOR-BROKEN", 1, "db records %d failed test(s) yet nothing was selected" % nfail)
-              why = ("changed-but-uncovered:" + ",".join(blind)) if blind else "zero-selection"
-              if os.environ.get("NIX_RUNTIME_GATE") == "noescalate":
-                  out("SCOPE-BLIND" if blind else "NOTHING-SELECTED", 2,
-                      "%s; escalation suppressed by NIX_RUNTIME_GATE=noescalate; this run measured %d test(s)"
-                      % (why, max(n, 0)))
-              mode = "full-escalated(%s)" % why
-              rc, n, bad = run(["--testmon-noselect"])
-              if n <= 0:
-                  out("CANNOT-MEASURE", 2, "the escalated full run also selected nothing; the suite itself is empty")
-          if rc != 0 or bad:
-              out("FAIL", 1, "%d of %d selected test(s) failed; pytest named the site above" % (bad, n))
-          out("MEASURED-PASS", 0)'
+        entry: ./.venv/bin/python scripts/runtime_gate.py
         language: system
         pass_filenames: false
         always_run: true

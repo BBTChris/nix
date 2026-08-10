@@ -322,6 +322,24 @@ def _debt_rows(home: Path) -> list[str]:
     return [ln for ln in text.splitlines() if re.match(r"^\|\s*D[123]\.\d+\s*\|", ln)]
 
 
+#: THE RULE OF RECORD for whether a debt row is paid, quoted from `docs/CHECK-DEBT.md`:
+#: "a row is discharged iff some **bold** span in it matches `discharged ARC <n>`".
+#:
+#: CORRECTED ARC 018 Phase 4. This probe previously tested `"discharged" not in ln.lower()`
+#: — a bare substring scan over the whole row. That is precisely the rule the ledger note
+#: warns against ("the bold-span restriction is load-bearing, not cosmetic"), so the harness
+#: was not implementing the rule its own ledger states, and had not been since ARC 017. It
+#: went unnoticed because no open row happened to contain the exact word "discharged": D3.5
+#: says "discharges", which the naive scan misses by one letter.
+#:
+#: ARC 018 broke it for real. Three open rows were counted as paid — D2.14 and D2.15 whose
+#: bodies read "**NARROWED ARC 018, NOT DISCHARGED.**", and D1.19 whose body cites
+#: "discharged D1.18". The count came back 26 against a hand-derived 29, and the three-row
+#: gap is exactly those rows. A ledger that cannot say "not discharged" without marking
+#: itself paid is the instrument being its own defect (`VERIFY-AND-CHECKS.md` Part C).
+_DISCHARGED = re.compile(r"\*\*[^*]*\bdischarged ARC \d+", re.IGNORECASE)
+
+
 def _p_check_debt_open_count(home: Path) -> tuple[int, str]:
     rows = _debt_rows(home)
     if not rows:
@@ -329,7 +347,7 @@ def _p_check_debt_open_count(home: Path) -> tuple[int, str]:
     open_ids = [
         re.match(r"^\|\s*(D[123]\.\d+)", ln).group(1)  # type: ignore[union-attr]
         for ln in rows
-        if "discharged" not in ln.lower()
+        if not _DISCHARGED.search(ln)
     ]
     return len(open_ids), f"{len(rows)} rows, open: {', '.join(open_ids)}"
 
