@@ -20,7 +20,8 @@
       "name": "trading-stack",
       "checks": [
         "check_python_deps",
-        "check_ibgateway_config"
+        "check_ibgateway_config",
+        "check_ibgateway_service"
       ]
     }
   ]

@@ -99,7 +99,7 @@ Only one class, and it is an inventory question rather than a rule question. The
 opens by measuring that **`verify.py`, `registry.json`, `strategy.py`, `bump_version.py` and
 `risk_engine` are all absent and `checks/` holds only `.gitkeep`.** That is a measurement of
 **`~/luna/`**. On this tree, measured today: `scripts/verify.py` runs, `checks/registry.json` is
-loaded by it, five checks pass against real machine state, and 140 tests exercise them.
+loaded by it, five checks pass against real machine state, and 142 tests exercise them.
 
 The rule that warning carries — *"this file names desired state, never inventory; the tree is the
 authority on what exists"* — **is inherited and binding**. Its inventory is not. This is CLAUDE.md's
@@ -368,7 +368,7 @@ re-login was spent.
 **Tests:** 14 new, covering non-vacuity, the unreachable/misconfigured split, site-naming on both
 defect classes, and the `jts.ini` parse (`configparser` is deliberately not used: the first section
 header is `[u:<hash>]` and values contain `:` and `;`, which its default delimiters mangle).
-Suite: **126 → 140, all green.** All eight pre-commit hooks pass.
+Suite: **126 → 142, all green.** All eight pre-commit hooks pass.
 
 ---
 
@@ -425,3 +425,315 @@ revisited when broker-order code exists and can host the probe.
 correction note) · `.pre-commit-config.yaml` (bandit 1.8.6→1.9.4, split hooks) ·
 `scripts/nixverify/contract.py` · `scripts/verify.py` · `install.sh` · `checks/*.py`,
 `checks/pinned_deps.json`, `scripts/tests/*` (reference repointing) · `docs/elements_v2.md`
+
+---
+---
+
+# ARC 011 — Xvfb + IB Gateway boot persistence (systemd units + check gate)
+
+**Status: 6 of 7 success boxes complete. One box is deliberately NOT performed** — the live
+cutover, because it costs an authenticated Gateway session and a manual IB Key 2FA tap. That was
+put to the human as an explicit choice and the answer was: do not cut over, report it plainly.
+Nothing below implies boot behaviour was verified.
+
+## Definition of success
+
+| Box | State |
+|---|---|
+| `nix-xvfb.service` written, enabled, started, display confirmed answering live | ⚠️ **written + enabled + invocation and restart policy proven on a scratch display; NOT started on `:99`** |
+| `nix-ibgateway.service` written with a real dependency, enabled, started, socket reachable | ⚠️ **written + enabled; NOT started** (socket *is* reachable — via the manual process, not the unit) |
+| Slice-membership decision made and reasoned for both units | ✅ |
+| Restart policy demonstrated (kill, confirm it returns) | ⚠️ **demonstrated for the Xvfb unit's exact `ExecStart` on a scratch display; not for Gateway** |
+| Reboot test performed with authorization, **or** explicitly reported as not performed | ✅ — **NOT PERFORMED**, stated plainly |
+| `check_ibgateway_service.py` built against the real spec, registered, non-overlapping, full FAIL-with-CONTROL | ✅ |
+| `dev_and_services_plan.md` updated, incl. boot persistence ≠ unattended auth | ✅ |
+
+---
+
+## What was not done, and why
+
+Xvfb and IB Gateway are running **right now** as manually-started foreground processes, and the
+Gateway holds an authenticated paper session. `systemctl start` on either unit requires systemd to
+take over from those processes, which means killing them. Killing the JVM drops the session:
+Gateway comes back on its login screen and stays there — API socket down, both gateway checks
+reporting FAIL — until a human logs in over VNC and approves IB Key on their phone.
+
+That is the identical cost the arc attaches to a reboot. It was raised as an explicit decision
+rather than absorbed silently; the human chose not to cut over now. So:
+
+- **`systemctl is-enabled` says `enabled` for both units.** That is a *declaration* that they will
+  start at boot. It is **not** evidence that they do. Recorded as **CHECK-DEBT D1.12**, discharged
+  by rebooting under human authorization and re-running `check_ibgateway_service` *before* anyone
+  touches the console.
+- **No reboot was performed.** Boot behaviour is unverified.
+
+---
+
+## Part 1 — `nix-xvfb.service`
+
+Invocation derived from the live process, not from the arc's transcription:
+
+```
+$ tr '\0' '\n' < /proc/236457/cmdline
+Xvfb
+:99
+-screen
+0
+1440x900x24
+```
+
+```ini
+[Service]
+Type=simple
+User=bbt
+ExecStart=/usr/bin/Xvfb :99 -screen 0 1440x900x24
+Restart=always
+RestartSec=2
+```
+
+`Restart=always`, not `on-failure`: a display server has no legitimate "finished" state, so a
+clean exit is as much a fault as a crash.
+
+### Proven, without touching `:99`
+
+The unit's `ExecStart` was read back **out of the installed unit** (never retyped) and run as a
+transient unit on a scratch display with the same `Service` block:
+
+```
+installed  : /usr/bin/Xvfb :99 -screen 0 1440x900x24
+scratch    : /usr/bin/Xvfb :98 -screen 0 1440x900x24
+
+$ xdpyinfo -display :98
+name of display:    :98
+  dimensions:    1440x900 pixels (366x229 millimeters)
+
+MainPID before kill: 257478
+$ systemctl kill -s KILL arc011-xvfb-scratch.service
+MainPID after kill : 257521   active=active
+NRestarts          : 1
+  dimensions:    1440x900 pixels (366x229 millimeters)
+  -> display served again after the kill
+```
+
+So the ExecStart is correct, it serves a real X client, and `Restart=always` genuinely recovers
+from a SIGKILL. What remains unproven is only that systemd starts it **at boot** on `:99`.
+
+## Part 2 — `nix-ibgateway.service`
+
+**ExecStart derived from `/proc/236482/cmdline`, and the derivation matters.** The live argv still
+contains **unsubstituted install4j placeholders** — `-DjtsConfigDir=${installer:jtsConfigDir}`,
+`install4j.ibgateway.GWClient ${installer:cmdLineArgs}` — and a JRE path carrying a generated hash
+(`~/.local/share/i4j_jres/Oda-jK0QgTEmVssfllLP/17.0.16.0.101-zulu_64/bin/java`). Copying that argv
+into a unit would be brittle and wrong. Reading the launcher shows why it is also unnecessary:
+
+```
+$ grep -c 'exec "$app_java_home/bin/java"' /home/bbt/ibgateway/ibgateway
+2      # both branches exec — the launcher does not fork
+```
+
+The launcher **execs** the JVM, so `Type=simple` tracks the real process with
+`ExecStart=/home/bbt/ibgateway/ibgateway`. (The JVM's `PPID 1` is reparenting after the invoking
+VNC shell exited, not evidence of forking.)
+
+```ini
+[Unit]
+BindsTo=nix-xvfb.service
+After=nix-xvfb.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=bbt
+Environment=DISPLAY=:99
+WorkingDirectory=/home/bbt/ibgateway
+ExecStartPre=/bin/sh -c 'for _ in $(seq 30); do xdpyinfo -display :99 >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1'
+ExecStart=/home/bbt/ibgateway/ibgateway
+Restart=on-failure
+RestartSec=15
+```
+
+### Dependency type — `BindsTo=`, reasoned rather than defaulted
+
+`Requires=` propagates a failed *start* and an explicit stop, but it **leaves this unit running
+when `nix-xvfb.service` dies on its own.** A Gateway whose X server vanished is precisely the
+"unit is active, the thing is unusable" state that Part 3's gate exists to catch — and an AWT
+application that loses its display can sit there holding port 4002 in a broken state rather than
+exiting cleanly. `BindsTo=` makes that state impossible instead of merely detectable. `After=`
+orders the two on the way up.
+
+**Ordering alone would not have been a real dependency**, which the arc explicitly warned about:
+`nix-xvfb.service` reaches `active` the moment Xvfb forks, milliseconds before the display accepts
+clients, and Gateway aborts on a display it cannot open. Hence the `ExecStartPre` that polls
+`xdpyinfo` until the display genuinely answers — a readiness gate, not an ordering hint.
+
+`Restart=on-failure`, not `always`: a crash or OOM kill must bring it back, but an operator who
+deliberately shuts Gateway down must not have to fight systemd.
+
+### A real defect the tooling caught
+
+`systemd-analyze verify` rejected the first draft:
+
+```
+/etc/systemd/system/nix-ibgateway.service:31: Unknown key 'StartLimitIntervalSec' in section [Service], ignoring.
+```
+
+Rate limiting is a **unit**-level property. In `[Service]` it is *silently ignored* — a restart
+loop with no brake, in a config that otherwise looks correct and reports no error. Moved to
+`[Unit]` and confirmed effective:
+
+```
+$ systemctl show nix-ibgateway.service -p StartLimitIntervalUSec -p StartLimitBurst -p Restart -p BindsTo -p Slice
+BindsTo=nix-xvfb.service
+StartLimitIntervalUSec=5min
+StartLimitBurst=5
+Restart=on-failure
+Slice=system.slice
+```
+
+## Slice membership — decided, not defaulted
+
+**Neither unit joins `nix-trading.slice`.** I agree with the arc, and the reasoning is stronger
+than "Xvfb is scaffolding".
+
+First, a correction: **the arc cites `elements_v2.md` §1.4, which does not exist.** That document
+has §1.1–§1.3, §2, §3, §4. The governing authorities are `nix-trading.slice`'s own definition
+(`AllowedCPUs=0-5`) and **risk spec §10, the locked process/core map**:
+
+| Core | Assignment |
+|---|---|
+| 0 | OS/kernel + interrupts |
+| 1 | capture.py (hosts broker-datafeed) |
+| 2 | Risk Engine (Limiter + broker-order) |
+| 3 | Allocator + strategy processes |
+| 4–5 | shared pool: Postgres, pollers, backfill, logging, ZMQ proxy, dashboards, health, Sentinel, Scoring |
+
+1. **Neither process appears in that map.** The trading path's broker contact is the
+   `broker-datafeed` and `broker-order` *libraries* (cores 1 and 2), not this JVM. The map is
+   locked; adding an unlisted member to the slice it encodes is a change to the map, and this arc
+   has no authority to make one.
+2. **On QuantVPS the slice is the whole 6-core box, so membership is a no-op there.** On this
+   20-core dev box it is a real restriction. So including them would create a dev/prod behavioural
+   difference — exactly what `dev_and_services_plan.md`'s core discipline forbids.
+3. **The decisive one, measured from the live argv:** the Gateway JVM runs `-Xmx768m` with
+   `-XX:+UseG1GC -XX:ParallelGCThreads=20 -XX:ConcGCThreads=5`. Those thread counts are sized for
+   this 20-core box. Confining that JVM to cores 0–5 while it still spawns 20 parallel GC threads
+   would land its GC pauses directly on the cores risk spec §11's hot-path discipline exists to
+   keep clear — worse than leaving it out, not merely different.
+4. **IBKR is permanently paper-only Stage 0**, with Tradovate the live broker at cutover. Pinning
+   throwaway scaffolding into the locked core map encodes a Stage 0 artifact as a production
+   constraint.
+
+Both run in `system.slice` (confirmed above). **Stated for the next author:** when Tradovate
+becomes trading-path, its membership is decided against §10 on its own merits — not inherited
+from this decision.
+
+## Part 3 — `checks/check_ibgateway_service.py`
+
+Registered in `checks/registry.json`. **Owns service persistence only**;
+`check_ibgateway_config.py` owns API configuration. The boundary is stated in both docstrings.
+
+**It does not build a second instrument for "reachable" (doctrine C.9 / §5.5).** It *imports*
+`api_handshake` from `check_ibgateway_config` rather than reimplementing it, so the two gates can
+never disagree about what reachable means. Asserted by a test:
+
+```python
+assert "from check_ibgateway_config import" in source
+assert "def api_handshake" not in source
+```
+
+**The same observation carries a different verdict in each gate, deliberately.** An unreachable
+Gateway is `CANNOT_MEASURE` for the config gate (it reads settings *through* the connection) and
+`FAIL` for this one (persistence that does not persist). Both are correct; the docstrings say so
+explicitly so it does not read as a contradiction.
+
+**No proxies.** `systemctl is-enabled` and `is-active` are recorded as *evidence*; the verdict
+comes from `xdpyinfo` opening the display and a real IB handshake completing.
+
+**A second duplication the gates caught on the way in.** pylint's `R0801` flagged that both gates
+rendered a `[(site, why)]` defect list into a `CheckResult` with identical code. Rather than
+suppress it, the rendering moved to `nixverify.contract.result_from_defects()` — the same C.9
+reasoning as the shared handshake, applied to a smaller thing. Both gates were re-run afterwards
+and reproduce every verdict above verbatim, including the planted FAIL.
+
+### FAIL-with-CONTROL — verbatim
+
+**Step 1 — PASS:**
+```
+pass: nix-xvfb.service=enabled/inactive; nix-ibgateway.service=enabled/inactive; display :99:
+dimensions:    1440x900 pixels (366x229 millimeters); 127.0.0.1:4002 handshake: answered (187)
+exit=0
+```
+
+**Step 2 — NON-VACUITY, before the plant.** Unit state must not be able to carry a verdict alone:
+```
+-- the gate's own scope assertion --
+test_run_probes_the_display_and_the_socket_not_just_unit_state  1 passed
+-- independent: strace the real run --
+connect(3, {sa_family=AF_UNIX, sun_path=@"/tmp/.X11-unix/X99"}, 21) = 0
+connect(3, {sin_port=htons(4002), sin_addr=inet_addr("127.0.0.1")}, 16) = -1 EINPROGRESS
+```
+
+**Step 3/4 — PLANT `systemctl disable nix-xvfb.service` → FAIL naming the unit:**
+```
+Removed '/etc/systemd/system/multi-user.target.wants/nix-xvfb.service'.
+nix-xvfb.service: disabled     nix-ibgateway.service: enabled
+
+fail_needs_operator: nix-xvfb.service=disabled/inactive; nix-ibgateway.service=enabled/inactive;
+display :99: dimensions: 1440x900 pixels ...; 127.0.0.1:4002 handshake: answered (187)
+  site: nix-xvfb.service
+  detail: nix-xvfb.service: is-enabled reports 'disabled' — will not come back after a reboot
+exit=1
+```
+
+Worth noting what that output demonstrates beyond "it failed": it names **only** the disabled
+unit, and it fails **while reporting the display still answering**. The gate is discriminating
+between "will come back after a reboot" and "works right now" — two different properties that a
+proxy check would have collapsed.
+
+**Step 5 — UNPLANT / Step 6 — CONTROL:**
+```
+Created symlink '/etc/systemd/system/multi-user.target.wants/nix-xvfb.service' → ...
+enabled / enabled
+
+pass: nix-xvfb.service=enabled/inactive; ... handshake: answered (187)
+exit=0
+```
+
+**Plant hygiene (C.8 / §5.4):** the plant was `systemctl disable`/`enable` — fully reversible and
+touching no running process. The authenticated Gateway session survived the entire arc
+(`LISTEN *:4002 pid=236482` held throughout).
+
+### Full suite through `verify.py`, the real runner
+
+```
+  [ok]   check_python_runtime   | sys.version_info=3.14.4 at /usr/bin/python3
+  [ok]   check_venv             | /home/bbt/nix/.venv/bin/python3: Python 3.14.4
+  [ok]   check_node_identity    | stored == live == 0a2fe0d5-5eb2-46ae-a9f9-013dc7097003
+  [ok]   check_python_deps      | pins satisfied: ib_async==2.1.0
+  [ok]   check_ibgateway_config | IB API handshake on 127.0.0.1:4002 -> serverVersion=187; ...
+  [ok]   check_ibgateway_service| nix-xvfb.service=enabled/inactive; ...; handshake: answered (187)
+
+  6 passed | 0 failed | 0 cannot measure | 0 skipped          exit 0
+```
+
+**142 → 153 tests, all eight pre-commit hooks green.**
+
+## Part 4 — `dev_and_services_plan.md`
+
+New **Boot persistence** section carrying the units, the `BindsTo` reasoning, the slice decision,
+and — as a call-out box, not a footnote — **boot persistence ≠ unattended auth**: after a reboot
+Gateway comes up on its login screen needing credentials and an IB Key tap, and auth automation is
+out of scope because anything built against IBKR's flow is discarded at the Tradovate cutover.
+
+Also corrected there from ARC 010's measurements: the Lock-and-Exit change (auto-logoff → auto
+restart, daily 2FA → weekly), where the API settings actually live (and the
+`LocalServerPort=4000` trap), and the Err 10189 entitlement finding with its bar-immutability
+consequence.
+
+## CHECK-DEBT movement
+
+**22 → 21.** D1.8/D1.9 (Xvfb and Gateway persistence) discharged by `check_ibgateway_service`;
+**D1.12 opened** for the unverified reboot behaviour. First recorded fall in the series — which,
+per doctrine A.7, is the thing that never once happened on the predecessor system across
+seventeen arcs.

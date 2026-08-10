@@ -200,6 +200,88 @@ sudo systemctl enable nix-verify.service
 sudo systemctl enable --now nix-verify-root.timer
 sudo systemctl enable --now nix-verify-weekly.timer
 
+echo "== install.sh: Stage 0 dev scaffolding (Xvfb + IB Gateway) =="
+# ARC 011. Both processes existed only as manually-started foreground jobs and
+# did not survive a reboot. These units fix that, and nothing more:
+# BOOT PERSISTENCE IS NOT UNATTENDED AUTH. After a reboot Gateway comes back
+# up sitting on its login screen, waiting for credentials and an IB Key 2FA
+# tap. Auth automation is deliberately out of scope — IBKR is permanently
+# paper-only Stage 0 plumbing and Tradovate is the live broker at cutover, so
+# anything built against IBKR's auth flow is thrown away at that boundary.
+#
+# NEITHER UNIT JOINS nix-trading.slice, deliberately. That slice is
+# AllowedCPUs=0-5 and exists to mirror the risk spec §10 core map (0 OS,
+# 1 capture, 2 Risk Engine, 3 Allocator, 4-5 pool). Neither Xvfb nor the
+# Gateway JVM appears anywhere in that map, and the JVM runs G1GC with
+# -XX:ParallelGCThreads=20 — sized for this 20-core dev box. Confining it to
+# six cores while it still spawns 20 GC threads would put GC pauses directly
+# on the cores §11's hot-path discipline exists to keep clear. Dev scaffold
+# stays in system.slice; when Tradovate becomes trading-path at cutover, that
+# membership gets decided against the core map on its own merits.
+sudo tee /etc/systemd/system/nix-xvfb.service > /dev/null << 'UNIT'
+[Unit]
+Description=Nix virtual display :99 — headless X server for IB Gateway
+Documentation=file:///home/bbt/nix/docs/dev_and_services_plan.md
+
+[Service]
+Type=simple
+User=bbt
+# Matches the invocation measured on the live process (ARC 011, /proc/<pid>/cmdline).
+ExecStart=/usr/bin/Xvfb :99 -screen 0 1440x900x24
+# A display server has no legitimate "finished" state: anything that stops it
+# is a fault, including a clean exit.
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+sudo tee /etc/systemd/system/nix-ibgateway.service > /dev/null << 'UNIT'
+[Unit]
+Description=IB Gateway (paper, Stage 0) — API endpoint on 127.0.0.1:4002
+Documentation=file:///home/bbt/nix/docs/dev_and_services_plan.md
+# BindsTo, not Requires. Requires propagates a failed *start* and an explicit
+# stop, but leaves this unit running when nix-xvfb.service dies on its own. A
+# Gateway whose X server vanished is the exact "unit active, thing unusable"
+# state check_ibgateway_service.py exists to catch — better to make it
+# impossible than to detect it. BindsTo stops this unit whenever the display
+# goes away for any reason; After orders the two on the way up.
+BindsTo=nix-xvfb.service
+After=nix-xvfb.service
+# systemd-analyze verify (ARC 011) rejected these in [Service]: rate-limiting
+# is a unit-level property, and a misplaced key here is silently ignored — a
+# restart loop with no brake, reported as a working config.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=bbt
+Environment=DISPLAY=:99
+WorkingDirectory=/home/bbt/ibgateway
+# Ordering alone is not a real dependency: Xvfb's unit is "active" the moment
+# it forks, milliseconds before the display accepts clients, and Gateway
+# aborts on a display it cannot open. Wait for the display to actually answer.
+ExecStartPre=/bin/sh -c 'for _ in $(seq 30); do xdpyinfo -display :99 >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1'
+# The install4j launcher, not the raw java argv: the live process's argv still
+# contains unsubstituted ${installer:jtsConfigDir} / ${installer:cmdLineArgs}
+# placeholders, and its JRE path carries a generated hash. The launcher execs
+# the JVM (it does not fork), so Type=simple tracks the real process.
+ExecStart=/home/bbt/ibgateway/ibgateway
+# on-failure, not always: a crash or an OOM kill must bring it back, but an
+# operator who deliberately shuts Gateway down must not have to fight systemd.
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+sudo systemctl daemon-reload
+sudo systemctl enable nix-xvfb.service
+sudo systemctl enable nix-ibgateway.service
+
 echo "== install.sh: verify.py (end-of-install run, per elements_v2.md §1.3) =="
 # System interpreter (§9.5), scripts/verify.py (§13 — no root copy exists),
 # --mode install so absent components get installed, --privilege all so this

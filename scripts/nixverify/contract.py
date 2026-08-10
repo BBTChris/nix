@@ -90,6 +90,35 @@ def validate_result(result: CheckResult) -> CheckResult:
     return result
 
 
+def result_from_defects(
+    name: str,
+    defects: list[tuple[str, str]],
+    evidence: str,
+    status: Status = Status.FAIL_NEEDS_OPERATOR,
+) -> CheckResult:
+    """Turn a `[(site, why)]` list into a CheckResult — PASS when empty.
+
+    Both IB Gateway gates accumulate defects as (site, reason) pairs and then
+    render them identically. Factored here rather than duplicated so the two
+    can never disagree about how a defect list becomes a verdict (§5.5,
+    doctrine C.9) — the same reasoning that makes the service gate import the
+    config gate's handshake instead of owning a copy.
+
+    `evidence` is attached to the FAIL as well as the PASS: an operator
+    reading a failure needs to know what *was* successfully measured, not
+    only what was wrong.
+    """
+    if not defects:
+        return CheckResult(name=name, status=Status.PASS, evidence=evidence)
+    return CheckResult(
+        name=name,
+        status=status,
+        site="; ".join(site for site, _ in defects),
+        evidence=evidence,
+        detail="; ".join(f"{site}: {why}" for site, why in defects),
+    )
+
+
 def exit_code_for(status: Status) -> int:
     """§4.2. SKIPPED maps to 2: a check that never ran is not a pass."""
     if status is Status.PASS:

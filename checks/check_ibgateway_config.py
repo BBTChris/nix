@@ -33,7 +33,7 @@ import sys
 from pathlib import Path
 
 import _preamble  # noqa: F401  pylint: disable=unused-import,wrong-import-order
-from nixverify.contract import CheckResult, Context, Mode, Status
+from nixverify.contract import CheckResult, Context, Mode, Status, result_from_defects
 
 PRIVILEGE = "user"
 INTERACTIVE = False
@@ -300,15 +300,7 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
         f"IB API handshake on {host}:{port} -> serverVersion={server_version}; "
         f"jts.ini sections={sorted(ini)}; localhost-only probe: {reject_evidence}"
     )
-    if defects:
-        return CheckResult(
-            name=NAME,
-            status=Status.FAIL_NEEDS_OPERATOR,
-            site="; ".join(site for site, _ in defects),
-            evidence=evidence,
-            detail="; ".join(f"{site}: {why}" for site, why in defects),
-        )
-    return CheckResult(name=NAME, status=Status.PASS, evidence=evidence)
+    return result_from_defects(NAME, defects, evidence)
 
 
 # Deliberately duplicated across every checks/check_*.py: the check

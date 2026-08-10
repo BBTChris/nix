@@ -19,6 +19,7 @@ arc whose own scope forbids the fix is furniture.
 | date | arc | open debts | delta |
 |---|---|---|---|
 | 2026-08-10 | ARC 010 | 22 | — (ledger opened) |
+| 2026-08-10 | ARC 011 | 21 | **−1** — D1.8/D1.9 discharged by `check_ibgateway_service`; D1.12 opened |
 
 ---
 
@@ -35,14 +36,14 @@ Each is an environment change that has already happened on this node.
 | D1.5 | Postgres cluster present, running, roles separated | ARC 006 | unassigned |
 | D1.6 | `unattended-upgrades` enabled and healthy | ARC 006 | unassigned — §7 makes this the *only* owner of OS patching, so its health is load-bearing |
 | D1.7 | `git` present (floor component, verify-only per §3) | ARC 006 | unassigned |
-| D1.8 | Xvfb `:99` display persistence | ARC 011 | **ARC 011** — `check_ibgateway_service.py` |
-| D1.9 | IB Gateway process persistence | ARC 011 | **ARC 011** — `check_ibgateway_service.py` |
 | D1.10 | pre-commit hook suite installed and each hook actually capable of failing | ARC 006 / ARC 010 | unassigned — see D3.2 |
+| D1.12 | **Reboot behaviour of `nix-xvfb.service` / `nix-ibgateway.service`** — enablement is verified, boot is not | ARC 011 | unassigned. No reboot was performed (it would drop the authenticated Gateway session and cost a manual 2FA re-login). `systemctl is-enabled` is a *declaration* that the units will start at boot, not evidence that they do. Discharge by rebooting under human authorization and re-running `check_ibgateway_service` before any human touches the console |
 | D1.11 | **ReadOnlyApi state** — no check covers it | ARC 010 | unassigned. Measured OFF in ARC 010, but only by sending a `whatIf` order and observing it reach IBKR's margin engine (err 201) instead of being refused. The setting is not in plaintext `jts.ini` (encrypted store) and the API exposes no read-only flag, so **the only known probe is order-shaped**. `check_ibgateway_config.py` deliberately does not carry it: a gate that must construct an order to run is the wrong instrument for a boot-time environment check. Revisit when broker-order code exists and can host the probe |
 
 Discharged: `.venv` (`check_venv`), `python3` (`check_python_runtime`), node identity
 (`check_node_identity`), `ib_async` pin (`check_python_deps`), IB Gateway API configuration
-(`check_ibgateway_config`, ARC 010).
+(`check_ibgateway_config`, ARC 010), Xvfb + IB Gateway boot persistence
+(`check_ibgateway_service`, ARC 011).
 
 ## D2 — Doctrine rules Nix does not yet satisfy
 

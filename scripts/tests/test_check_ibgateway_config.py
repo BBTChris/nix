@@ -40,6 +40,7 @@ EXPECTED = {
 }
 
 
+# pylint: disable=duplicate-code
 def _mod():
     """Load the check for direct access to evaluate()/parse_jts_ini()."""
     loaded = load_check(CHECKS, "check_ibgateway_config")

@@ -467,3 +467,61 @@ no 2FA was spent. 126 → 140 tests, all eight hooks green.
 
 PR #8 confirmed merged (`47ea580` on `origin/main`). `arc-009-verify-v2` is 55 ahead / 1 behind,
 that one commit *being* the merge commit — no conflict, no rebase needed, nothing pushed.
+
+---
+
+## ARC 011 — Xvfb + IB Gateway boot persistence (2026-08-10)
+
+**6 of 7 boxes. One deliberately not performed and reported as such.**
+
+Both units written, installed, enabled: `nix-xvfb.service` (`:99`, `1440x900x24`,
+`Restart=always`) and `nix-ibgateway.service` (`BindsTo=`+`After=nix-xvfb.service`,
+`DISPLAY=:99`, `Restart=on-failure`). Neither was **started**, and no reboot was performed —
+taking systemd over from the manually-started processes kills the JVM, drops the authenticated
+paper session, and costs a VNC login plus an IB Key tap. I put that to the human as an explicit
+choice rather than absorbing it; the answer was don't cut over. `systemctl is-enabled` is a
+*declaration* that they start at boot, not evidence — recorded as CHECK-DEBT D1.12.
+
+**What was proven without paying that cost.** The Xvfb unit's `ExecStart` was read back out of
+the installed unit (never retyped), run as a transient unit on scratch display `:98` with the same
+Service block, confirmed serving a real X client at 1440x900, SIGKILLed, and confirmed returning —
+`NRestarts=1`, new MainPID, display served again. So the invocation and the restart policy are
+real; only "systemd starts it at boot on `:99`" remains unverified.
+
+**Deriving the Gateway invocation from `/proc` changed the answer.** The live argv still holds
+unsubstituted install4j placeholders (`${installer:jtsConfigDir}`, `${installer:cmdLineArgs}`) and
+a hash-bearing JRE path — copying it into a unit would have been brittle and wrong. Reading the
+launcher showed both branches `exec` the JVM rather than forking, so `ExecStart` is the launcher
+and `Type=simple` tracks the real process. The JVM's PPID 1 is reparenting after the VNC shell
+exited, not evidence of a fork.
+
+**`BindsTo=`, not `Requires=`, and it was a real choice.** `Requires=` leaves Gateway running when
+Xvfb dies on its own — an AWT app that lost its display can sit holding port 4002 in a broken
+state, which is exactly the "unit active, thing unusable" case the new gate exists to catch.
+BindsTo makes it impossible rather than merely detectable. Ordering alone would not have been a
+real dependency either: the Xvfb unit is `active` milliseconds before the display accepts clients,
+so there is an `ExecStartPre` that polls `xdpyinfo` until it genuinely answers.
+
+**`systemd-analyze verify` caught a defect worth remembering:** `StartLimitIntervalSec` in
+`[Service]` is *silently ignored* — a restart loop with no brake in a config that reports no
+error. It is a `[Unit]` property. Moved and confirmed effective (`StartLimitIntervalUSec=5min`).
+
+**Slice: neither unit joins `nix-trading.slice`.** The arc cites `elements_v2.md` §1.4, which does
+not exist — that file has §1.1–1.3, §2–4. The real authorities are the slice's own
+`AllowedCPUs=0-5` and risk spec §10's locked core map, in which neither process appears. Decisive
+detail, measured from the live argv: the JVM runs `-XX:ParallelGCThreads=20`, sized for this
+20-core box. Confining it to six cores while it still spawns 20 GC threads would put GC pauses
+directly on the cores §11 exists to keep clear — worse than leaving it out, not merely different.
+Recorded for the next author: Tradovate's membership gets decided against §10 on its own merits.
+
+`check_ibgateway_service.py` **imports** `api_handshake` from `check_ibgateway_config` rather than
+reimplementing it, so two gates can never disagree about "reachable" (C.9), with a test asserting
+no second implementation exists. The same observation carries opposite verdicts in the two gates
+by design — unreachable is CANNOT_MEASURE for the config gate (it reads settings through the
+connection) and FAIL for this one (persistence that does not persist). Full FAIL-with-CONTROL via
+`systemctl disable`: it named only the disabled unit **while reporting the display still
+answering**, which is the gate discriminating "comes back after a reboot" from "works right now" —
+the two properties a proxy check collapses.
+
+142 → 153 tests, all eight hooks green, six checks passing through verify.py. CHECK-DEBT 22 → 21,
+the first fall in the series.
