@@ -18,8 +18,22 @@ arc whose own scope forbids the fix is furniture.
 
 | date | arc | open debts | delta |
 |---|---|---|---|
-| 2026-08-10 | ARC 010 | 22 | — (ledger opened) |
-| 2026-08-10 | ARC 011 | 21 | **−1** — D1.8/D1.9 discharged by `check_ibgateway_service`; D1.12 opened |
+| 2026-08-10 | ARC 010 | 24 | — (ledger opened) |
+| 2026-08-10 | ARC 011 | 23 | **−1** — D1.8/D1.9 discharged by `check_ibgateway_service`; D1.12 opened |
+| 2026-08-10 | ARC 012 | 24 | **+1** — D1.13 opened; D1.12 narrowed (cutover done, reboot still owed); nothing discharged |
+
+> **Count corrected ARC 012.** The ARC 010 and ARC 011 rows originally read 22 and 21. Both were
+> wrong: I hand-counted the rows and got it wrong twice in a row. Counted mechanically the figures
+> are 24 and 23 (D1 ×11, D2 ×12, D3 ×1 today). The banked `SESSION.md` entries still say 22→21 and
+> are deliberately left alone — history is appended, never rewritten — so this note is the
+> correction of record.
+>
+> **This is the ledger being the instrument's own defect**, which is the failure class
+> `VERIFY-AND-CHECKS.md` Part C opens with. The count is hand-maintained prose asserting a number
+> the table already determines — precisely the `derive, never restate` violation doctrine **B.7**
+> exists to catch, and it is already recorded as debt **D2.8**. Discharging D2.8 with a harness
+> that counts the rows and asserts the latest series figure would have caught this on the first
+> commit; until then, recount mechanically before editing this table.
 
 ---
 
@@ -37,8 +51,9 @@ Each is an environment change that has already happened on this node.
 | D1.6 | `unattended-upgrades` enabled and healthy | ARC 006 | unassigned — §7 makes this the *only* owner of OS patching, so its health is load-bearing |
 | D1.7 | `git` present (floor component, verify-only per §3) | ARC 006 | unassigned |
 | D1.10 | pre-commit hook suite installed and each hook actually capable of failing | ARC 006 / ARC 010 | unassigned — see D3.2 |
-| D1.12 | **Reboot behaviour of `nix-xvfb.service` / `nix-ibgateway.service`** — enablement is verified, boot is not | ARC 011 | unassigned. No reboot was performed (it would drop the authenticated Gateway session and cost a manual 2FA re-login). `systemctl is-enabled` is a *declaration* that the units will start at boot, not evidence that they do. Discharge by rebooting under human authorization and re-running `check_ibgateway_service` before any human touches the console |
 | D1.11 | **ReadOnlyApi state** — no check covers it | ARC 010 | unassigned. Measured OFF in ARC 010, but only by sending a `whatIf` order and observing it reach IBKR's margin engine (err 201) instead of being refused. The setting is not in plaintext `jts.ini` (encrypted store) and the API exposes no read-only flag, so **the only known probe is order-shaped**. `check_ibgateway_config.py` deliberately does not carry it: a gate that must construct an order to run is the wrong instrument for a boot-time environment check. Revisit when broker-order code exists and can host the probe |
+| D1.12 | **Reboot behaviour of `nix-xvfb.service` / `nix-ibgateway.service`** | ARC 011 | **still open, narrowed by ARC 012.** The cutover is done — both processes are systemd-owned (cgroup `/system.slice/nix-*.service`, API socket served by the unit's own MainPID) and `verify.py` is green. What remains unproven is only that systemd starts them **at boot**: `systemctl is-enabled` is a declaration, not evidence. A reboot was offered as a separate authorization in ARC 012 and declined (second IB Key tap). Discharge: reboot, then run `check_ibgateway_service` **before anyone touches the console** — a human logging in first creates the very state the check must observe independently |
+| D1.13 | **No CME futures tick stream on this account, and no check asserts the fallback path** | ARC 012 | unassigned. `Err 10189` ("No market data permissions for CME FUT") measured on **both** ES and MES — it names the product class, not the contract, so instrument selection cannot dodge it. `reqHistoricalTicks` works for both. Two things are owed and neither is a check yet: (a) a **human decision** on whether to buy CME data in IBKR Account Management for a throwaway Stage 0 broker — surfaced, deliberately not recommended; (b) once broker-datafeed exists, a gate asserting the polled path's **bar immutability**, which is Nix's obligation precisely because the feed does not stream |
 
 Discharged: `.venv` (`check_venv`), `python3` (`check_python_runtime`), node identity
 (`check_node_identity`), `ib_async` pin (`check_python_deps`), IB Gateway API configuration

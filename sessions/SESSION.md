@@ -525,3 +525,66 @@ the two properties a proxy check collapses.
 
 142 → 153 tests, all eight hooks green, six checks passing through verify.py. CHECK-DEBT 22 → 21,
 the first fall in the series.
+
+---
+
+## ARC 012 — systemd cutover · MES · entitlement clarification (2026-08-10)
+
+**Complete.** All nine boxes, with the reboot box checked as the arc's "explicitly left open"
+alternative.
+
+**Ran Part 2 before Part 1, deliberately.** Part 2's measurements need an authenticated Gateway and
+Part 1 destroys that authentication; written order would have parked the MES work behind a human
+login. No dependency ran backwards.
+
+**Prerequisite unmet and reported, not assumed:** the arc requires `arc-009-verify-v2` merged
+first. It is not — `origin/main` is still `47ea580`, branch 57 ahead / 1 behind. Repo hygiene with
+no bearing on the work, and console availability was the perishable resource, so I proceeded and
+flagged it. Still owed.
+
+**Cutover done, and proven by cgroup rather than unit status.** Before: both processes in
+`user.slice/user-1000.slice/session-231.scope` — a login-session scope, which is what "shell-owned"
+actually looks like. After: Xvfb PID 260814 in `/system.slice/nix-xvfb.service`, Gateway PID 261046
+in `/system.slice/nix-ibgateway.service`. The decisive evidence is that the 4002 listener's PID
+equals the unit's own `MainPID` — not a shell orphan that happens to be listening. `ExecStartPre`
+(the xdpyinfo readiness gate) exited `0/SUCCESS`, so the display dependency was a real precondition
+rather than incidental ordering. Both units `NRestarts=0`. Post-login `verify.py`: 6 passed, exit 0,
+with the service gate now reading `enabled/active` where it read `enabled/inactive`. Gateway's API
+config survived the restart untouched.
+
+**The ARC 010/011 design met reality and held.** With the Gateway genuinely down — nothing planted
+— `check_ibgateway_config` returned CANNOT_MEASURE (exit 2) and `check_ibgateway_service` returned
+FAIL (exit 1) naming the endpoint. One observation, two gates, two different and correct verdicts.
+That distinction had only ever been demonstrated with a planted wrong port.
+
+**I stopped and handed off for the VNC login rather than working around it.** No VNC server was
+running (the old one died with the torn-down session) and I did not start one — an unauthenticated
+VNC exposing a live broker Gateway is an operator decision.
+
+**Reboot offered as a separate authorization and declined**, so **D1.12 stays open**: boot
+behaviour is unverified and `is-enabled` is a declaration, not evidence.
+
+**MES fixes margin and does not fix data — both measured separately.** MESU6 conId 793356217,
+multiplier 5. Initial margin **3,503.59** vs net liq 20,344.34 → **5 contracts affordable**; ES
+**35,035.87** → 0, rejected with err 201. Exactly 10.0×, tracking the multiplier. But
+`reqTickByTickData` on MES returns **Err 10189, "No market data permissions for CME FUT"** — the
+error names the *product class*, not the contract, so a smaller instrument cannot dodge an
+account-level subscription. `reqHistoricalTicks` returned 25 ticks. **No CME futures tick stream is
+available on this account at all**, now confirmed across two instruments rather than inferred from
+one; the polled path stands and bar immutability remains Nix's own obligation. Whether to buy CME
+data on a throwaway Stage 0 broker is surfaced as a human decision, deliberately not recommended.
+
+**Method trap worth remembering:** `ib.whatIfOrder()` (sync) returns an *empty* OrderState here —
+its wait expires before IB answers, and the rejection then surfaces seconds later against an
+unrelated request. My first pass called both contracts UNDETERMINED on that basis, and **ARC 010
+made the same mistake**, recording ES margin as undetermined when it was merely late. Use
+`whatIfOrderAsync` under an explicit timeout.
+
+**A defect in the ledger itself.** CHECK-DEBT's series column read 22 (ARC 010) then 21 (ARC 011).
+Both wrong — I hand-counted twice and missed both times. Mechanically counted it is 24, 23, and 24
+today. Corrected in the doc with the error named; these banked entries are left as written, since
+history is appended and never rewritten. The count is hand-maintained prose asserting a number the
+table already determines — a `derive, never restate` violation, which is exactly doctrine B.7 and
+already on the books as debt D2.8. D2.8 now has a measured motivating instance.
+
+CHECK-DEBT 23 → 24 (D1.13 opened, nothing discharged). 153 tests, verify.py exit 0.

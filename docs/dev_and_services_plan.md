@@ -36,11 +36,46 @@ localhost-only flag are in the encrypted store. Note the trap: `jts.ini`'s
 expected values are therefore declared in `checks/ibgateway_expected.json` and asserted against
 reality.
 
-**Market data: no tick-by-tick entitlement (ARC 010, measured).** `reqTickByTickData` on CME
-futures returns **Err 10189** — "No market data permissions for CME FUT". `reqHistoricalTicks`
-works and is the only path. Consequence for the broker-datafeed spec: the feed is **polled, not
-streamed**, so **bar immutability is an obligation Nix must enforce itself**, not a property
-inherited from the feed.
+**Market data: no CME futures tick stream on this account at all (ARC 010 on ES, ARC 012 on MES).**
+`reqTickByTickData` returns **Err 10189 — "No market data permissions for CME FUT"** on *both* ES
+and MES. `reqHistoricalTicks` works for both and is the only path.
+
+> **This is not solvable by instrument selection or by code.** 10189 names the *product class*
+> (`CME FUT`), not the contract. MES is CME FUT exactly as ES is, so a smaller contract does not
+> dodge it — ARC 012 measured this rather than assuming it. It is an **account-level market-data
+> subscription**, and the only place it can change is IBKR Account Management.
+>
+> **Whether to pay for CME data on this account is a human decision, and is deliberately left
+> open here.** IBKR is permanently paper-only Stage 0 and Tradovate is the live broker at cutover,
+> so a subscription bought here is thrown away at that boundary — but so is the ability to test
+> any streaming path before then. Surfaced as a decision, not a recommendation.
+
+Consequence for the broker-datafeed spec, unchanged by ARC 012 and now confirmed across two
+instruments: the feed is **polled, not streamed**, so **bar immutability is an obligation Nix must
+enforce itself**, not a property inherited from the feed. Polled history is re-requestable and can
+return revised values, so the bar builder needs its own seal-and-never-rewrite rule.
+
+**Margin: MES is affordable, ES is not (ARC 012, measured via `whatIfOrderAsync`).**
+Account DUR250018, net liquidation **20,344.34 USD**:
+
+| | ES (`ESU6`) | MES (`MESU6`) |
+|---|---|---|
+| conId | 649180671 | 793356217 |
+| expiry | 20260918 | 20260918 |
+| multiplier | 50 | **5** |
+| initial margin | 35,035.87 | **3,503.59** |
+| maintenance margin | 25,029.29 | 2,502.93 |
+| headroom vs net liq | **−14,691.53** | **+16,840.75** |
+| contracts affordable | **0** — rejected, err 201 | **5** |
+
+Margin scales at exactly 10.0×, tracking the multiplier. **MES is the instrument to develop
+against at Stage 0** — but note it fixes *margin only*. The two problems are independent and only
+one of them has been solved.
+
+Method note for whoever repeats this: `ib.whatIfOrder()` (sync) returns an **empty** `OrderState`
+here — its internal wait expires before IB answers, and the rejection then surfaces seconds later
+against an unrelated request. Use `whatIfOrderAsync` awaited under an explicit timeout, or the
+margin figures come back as `None` and read as "undetermined" when they are merely late.
 
 **`clientId` allocation scheme (ARC 008 — a decision being recorded here, not a value discovered
 from the environment):** the TWS API keys every concurrent session by `clientId`; two processes
@@ -79,6 +114,37 @@ arc R6; the stages above sequence when each gate opens.)
 Before ARC 011, Xvfb and IB Gateway existed **only as manually-started foreground jobs**. Neither
 survived a reboot; recovering from one meant a VNC session just to get the processes running. Two
 units now own them.
+
+**Cutover performed ARC 012 (2026-08-10).** Both processes are now systemd-owned, verified by
+cgroup rather than by unit status:
+
+| | before cutover | after cutover |
+|---|---|---|
+| Xvfb | PID 236457, `user.slice/user-1000.slice/session-231.scope` | PID 260814, `/system.slice/nix-xvfb.service` |
+| Gateway JVM | PID 236482, `session-231.scope` | PID 261046, `/system.slice/nix-ibgateway.service` |
+| API socket 4002 | served by 236482 | served by **261046 — the unit's own `MainPID`** |
+
+`ExecStartPre` (the `xdpyinfo` display-readiness gate) exited `0/SUCCESS`, so the Gateway→display
+dependency worked as a real precondition and not as incidental ordering. Both units report
+`NRestarts=0`. `verify.py`: 6 passed, exit 0, with `check_ibgateway_service` now reading
+`enabled/active` for both units where it read `enabled/inactive` before.
+
+> **⚠ Boot behaviour is still NOT verified — CHECK-DEBT D1.12 remains open.** No reboot was
+> performed; it was offered as a separate authorization and declined, because it costs a second IB
+> Key tap. **`systemctl is-enabled` is a declaration that these units start at boot, not evidence
+> that they do.** Discharge condition: reboot, then run `check_ibgateway_service` **before anyone
+> touches the console** — a human logging in first contaminates the measurement by creating the
+> very state the check is trying to observe independently.
+
+**The unreachable-vs-misconfigured distinction was confirmed against reality during the cutover**,
+not just against ARC 010's planted port. With the Gateway stopped and nothing on 4002:
+`check_ibgateway_config` → `CANNOT_MEASURE` (exit 2, *"Gateway down or not logged in; that is not
+a misconfiguration"*); `check_ibgateway_service` → `FAIL` (exit 1, naming
+`127.0.0.1:4002 (nix-ibgateway.service)`). Same observation, two gates, two correct and different
+verdicts.
+
+Gateway's API configuration **survived the restart** — `check_ibgateway_config` passed unchanged
+afterwards, so the settings live in the profile rather than in process state.
 
 > ## ⚠ Boot persistence is **not** unattended authentication
 >
