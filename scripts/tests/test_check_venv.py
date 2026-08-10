@@ -105,10 +105,16 @@ def test_correct_mode_refuses_to_rebuild_its_own_interpreter(
 
     assert result.status is Status.FAIL_NEEDS_OPERATOR
     assert result.site == str(venv)
-    # Direct proof the venv was not rebuilt, not an inference from status —
-    # a reordering that reached _create() before this guard would still
-    # report FAIL_NEEDS_OPERATOR-shaped-looking failures in other ways, but
-    # would not leave the fixture's exact dangling symlink untouched.
+    # These three are a sanity check on the fixture, not independent proof
+    # the guard fired: sys.executable is itself the dangling symlink here,
+    # so even a bypassed guard reaching _create() would fail at exec
+    # (FileNotFoundError, caught by _create()'s except clause) before ever
+    # touching the venv's contents — leaving this exact dangling-symlink
+    # state regardless of whether the guard ran. The assertion that
+    # actually catches a removed guard is `result.status is
+    # Status.FAIL_NEEDS_OPERATOR` above: a bypassed guard that reached
+    # _create() and failed there would report FAIL_REPAIRABLE with a "venv
+    # creation failed" detail, not FAIL_NEEDS_OPERATOR.
     assert interpreter.is_symlink()
     assert interpreter.readlink() == Path("/nonexistent/python3")
     assert not interpreter.exists()

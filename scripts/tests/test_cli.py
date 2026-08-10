@@ -122,6 +122,50 @@ def test_engine_imports_no_third_party_modules() -> None:
     assert proc.returncode == 0, f"third-party imports in engine: {proc.stdout}"
 
 
+def test_checks_import_no_third_party_modules_at_module_scope() -> None:
+    """§4: checks are stdlib-only at module scope — I4, extending §9.1's
+    enforcement to checks/ (previously only scripts/ was scanned).
+
+    checks/*.py legitimately import `nixverify` (first-party, resolved via
+    checks/_preamble.py's sys.path setup) — that must not false-positive as
+    a third-party import. The test filters on "site-packages" appearing in
+    a module's __file__, which nixverify/_preamble never do (they resolve
+    under scripts/ and checks/), so no name-based allowlist is needed.
+    """
+    check_names = sorted(p.stem for p in (REPO / "checks").glob("check_*.py"))
+    script = textwrap.dedent(
+        f"""
+        import sys
+
+        sys.path.insert(0, {str(REPO / "checks")!r})
+        sys.path.insert(0, {str(REPO / "scripts")!r})
+        import _preamble  # noqa: F401
+
+        before = set(sys.modules)
+        for name in {check_names!r}:
+            __import__(name)
+
+        mods = [m for m in sys.modules if m not in before]
+        bad = [
+            m
+            for m in mods
+            if getattr(sys.modules[m], "__file__", None)
+            and "site-packages" in sys.modules[m].__file__
+        ]
+        print(bad)
+        raise SystemExit(1 if bad else 0)
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, f"third-party imports in checks/: {proc.stdout}"
+
+
 def _sys_aliases(tree: ast.Module) -> set[str]:
     """Every name `sys` is reachable under, including `import sys as X`."""
     aliases = {"sys"}
@@ -194,6 +238,8 @@ def test_engine_source_never_reads_stdin() -> None:
     for path in (
         REPO / "scripts" / "verify.py",
         *(REPO / "scripts" / "nixverify").glob("*.py"),
+        REPO / "checks" / "_preamble.py",
+        *(REPO / "checks").glob("check_*.py"),
     ):
         assert not _reads_stdin(path), f"{path} reads stdin"
 

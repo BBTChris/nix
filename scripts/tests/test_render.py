@@ -3,6 +3,7 @@
 import io
 import re
 
+import pytest  # pylint: disable=import-error
 from nixverify.contract import CheckResult, Status
 from nixverify.render import render_results, render_summary, theme_for
 
@@ -146,6 +147,28 @@ def test_summary_no_colour_on_non_tty() -> None:
     text = render_summary(results, 1, theme)
     assert "\x1b[" not in text
     assert "1 failed" in text
+
+
+def test_summary_colours_from_the_failure_status_actually_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: render_summary previously always painted the failed count
+    with FAIL_REPAIRABLE's colour, even when only FAIL_NEEDS_OPERATOR
+    results exist. Both statuses happen to share the same colour value
+    today, so this patches them apart to make the prior bug observable.
+    """
+    import nixverify.render as render_mod  # pylint: disable=import-outside-toplevel
+
+    monkeypatch.setitem(
+        render_mod._COLOURS,  # pylint: disable=protected-access
+        Status.FAIL_NEEDS_OPERATOR,
+        "\x1b[95m",
+    )
+    theme = theme_for(_Tty(), {"LANG": "en_US.UTF-8"})
+    results = [CheckResult("a", Status.FAIL_NEEDS_OPERATOR, site="s")]
+    text = render_summary(results, 1, theme)
+    assert "\x1b[95m" in text
+    assert "\x1b[31m" not in text
 
 
 def test_summary_no_colour_when_no_failures() -> None:
