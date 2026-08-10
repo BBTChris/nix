@@ -654,3 +654,166 @@ CHECK-DEBT 24 → 25, counted mechanically: D1.13 re-scoped (subscription half c
 decision; the owed gate is now "assert the *granted* marketDataType and FAIL on silent downgrade",
 motivated by mode 4), D1.14 split out for bar immutability since it discharges in a different arc.
 No gates built — this arc was measurement and documentation. 153 tests, verify.py exit 0.
+
+---
+
+## ARC 014 — broker-order seam landed; first real orders on DUR250018 (2026-08-10)
+
+**Complete, with one deliberate non-completion recorded below.**
+
+**The arc document never arrived.** `~/nix/downloads/arc_014_broker_order_land.md` does not exist
+— not at that path and nowhere under `/home/bbt`. The five proposal `.py` files landed at 16:21;
+the `.md` did not. So this arc has **no arc-authored definition of success**, and its "Section 2d"
+list of four suspect offline assumptions was never available. The operator was told, chose to
+proceed on operator authorization alone, and the test plan below is **self-authored**. Read every
+result here against that: the boxes checked are mine, not claude.ai's. If the arc doc surfaces,
+its gate has NOT been run.
+
+**Order placement was authorized and used.** Paper account DUR250018, MES only, qty 1, one order
+at a time, venue-confirmed flat between every test. Four real orders total across two runs
+(2 market buys, 2 flatten sells) plus one resting limit that was cancelled unfilled. Account
+finished flat; a `finally`-block cleanup that cancels strays and closes any residual position ran
+on both runs and reported 0.
+
+**The four assumptions I chose to attack**, since 2d was unavailable — picked as the places
+`FakeIB` looked most polite:
+
+| # | assumption | verdict | how settled |
+|---|---|---|---|
+| A1 | `placeOrder` sets `order.orderId` synchronously | SAFE | ib_async source: `order.orderId = orderId` before return |
+| A2 | `errorEvent` emits `(reqId, code, msg, contract)` | CONFIRMED | `wrapper.py:1723` |
+| A3 | `Execution.side` is literally `'BOT'`/`'SLD'` | CONFIRMED LIVE | venue sent `'BOT'`; ib_async never writes the literal, it passes IBKR's wire value through, so only the venue could settle it |
+| A4 | mirror key matches flatten's lookup key | CONFIRMED LIVE | both `'MESU6'`, from resolver and from venue |
+
+A1/A2 were settleable offline against the installed library and were checked there first, which
+is why only A3/A4 needed orders.
+
+**The centrepiece worked.** `flatten("MESU6")` against a REAL open long 1: returned in **0.6 ms**,
+made **zero** `reqPositionsAsync` calls (counted by wrapping the method), fired `SELL 1 MKT IOC`,
+filled, venue flat. The position-mirror design decision (GAP-1) is validated against the venue,
+not against a stub. CME accepted MKT+IOC — that was an open question, not a given.
+
+**Defect found that only the venue could show: `Position.avg_price` carried two units.**
+`_on_ib_exec_details` stored `Execution.price` (per-unit) while `_on_ib_position` and
+`query_positions` stored IBKR's `avgCost`, which for a FUTURE is **notional** — price x multiplier.
+Measured: long 1 MESU6 filled at 7782.50, `on_position` reported 38912.50, exactly 5x. Whichever
+event landed last won, so the field silently flip-flopped. Fixed by normalising every
+venue-sourced cost through `_avg_price_from_cost()`; re-verified live at 7773.622 per-unit against
+a notional of 38867.50. `FakeIB` structurally could not catch this: its `fut()` helper has no
+`multiplier` and every mirror assertion tested only `net_qty`.
+
+**Residual measured while fixing it:** `avgCost` is COMMISSION-INCLUSIVE, `Execution.price` is raw.
+Same fill: 7773.500 raw vs 7773.622 from avgCost — a 0.122 gap that is exactly the 0.61 commission
+divided by the multiplier 5. So `avg_price` still varies by provenance, but by a fraction of a tick
+rather than by 5x. Recorded in the code; anything needing raw-vs-net must read the Execution.
+
+**NOT FIXED — an architect's decision, not mine: the seam lies about sync/async.**
+`BrokerOrderPort` declares all nine verbs sync. `IBKRBrokerOrder` implements `connect`,
+`query_positions`, `query_balance`, `get_margin` as `async def` and the rest sync. A Limiter
+calling `port.query_positions()` gets a coroutine, not a `list[Position]`. The adapter docstring
+claims "the sync surface the Limiter sees is satisfied by scheduling onto the loop" — no such
+scheduling exists anywhere in the file. Which verbs are hot-path-sync versus awaited is a contract
+question that belongs to claude.ai, so the contract was left alone and the **instrument** was
+fixed instead: `check_structural_conformance` passes an `async def` against a sync-declared port
+because `callable()` cannot tell them apart — the same shape as the HOLLOW control, right shape and
+wrong behaviour with a green light. Added `check_await_conformance()`, which names all four
+divergences. **Open for the architect.**
+
+**Two further findings, neither fixed:**
+- `query_positions()` returns IBKR's **zero-quantity position rows** verbatim; only the mirror
+  filters `net_qty != 0`. A caller doing `if broker.query_positions(): halt()` sees a phantom
+  position at cold start. Found because it broke my own flat-check first.
+- `connectAsync`'s default `fetchFields` includes `EXECUTIONS`, and `_wire_events()` runs BEFORE
+  `connectAsync`, so historical executions are delivered to `_on_ib_exec_details` at connect. They
+  are dropped today only because `_from_ib` happens to be empty at that moment — accidental, not
+  designed. `FakeIB.connectAsync` fetches nothing, so no offline test could see it.
+
+**One hazard hypothesised and NOT observed:** `_on_ib_order_status` acks only on
+`PreSubmitted`/`Submitted`. A market order that went `PendingSubmit -> Filled` would produce no ack
+at all. Live, the venue emitted `PreSubmitted` then `Filled` 44 ms apart, so the ack fired. That is
+one sample of a race, not proof it cannot happen — owed as a gate, not closed.
+
+**Landed** to `scripts/broker/` (seam, IBKR adapter, mapping findings, seam simulator) with the
+adapter test at `scripts/tests/test_broker_order.py`. `directory_structure.md` -> v1.4.0 names the
+new subpackage; `pyproject.toml` `pythonpath` gained `scripts/broker` so the flat intra-package
+imports resolve under pytest without a sys.path insert that would trip conftest's session-end
+guard. Offline suites: 26 (seam simulator) + 42 (adapter) = 68, all green. Project suite 153 -> 154,
+verify.py exit 0.
+
+---
+
+## ARC 015 — Apply the async contract decision; close the ARC 014 findings (2026-08-10)
+
+Arc document arrived this time. All edits made **in place** in `scripts/broker/` and
+`scripts/tests/`; the architect's `downloads/*.py` copies are now well behind and should not be read
+as current.
+
+**Part 1 — the split.** `BrokerOrderPort` now declares `connect`, `query_positions`, `query_balance`,
+`get_margin` async and everything else sync, per the operator's ratification. Applied to the port,
+`StubBrokerOrder`, `HollowBrokerOrder`, `IBKRBrokerOrder`, the mapping skeleton, and every caller and
+test. The decision and the rejected alternative (adapter-schedules-onto-the-loop) are written into
+the port's docstring so the question is not reopened from the code. The false
+`THREADING/ASYNC NOTE` — "the sync surface ... is satisfied by scheduling onto the loop" — is deleted
+and replaced with what is true, with the retraction itself recorded.
+
+`check_await_conformance()` is clean on all four conformance subjects, and **demonstrated capable of
+failing**: planted a plausible divergence in the real adapter (`query_positions` served from the
+mirror with `async` dropped — it compiles and passes structural conformance), confirmed it reported
+exactly `['query_positions: port declares async, adapter is sync']` while structural conformance
+stayed CLEAN, then removed it and confirmed the file byte-identical. The plant also lives permanently
+as `AwaitDivergentBrokerOrder`, because a deleted demonstration has to be taken on trust. Hollow was
+converted along with the real adapters (a control failing the *await* check for a shape reason stops
+measuring behaviour) and still fails 9 behavioural assertions.
+
+**Part 2 — four findings, each mutation-proved.** Every fix was reverted and the suite re-run; the
+failing assertion names are in RESULTS.md.
+
+- **2a** zero-qty rows filtered at the one point the returned list and the mirror are both built
+  from, so they cannot diverge again. 3 assertions fail without it.
+- **2b** startup replay closed with a **connect-scoped gate** — chosen over narrowing `fetchFields`
+  because it is venue-agnostic and re-arms on every `connect()` for free, which is what makes it
+  survive the 03:00 restart. It opens *before* the mirror rebuild on purpose: that awaits
+  `reqPositionsAsync`, and holding it shut across the await would drop a genuine fill to catch a
+  historical one. `fetchFields` also drops `EXECUTIONS` as source-level belt and braces. Two further
+  defects found while building it: the id maps were cleared **after** `connectAsync` (i.e. still
+  live during the replay, on a reconnect — the real mechanism by which the old accident would have
+  failed), and `_wire_events()` re-registered every handler on each connect because ib_async's
+  `Event` uses `+=`; the dedupe sets hid the duplicates, so the only honest observable is the handler
+  count, now asserted. 4 assertions fail without it.
+- **2c** any fill, or any terminal transition implying the order was live, now synthesises the ACCEPTED
+  ack **before** the fill/cancel. `Inactive`/`ValidationError` deliberately do NOT — terminal without
+  acceptance, and inventing an acceptance is the worse defect. All ack paths share one gate and one
+  dedupe set. Proving the ordering needed a cross-stream observable, so `RecordingSink` gained an
+  arrival-order `sequence`; the per-stream lists cannot express "ack preceded fill". Both event
+  orderings driven. 9 assertions fail without it. My own first cut labelled the *genuine*
+  PreSubmitted ack "synthesised" — the suite caught it in the same run.
+- **2d** `FakeIB` now carries real multipliers (MES 5 / ES 50, longest-prefix matched), notional
+  `avgCost`, and the measured commission wrinkle (`7773.50 × 5 + 0.61 = 38868.11`, `/5 = 7773.622`).
+  Mirror assertions read `avg_price` on every path. The original unit bug was **re-planted** and is
+  caught by 6 assertions, including one naming the defect's signature rather than just an inequality;
+  the plant is permanent, the same pattern as Hollow applied to a defect.
+
+**Part 3.** `pytest-asyncio 1.4.0` pinned in `checks/pinned_deps.json` and installed; `asyncio_mode
+= "strict"` not `auto`, so a missing marker fails loudly instead of being silently coerced.
+`TaskGroup`-over-`create_task` recorded as policy before the first task exists (there are none).
+**No retry/backoff on the order path**, with the reasoning in the adapter's module docstring where a
+future author meets it — including the part that actually bites: a socket write raising *after* the
+request reached the venue is indistinguishable from one that never left, which is why `place_order`
+rolls back and re-raises. Two assertions enforce it rather than trusting prose.
+
+**What the gate measured about itself.** Running pre-commit explicitly over `scripts/broker/`
+surfaced 11 ruff findings, 229 pylint findings, 7 mypy errors and 2 complexity breaches — in files
+that had been passing `pre-commit run --all-files` since ARC 014, **because they are untracked and
+`--all-files` means git-tracked files**. A gate whose scope is set by what has been `git add`ed can
+be silenced by not adding. All now clean both ways: real fixes where real (including a
+`RecordingFeedSink` — the seam suite had been passing an *order* sink into the *datafeed* port,
+against invariant 3, surviving only because no feed event was driven through it), named and reasoned
+suppressions where not. Discharges **D3.2**; **D1.15** recorded (`seam_simulate.py` is not in the
+pytest suite and `scripts/broker/` is untracked).
+
+**No live order was placed.** Every finding closed offline — which is what Part 2d existed to make
+possible. Gateway never connected this arc; D1.12 untouched.
+
+Suites: project pytest 154 → **155**; adapter driver 42 → **79** assertions; seam simulator 26 → **33**;
+`verify.py` 6 passed exit 0; Tier-2 pre-commit 8/8 on the tracked tree **and** 8/8 over
+`scripts/broker/` explicitly.

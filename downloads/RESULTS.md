@@ -1,224 +1,352 @@
-# RESULTS — ARC 013: delayed market data verified; the Stage 0 data decision recorded
+# ARC 015 — RESULTS
 
-**Status: ARC 013 complete.** Every success box checked.
-
-**Headline: a delayed CME futures stream *does* flow on this account, at a measured 10 minutes —
-not the documented 15–20.** ARC 012's "no tick stream at all" was accurate for what it measured and
-is now **narrowed to real-time**, not overturned.
+**Async contract applied; all four ARC 014 findings closed, each with a mutation-proved test** —
+2026-08-10
 
 ---
 
-## Definition of success
+## 0. Handoff note
 
-| Box | State |
-|---|---|
-| All three modes attempted on MES; requested vs **granted** recorded | ✅ |
-| Measured lag from multiple ticks, not the documented figure, not one sample | ✅ — n=8 and n=9 distinct exchange timestamps |
-| Market-open state stated; closed ⇒ CANNOT-MEASURE | ✅ — **CME was open**, established two ways |
-| Errors recorded verbatim with codes | ✅ — 354, 300, 10167, 2119, 2104 |
-| ARC 012's claim confirmed or narrowed, with the change and reason visible | ✅ — narrowed, with a "correction of record" block |
-| Stage 0 data decision written with reasoning and the explicit constraint | ✅ |
-| `CHECK-DEBT.md` updated; D1.13 closed or re-scoped | ✅ — re-scoped, D1.14 split out |
+`~/nix/downloads/arc_015_async_contract.md` arrived and was executed end to end. Everything it
+references was on disk: `scripts/broker/{broker_seam,broker_order_ibkr,ibkr_mapping,seam_simulate}.py`
+and `scripts/tests/test_broker_order.py`, all carrying ARC 014's `avg_price` unit fix and
+`check_await_conformance()`. All edits were made **in place**; nothing was replaced from the
+architect's copies.
 
----
+ARC 014's own arc document still has not reached the machine (the second such loss after
+`VERIFY-AND-CHECKS.md` in ARC 008). Nothing in ARC 015 depended on it.
 
-## Part 0 — Was CME actually open? (precondition, established before anything else)
-
-A closed market produces no ticks regardless of entitlement, so an absence of ticks is only
-evidence about *entitlement* if the market was open. Established two ways deliberately, because
-neither alone is sufficient — a schedule can be right while a venue is halted:
-
-**Declared** — IBKR's own `tradingHours` for `MESU6`:
-
-```
-tradingHours : 20260809:1700-20260810:1600;20260810:1700-20260811:1600;...
-liquidHours  : 20260810:0830-20260810:1600;...
-timeZoneId   : US/Central
-
-wall clock UTC : 2026-08-10 12:04:16 UTC
-wall clock CT  : 2026-08-10 07:04:16 CDT (Monday)
-  20260809:1700-20260810:1600   <== NOW INSIDE THIS SEGMENT
---> declared open right now: True
---> inside LIQUID (RTH) hours: False
-```
-
-**Empirical** — trades were present in the tape.
-
-**Verdict: open, in the Globex overnight session, outside RTH.** So the market was thin but
-trading, and an absence of ticks would have been interpretable. It did not come to that — ticks
-flowed. Had the market been closed, every null result below would have been reported as
-CANNOT-MEASURE rather than as evidence of absence.
-
-Contract re-resolved rather than trusting ARC 012's number: `MESU6`, conId **793356217**, expiry
-`20260918` — **matches** what ARC 012 recorded.
+One housekeeping note: `downloads/broker_seam.py`, `downloads/broker_order_ibkr.py`,
+`downloads/ibkr_mapping.py`, `downloads/simulate.py`, `downloads/test_broker_order.py` are the
+architect's original copies and are now **substantially behind** the landed code. They should not be
+read as current. `scripts/broker/` and `scripts/tests/` are the source of truth.
 
 ---
 
-## Part 1 — All three market-data modes on MES
+## 1. Part 1 — the sync/async split, applied
 
-Measured 2026-08-10 12:05–12:07 UTC, `clientId=905`, 40 s observation window per mode.
+The operator-ratified split is implemented exactly as specified, and the decision (with the rejected
+alternative) is written into `BrokerOrderPort`'s docstring so it is not relitigated from the code.
 
-| requested | **granted by IBKR** | ticks / 40s | error (verbatim) | measured lag |
-|---|---|---|---|---|
-| 1 real-time | **none — no grant callback at all** | **0** | `354: Requested market data is not subscribed. Check API status … and/or availability of delayed data.Delayed market data is available.MES SEP'26 (MESU6) /TOP/ALL` · `300: Can't find EId with tickerId:5` | n/a |
-| 3 delayed | **3 = delayed** | 18 | `10167: Requested market data is not subscribed. Displaying delayed market data.` | **600.0–601.9 s**, mean 600.3 s, spread **1.9 s**, n=8 |
-| 4 delayed-frozen | **3 = delayed — silently downgraded** | 19 | `10167` (as above) | **600.1–604.9 s**, mean 600.6 s, spread 4.8 s, n=9 |
+| verb | contract | applied to |
+|---|---|---|
+| `place_order`, `cancel_order`, `flatten`, `disconnect`, `query_order_status` | **sync** | port, Stub, Hollow, IBKR adapter, mapping skeleton, every caller and test |
+| `connect`, `query_positions`, `query_balance`, `get_margin` | **async** | same |
 
-Populated fields on both working modes: `bid, ask, last, close, volume, delayedLastTimestamp`.
-Also seen, connection-level: `2119 Market data farm is connecting:usfuture`, `2104 Market data farm
-connection is OK:usfuture`.
+`check_await_conformance()` is clean on all four conformance subjects (Stub, Hollow, the IBKR
+adapter, the mapping skeleton).
 
-### The granted type is not the requested type — twice over
+### It is demonstrably capable of failing
 
-**Mode 4 was silently downgraded to 3.** Asking for delayed-frozen and assuming you received it
-would misdescribe the feed.
-
-**Mode 1 received no grant at all, and this nearly produced a false report.** The first run showed
-`granted=1` for real-time — but `ib_async`'s `Ticker.marketDataType` **defaults to `1`**, so that
-was an unset field, not a grant. A naive read would have reported "IBKR granted real-time" for a
-subscription that returned **zero ticks and error 354**.
-
-Verified rather than assumed, by sentinelling the field to `0` immediately after subscribing so
-only a genuine callback could move it:
+Planted **one plausible divergence** in the real adapter — `query_positions` served from the
+in-memory mirror with `async` dropped, which compiles, imports, and passes structural conformance —
+then removed it:
 
 ```
-requested=1  field after 12s=0  -> NO callback (field never set by IBKR)   errors=[354]
-requested=3  field after 12s=3  -> AFFIRMATIVE GRANT = 3                   errors=[]
-requested=4  field after 12s=3  -> AFFIRMATIVE GRANT = 3                   errors=[10167]
+BEFORE PLANT — real adapter:
+  structural : CLEAN (all verbs present)
+  await      : CLEAN
+
+WITH PLANT (query_positions served from the mirror, `async` dropped):
+  structural : CLEAN (all verbs present)
+  await      : ['query_positions: port declares async, adapter is sync']
+
+AFTER REMOVING THE PLANT:
+  structural : CLEAN (all verbs present)
+  await      : CLEAN
+
+plant removed; adapter byte-identical to its pre-plant state
 ```
 
-### The lag is 10 minutes, measured — not the documented 15–20
+Note the middle block's first line: **structural conformance stayed CLEAN through the divergence.**
+That is the point of the second checker, measured rather than argued.
 
-Measured from the exchange timestamp the feed itself carries (tick **88** →
-`delayedLastTimestamp`) against wall clock at receipt, deduplicated on the exchange timestamp so
-repeated updates re-reporting one trade can't manufacture agreement:
+The plant is not only a one-off. It also lives permanently as `AwaitDivergentBrokerOrder` in
+`broker_seam.py` — a Hollow subclass whose sole purpose is to be caught — and both suites assert the
+checker returns exactly one entry naming `query_positions`. A demonstration that is deleted has to
+be taken on trust by the next reader.
 
-```
-delayedLastTimestamp   exch=11:55:54 recv=12:05:55  lag=601.9s (10.03 min)
-delayedLastTimestamp   exch=11:55:59 recv=12:05:59  lag=600.1s (10.00 min)
-delayedLastTimestamp   exch=11:56:04 recv=12:06:04  lag=600.1s (10.00 min)
-delayedLastTimestamp   exch=11:56:09 recv=12:06:09  lag=600.1s (10.00 min)
-delayedLastTimestamp   exch=11:56:17 recv=12:06:17  lag=600.0s (10.00 min)
-delayedLastTimestamp   exch=11:56:24 recv=12:06:24  lag=600.1s (10.00 min)
-delayedLastTimestamp   exch=11:56:29 recv=12:06:29  lag=600.1s (10.00 min)
-delayedLastTimestamp   exch=11:56:32 recv=12:06:32  lag=600.1s (10.00 min)
+### The false docstring claim is gone
 
-min 600.0s  max 601.9s  spread 1.9s  mean 600.3s
-```
+The `THREADING/ASYNC NOTE` asserting "the sync surface the Limiter sees is satisfied by scheduling
+onto the loop" is deleted. Its replacement states what is actually true — the send path is
+non-blocking because `ib.placeOrder`/`ib.cancelOrder` are themselves non-blocking, **not** because
+anything schedules — and records the retraction, because a docstring describing a mechanism the code
+does not have is this file's most dangerous failure mode.
 
-**The spread is what makes this a result rather than an anecdote.** 1.9 s across 8 distinct
-timestamps is a steady pipeline delay; a stale first tick followed by live data would have shown a
-collapsing lag. This is exactly why the arc demanded multiple samples.
+### Hollow is still a failing control
 
-### `reqHistoricalTicks` is delayed by the same ~10 minutes — and this was visible all along
-
-It is **not** a real-time back door. Worse, the evidence was sitting in ARC 010's own banked output
-and went unread:
+Converted along with the real adapters, deliberately: a control that started failing the *await*
+check for a shape reason would have stopped measuring behaviour. It still fails the behavioural
+suite on **9 assertions**:
 
 ```
-ARC 010 (reqHistoricalTicks)   now=09:39:54  newest tick=09:29:30  age=624.0s = 10.40 min
-ARC 013 (reqHistoricalTicks)   now=12:04:16  newest tick=11:54:12  age=604.0s = 10.07 min
+NON-VACUITY: Hollow FAILS behavioural assertions (control)
+  -> 9 failures: ['connect emits on_session', 'place_order emits on_ack',
+     'status is working after place', 'adapter can be driven to a fill (no opt-out)',
+     'position exists after fill',
+     'flatten assertion is non-vacuous (a position existed to clear)',
+     'balance is non-trivial', 'balance carries venue_seq_ts',
+     'get_margin returns a real figure']
 ```
-
-ARC 010 printed both numbers — `connectionTime: 2026-08-10 09:39:54` and
-`HistoricalTickLast(time=2026-08-10 09:29:30 …)` — and I never computed the difference. The
-10-minute delay has been characterising this account since the first probe.
-
-**This is the same failure mode as ARC 012's CHECK-DEBT miscount**: a number present in the output,
-unread. Both are cheap to catch mechanically and expensive to catch by eye, which is the argument
-for doctrine B.7 (debt **D2.8**) rather than more careful reading.
-
-**Consequence:** the "polled fallback" ARC 010 and ARC 012 both relied on is a *delayed* polled
-fallback. The Stage 0 feed is delayed **and** polled, which is sharper than either arc recorded.
 
 ---
 
-## Part 2 — Reconciling with ARC 012
+## 2. Part 2 — the four findings, closed
 
-**ARC 012's claim was too broad and is narrowed, not overturned.** It said *"no CME futures tick
-stream is available on this account at all."*
+Every fix below was **mutation-tested**: the fix was reverted, the suite re-run, and the failing
+assertions recorded. A test that passes both with and without the fix proves nothing.
 
-That was **accurate for what it measured**. `reqTickByTickData` is a **real-time-only** request
-path — delayed data never arrives on it, which is exactly why `Err 10189` came back. ARC 012 did
-not test `reqMarketDataType` → `reqMktData`, so the delayed path was never in its scope.
+### 2a. Zero-qty rows filtered from `query_positions()`
 
-Corrected in `dev_and_services_plan.md` under an explicit **"Correction of record"** block that
-states what the earlier arcs measured, why the conclusion was sound for that measurement, and what
-later measurement narrowed it. **Not silently overwritten** — the record shows why it changed.
+Filtered at the single point both the returned list and the mirror are built from, so they cannot
+diverge again. Mutation — filter removed:
 
-Standing correctly, unchanged:
+```
+M1 (2a) zero-qty filter removed          suite exit=1  (CAUGHT)
+  XX §2a: zero-qty rows filtered from the RETURNED list
+  XX §2a: the real position still comes back (filter is not a black hole)
+  XX §2a: a caller's truthiness test sees FLAT when the account is flat
+```
 
-- **No real-time stream.** Error 354 with zero ticks; `10189` on the tick-by-tick path.
-- **Not solvable by instrument selection or code.** `10189` names the product class `CME FUT`, not
-  the contract. Real-time is an account-level subscription.
+The third assertion is the caller idiom §4 actually invites: `if await broker.query_positions():
+halt()`.
+
+### 2b. Startup executions — mechanism stated
+
+**Mechanism of record: a connect-scoped gate.** `self._startup_complete` is set False at the top of
+`connect()` and True the instant `connectAsync` returns; `_on_ib_order_status` and
+`_on_ib_exec_details` refuse while it is closed.
+
+Why this one over the alternatives:
+- **Venue-agnostic** — it catches any startup replay whatever ib_async decides to fetch, including
+  anything a future version adds. Narrowing `fetchFields` alone only covers what is known today.
+- **Reconnect-safe for free** — the gate is scoped to the CALL, so it re-arms on every `connect()`.
+  There is no separate reconnect path to remember, which matters because the Gateway restarts daily
+  at 03:00.
+- **The window is provably empty** — there is no `await` between `connectAsync` returning and the
+  gate opening, so the loop cannot dispatch anything into it. It opens **before** `_rebuild_mirror()`
+  deliberately: that method awaits `reqPositionsAsync`, and a genuine fill can land during the await
+  (the existing D3 race). Holding the gate shut across it would drop a real fill to catch a
+  historical one.
+
+Belt and braces at the source: `fetchFields` now drops `EXECUTIONS`, so the replay is not requested
+either. The gate is the guarantee; this only reduces what has to be caught. Nothing reads
+`ib.fills()`/`ib.executions()` — the adapter keeps its own `(order_id, exec_id)` ledger.
+
+Two further corrections found while building it:
+- **The id maps are now cleared BEFORE `connectAsync`, not after.** The replay arrives *during*
+  `connectAsync`; clearing afterwards meant a reconnect still held the previous session's map while
+  the venue was replaying it. That is the exact mechanism by which the old "dropped because
+  `_from_ib` happened to be empty" accident would have failed on a reconnect.
+- **`_wire_events()` is now idempotent per IB instance.** ib_async's `Event` uses `+=`, so wiring
+  once per `connect()` registered a second copy of every handler after the 03:00 restart and a third
+  after the next. The dedupe sets hid the duplicate ack and duplicate fill, so the only honest
+  observable is the handler count — which the suite now asserts.
+
+The test drives it as a **reconnect**, so the historical execution carries the same `orderId` the
+sequence reissues. Mutation — gate removed AND the clear moved back after `connectAsync` (i.e. the
+pre-ARC-015 code):
+
+```
+M2 (2b) startup gate removed AND id-map clear moved back   suite exit=1  (CAUGHT)
+  XX §2b: historical execution replayed at connect produces NO fill
+  XX §2b: historical orderStatus replayed at connect produces NO ack
+  XX §2b: connectAsync asked for StartupFetch WITHOUT EXECUTIONS
+  XX §2b: still ignored on the SECOND reconnect (survives the 03:00 restart, twice)
+```
+
+There is also an assertion that the gate **opens** — a gate that never opens drops every real fill,
+which would be a worse defect than the one being fixed.
+
+### 2c. The missing-ack race — closed
+
+Any event that proves the venue accepted an order — a fill, or a terminal transition implying it was
+live — synthesises the ack **first**, so the Limiter can never observe a fill or a cancel for an
+order it never saw accepted. Ordering, not merely presence, is the guarantee.
+
+Three things worth flagging in the implementation:
+
+1. **`Inactive`/`ValidationError` deliberately do NOT synthesise.** They are terminal *without*
+   acceptance; IBKR delivers the reason on `errorEvent`, which raises a REJECTED ack. Synthesising
+   ACCEPTED there would invent an acceptance that never happened — the opposite defect, and worse.
+   Two assertions guard this direction.
+2. **All ack paths share one gate** (`_ack_once`) and one dedupe set, so venue-ack, error-rejection
+   and synthesis cannot both fire for the same order.
+3. **A real venue ack is not labelled "synthesised".** The first cut routed the normal
+   PreSubmitted path through the synthesis helper; the suite caught it immediately. `reason` is the
+   provenance channel, and destroying that distinction would make the synthesis unauditable.
+
+Proof of ordering needed a cross-stream observable, so `RecordingSink` gained a `sequence` list
+recording every event in arrival order — the per-stream lists cannot express "the ack preceded the
+fill", and an adapter emitting the fill first would satisfy every per-stream assertion. Both event
+orderings are driven, because IBKR does not guarantee which lands first. Mutation — synthesis
+removed:
+
+```
+M3 (2c) ack synthesis removed             suite exit=1  (CAUGHT)
+  XX §2c (exec before status): an ack IS raised for a PendingSubmit -> Filled order
+  XX §2c (exec before status): the ack PRECEDES the fill in arrival order
+  XX §2c (exec before status): the synthesised ack says so, so provenance is not lost
+  XX §2c (exec before status): exactly ONE ack — synthesis does not double up
+  XX §2c (status before exec): an ack IS raised for a PendingSubmit -> Filled order
+  XX §2c (status before exec): the ack PRECEDES the fill in arrival order
+  XX §2c (status before exec): the synthesised ack says so, so provenance is not lost
+  XX §2c (status before exec): exactly ONE ack — synthesis does not double up
+  XX §2c: a cancel with no prior ack synthesises the ack FIRST
+```
+
+The first run of that mutation aborted on an `IndexError` instead of reporting nine named failures.
+The indexing is now guarded — a test that aborts is a worse instrument than one that fails.
+
+### 2d. `FakeIB` fidelity — and the re-planted bug is caught
+
+The fake now carries what it needs to *represent* the defect:
+
+- `fut()` emits a real `multiplier`, as a string, as IBKR sends it — MES 5, ES 50, MNQ 2, NQ 20, by
+  longest-prefix match so `MESU6` resolves to MES and not ES.
+- `positionEvent` and `reqPositionsAsync` report `avgCost` as **notional** — `price × multiplier`.
+- The **commission wrinkle** ARC 014 measured is encoded:
+  `avgCost = price × multiplier + commission`. For the measured fill, `7773.50 × 5 + 0.61 =
+  38868.11`, and `38868.11 / 5 = 7773.622` — reproducing the 0.122 provenance gap exactly.
+- Mirror assertions read `avg_price`, on every path: `positionEvent`, `on_position`,
+  `query_positions`, and the fill path (which is already per-unit and must NOT be divided).
+- A second instrument uses a **different multiplier** (ES 50), so a hardcoded 5 cannot pass.
+
+**The original unit bug re-planted, and caught.** `replanted_unit_bug_is_caught()` replaces
+`_avg_price_from_cost` with the verbatim pre-fix behaviour and asserts the assertions now fail:
+
+```
+NON-VACUITY §2d: the RE-PLANTED ARC 014 unit bug is CAUGHT by this suite
+  -> caught 6: ['mirror avg_price is per-unit (38868.11 != 7773.622)',
+                'mirror avg_price is NOTIONAL — the ARC 014 unit defect',
+                'avg_price within one tick of the raw execution price (gap 31094.61)',
+                'on_position avg_price is per-unit (38868.11)',
+                'ES avg_price normalised by ITS OWN multiplier (250002.2)',
+                'query_positions avg_price is per-unit (38868.11)']
+```
+
+Six independent assertions catch it, including one that names the defect's *signature* rather than
+just an inequality. A following assertion confirms the plant was removed and everything passes
+again. This is permanent, not a one-off — the same pattern as the Hollow control, applied to a
+defect instead of an adapter.
 
 ---
 
-## Part 3 — The Stage 0 data decision, written down
+## 3. Part 3 — libraries
 
-Added to `dev_and_services_plan.md` as a top-level `## DECISION` section, deliberately written to
-be legible to someone arriving with none of this session's context.
+**Adopted:**
+- **`pytest-asyncio 1.4.0`**, pinned in `checks/pinned_deps.json` (so `check_python_deps` covers its
+  drift) and installed. Configured `asyncio_mode = "strict"`, **not** `auto`: auto silently coerces
+  every `async def test_*` onto a loop, so a missing marker is invisible; strict makes "this test
+  runs on the loop" a written decision and fails loudly otherwise — the same class of defect
+  `check_await_conformance()` exists to catch one layer down.
+- **`asyncio.TaskGroup` over bare `create_task`** — recorded as policy in the adapter's module
+  docstring. There is currently **no supervised concurrency anywhere in this code** (`grep` for
+  `create_task`/`ensure_future` across `scripts/` and `checks/` returns nothing), so the policy is
+  written *before* the first task rather than after.
 
-**Decision: Stage 0 runs on IBKR's free market data. No subscription will be purchased.** Recorded
-as *settled*, superseding the earlier records in that file which surfaced it as pending — with a
-note that only new information about the Tradovate cutover could reopen it.
+**NOT adopted, and why — recorded where a future author will read it:** a `RETRY POLICY` block in
+`broker_order_ibkr.py`'s module docstring, immediately above the code, stating that no retry or
+backoff may be added to `place_order`, `cancel_order` or `flatten`. §4 resolves a pending timeout by
+querying order status and **never auto-resends**; a retry wrapper turns one intended order into two
+live ones the venue accepted and cannot tell apart. The sharpest part is written down explicitly: a
+socket write that raises *after* the request reached the venue is indistinguishable, from inside
+this process, from one that never left — which is exactly why `place_order` rolls back and re-raises
+rather than retrying. Retry is admissible only on genuinely idempotent reads, and even there must
+not mask a CANNOT-MEASURE as a stale value.
 
-**What it forbids, stated as a constraint rather than a footnote.** On a 10-minute delayed polled
-feed these are meaningless and must not be produced, cited, or carried forward: latency
-measurements of any kind; fill realism, slippage or spread-capture estimates; strategy performance
-figures (P&L, Sharpe, hit rate, drawdown, expectancy); **any claim about edge** — including hedged
-ones like "directionally encouraging".
+Two assertions enforce it rather than trusting the prose:
+- `NO-RETRY: a failed placement leaves ZERO orders at the venue (no auto-resend)`
+- `margin: a prior success is NOT served as a fallback on a later failure`
 
-What Stage 0 *is* for: the plumbing — connection handling, reconnect and session recovery, bar
-construction, persistence, the broker-datafeed interface shape, gate and risk-path wiring, order
-lifecycle mechanics. All fully exercisable on delayed data, because they are about structure and
-correctness rather than price.
-
-The section carries a direct address to a future reader:
-
-> **If you are reading this because a document you are holding cites a Stage 0 backtest or paper
-> P&L as evidence of anything — that document is misusing it.** The number is not weak evidence; it
-> is not evidence. The feed it was computed from was ten minutes behind the market, measured, on
-> 2026-08-10. Discard the conclusion, keep the plumbing lesson.
-
-Also recorded: the Crucible pipeline's scoring gates cannot be run to a *verdict* at Stage 0, only
-to prove the pipeline mechanically executes.
-
-**Carried forward for broker-datafeed** — four points, the last of which is new from this arc's
-measurements: build against delayed + polled as the Stage 0 shape; bar immutability stays Nix's own
-obligation regardless of feed; the vendor-neutral seam must encode no assumption that only holds
-for a delayed or polled feed (Tradovate is expected to be real-time and push-based, so "data
-arrives late" leaking into the interface is a defect); and **never infer the mode from the
-request** — read and record the *granted* type and treat a downgrade as a real event.
+Nothing else was added.
 
 ---
 
-## CHECK-DEBT
+## 4. What the gate itself measured
 
-**D1.13 re-scoped.** Its subscription half is **closed** by the decision above. What remains is a
-gate: assert the *granted* `marketDataType` matches what Stage 0 declares and **FAIL on a silent
-downgrade** — motivated directly by mode 4 being granted as 3. To be built with broker-datafeed,
-not here (this arc is measurement and documentation; no new gates, per scope).
+Bringing `scripts/broker/` into the static sweep's **file list** surfaced something worth your
+attention, unrelated to this arc's findings.
 
-**D1.14 split out**: bar immutability on a re-requestable feed. Separated because it discharges in
-a different arc and stays owed even after Tradovate's real-time feed arrives.
+Those files have been in the tree since ARC 014 and were passing `pre-commit run --all-files`. They
+were passing because they are **untracked**, and `--all-files` means all *git-tracked* files. Run
+explicitly against them, the same hooks produced: ruff 11 findings, pylint 229 findings across 20
+codes, mypy 7 type errors in 3 files, complexipy 2 drivers over the 15 ceiling (37 and 25).
 
-**24 → 25 open**, counted mechanically (D1 ×12, D2 ×12, D3 ×1) — not hand-counted, after ARC 012
-established that hand-counting this table gets it wrong.
+**A gate whose scope is set by what has been `git add`ed can be silenced by not adding.** That is
+the "can it be made to pass by editing something it also reads?" question from the debug doctrine's
+Stage 2, in a form nobody edited anything to create.
+
+All of it is now clean, both ways:
+- Real fixes where the finding was real: two lifted helper functions, three over-long lines, a
+  needless lambda, an un-narrowed `float()`, `_symbol_for` returning a non-`str`, a `RecordingFeedSink`
+  (the seam suite had been passing an **order** sink into the **datafeed** port — invariant 3 says
+  they are disjoint, and it only survived because no feed event was ever driven through it), and the
+  two long drivers split into named sections.
+- Named, reasoned suppressions where the finding was not: e.g. `FakeIB` **must** use camelCase to
+  mirror ib_async's real surface, and the tests **must** read `_mirror`/`_from_ib` because that
+  internal state is the thing under test. Every suppression names its codes and states why — never a
+  blanket disable.
+
+Side effect: this discharges **D3.2** (ruff/pylint/mypy/complexipy never demonstrated capable of
+failing on this repo) with evidence from real code rather than a contrived plant.
 
 ---
 
-## State at close
+## 5. Definition of success
 
-- `verify.py`: **6 passed, 0 failed, 0 cannot measure, 0 skipped — exit 0**
-- Test suite: **153 passed**
-- Branch `arc-013-delayed-feed`, cut fresh from `main` at `7ebb32d` (PR #9 merge)
-- Docs changed: `dev_and_services_plan.md`, `CHECK-DEBT.md`
+- [x] **Port split applied per Part 1; `check_await_conformance()` clean AND demonstrated capable of
+      failing via a planted divergence that it names** — §1. Clean on all four subjects; plant named
+      `query_positions` and reported both sides of the disagreement; plant removed, file
+      byte-identical; kept permanently as `AwaitDivergentBrokerOrder`.
+- [x] **The false scheduling claim removed from `broker_order_ibkr.py`** — §1, replaced with what is
+      true and with the retraction recorded.
+- [x] **`HollowBrokerOrder` still fails the behavioural suite after conversion** — §1, 9 failures.
+- [x] **Zero-qty rows filtered from `query_positions()`; test fails without the fix** — §2a,
+      mutation M1, 3 assertions.
+- [x] **Startup-execution handling made deliberate with the mechanism stated; test proves it is
+      ignored by design and survives a reconnect** — §2b, connect-scoped gate (stated, with the
+      reasoning for choosing it), plus two related corrections; mutation M2, 4 assertions; asserted
+      across two reconnects.
+- [x] **Missing-ack race closed; ack proven to precede the fill on `PendingSubmit → Filled`** — §2c,
+      both event orderings, cross-stream ordering observable; mutation M3, 9 assertions.
+- [x] **`FakeIB` carries multiplier/notional/commission fidelity; the original `avg_price` unit bug
+      re-planted and now caught** — §2d, caught by 6 assertions.
+- [x] **`pytest-asyncio` pinned in `checks/pinned_deps.json`** — 1.4.0, installed,
+      `check_python_deps` green against it.
+- [x] **No retry/backoff on the order path; the reasoning recorded where a future author will read
+      it** — §3, module docstring plus two enforcing assertions.
+- [x] **All suites green; Tier-2 gates pass; `verify.py` exit 0** — §6.
+- [x] **Account confirmed flat at close with a fresh venue query, if any order was placed** — **no
+      order was placed.** Every finding was closed offline, which is what Part 2d existed to make
+      possible. The Gateway was never connected and no live session was opened during this arc.
 
-## Still owed
+---
 
-1. **D1.12** — reboot test; boot behaviour unverified (out of scope this arc).
-2. **D1.13** — granted-market-data-type gate, with broker-datafeed.
-3. **D1.14** — bar immutability gate, with broker-datafeed.
-4. **D2.8** — the doctrine-B.7 harness. Two measured instances now argue for it: the CHECK-DEBT
-   miscount and the unread 10-minute delay in ARC 010's own output.
+## 6. Numbers
+
+| measure | before | after |
+|---|---|---|
+| project pytest suite | 154 passed | **155 passed** |
+| adapter driver assertions (`test_broker_order.py`) | 42 | **79** |
+| seam simulator assertions (`seam_simulate.py`) | 26 | **33** |
+| `verify.py` | 6 passed, exit 0 | **6 passed, exit 0** |
+| Tier-2 pre-commit, tracked tree | 8/8 pass | **8/8 pass** |
+| Tier-2 pre-commit, `scripts/broker/` explicitly | never run | **8/8 pass** |
+| pinned packages | 1 | **2** |
+| mutation tests proving non-vacuity | 1 (Hollow) | **6** (Hollow, await plant, M1, M2, M3, re-planted unit bug) |
+
+---
+
+## 7. Open for the architect
+
+1. **`scripts/broker/` is untracked.** Nothing in it is committed, so the commit gate covers it only
+   when it is named explicitly. Recorded as **D1.15**/**D3.2** in `CHECK-DEBT.md`. It should be
+   `git add`ed at the next commit boundary.
+2. **`seam_simulate.py` is not in the pytest suite.** It holds both seam non-vacuity controls and is
+   only ever run by hand. Recorded as **D1.15**. Out of ARC 015's scope; cheap to close.
+3. **`query_order_status` stays sync by contract.** If a vendor ever forces a venue round trip
+   there, that is a contract change to be argued, not a signature to flip — the §4 pending-timeout
+   path calls it.
+4. **D1.12 (reboot persistence) remains open**, untouched as the arc directed.
