@@ -817,3 +817,109 @@ possible. Gateway never connected this arc; D1.12 untouched.
 Suites: project pytest 154 → **155**; adapter driver 42 → **79** assertions; seam simulator 26 → **33**;
 `verify.py` 6 passed exit 0; Tier-2 pre-commit 8/8 on the tracked tree **and** 8/8 over
 `scripts/broker/` explicitly.
+
+---
+
+## ARC 016 — commit the broker package; prove gate coverage; re-validate live (2026-08-10)
+
+Consolidation arc. No new features. Three jobs: get two arcs of uncommitted code into history,
+prove the commit gate covers it *by virtue of tracking rather than naming*, and re-validate the
+paths that changed after ARC 014's live run.
+
+**Part 1 — tracked, and the gate proved to follow.** `scripts/broker/` (4 files, 2 488 lines) and
+`scripts/tests/test_broker_order.py` (1 270 lines) committed, plus the ARC 014/015 infrastructure
+changes that had also never landed (`pyproject.toml`, `checks/pinned_deps.json`,
+`directory_structure.md` v1.4.0, `CHECK-DEBT.md`, and 163 lines of `SESSION.md` history). Two
+commits, both pushed the moment they existed — the arc's actual risk was durability, and that should
+not wait for the merge.
+
+*Untracked audit, reported in full:* **zero** non-ignored untracked files remain, tree-wide and
+scoped to `scripts/` `checks/` `risks/` `databases/` `docs/`. The *ignored* listing was the
+informative one and produced a finding — `state/encrypt_credentials.py` is **real Python no gate can
+see**, because `.gitignore` excludes `state/` wholesale (correctly — hardware UUID and credential
+JSON) and executable code lives in there too. Opened as **D1.16**; not fixed here, since moving
+credential tooling is neither trivial nor in scope. Also gitignored rather than committed:
+`downloads/*.py` (superseded inbound drafts — the landed copies have since grown 626→790, 258→525
+and 489→1270 lines, so committing them would plant a second stale source of truth) and
+`.testmondata-shm`/`-wal`, which the bare `.testmondata` rule did not cover and which a `git add -A`
+duly staged.
+
+*The gate proof.* Non-vacuity asserted first (§7.3): at `HEAD` the gate's scope contained **zero**
+broker files; after `git add` it contained five. CONTROL clean 8/8. Planted one `F821` undefined
+name in `broker_seam.py`, then ran `pre-commit run --all-files` **naming no path anywhere** — three
+independent hooks failed and each named the site: ruff `F821` at `broker_seam.py:648:12`, pylint
+`E0602` at `648:11`, mypy `name-defined` at `648` ("checked 36 source files"). Plant removed, all
+five files verified **byte-identical by sha256**, CONTROL green again.
+
+**Part 2a — the seam simulation into the suite (D1.15 discharged).** `test_seam_simulate.py`, under
+`scripts/tests/` rather than inside `seam_simulate.py`: `testpaths` is `scripts/tests/`, so a
+`test_*` added to `scripts/broker/` would have *looked* converted and been collected never. Controls
+asserted verdict-by-verdict rather than inferred from a green aggregate (§7.7) — Hollow 9 failures,
+working Stub 0, await checker exactly 1 divergence naming `query_positions`.
+
+**The can-fail caught a defect in the brand-new test.** The hollow control was written with two
+separate `RecordingSink` instances, so the adapter emitted into one and the assertions read the
+other. Driven against a *working* adapter it still reported failures: it could not distinguish
+"hollow" from "behaving" and would have stayed green through the exact regression it exists to
+catch. Fixed to share one sink. 4/4 can-fails then demonstrated.
+
+**Part 2b — the joint dependency written into the code.** ARC 015 called the `fetchFields` narrowing
+"belt and braces over the gate". That framing is wrong and now says so at all three sites a future
+author reads in isolation. The gate does **not** cover `fetchFields`: `_startup_complete` opens the
+instant `connectAsync` returns and `_rebuild_mirror()` awaits *after* that, so the entire mirror
+rebuild runs with the gate OPEN — and `_connected` is already `True` there, so a concurrently
+scheduled task can `place_order` inside the same window and populate `_from_ib`, while IBKR order
+ids **reset across sessions**. A replayed historical execution can therefore carry an id matching a
+live order: a phantom fill on the order path. Conversely `fetchFields` suppresses one named source
+while the gate is venue-agnostic and re-arms per call. Jointly sufficient, individually not.
+
+**Part 2c — promoted to doctrine.** `debug.md` **v1.2.0 §7.12 — THE STANDING QUESTION**: *what would
+have to be true for this to pass while measuring nothing?*, required of every new gate and answered
+**in writing, beside the gate**. Seven instances tabulated with what each measured and how each
+stayed green; the eighth (found this arc, above) recorded as evidence the discipline pays on first
+use. Failure mode **#14** added — *scope set by an external mutable list*, distinct from #2 in that
+the gate is configured exactly as intended and the list it consults moved, so no diff to the gate
+ever appears. Linked from the trigger table, the §9 per-instrument checklist and §11.
+
+*Citation correction.* The brief directed this at **D2.8**. D2.8 is doctrine B.7 — *no harness parses
+a constant out of a document* — the derive-never-restate class, not the vacuous-pass class. It
+remains open and unassigned; nothing about it was discharged. The items actually carrying the class
+are D1.10, D2.7, D2.12 and all of D3. Recorded rather than silently redirected: a pointer that reads
+as authoritative while naming the wrong target is itself a stale literal anchor (§7.4).
+
+**Part 3 — live on clientId=905, market OPEN** (Monday 2026-08-10, 13:44 CDT; MES trades to 16:00
+CT). Paper DUR250018, MESU6 only, qty 1. **28 PASS / 0 FAIL / 2 CANNOT-MEASURE.**
+
+- 3a: `connect()` 311 ms, `on_session(UP)`, mirror rebuild clean, **no ack or fill from startup
+  replay on either connect**. `query_balance` real (cash 20 334.15, netliq 20 339.43) with
+  `ts_is_venue_sourced=False` intact (GAP-2). `get_margin("MESU6")` **2 449.13 USD/contract in 84 ms**
+  via `whatIfOrderAsync` under timeout — the ARC 012 trap avoided.
+- **The zero-qty filter was proved live and non-vacuously**: the venue *did* emit a `position=0` row
+  for MESU6 on the flat account (`[('MESU6', 0, 0.0)]`) and the adapter returned `[]`. This is a
+  venue behaviour that offline could only assert about, and it reproduced.
+- 3b reconnect — the one offline genuinely could not prove: handler counts per event **identical**
+  before and after the second connect (`orderStatus 1, execDetails 1, error 2, position 1,
+  accountValue 1, disconnected 1`), so `_wire_events` is idempotent against a real second connect.
+  Id map non-vacuously populated first (`{'arc016-3b-map': 29}`) and **empty** after. No replay ack
+  or fill.
+- 3c lifecycle: ack **exactly once** and **preceding** the fill in arrival order; `cumQty` carried;
+  `avg_price` per-unit proved against a **derived** anchor — venue `avgCost` 38 863.11 ÷ multiplier 5
+  = 7 772.622 = the adapter's `avg_price`, where the ARC 014 defect would have reported 38 863.11.
+- **`flatten()` against a real open position: 0.292 ms, ZERO `reqPositionsAsync` calls during the
+  call** (wrapped and counted), venue confirms flat afterwards. Far-off LMT placed, `query_order_status`
+  → working, cancelled, → cancelled/terminal.
+- **CANNOT-MEASURE ×2, stated not implied.** (1) `PendingSubmit → Filled` with no intermediate state
+  was **not observed** — both fills went `PreSubmitted → Filled`. Not manufactured, per scope; the
+  ack-synthesis path stays offline-proved for that trigger. It is not untested live, though: an
+  earlier run of the same harness *did* emit a synthesised ack via the `Cancelled` trigger
+  (`"synthesised: Cancelled arrived with no prior ack"`), and the second run did not — which is
+  itself evidence the §2c race is real and timing-dependent. (2) **D1.17 opened**: one requested
+  `disconnect()` emits **two** `on_session(DOWN)` events — `"transport disconnected"` from
+  `_on_ib_disconnected` and `"requested"` from `disconnect()`. Acks are deduped; session events are
+  not. Benign on level, a defect on edge; the Limiter owns that contract.
+
+Account confirmed **flat by a fresh venue query** at close; `finally` cleanup ran.
+
+Suites: project pytest 155 → **159**; seam simulator now carried by the suite; `verify.py` 6 passed
+exit 0; Tier-2 pre-commit **8/8 on the tracked tree**, which for the first time means 8/8 including
+`scripts/broker/`. Debt 26 → **27** (D1.15 discharged; D1.16, D1.17 opened).

@@ -1,352 +1,314 @@
-# ARC 015 — RESULTS
+# ARC 016 RESULTS — commit the broker package; prove gate coverage; re-validate live
 
-**Async contract applied; all four ARC 014 findings closed, each with a mutation-proved test** —
-2026-08-10
-
----
-
-## 0. Handoff note
-
-`~/nix/downloads/arc_015_async_contract.md` arrived and was executed end to end. Everything it
-references was on disk: `scripts/broker/{broker_seam,broker_order_ibkr,ibkr_mapping,seam_simulate}.py`
-and `scripts/tests/test_broker_order.py`, all carrying ARC 014's `avg_price` unit fix and
-`check_await_conformance()`. All edits were made **in place**; nothing was replaced from the
-architect's copies.
-
-ARC 014's own arc document still has not reached the machine (the second such loss after
-`VERIFY-AND-CHECKS.md` in ARC 008). Nothing in ARC 015 depended on it.
-
-One housekeeping note: `downloads/broker_seam.py`, `downloads/broker_order_ibkr.py`,
-`downloads/ibkr_mapping.py`, `downloads/simulate.py`, `downloads/test_broker_order.py` are the
-architect's original copies and are now **substantially behind** the landed code. They should not be
-read as current. `scripts/broker/` and `scripts/tests/` are the source of truth.
+**Date:** 2026-08-10 · **Node:** node02 (MS-01) · **Branch:** `arc-016-broker-consolidate`
+**Environment for every live result:** IB Gateway 127.0.0.1:4002, clientId=905, paper DUR250018,
+MESU6 only, qty 1. Market **OPEN** (Monday 2026-08-10 13:44 CDT; MES trades to 16:00 CT).
 
 ---
 
-## 1. Part 1 — the sync/async split, applied
+## Definition of success — every box, against the criterion as written
 
-The operator-ratified split is implemented exactly as specified, and the decision (with the rejected
-alternative) is written into `BrokerOrderPort`'s docstring so it is not relitigated from the code.
-
-| verb | contract | applied to |
+| # | criterion | verdict |
 |---|---|---|
-| `place_order`, `cancel_order`, `flatten`, `disconnect`, `query_order_status` | **sync** | port, Stub, Hollow, IBKR adapter, mapping skeleton, every caller and test |
-| `connect`, `query_positions`, `query_balance`, `get_margin` | **async** | same |
-
-`check_await_conformance()` is clean on all four conformance subjects (Stub, Hollow, the IBKR
-adapter, the mapping skeleton).
-
-### It is demonstrably capable of failing
-
-Planted **one plausible divergence** in the real adapter — `query_positions` served from the
-in-memory mirror with `async` dropped, which compiles, imports, and passes structural conformance —
-then removed it:
-
-```
-BEFORE PLANT — real adapter:
-  structural : CLEAN (all verbs present)
-  await      : CLEAN
-
-WITH PLANT (query_positions served from the mirror, `async` dropped):
-  structural : CLEAN (all verbs present)
-  await      : ['query_positions: port declares async, adapter is sync']
-
-AFTER REMOVING THE PLANT:
-  structural : CLEAN (all verbs present)
-  await      : CLEAN
-
-plant removed; adapter byte-identical to its pre-plant state
-```
-
-Note the middle block's first line: **structural conformance stayed CLEAN through the divergence.**
-That is the point of the second checker, measured rather than argued.
-
-The plant is not only a one-off. It also lives permanently as `AwaitDivergentBrokerOrder` in
-`broker_seam.py` — a Hollow subclass whose sole purpose is to be caught — and both suites assert the
-checker returns exactly one entry naming `query_positions`. A demonstration that is deleted has to
-be taken on trust by the next reader.
-
-### The false docstring claim is gone
-
-The `THREADING/ASYNC NOTE` asserting "the sync surface the Limiter sees is satisfied by scheduling
-onto the loop" is deleted. Its replacement states what is actually true — the send path is
-non-blocking because `ib.placeOrder`/`ib.cancelOrder` are themselves non-blocking, **not** because
-anything schedules — and records the retraction, because a docstring describing a mechanism the code
-does not have is this file's most dangerous failure mode.
-
-### Hollow is still a failing control
-
-Converted along with the real adapters, deliberately: a control that started failing the *await*
-check for a shape reason would have stopped measuring behaviour. It still fails the behavioural
-suite on **9 assertions**:
-
-```
-NON-VACUITY: Hollow FAILS behavioural assertions (control)
-  -> 9 failures: ['connect emits on_session', 'place_order emits on_ack',
-     'status is working after place', 'adapter can be driven to a fill (no opt-out)',
-     'position exists after fill',
-     'flatten assertion is non-vacuous (a position existed to clear)',
-     'balance is non-trivial', 'balance carries venue_seq_ts',
-     'get_margin returns a real figure']
-```
+| 1 | `scripts/broker/` and the adapter test tracked; full untracked audit reported | **PASS** |
+| 2 | Gate coverage proved by **tracking, not naming**: defect planted, caught by an unqualified `pre-commit run --all-files`, removed, byte-identical | **PASS** |
+| 3 | Committed, PR'd, merged to main; commit message covers ARC 014 **and** 015 | **PASS** |
+| 4 | `seam_simulate.py` in the pytest suite; both non-vacuity controls still *fail* as controls | **PASS** |
+| 5 | The joint gate/`fetchFields` dependency written into the code | **PASS** |
+| 6 | D2.8 promoted to doctrine with the standing question and the seven-instance evidence base | **PASS** (with a citation correction — see §2c) |
+| 7 | Live: connect, positions, balance, margin verified on clientId=905 with real figures | **PASS** |
+| 8 | Live: reconnect proves `_wire_events` idempotency by handler count | **PASS** |
+| 9 | Live: order lifecycle on MES — ack-once, per-unit `avg_price`, cancel, status | **PASS** |
+| 10 | Live: `flatten()` closes a real position with zero venue queries; venue confirms flat | **PASS** |
+| 11 | Ack-synthesis path either observed live or explicitly recorded as offline-proved only | **PASS** — recorded, with a partial live observation |
+| 12 | Account confirmed flat at close via fresh venue query | **PASS** |
+| 13 | `verify.py` exit 0; Tier-2 gates pass on the now-tracked tree | **PASS** |
 
 ---
 
-## 2. Part 2 — the four findings, closed
+## Part 1 — tracked, and the gate proved to follow
 
-Every fix below was **mutation-tested**: the fix was reverted, the suite re-run, and the failing
-assertions recorded. A test that passes both with and without the fix proves nothing.
+### 1.1–1.2 What is now tracked, and the audit in full
 
-### 2a. Zero-qty rows filtered from `query_positions()`
+Committed: `scripts/broker/` (4 files, 2 488 lines), `scripts/tests/test_broker_order.py`
+(1 270 lines), and the ARC 014/015 infrastructure that had also never landed — `pyproject.toml`,
+`checks/pinned_deps.json`, `directory_structure.md` v1.4.0, `CHECK-DEBT.md`, 163 lines of
+`SESSION.md` history, and the ARC 015/016 briefs (following the existing `downloads/arc_*.md`
+convention). **Both commits were pushed to origin the moment they existed** — the risk this arc
+exists to retire is durability, and that should not wait for a merge.
 
-Filtered at the single point both the returned list and the mirror are built from, so they cannot
-diverge again. Mutation — filter removed:
-
-```
-M1 (2a) zero-qty filter removed          suite exit=1  (CAUGHT)
-  XX §2a: zero-qty rows filtered from the RETURNED list
-  XX §2a: the real position still comes back (filter is not a black hole)
-  XX §2a: a caller's truthiness test sees FLAT when the account is flat
-```
-
-The third assertion is the caller idiom §4 actually invites: `if await broker.query_positions():
-halt()`.
-
-### 2b. Startup executions — mechanism stated
-
-**Mechanism of record: a connect-scoped gate.** `self._startup_complete` is set False at the top of
-`connect()` and True the instant `connectAsync` returns; `_on_ib_order_status` and
-`_on_ib_exec_details` refuse while it is closed.
-
-Why this one over the alternatives:
-- **Venue-agnostic** — it catches any startup replay whatever ib_async decides to fetch, including
-  anything a future version adds. Narrowing `fetchFields` alone only covers what is known today.
-- **Reconnect-safe for free** — the gate is scoped to the CALL, so it re-arms on every `connect()`.
-  There is no separate reconnect path to remember, which matters because the Gateway restarts daily
-  at 03:00.
-- **The window is provably empty** — there is no `await` between `connectAsync` returning and the
-  gate opening, so the loop cannot dispatch anything into it. It opens **before** `_rebuild_mirror()`
-  deliberately: that method awaits `reqPositionsAsync`, and a genuine fill can land during the await
-  (the existing D3 race). Holding the gate shut across it would drop a real fill to catch a
-  historical one.
-
-Belt and braces at the source: `fetchFields` now drops `EXECUTIONS`, so the replay is not requested
-either. The gate is the guarantee; this only reduces what has to be caught. Nothing reads
-`ib.fills()`/`ib.executions()` — the adapter keeps its own `(order_id, exec_id)` ledger.
-
-Two further corrections found while building it:
-- **The id maps are now cleared BEFORE `connectAsync`, not after.** The replay arrives *during*
-  `connectAsync`; clearing afterwards meant a reconnect still held the previous session's map while
-  the venue was replaying it. That is the exact mechanism by which the old "dropped because
-  `_from_ib` happened to be empty" accident would have failed on a reconnect.
-- **`_wire_events()` is now idempotent per IB instance.** ib_async's `Event` uses `+=`, so wiring
-  once per `connect()` registered a second copy of every handler after the 03:00 restart and a third
-  after the next. The dedupe sets hid the duplicate ack and duplicate fill, so the only honest
-  observable is the handler count — which the suite now asserts.
-
-The test drives it as a **reconnect**, so the historical execution carries the same `orderId` the
-sequence reissues. Mutation — gate removed AND the clear moved back after `connectAsync` (i.e. the
-pre-ARC-015 code):
+**Untracked audit — the full list, as required:**
 
 ```
-M2 (2b) startup gate removed AND id-map clear moved back   suite exit=1  (CAUGHT)
-  XX §2b: historical execution replayed at connect produces NO fill
-  XX §2b: historical orderStatus replayed at connect produces NO ack
-  XX §2b: connectAsync asked for StartupFetch WITHOUT EXECUTIONS
-  XX §2b: still ignored on the SECOND reconnect (survives the 03:00 restart, twice)
+A. non-ignored untracked, whole tree            (none)
+B. scoped: scripts/ checks/ risks/ databases/ docs/   (none)
 ```
 
-There is also an assertion that the gate **opens** — a gate that never opens drops every real fill,
-which would be a worse defect than the one being fixed.
+**Zero.** Stated, not assumed. The *ignored* listing was the informative one and produced a finding:
 
-### 2c. The missing-ack race — closed
+- **`state/encrypt_credentials.py` is real Python that no gate can see.** `.gitignore` excludes
+  `state/` wholesale — correctly, since it holds the hardware UUID and credential JSON — but
+  executable code lives there too, so it is untracked and outside `--all-files` for exactly the
+  reason D3.2 records. **Failure mode #14 sitting in the tree today.** Opened as **D1.16**; not
+  fixed, because the arc forbade behaviour changes and moving credential tooling is not trivial.
 
-Any event that proves the venue accepted an order — a fill, or a terminal transition implying it was
-live — synthesises the ack **first**, so the Limiter can never observe a fill or a cancel for an
-order it never saw accepted. Ordering, not merely presence, is the guarantee.
+**Gitignored rather than committed** (the arc's "check for anything that should not be tracked"):
 
-Three things worth flagging in the implementation:
+- `downloads/*.py` — superseded inbound drafts. The landed copies have grown 626→790, 258→525 and
+  489→1270 lines, so committing them would plant a **second, stale source of truth** for live code.
+- `.testmondata-shm` / `.testmondata-wal` — the bare `.testmondata` rule did not cover the SQLite
+  WAL sidecars, and a `git add -A` duly staged them.
+- `__pycache__/`, `.DS_Store`, `._*` were already covered.
 
-1. **`Inactive`/`ValidationError` deliberately do NOT synthesise.** They are terminal *without*
-   acceptance; IBKR delivers the reason on `errorEvent`, which raises a REJECTED ack. Synthesising
-   ACCEPTED there would invent an acceptance that never happened — the opposite defect, and worse.
-   Two assertions guard this direction.
-2. **All ack paths share one gate** (`_ack_once`) and one dedupe set, so venue-ack, error-rejection
-   and synthesis cannot both fire for the same order.
-3. **A real venue ack is not labelled "synthesised".** The first cut routed the normal
-   PreSubmitted path through the synthesis helper; the suite caught it immediately. `reason` is the
-   provenance channel, and destroying that distinction would make the synthesis unauditable.
+### 1.3 The gate proof — scope, not invocation
 
-Proof of ordering needed a cross-stream observable, so `RecordingSink` gained a `sequence` list
-recording every event in arrival order — the per-stream lists cannot express "the ack preceded the
-fill", and an adapter emitting the fill first would satisfy every per-stream assertion. Both event
-orderings are driven, because IBKR does not guarantee which lands first. Mutation — synthesis
-removed:
+**Non-vacuity first (§7.3), before any plant.** `pre-commit --all-files` derives its file list from
+`git ls-files`:
 
 ```
-M3 (2c) ack synthesis removed             suite exit=1  (CAUGHT)
-  XX §2c (exec before status): an ack IS raised for a PendingSubmit -> Filled order
-  XX §2c (exec before status): the ack PRECEDES the fill in arrival order
-  XX §2c (exec before status): the synthesised ack says so, so provenance is not lost
-  XX §2c (exec before status): exactly ONE ack — synthesis does not double up
-  XX §2c (status before exec): an ack IS raised for a PendingSubmit -> Filled order
-  XX §2c (status before exec): the ack PRECEDES the fill in arrival order
-  XX §2c (status before exec): the synthesised ack says so, so provenance is not lost
-  XX §2c (status before exec): exactly ONE ack — synthesis does not double up
-  XX §2c: a cancel with no prior ack synthesises the ack FIRST
+at HEAD (untracked = invisible):   (no broker files at all)
+after git add:                     scripts/broker/broker_order_ibkr.py
+                                   scripts/broker/broker_seam.py
+                                   scripts/broker/ibkr_mapping.py
+                                   scripts/broker/seam_simulate.py
+                                   scripts/tests/test_broker_order.py
 ```
 
-The first run of that mutation aborted on an `IndexError` instead of reporting nine named failures.
-The indexing is now guarded — a test that aborts is a worse instrument than one that fails.
-
-### 2d. `FakeIB` fidelity — and the re-planted bug is caught
-
-The fake now carries what it needs to *represent* the defect:
-
-- `fut()` emits a real `multiplier`, as a string, as IBKR sends it — MES 5, ES 50, MNQ 2, NQ 20, by
-  longest-prefix match so `MESU6` resolves to MES and not ES.
-- `positionEvent` and `reqPositionsAsync` report `avgCost` as **notional** — `price × multiplier`.
-- The **commission wrinkle** ARC 014 measured is encoded:
-  `avgCost = price × multiplier + commission`. For the measured fill, `7773.50 × 5 + 0.61 =
-  38868.11`, and `38868.11 / 5 = 7773.622` — reproducing the 0.122 provenance gap exactly.
-- Mirror assertions read `avg_price`, on every path: `positionEvent`, `on_position`,
-  `query_positions`, and the fill path (which is already per-unit and must NOT be divided).
-- A second instrument uses a **different multiplier** (ES 50), so a hardcoded 5 cannot pass.
-
-**The original unit bug re-planted, and caught.** `replanted_unit_bug_is_caught()` replaces
-`_avg_price_from_cost` with the verbatim pre-fix behaviour and asserts the assertions now fail:
-
-```
-NON-VACUITY §2d: the RE-PLANTED ARC 014 unit bug is CAUGHT by this suite
-  -> caught 6: ['mirror avg_price is per-unit (38868.11 != 7773.622)',
-                'mirror avg_price is NOTIONAL — the ARC 014 unit defect',
-                'avg_price within one tick of the raw execution price (gap 31094.61)',
-                'on_position avg_price is per-unit (38868.11)',
-                'ES avg_price normalised by ITS OWN multiplier (250002.2)',
-                'query_positions avg_price is per-unit (38868.11)']
-```
-
-Six independent assertions catch it, including one that names the defect's *signature* rather than
-just an inequality. A following assertion confirms the plant was removed and everything passes
-again. This is permanent, not a one-off — the same pattern as the Hollow control, applied to a
-defect instead of an adapter.
-
----
-
-## 3. Part 3 — libraries
-
-**Adopted:**
-- **`pytest-asyncio 1.4.0`**, pinned in `checks/pinned_deps.json` (so `check_python_deps` covers its
-  drift) and installed. Configured `asyncio_mode = "strict"`, **not** `auto`: auto silently coerces
-  every `async def test_*` onto a loop, so a missing marker is invisible; strict makes "this test
-  runs on the loop" a written decision and fails loudly otherwise — the same class of defect
-  `check_await_conformance()` exists to catch one layer down.
-- **`asyncio.TaskGroup` over bare `create_task`** — recorded as policy in the adapter's module
-  docstring. There is currently **no supervised concurrency anywhere in this code** (`grep` for
-  `create_task`/`ensure_future` across `scripts/` and `checks/` returns nothing), so the policy is
-  written *before* the first task rather than after.
-
-**NOT adopted, and why — recorded where a future author will read it:** a `RETRY POLICY` block in
-`broker_order_ibkr.py`'s module docstring, immediately above the code, stating that no retry or
-backoff may be added to `place_order`, `cancel_order` or `flatten`. §4 resolves a pending timeout by
-querying order status and **never auto-resends**; a retry wrapper turns one intended order into two
-live ones the venue accepted and cannot tell apart. The sharpest part is written down explicitly: a
-socket write that raises *after* the request reached the venue is indistinguishable, from inside
-this process, from one that never left — which is exactly why `place_order` rolls back and re-raises
-rather than retrying. Retry is admissible only on genuinely idempotent reads, and even there must
-not mask a CANNOT-MEASURE as a stale value.
-
-Two assertions enforce it rather than trusting the prose:
-- `NO-RETRY: a failed placement leaves ZERO orders at the venue (no auto-resend)`
-- `margin: a prior success is NOT served as a fallback on a later failure`
-
-Nothing else was added.
-
----
-
-## 4. What the gate itself measured
-
-Bringing `scripts/broker/` into the static sweep's **file list** surfaced something worth your
-attention, unrelated to this arc's findings.
-
-Those files have been in the tree since ARC 014 and were passing `pre-commit run --all-files`. They
-were passing because they are **untracked**, and `--all-files` means all *git-tracked* files. Run
-explicitly against them, the same hooks produced: ruff 11 findings, pylint 229 findings across 20
-codes, mypy 7 type errors in 3 files, complexipy 2 drivers over the 15 ceiling (37 and 25).
-
-**A gate whose scope is set by what has been `git add`ed can be silenced by not adding.** That is
-the "can it be made to pass by editing something it also reads?" question from the debug doctrine's
-Stage 2, in a form nobody edited anything to create.
-
-All of it is now clean, both ways:
-- Real fixes where the finding was real: two lifted helper functions, three over-long lines, a
-  needless lambda, an un-narrowed `float()`, `_symbol_for` returning a non-`str`, a `RecordingFeedSink`
-  (the seam suite had been passing an **order** sink into the **datafeed** port — invariant 3 says
-  they are disjoint, and it only survived because no feed event was ever driven through it), and the
-  two long drivers split into named sections.
-- Named, reasoned suppressions where the finding was not: e.g. `FakeIB` **must** use camelCase to
-  mirror ib_async's real surface, and the tests **must** read `_mirror`/`_from_ib` because that
-  internal state is the thing under test. Every suppression names its codes and states why — never a
-  blanket disable.
-
-Side effect: this discharges **D3.2** (ruff/pylint/mypy/complexipy never demonstrated capable of
-failing on this repo) with evidence from real code rather than a contrived plant.
-
----
-
-## 5. Definition of success
-
-- [x] **Port split applied per Part 1; `check_await_conformance()` clean AND demonstrated capable of
-      failing via a planted divergence that it names** — §1. Clean on all four subjects; plant named
-      `query_positions` and reported both sides of the disagreement; plant removed, file
-      byte-identical; kept permanently as `AwaitDivergentBrokerOrder`.
-- [x] **The false scheduling claim removed from `broker_order_ibkr.py`** — §1, replaced with what is
-      true and with the retraction recorded.
-- [x] **`HollowBrokerOrder` still fails the behavioural suite after conversion** — §1, 9 failures.
-- [x] **Zero-qty rows filtered from `query_positions()`; test fails without the fix** — §2a,
-      mutation M1, 3 assertions.
-- [x] **Startup-execution handling made deliberate with the mechanism stated; test proves it is
-      ignored by design and survives a reconnect** — §2b, connect-scoped gate (stated, with the
-      reasoning for choosing it), plus two related corrections; mutation M2, 4 assertions; asserted
-      across two reconnects.
-- [x] **Missing-ack race closed; ack proven to precede the fill on `PendingSubmit → Filled`** — §2c,
-      both event orderings, cross-stream ordering observable; mutation M3, 9 assertions.
-- [x] **`FakeIB` carries multiplier/notional/commission fidelity; the original `avg_price` unit bug
-      re-planted and now caught** — §2d, caught by 6 assertions.
-- [x] **`pytest-asyncio` pinned in `checks/pinned_deps.json`** — 1.4.0, installed,
-      `check_python_deps` green against it.
-- [x] **No retry/backoff on the order path; the reasoning recorded where a future author will read
-      it** — §3, module docstring plus two enforcing assertions.
-- [x] **All suites green; Tier-2 gates pass; `verify.py` exit 0** — §6.
-- [x] **Account confirmed flat at close with a fresh venue query, if any order was placed** — **no
-      order was placed.** Every finding was closed offline, which is what Part 2d existed to make
-      possible. The Gateway was never connected and no live session was opened during this arc.
-
----
-
-## 6. Numbers
-
-| measure | before | after |
+| step | command | result |
 |---|---|---|
-| project pytest suite | 154 passed | **155 passed** |
-| adapter driver assertions (`test_broker_order.py`) | 42 | **79** |
-| seam simulator assertions (`seam_simulate.py`) | 26 | **33** |
-| `verify.py` | 6 passed, exit 0 | **6 passed, exit 0** |
-| Tier-2 pre-commit, tracked tree | 8/8 pass | **8/8 pass** |
-| Tier-2 pre-commit, `scripts/broker/` explicitly | never run | **8/8 pass** |
-| pinned packages | 1 | **2** |
-| mutation tests proving non-vacuity | 1 (Hollow) | **6** (Hollow, await plant, M1, M2, M3, re-planted unit bug) |
+| CONTROL | `pre-commit run --all-files` | **8/8 Passed, exit 0** |
+| PLANT | `F821` undefined name in `broker_seam.py` | — |
+| CAN-FAIL | `pre-commit run --all-files` — **no path named anywhere** | **exit 1** |
+| RESTORE | plant removed | **all five files byte-identical (sha256)** |
+| CONTROL | `pre-commit run --all-files` | **8/8 Passed, exit 0** |
+
+Three independent hooks failed and **each named the planted site**:
+
+```
+ruff    F821 Undefined name `ARC016_THIS_NAME_IS_DELIBERATELY_UNDEFINED`
+             --> scripts/broker/broker_seam.py:648:12
+pylint  scripts/broker/broker_seam.py:648:11: E0602: Undefined variable ... (undefined-variable)
+mypy    scripts/broker/broker_seam.py:648: error: Name "..." is not defined  [name-defined]
+        Found 1 error in 1 file (checked 36 source files)
+```
+
+A defect that ruff **cannot auto-fix** was chosen deliberately: `ruff-check` runs with `--fix`, so an
+unused import would have been silently repaired and the evidence would have been "files were
+modified by this hook" rather than a named line. This is a *report*, not a repair.
 
 ---
 
-## 7. Open for the architect
+## Part 2 — the cheap debts
 
-1. **`scripts/broker/` is untracked.** Nothing in it is committed, so the commit gate covers it only
-   when it is named explicitly. Recorded as **D1.15**/**D3.2** in `CHECK-DEBT.md`. It should be
-   `git add`ed at the next commit boundary.
-2. **`seam_simulate.py` is not in the pytest suite.** It holds both seam non-vacuity controls and is
-   only ever run by hand. Recorded as **D1.15**. Out of ARC 015's scope; cheap to close.
-3. **`query_order_status` stays sync by contract.** If a vendor ever forces a venue round trip
-   there, that is a contract change to be argued, not a signature to flip — the §4 pending-timeout
-   path calls it.
-4. **D1.12 (reboot persistence) remains open**, untouched as the arc directed.
+### 2a. `seam_simulate.py` into pytest — D1.15 **discharged**
+
+`scripts/tests/test_seam_simulate.py`. **It does not live inside `seam_simulate.py`**, deliberately:
+`testpaths = ["scripts/tests"]`, so a `test_*` function added to `scripts/broker/` would have looked
+converted and been collected **never** — strictly worse than the honest status quo. The driver stays
+runnable standalone.
+
+Controls asserted **verdict-by-verdict**, not inferred from a green aggregate (§7.7):
+
+| control | required behaviour | measured |
+|---|---|---|
+| `HollowBrokerOrder` | must **FAIL** behaviourally | **9 failures** |
+| working `StubBrokerOrder` | must **PASS** | **0 failures** — this is what makes the row above discriminating |
+| `AwaitDivergentBrokerOrder` | must be **NAMED** | exactly **1** divergence: `query_positions: port declares async, adapter is sync` |
+
+**The can-fail immediately caught a defect in the brand-new test.** The hollow control was written
+with **two separate `RecordingSink` instances** — the adapter emitted into one, the assertions read
+the other. Driven against a *working* adapter it **still reported failures**: it could not tell
+"hollow" from "behaving", and would have stayed green through the exact regression it exists to
+catch. Fixed to share one sink; 4/4 can-fails then demonstrated. Recorded in doctrine as the eighth
+instance, and the first found *by applying the new principle*.
+
+### 2b. The joint dependency, written where both are set
+
+ARC 015 framed the `fetchFields` narrowing as "belt and braces over the gate". **That framing is
+wrong**, and it is the framing that invites a future author to restore `EXECUTIONS`. Corrected at all
+three sites read in isolation: `_startup_fetch_fields()`, the `connect()` docstring, and the line
+where the gate opens.
+
+**The gate does not cover `fetchFields`.** `_startup_complete` is set `True` the instant
+`connectAsync` returns, and `_rebuild_mirror()` awaits **after** that — so the whole mirror rebuild
+runs with the gate **OPEN**. Worse, `_connected` is already `True` there, so a concurrently scheduled
+task can call `place_order` inside the same window and populate `_from_ib`; and **IBKR order ids reset
+across sessions**, so a replayed *historical* execution can carry an id that now matches a *live*
+order → a phantom fill reported to the Limiter.
+
+**`fetchFields` does not cover the gate.** It suppresses one replay source *by name*. The gate is
+venue-agnostic, catches whatever a future `ib_async` decides to fetch, and re-arms on every reconnect
+for free.
+
+Jointly sufficient. Individually not. Removing either opens a path the other does not close.
+
+### 2c. Promoted to doctrine — `debug.md` v1.2.0
+
+**§7.12 — THE STANDING QUESTION:** *what would have to be true for this to pass while measuring
+nothing?* — required of every new gate and **answered in writing, beside the gate**, not in an arc
+report. The seven instances are tabulated as the evidence base, each with *what it measured* and
+*how it stayed green*, so the principle arrives with proof rather than as an assertion. Also added:
+failure mode **#14 — scope set by an external mutable list** (distinct from #2: the gate is
+configured exactly as intended and the *list it consults* moved, so no diff to the gate ever
+appears). Linked from the trigger table, the §9 per-instrument checklist, and §11.
+
+> ### ⚠ Citation correction — please read
+>
+> The brief directed this promotion at debt item **D2.8**. **D2.8 is doctrine B.7 — *"no harness
+> parses a constant out of a document and asserts the code equals it"*** — which is the
+> **derive-never-restate** class, **not** the vacuous-pass class. It remains **open and unassigned**;
+> nothing about it was discharged, and a future arc reading "D2.8 was promoted" would find a doctrine
+> section with nothing to do with parsing constants out of documents.
+>
+> The ledger items that actually carry the promoted class are **D1.10** (each hook actually capable
+> of failing), **D2.7** (nothing baselined on a pristine tree — bandit scanning nothing is its
+> measured instance), **D2.12** (a suite that silently skips a gate reports GREEN) and the whole of
+> **D3**, whose header states the principle outright. §7.12 now stands over those.
+>
+> Recorded in the ledger rather than silently redirected, because **a pointer that reads as
+> authoritative while naming the wrong target is itself a stale literal anchor** — §7.4, and the same
+> class as the ledger's own miscounted series row.
+
+---
+
+## Part 3 — live re-validation, clientId=905
+
+**28 PASS · 0 FAIL · 2 CANNOT-MEASURE.** Market state: **OPEN**.
+
+### 3a. Read-only
+
+| assertion | measured |
+|---|---|
+| `connect()` succeeds | **311 ms** |
+| `on_session(UP)` emitted | `[('up', None)]` |
+| mirror rebuild does not raise | clean, `mirror={}` |
+| no ack **or** fill from startup replay — **1st connect** | `acks=[]` `fills=[]` |
+| `query_positions()` — account flat | `[]` |
+| `query_balance()` real figures | cash **20 334.15**, netliq **20 339.43**, maint 0.00, init 0.00 |
+| `ts_is_venue_sourced=False` still set (GAP-2) | `False` |
+| `get_margin("MESU6")` via `whatIfOrderAsync` under timeout | **2 449.13 USD/contract in 84 ms** (ARC 012 trap avoided) |
+
+**The zero-qty filter was proved live and NON-VACUOUSLY.** The arc anticipated this might be
+unprovable — it was not. The venue **did** emit a `position=0` row on the flat account:
+
+```
+venue raw rows : [('MESU6', 0, 0.0)]      <- a genuine zero-qty row
+adapter returned: []                       <- filtered
+```
+
+This is a *venue* behaviour offline could only assert about, and it reproduced. Criterion met without
+needing the "say so if it doesn't occur" escape.
+
+### 3b. The reconnect — what offline genuinely could not prove
+
+Non-vacuity established first: the id map was **populated** before the disconnect
+(`_to_ib={'arc016-3b-map': 29}` via a far-off LMT), so "does not carry across" is not empty→empty.
+
+| assertion | measured |
+|---|---|
+| **`_wire_events` idempotent — handler count per event unchanged** | `{orderStatus 1, execDetails 1, error 2, position 1, accountValue 1, disconnected 1}` — **identical before and after the 2nd connect** |
+| id map does not carry across | `_to_ib={}` `_from_ib={}` (was `{'arc016-3b-map': 29}`) |
+| no ack from startup replay, 2nd connect | `1 → 1` |
+| no fill from startup replay, 2nd connect | `0 → 0` |
+
+The duplicate-handler bug only manifests on a real second connect. It did not manifest.
+
+### 3c. Order lifecycle — MES, qty 1, flat between tests
+
+| assertion | measured |
+|---|---|
+| ack via the event stream **exactly once** | 1 ack |
+| ack **precedes** fill in arrival order | `['on_ack:arc016-3c-buy:accepted', 'on_fill:...:1@7772.5']` |
+| `on_fill` carries `cumQty` | `filled_qty=1 cumulative_qty=1` |
+| **`avg_price` per-unit, not notional** | see below |
+| **`flatten()` returns without blocking** | **0.292 ms** |
+| **`flatten()` — zero `reqPositionsAsync` during the call** | **0** (wrapped and counted) |
+| venue confirms flat after `flatten()` | fresh query → `[('MESU6', 0)]` |
+| far-off LMT → `query_order_status` | `working`, non-terminal |
+| `cancel_order` → `on_cancel` → status | `cancelled`, terminal |
+
+**`avg_price` re-proved live against a *derived* anchor, not a literal band:**
+
+```
+fill price (Execution, per-unit)  7772.50
+venue avgCost (Position, notional) 38863.11
+multiplier                             5
+avgCost / multiplier              7772.6220
+adapter Position.avg_price        7772.6220   <- matches
+the ARC 014 defect would have reported 38863.11
+```
+
+The residual 0.122 gap between fill price and `avgCost/mult` is the commission, exactly as ARC 014
+measured — a fraction of a tick, not 5×.
+
+### The two CANNOT-MEASURE results — stated, not implied
+
+**1. `PendingSubmit → Filled` with no intermediate state was NOT observed.** Both fills went
+`PreSubmitted → Filled`:
+
+```
+observed venue status sequences: {31: ['PreSubmitted','Filled'],
+                                  32: ['PreSubmitted','Filled'],
+                                  33: ['Submitted','PendingCancel','Cancelled']}
+```
+
+Not manufactured, per scope ("observe, do not force"). **For that trigger the synthesis path remains
+offline-proved only.**
+
+**But it is not untested live.** An earlier run of the identical harness *did* fire the synthesis, via
+the `Cancelled` trigger rather than the `Filled` one:
+
+```
+no venue ack seen for arc016-3b-map before Cancelled — synthesised ACCEPTED (§2c)
+('arc016-3b-map', AckStatus.ACCEPTED, 'synthesised: Cancelled arrived with no prior ack')
+```
+
+The second run did not reproduce it. **That difference is itself the evidence**: the §2c race is real
+and timing-dependent, which is precisely the argument for synthesising rather than trusting that a
+venue ack always arrives first.
+
+**2. D1.17 — one requested `disconnect()` emits TWO `on_session(DOWN)` events.**
+
+```
+[('down', 'transport disconnected'),   <- _on_ib_disconnected, via ib_async's disconnectedEvent
+ ('down', 'requested')]                <- disconnect() itself
+```
+
+Acks are deduped through `_ack_once`; **session events are not deduped at all.** Benign if the
+Limiter treats DOWN as an idempotent *level*, a defect if it ever counts *edges*. Note the two carry
+different reasons, so the provenance channel is intact and the fix is **not** simply "drop one" — §4
+wants an unrequested drop distinguishable from a requested one. Not fixed here: the arc forbade
+behaviour changes. **Discharge with the Limiter**, which owns that contract.
+
+**Account confirmed FLAT by a fresh venue query at close**; the `finally` cleanup ran.
+
+---
+
+## Gates
+
+```
+verify.py                6 passed | 0 failed | 0 cannot measure | 0 skipped   exit 0
+pytest (full, not -testmon)                              159 passed
+pre-commit run --all-files       8/8 Passed  exit 0  — for the first time this
+                                 includes scripts/broker/
+```
+
+Suites: project pytest 155 → **159**. Debt **26 → 27** (D1.15 discharged; D1.16, D1.17 opened) —
+recounted mechanically, not by hand, per the ledger's own lesson.
+
+---
+
+## Findings for claude.ai
+
+1. **The D2.8 citation is wrong** (§2c above). Substance delivered; the pointer needs correcting in
+   whatever the brief was generated from, or the next arc inherits it.
+2. **`state/encrypt_credentials.py` is invisible to every gate** (D1.16). This is the same class the
+   arc was written about, still live in the tree. Needs an arc to move code out of `state/` while
+   leaving the data behind — do **not** un-ignore `state/`.
+3. **`disconnect()` emits two DOWN events** (D1.17). Needs a Limiter-side decision on edge vs level
+   before it is "fixed" in the adapter.
+4. **The series table had silently skipped two arcs** — ARC 014 and ARC 015 added no row at all.
+   Reconstructed mechanically. A ledger that stops being written is indistinguishable from one with
+   nothing to report.
+5. **ARC 013's commit was also unmerged**, stranded on `arc-013-delayed-feed`. It rides to `main` in
+   this PR, so nothing is left behind.
