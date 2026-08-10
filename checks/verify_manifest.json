@@ -18,7 +18,6 @@
     },
     {
       "name": "trading-stack",
-      "parallel": true,
       "checks": [
         "check_python_deps"
       ]

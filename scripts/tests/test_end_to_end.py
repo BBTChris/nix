@@ -2,7 +2,6 @@
 
 import json
 import subprocess
-import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -13,7 +12,7 @@ MANIFEST = REPO / "checks" / "verify_manifest.json"
 def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
     """Invoke the real verify.py as a subprocess, capturing stdout/stderr."""
     return subprocess.run(
-        [sys.executable, str(VERIFY), *args],
+        ["/usr/bin/python3", str(VERIFY), *args],
         capture_output=True,
         text=True,
         check=False,
@@ -41,8 +40,8 @@ def test_real_run_reports_every_check_in_manifest_order() -> None:
     assert positions == sorted(positions), proc.stdout
 
 
-def test_real_run_exits_zero_or_two_never_one_on_a_healthy_box() -> None:
-    """Node identity may be absent pre-install; that is 1, and is informative."""
+def test_real_run_exit_code_is_within_the_documented_taxonomy() -> None:
+    """Exit is 0/1/2 per §4.2; 1 is legitimate (e.g. a real FAIL), not excluded."""
     proc = _run([])
     assert proc.returncode in (0, 1, 2)
     assert "passed" in proc.stdout
