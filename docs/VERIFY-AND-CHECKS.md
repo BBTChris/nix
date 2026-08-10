@@ -244,8 +244,21 @@ drift against the first; a per-check declaration cannot.
 | Runner | Privilege | Runs | Disruptive actions |
 |---|---|---|---|
 | `nix-verify.service` (boot) | `User=bbt` | `PRIVILEGE == "user"` | **refused** |
+| `nix-verify-weekly.service` (weekly timer) | `User=bbt` | `PRIVILEGE == "user"` | permitted |
 | `nix-verify-root.service` (weekly timer) | root | `PRIVILEGE == "root"` | permitted |
 | `install.sh` | sudo, human present | all, including `INTERACTIVE` | permitted |
+
+**Three automated runners, not two.** The weekly *user* unit exists because a `user`-privilege
+check that is also `DISRUPTIVE` would otherwise be reachable by no runner at all: the boot unit
+refuses disruptive work and the root unit skips it on privilege. That gap was live — pin drift on
+the order-placing library was detected at every boot and repaired never — and the fix is a
+separate `User=bbt` unit rather than a second `ExecStart` on the root one, because running user
+checks as root would let the venv be rebuilt root-owned and break the operating user. Privilege
+separation is the point; widening the root unit would defeat it.
+
+**Every check in the manifest must be reachable by some runner.** This is enforced by a test that
+parses `install.sh`'s actual invocations and cross-checks them against each check's declared
+`PRIVILEGE`/`DISRUPTIVE` — not by a restated matrix, which would drift.
 
 **Disruptive repairs are gated on maintenance context, not on mode.** A boot can occur at any
 time, including mid-session; a repair that restarts a service or swaps a package must not fire
@@ -299,8 +312,11 @@ bootstrap.sh   — tiny, stable; the only thing the curl URL points at
          ├─ non-secrets  → plain config JSON
          ├─ node ID      → derived via blkid → state/node_identity.json
          ├─ python3 -m venv ~/nix/.venv
-         ├─ install units: nix-verify.service, nix-verify-root.service + timer
-         └─ /usr/bin/python3 ~/nix/scripts/verify.py --install
+         ├─ install units: nix-verify.service (boot, user, non-disruptive)
+         │                 nix-verify-weekly.service + timer (user, maintenance)
+         │                 nix-verify-root.service + timer   (root, maintenance)
+         └─ /usr/bin/python3 ~/nix/scripts/verify.py
+              --mode install --privilege all --allow-interactive --verbose
 ```
 
 **`curl … | bash` is prohibited.** The interview reads stdin; if stdin is the pipe, `read` either
