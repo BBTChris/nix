@@ -1,0 +1,6 @@
+{
+  "comment": "Single source of truth for venv pins. install.sh and check_python_deps both read this — never restate a version elsewhere (VERIFY-AND-CHECKS.md §7, CLAUDE.md directive 3).",
+  "packages": {
+    "ib_async": "2.1.0"
+  }
+}

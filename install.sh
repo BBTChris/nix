@@ -17,9 +17,13 @@ if [ ! -d "$NIX_HOME/.venv" ]; then
     python3 -m venv "$NIX_HOME/.venv"
 fi
 "$NIX_HOME/.venv/bin/pip" install --quiet --upgrade pip
-# Pinned: ib_async is the TWS API client the broker seam will use (ARC 008). Pinned rather
-# than floating because a vendor-API client version bump can silently change wire behavior.
-"$NIX_HOME/.venv/bin/pip" install --quiet cryptography "ib_async==2.1.0"
+"$NIX_HOME/.venv/bin/pip" install --quiet cryptography
+# Pins live in checks/pinned_deps.json — the same file check_python_deps
+# verifies against, so install and verify can never disagree (CLAUDE.md
+# directive 3: derive from a single source of truth).
+PINS=$(python3 -c "import json,sys; d=json.load(open('$NIX_HOME/checks/pinned_deps.json'))['packages']; print(' '.join(f'{k}=={v}' for k,v in d.items()))")
+# shellcheck disable=SC2086
+"$NIX_HOME/.venv/bin/pip" install --quiet $PINS
 
 echo "== install.sh: hardware identity (v4 full UUID, primary partition) =="
 ROOT_DEV=$(findmnt -n -o SOURCE /)
