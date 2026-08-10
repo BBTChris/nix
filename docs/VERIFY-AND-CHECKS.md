@@ -1,4 +1,4 @@
-# VERIFY-AND-CHECKS — provisioning engine, check contract, and standing check rule — v1.0.0
+# VERIFY-AND-CHECKS — provisioning engine, check contract, and standing check rule — v1.0.1
 
 **Status: authority for the provisioning/verification layer.** Governs `bootstrap.sh`,
 `install.sh`, `scripts/verify.py`, and every `checks/check_*.py`. Where this file meets
@@ -471,12 +471,15 @@ core pinning · systemd units · `trade_history` schema · Postgres · IB Gatewa
 - **`install.sh` location.** `directory_structure.md` assigns all shell scripts to `scripts/`, but
   `install.sh` is an entry point and is currently at root. Resolve explicitly rather than by
   drift.
-- **`ctx` (`Context`) contents.** The object passed to `run()` — config accessor, logger, dry-run
-  flag, maintenance-window state — is referenced by §4 but not yet specified.
 
 ---
 
 ## Changelog
+
+**v1.0.1 (ARC 008)** — §14 `Context` resolved: implemented as a frozen dataclass
+carrying `nix_home`, `mode`, `privilege`, `maintenance`, `allow_interactive`
+(`scripts/nixverify/contract.py`). `bootstrap.sh` signing and `install.sh` location
+remain open.
 
 **v1.0.0 (2026-08-09, ARC 008)** — first authoring. Establishes the standing check rule, the
 install.sh/check boundary criterion, the five-state check contract with mechanically-enforced

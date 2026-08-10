@@ -4,6 +4,16 @@ Append-only. One entry per instruction change to `~/nix/CLAUDE.md`.
 
 ---
 
+## 2026-08-09 — ARC 008 — verify.py v2 doc reconciliation
+
+- Added `VERIFY-AND-CHECKS.md` to CLAUDE.md's spec table; it is the authority for
+  the provisioning/verification layer.
+- `elements_v2.md` §1.2/§1.3 reconciled: three semantic modes, `scripts/` location,
+  systemd-creds supersedes Fernet (decision recorded; migration itself not yet
+  landed — `install.sh` still contains the Fernet block).
+- `directory_structure.md` v1.3.0: `scripts/` names the engine package
+  (`nixverify/`) and its test suite (`scripts/tests/`).
+
 ## 2026-08-09 — docs table audit
 
 Scanned `~/nix/docs/` against CLAUDE.md's "Specs — read on demand" table.

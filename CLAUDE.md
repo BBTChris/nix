@@ -30,8 +30,9 @@ Not auto-loaded. Read the ones an arc touches; they cost nothing until opened. F
 | `nics_risk_subsystem_spec_v1.3.md` | **frozen — never edit** | any work on order flow, gating, sizing, stops, HALT, reconciliation, two-plane logging, §12A tunables, §13 objectives (38) |
 | `nix_strategy_contract_v1.1.md` | **binding interface** (`contract_rev 1.1.0`) | any work on the strategy seam or the bus. §3–4 schemas + §9A guarantees are the **acceptance criteria** for the Nix-side implementation; `contract_rev` mismatch = registration rejection |
 | `debug.md` | **doctrine of record** (v1.1.0, three tiers) | changing gates or regenerating `debugging.md`. Supersedes any two-tier protocol found elsewhere |
-| `directory_structure.md` | canonical topology (v1.1.0) | adding artifacts or regenerating `directory-layout.md` |
+| `directory_structure.md` | canonical topology (v1.3.0) | adding artifacts or regenerating `directory-layout.md` |
 | `elements_v2.md` | **non-authoritative ops input** (v2.1) | provisioning, `install.sh`, credential encryption, `verify.py`, versioning, backup/DR. Risk spec wins wherever they meet |
+| `VERIFY-AND-CHECKS.md` | **authority — provisioning/verification layer** (v1.0.1) | any work on `install.sh`, `bootstrap.sh`, `scripts/verify.py`, or `checks/check_*.py`; the standing rule that every environment change owes a check |
 | `dev_and_services_plan.md` | staging plan | vendor/account/stage questions: Stage 0–4 sequence, dev box, QuantVPS |
 | `nix-strategy-evaluator-pipeline-6.docx` | **Crucible pipeline design** (planning-stage, no code yet; supersedes pipeline-5) | strategy candidate scoring: static/contract/structural checks, historical scoring, WFO, holdout, AI council review, paper trading, live-promotion gate, monitoring, retirement (pipeline Gates 0–9 / scorer gates G1–G7) |
 | `nix_db_schema_spec.docx` | **source of truth** (v1.3.0, validated live against Postgres 16) | persistent storage: `trade_history` db, per-symbol `<symbol>_bar_history` dbs, FDW hub, symbol provisioning, `validate_schemas.sh` (40 checks) |
