@@ -1,0 +1,27 @@
+{
+  "manifest_version": "1.0.0",
+  "comment": "Ordering, parallelism, and failure policy only. What a check needs (privilege, interactive, disruptive) is declared in the check module \u2014 see VERIFY-AND-CHECKS.md \u00a76.",
+  "blocks": [
+    {
+      "name": "bootstrap-floor",
+      "on_fail": "halt",
+      "checks": [
+        "check_python_runtime",
+        "check_venv"
+      ]
+    },
+    {
+      "name": "identity",
+      "checks": [
+        "check_node_identity"
+      ]
+    },
+    {
+      "name": "trading-stack",
+      "parallel": true,
+      "checks": [
+        "check_python_deps"
+      ]
+    }
+  ]
+}
