@@ -48,3 +48,22 @@ def test_root_timer_is_saturday_0300_chicago() -> None:
     assert "Sat" in text
     assert "03:00" in text
     assert "America/Chicago" in text
+
+
+def test_weekly_unit_runs_as_user_with_maintenance() -> None:
+    """I1: a user-privilege DISRUPTIVE check (e.g. check_python_deps) has no
+    runner otherwise — boot refuses disruptive repair and the root unit only
+    runs PRIVILEGE=root checks. This third unit closes that gap.
+    """
+    text = _text("nix-verify-weekly.service")
+    assert "User=bbt" in text
+    assert "--privilege user" in text
+    assert "--maintenance" in text
+
+
+def test_weekly_timer_is_saturday_0300_chicago() -> None:
+    """Same window as the root timer (§8) — outside any trading session."""
+    text = _text("nix-verify-weekly.timer")
+    assert "Sat" in text
+    assert "03:00" in text
+    assert "America/Chicago" in text

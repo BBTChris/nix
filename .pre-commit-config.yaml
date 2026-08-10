@@ -38,14 +38,17 @@ repos:
     hooks:
       - id: pytest-affected
         name: Stage 3 — runtime pass
-        # pytest exits 5 ("no tests collected") with an empty repo pre-R1; that's not
-        # a real failure here, so it's treated as pass alongside 0. Once scripts/ has
-        # real tests, exit 5 becomes a genuine failure again (it can only mean pytest
-        # found zero tests despite a non-empty suite existing, e.g. a collection
-        # misconfiguration) — not silently masked long-term, just for this arc's state.
-        # pre-commit runs local hooks with cwd = repo top level, so this relative
-        # path to the venv is stable regardless of where `git commit` was invoked from.
-        entry: bash -c './.venv/bin/pytest --testmon; code=$?; [ "$code" = 0 ] || [ "$code" = 5 ]'
+        # Exit-5 ("no tests collected") tolerance removed (final whole-branch
+        # review, I6). It existed only for the pre-R1 window when scripts/ had
+        # no tests yet, with a comment promising removal once real tests
+        # existed — there are now 126. Tolerating exit 5 today would let a
+        # pythonpath/testpaths regression or a stale .testmondata collect zero
+        # tests and still pass the gate having run nothing (CLAUDE.md
+        # directive 4: fail closed and loud, not silently green on nothing).
+        # pre-commit runs local hooks with cwd = repo top level, so this
+        # relative path to the venv is stable regardless of where `git commit`
+        # was invoked from.
+        entry: ./.venv/bin/pytest --testmon
         language: system
         pass_filenames: false
         always_run: true

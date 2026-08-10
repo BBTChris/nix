@@ -30,8 +30,12 @@ fi
 # empty PINS and deferring the failure to pip's own "nothing to install"
 # (CLAUDE.md directive 4: fail closed and loud).
 PINS_RAW="$(python3 "$NIX_HOME/checks/check_python_deps.py" --print-pins)"
-mapfile -t PINS <<< "$PINS_RAW"
-"$NIX_HOME/.venv/bin/pip" install --quiet "${PINS[@]}"
+if [ -z "$PINS_RAW" ]; then
+    echo "no pins declared in checks/pinned_deps.json — nothing to install"
+else
+    mapfile -t PINS <<< "$PINS_RAW"
+    "$NIX_HOME/.venv/bin/pip" install --quiet "${PINS[@]}"
+fi
 
 echo "== install.sh: hardware identity (v4 full UUID, primary partition) =="
 ROOT_DEV=$(findmnt -n -o SOURCE /)
@@ -106,7 +110,122 @@ chmod 700 "$STATE_DIR/encrypt_credentials.py"
 echo "credential-encryption mechanism ready at $STATE_DIR/encrypt_credentials.py"
 echo "NOT run — no human present for interactive master-password/credential entry."
 
+echo "== install.sh: systemd units (boot, weekly-root, weekly-user) =="
+# Idempotent: sudo tee deterministically overwrites each unit file, and
+# daemon-reload/enable are no-ops when already applied — safe to re-run.
+sudo tee /etc/systemd/system/nix-verify.service > /dev/null << 'UNIT'
+[Unit]
+Description=Nix verify.py — boot-time inspection and non-disruptive repair
+Documentation=file:///home/bbt/nix/docs/VERIFY-AND-CHECKS.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=bbt
+# System interpreter, not .venv: the engine is stdlib-only (§9.1) and a check
+# that rebuilds .venv must not be running on .venv's interpreter (§9.5).
+ExecStart=/usr/bin/python3 /home/bbt/nix/scripts/verify.py \
+    --mode correct --privilege user --verbose
+# Maintenance mode is deliberately omitted: a boot can occur mid-session, so
+# disruptive repairs are refused here and deferred to the weekly runs (§8).
+SuccessExitStatus=0 2
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+sudo tee /etc/systemd/system/nix-verify-root.service > /dev/null << 'UNIT'
+[Unit]
+Description=Nix verify.py — weekly privileged verification and repair
+Documentation=file:///home/bbt/nix/docs/VERIFY-AND-CHECKS.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/bbt/nix/scripts/verify.py \
+    --mode correct --privilege root --maintenance --verbose
+SuccessExitStatus=0 2
+UNIT
+
+sudo tee /etc/systemd/system/nix-verify-root.timer > /dev/null << 'UNIT'
+[Unit]
+Description=Weekly Nix privileged verification
+Documentation=file:///home/bbt/nix/docs/VERIFY-AND-CHECKS.md
+
+[Timer]
+# Saturday 03:00 America/Chicago — no session at all, comfortably outside the
+# risk spec's no-new-entry window (Friday close -30min through Sunday open).
+OnCalendar=Sat *-*-* 03:00:00 America/Chicago
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+# §8 gap fix (final whole-branch review, I1): check_python_deps is
+# PRIVILEGE=user and DISRUPTIVE=True. The boot unit above never repairs
+# (disruptive refused) and nix-verify-root.service runs only PRIVILEGE=root
+# checks — so a user-privilege disruptive check was detected at every boot
+# and repaired never. This third unit gives user-privilege disruptive
+# checks a weekly window of their own, mirroring the root pair exactly.
+sudo tee /etc/systemd/system/nix-verify-weekly.service > /dev/null << 'UNIT'
+[Unit]
+Description=Nix verify.py — weekly user-privilege disruptive repair (e.g. pin drift)
+Documentation=file:///home/bbt/nix/docs/VERIFY-AND-CHECKS.md
+
+[Service]
+Type=oneshot
+User=bbt
+ExecStart=/usr/bin/python3 /home/bbt/nix/scripts/verify.py \
+    --mode correct --privilege user --maintenance --verbose
+SuccessExitStatus=0 2
+UNIT
+
+sudo tee /etc/systemd/system/nix-verify-weekly.timer > /dev/null << 'UNIT'
+[Unit]
+Description=Weekly Nix user-privilege disruptive repair
+Documentation=file:///home/bbt/nix/docs/VERIFY-AND-CHECKS.md
+
+[Timer]
+# Same window as nix-verify-root.timer (§8): Saturday 03:00 America/Chicago.
+OnCalendar=Sat *-*-* 03:00:00 America/Chicago
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+sudo systemctl daemon-reload
+sudo systemctl enable nix-verify.service
+sudo systemctl enable --now nix-verify-root.timer
+sudo systemctl enable --now nix-verify-weekly.timer
+
 echo "== install.sh: verify.py (end-of-install run, per elements_v2.md §1.3) =="
-"$NIX_HOME/.venv/bin/python3" "$NIX_HOME/verify.py" --verbose || true
+# System interpreter (§9.5), scripts/verify.py (§13 — no root copy exists),
+# --mode install so absent components get installed, --privilege all so this
+# human-present, sudo-capable run covers both user- and root-privilege
+# checks in one pass (§8), --allow-interactive since only install.sh may run
+# INTERACTIVE checks (§9.2).
+VERIFY_EXIT=0
+/usr/bin/python3 "$NIX_HOME/scripts/verify.py" \
+    --mode install --privilege all --allow-interactive --verbose || VERIFY_EXIT=$?
+case "$VERIFY_EXIT" in
+    0)
+        echo "verify.py: all checks PASS"
+        ;;
+    2)
+        # §4.2: exit 2 is CANNOT_MEASURE/SKIPPED — not a failure. Reported
+        # clearly but must not abort the install (CLAUDE.md directive 4:
+        # fail closed and loud, not fail closed and silent).
+        echo "verify.py: exit 2 — one or more checks could not be measured; review the output above"
+        ;;
+    *)
+        # Exit 1: a real FAIL_REPAIRABLE/FAIL_NEEDS_OPERATOR. Surfaced loudly
+        # and install.sh stops here rather than printing "done" over a node
+        # that is not actually provisioned.
+        echo "verify.py: exit $VERIFY_EXIT — FAILURE; node is NOT fully provisioned; review the output above" >&2
+        exit "$VERIFY_EXIT"
+        ;;
+esac
 
 echo "== install.sh: done =="
