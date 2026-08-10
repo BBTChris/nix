@@ -21,7 +21,7 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.append(str(Path(__file__).resolve().parent))
 
 from nixverify.contract import Context, Mode  # pylint: disable=wrong-import-position
 from nixverify.engine import (  # pylint: disable=wrong-import-position

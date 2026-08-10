@@ -9,6 +9,7 @@ a repair it cannot perform.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import _preamble  # noqa: F401  pylint: disable=unused-import,wrong-import-order
 from nixverify.contract import CheckResult, Context, Mode, Status
@@ -16,6 +17,8 @@ from nixverify.contract import CheckResult, Context, Mode, Status
 PRIVILEGE = "user"
 INTERACTIVE = False
 DISRUPTIVE = False
+
+NAME = "check_python_runtime"
 
 MINIMUM = (3, 14)
 
@@ -26,13 +29,13 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
     version = f"{actual[0]}.{actual[1]}.{sys.version_info.micro}"
     if actual >= MINIMUM:
         return CheckResult(
-            name="check_python_runtime",
+            name=NAME,
             status=Status.PASS,
             evidence=f"sys.version_info={version} at {sys.executable}",
         )
     wanted = f"{MINIMUM[0]}.{MINIMUM[1]}"
     return CheckResult(
-        name="check_python_runtime",
+        name=NAME,
         status=Status.FAIL_NEEDS_OPERATOR,
         site=f"{sys.executable} (python {version})",
         evidence=f"sys.version_info={version}",
@@ -41,12 +44,19 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
     )
 
 
+# Deliberately duplicated across every checks/check_*.py: the check
+# contract (§4.2) requires each module be independently runnable, so this
+# block cannot be factored into a shared helper without breaking that.
+# The disable pragma must be on its own line, not trailing on the `if` —
+# pylint's Similarities checker (R0801) does not honour a same-line
+# trailing disable comment here (verified empirically, pylint v4.0.6).
+# pylint: disable=duplicate-code
 if __name__ == "__main__":
-    from pathlib import Path
-
-    from nixverify.contract import exit_code_for
+    from nixverify.contract import exit_code_for, validate_result
 
     HOME = Path(__file__).resolve().parent.parent
-    OUTCOME = run(Mode.VERIFY, Context(nix_home=HOME, mode=Mode.VERIFY))
+    OUTCOME = validate_result(
+        run(Mode.VERIFY, Context(nix_home=HOME, mode=Mode.VERIFY))
+    )
     print(f"{OUTCOME.status.value}: {OUTCOME.evidence or OUTCOME.detail}")
     sys.exit(exit_code_for(OUTCOME.status))

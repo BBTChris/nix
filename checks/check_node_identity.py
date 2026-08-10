@@ -54,25 +54,70 @@ def live_uuid() -> str:
     return _command(["blkid", "-s", "UUID", "-o", "value", device])
 
 
+def _read_state(path: Path) -> tuple[str, str]:
+    """Read the stored UUID, distinguishing *why* it might be missing.
+
+    Returns (uuid, condition). condition is "" on success, "absent" if the
+    file does not exist at all, or "corrupt: <reason>" if it exists but
+    could not be read/parsed as a JSON object. §10.1: a present-but-
+    unparseable file is a different operator-facing condition than an
+    absent one and must be reported as such, not folded into "no stored
+    node identity" wording that tells the operator to re-run install.sh
+    fresh when the real problem is a damaged file.
+
+    Mirrors scripts/nixverify/manifest.py's handling of the identical
+    read-decode-parse operation: OSError (unreadable), UnicodeDecodeError
+    (read_text on non-UTF-8 bytes — a ValueError, not caught by the prior
+    `except OSError, json.JSONDecodeError`), and json.JSONDecodeError
+    (malformed JSON) are all "corrupt", never allowed to escape as an
+    uncaught exception. A payload that parses but is not a JSON object
+    (e.g. a list) is guarded explicitly so `.get()` below cannot raise
+    AttributeError on valid-but-wrong-shaped JSON.
+    """
+    if not path.is_file():
+        return "", "absent"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return "", f"corrupt: {exc!r}"
+    if not isinstance(payload, dict):
+        return "", f"corrupt: expected a JSON object, got {type(payload).__name__}"
+    return str(payload.get("primary_partition_uuid", "")), ""
+
+
 def stored_uuid(path: Path) -> str:
-    """UUID recorded at install time. '' if absent or unreadable.
+    """UUID recorded at install time. '' if absent, corrupt, or missing the key.
 
     Reads "primary_partition_uuid" — the key install.sh actually writes
     (install.sh:43), not "root_uuid". Verified against the on-disk
     state/node_identity.json produced by ARC 006/008's install run.
+
+    Convenience wrapper over `_read_state()` for callers that only need the
+    value, not the absent-vs-corrupt distinction (§10.1) — `run()` calls
+    `_read_state()` directly for that.
     """
-    if not path.is_file():
-        return ""
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except OSError, json.JSONDecodeError:
-        return ""
-    return str(payload.get("primary_partition_uuid", ""))
+    return _read_state(path)[0]
 
 
-def evaluate(stored: str, live: str, path: Path) -> CheckResult:
-    """Compare the two. Pure — hence directly testable."""
+def evaluate(stored: str, live: str, path: Path, condition: str = "") -> CheckResult:
+    """Compare the two. Pure — hence directly testable.
+
+    `condition` (from `_read_state()`) distinguishes why `stored` is empty:
+    "absent" (no file — re-run install.sh) vs a "corrupt: ..." reason (a
+    file exists but could not be parsed — a different condition, §10.1).
+    Defaults to "" (treated as absent) so existing direct callers that only
+    care about the UUID comparison need not supply it.
+    """
     if not stored:
+        if condition.startswith("corrupt"):
+            return CheckResult(
+                name=NAME,
+                status=Status.FAIL_NEEDS_OPERATOR,
+                site=str(path),
+                detail=f"stored node identity file is present but unparseable "
+                f"({condition}) — this is not an absent file; investigate "
+                f"before re-running install.sh",
+            )
         return CheckResult(
             name=NAME,
             status=Status.FAIL_NEEDS_OPERATOR,
@@ -104,16 +149,23 @@ def evaluate(stored: str, live: str, path: Path) -> CheckResult:
 def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argument
     """Read both values and compare."""
     path = ctx.nix_home / "state" / "node_identity.json"
-    return evaluate(stored_uuid(path), live_uuid(), path)
+    stored, condition = _read_state(path)
+    return evaluate(stored, live_uuid(), path, condition)
 
 
 # Deliberately duplicated across every checks/check_*.py: the check
 # contract (§4.2) requires each module be independently runnable, so this
 # block cannot be factored into a shared helper without breaking that.
-if __name__ == "__main__":  # pylint: disable=duplicate-code
-    from nixverify.contract import exit_code_for
+# The disable pragma must be on its own line, not trailing on the `if` —
+# pylint's Similarities checker (R0801) does not honour a same-line
+# trailing disable comment here (verified empirically, pylint v4.0.6).
+# pylint: disable=duplicate-code
+if __name__ == "__main__":
+    from nixverify.contract import exit_code_for, validate_result
 
     HOME = Path(__file__).resolve().parent.parent
-    OUTCOME = run(Mode.VERIFY, Context(nix_home=HOME, mode=Mode.VERIFY))
+    OUTCOME = validate_result(
+        run(Mode.VERIFY, Context(nix_home=HOME, mode=Mode.VERIFY))
+    )
     print(f"{OUTCOME.status.value}: {OUTCOME.evidence or OUTCOME.detail}")
     sys.exit(exit_code_for(OUTCOME.status))

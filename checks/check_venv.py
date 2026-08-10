@@ -184,10 +184,16 @@ def run(  # pylint: disable=too-many-return-statements
 # Deliberately duplicated across every checks/check_*.py: the check
 # contract (§4.2) requires each module be independently runnable, so this
 # block cannot be factored into a shared helper without breaking that.
-if __name__ == "__main__":  # pylint: disable=duplicate-code
-    from nixverify.contract import exit_code_for
+# The disable pragma must be on its own line, not trailing on the `if` —
+# pylint's Similarities checker (R0801) does not honour a same-line
+# trailing disable comment here (verified empirically, pylint v4.0.6).
+# pylint: disable=duplicate-code
+if __name__ == "__main__":
+    from nixverify.contract import exit_code_for, validate_result
 
     HOME = Path(__file__).resolve().parent.parent
-    OUTCOME = run(Mode.VERIFY, Context(nix_home=HOME, mode=Mode.VERIFY))
+    OUTCOME = validate_result(
+        run(Mode.VERIFY, Context(nix_home=HOME, mode=Mode.VERIFY))
+    )
     print(f"{OUTCOME.status.value}: {OUTCOME.evidence or OUTCOME.detail}")
     sys.exit(exit_code_for(OUTCOME.status))

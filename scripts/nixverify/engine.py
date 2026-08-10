@@ -32,8 +32,6 @@ def _gate(loaded: LoadedCheck, ctx: Context) -> str:
     weekly run. `_execute` downgrades a disruptive check's mode instead —
     it still runs, still reports, only the repair is withheld (§8).
     """
-    if loaded.load_error:
-        return ""
     if ctx.privilege not in ("all", loaded.privilege):
         return f"privilege: needs {loaded.privilege}, run is {ctx.privilege}"
     if loaded.interactive and not ctx.allow_interactive:

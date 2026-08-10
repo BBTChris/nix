@@ -101,7 +101,16 @@ def render_summary(results: list[CheckResult], exit_code: int, theme: Theme) -> 
     failed = counts[Status.FAIL_REPAIRABLE] + counts[Status.FAIL_NEEDS_OPERATOR]
     failed_text = f"{failed} failed"
     if failed > 0:
-        failed_text = theme.paint(Status.FAIL_REPAIRABLE, failed_text)
+        # Paint with whichever failure status is actually present, rather
+        # than hardcoding FAIL_REPAIRABLE's colour — a run with only
+        # FAIL_NEEDS_OPERATOR results must not be painted as though a
+        # repairable failure occurred.
+        failure_status = (
+            Status.FAIL_REPAIRABLE
+            if counts[Status.FAIL_REPAIRABLE] > 0
+            else Status.FAIL_NEEDS_OPERATOR
+        )
+        failed_text = theme.paint(failure_status, failed_text)
     segments = [
         f"{counts[Status.PASS]} passed",
         failed_text,
