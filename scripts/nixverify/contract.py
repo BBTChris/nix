@@ -63,7 +63,6 @@ class Context:
     privilege: str = "user"
     maintenance: bool = False
     allow_interactive: bool = False
-    dry_run: bool = False
 
 
 def validate_result(result: CheckResult) -> CheckResult:

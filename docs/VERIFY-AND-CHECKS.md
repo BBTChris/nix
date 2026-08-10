@@ -441,6 +441,11 @@ Requirements:
 This document contradicts current on-disk state and two docs of record. All must be reconciled in
 the arc that implements it — a derived artifact may never be left contradicting its source.
 
+**Resolved (ARC 008, Task 13).** Every row below is now verified against disk: the engine runs at
+`scripts/verify.py` with no root copy, both systemd units exist on the system interpreter,
+`elements_v2.md` §1.2/§1.3 were reconciled, `Status` is five-state, `checks/` is populated. The
+table is retained as the record of what was reconciled, not as a live claim.
+
 | Item | Current | Required |
 |---|---|---|
 | `verify.py` location | `~/nix/verify.py` (repo root) | `~/nix/scripts/verify.py` — per `directory_structure.md` v1.2.0 ("scripts: All Python and shell scripts"); root placement is the deviation |
