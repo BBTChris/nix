@@ -283,6 +283,120 @@
         "counted by the code side and not by the spec side, and the two disagree. That is the",
         "difference between an extension and a drift, made mechanical."
       ]
+    },
+    {
+      "id": "order_path_scope_files",
+      "property": "how many .py files the ban gate believes it covers, derived from the tree vs from its stated anchor",
+      "sources": [
+        {
+          "name": "gate_derived_scope",
+          "role": "derived",
+          "files": ["checks/check_order_path_bans.py", "scripts/broker"],
+          "argv": [
+            "{system_python}",
+            "{checks_dir}/check_order_path_bans.py",
+            "--print-scope-count",
+            "{nix_home}"
+          ]
+        },
+        {
+          "name": "stated_anchor_dirs",
+          "role": "stated",
+          "files": ["checks/check_order_path_bans.py"],
+          "probe": "order_path_anchor_files"
+        }
+      ],
+      "note": [
+        "ARC 018, CHECK-DEBT D2.15. The file set a gate believes it covers is exactly the kind of",
+        "number that goes stale silently — debug.md §8 failure mode #14, the scope set by a list a",
+        "person edits.",
+        "THE TWO SOURCES ARE INDEPENDENT IN MECHANISM. `gate_derived_scope` asks the gate itself for",
+        "the scope it will actually read, and that scope is derived FROM FILE CONTENT: a directory",
+        "is in scope because some module in it declares ORDER_PORT_VERBS or defines a class carrying",
+        "at least PORT_QUORUM roster verbs as methods. `stated_anchor_dirs` globs the PATH the gate's",
+        "ORDER_PATH_DIRS constant names — read out of the gate by AST rather than retyped here, so",
+        "this probe is not itself a restatement.",
+        "WHAT A DISAGREEMENT MEANS, and it is not a bug in either side: the order path has acquired a",
+        "second home, or has moved. The gate SELF-HEALS — the new home joins its scan the moment the",
+        "file is written, which is D2.15's actual requirement — and this claim makes that change",
+        "VISIBLE rather than silent, so a human confirms the new home and updates the anchor. A gate",
+        "whose scope grows without anyone noticing is the same defect one direction over.",
+        "MEASURED ARC 018: the second-home case was planted (an adapter at scripts/limiter/ defining",
+        "four roster verbs) and the gate's scope went 4 files / 1 dir -> 5 files / 2 dirs, naming a",
+        "retry shape inside the plant. Restored, the scope returned to 4 / 1.",
+        "RESIDUAL, stated so it is not discovered as a surprise: a module that CALLS the order port",
+        "without DECLARING it — the future Limiter — is in neither source. §7.12 condition 4 beside",
+        "the gate carries the full statement."
+      ]
+    },
+    {
+      "id": "broker_order_percent_sec2a_element_v1",
+      "property": "the broker-order module percent under scheme `sec2a-element-v1`, both terms re-derived",
+      "sources": [
+        {
+          "name": "spec_denominator",
+          "role": "derived",
+          "files": [
+            "docs/nics_risk_subsystem_spec_v1.3.md",
+            "scripts/broker/ibkr_mapping.py"
+          ],
+          "probe": "broker_order_percent_spec"
+        },
+        {
+          "name": "seam_denominator",
+          "role": "stated",
+          "files": [
+            "scripts/broker/broker_seam.py",
+            "scripts/broker/ibkr_mapping.py"
+          ],
+          "probe": "broker_order_percent_seam"
+        }
+      ],
+      "restatement_scans": [
+        {
+          "file": "downloads/RESULTS.md",
+          "pattern": "broker-order level = (\\d+)% \\[scheme sec2a-element-v1\\]",
+          "note": "the CANONICAL written form of this scheme's level. Zero matches is the preferred outcome and is what ARC 018 measured; the pattern is a tripwire that goes live the moment anyone writes the level down in prose. It deliberately does NOT match a per-arc DELTA — a delta and a level are different quantities over the same denominator, and matching both would redden this claim for the wrong reason. Only downloads/RESULTS.md is scanned, because it is overwritten every arc and is therefore always current; sessions/SESSION.md and the CHECK-DEBT series table are APPEND-ONLY history, and a dated historical percent there is correct forever and must never be compared against today's derivation."
+        }
+      ],
+      "note": [
+        "ARC 018 / C4 — ONE SCHEME REGISTERED, THE OTHER RETIRED FROM PERCENT FORM.",
+        "THE SCHEME. `sec2a-element-v1`. percent(level) = 100 * |§2A broker-order elements graded",
+        "CLEAN| / |§2A broker-order roster|. An arc's 'percent moved' is the CHANGE in that level, in",
+        "percentage points, over the same denominator. The identifier is registered ALONGSIDE the",
+        "value — it is this claim's id and it is printed by both probes on every run — so a future",
+        "change of scheme appears as a new claim id rather than as a silent discontinuity in a series",
+        "that kept its name.",
+        "THE OTHER NUMBER. A prior architect estimate used a readiness-weighted decomposition and",
+        "produced ~42% for the same module. It is NOT comparable to this scheme and both called",
+        "themselves 'broker-order percent' — the 19-vs-16 shape recurring inside the progress number.",
+        "MEASURED ARC 018: `grep -rIn '42%'` over the whole tree, `git log --all -S'42%'` over the",
+        "whole history, and an XML extraction over both .docx files return NOTHING except this note.",
+        "The ~42% figure appears in exactly ONE place in this project: the ARC 018 brief itself,",
+        "downloads/arc_018_runtime_gate_truth.md, which is a task document and not a banked",
+        "artifact. It has never been in the repository, in any banked result, or in any commit. So",
+        "there was no restatement to delete; the retirement is a RULE, not a repair, and the rule",
+        "is: readiness commentary continues as",
+        "PROSE and is never expressed as a percent, so two incomparable numbers cannot both claim the",
+        "name again. This note is the only place the string exists, and it exists here as a record",
+        "that the search was run rather than as a value anyone should reuse.",
+        "HOW THE SOURCES ARE INDEPENDENT, AND WHERE THEY ARE NOT — stated because §7.12 condition 3",
+        "requires it and because overstating it would be the defect this file exists to catch. The",
+        "DENOMINATORS are genuinely independent: one is a markdown parse of the frozen spec's §2A",
+        "bullets by identifier, the other is a Python AST read of broker_seam.py's ORDER_PORT_VERBS +",
+        "ORDER_EVENTS. They diverge whenever the seam drifts from the spec. The NUMERATORS share a",
+        "mechanism — both read ARC 014's FINDINGS out of ibkr_mapping.py — so a defect in FINDINGS",
+        "itself would move both sides together. That residual is why this claim is a THIRD assertion",
+        "on top of spec_2a_broker_order_elements and arc014_broker_order_classification rather than a",
+        "replacement for either: those two already pin the roster and the grade tally from three",
+        "directions.",
+        "WHAT THIS CLAIM DOES NOT FIX, and ARC 018 found it rather than reconciling toward the brief:",
+        "ARC 017 reported broker-order at ~13%, and that number is 2/16 where 16 is the machine-",
+        "derived roster size and 2 is an ARC-LOCAL HAND COUNT of defects closed. The DENOMINATOR was",
+        "derivable; the NUMERATOR was not, and no gate can make an arc's own count of what it closed",
+        "machine-derivable. What is registered here is the reproducible part — the denominator and",
+        "the level — so a future delta is at least stated over a denominator that cannot drift."
+      ]
     }
   ]
 }
