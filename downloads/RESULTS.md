@@ -1,314 +1,336 @@
-# ARC 016 RESULTS — commit the broker package; prove gate coverage; re-validate live
+# ARC 017 — RESULTS
 
-**Date:** 2026-08-10 · **Node:** node02 (MS-01) · **Branch:** `arc-016-broker-consolidate`
-**Environment for every live result:** IB Gateway 127.0.0.1:4002, clientId=905, paper DUR250018,
-MESU6 only, qty 1. Market **OPEN** (Monday 2026-08-10 13:44 CDT; MES trades to 16:00 CT).
+**Session-state integrity · startup window closure · gate-coverage truth**
+Mega arc, three parallel sub-agents on disjoint file sets. 2026-08-10.
+Branch `arc-017-session-integrity` · **PR #11** · pushed at first commit, not at merge.
 
----
-
-## Definition of success — every box, against the criterion as written
-
-| # | criterion | verdict |
-|---|---|---|
-| 1 | `scripts/broker/` and the adapter test tracked; full untracked audit reported | **PASS** |
-| 2 | Gate coverage proved by **tracking, not naming**: defect planted, caught by an unqualified `pre-commit run --all-files`, removed, byte-identical | **PASS** |
-| 3 | Committed, PR'd, merged to main; commit message covers ARC 014 **and** 015 | **PASS** |
-| 4 | `seam_simulate.py` in the pytest suite; both non-vacuity controls still *fail* as controls | **PASS** |
-| 5 | The joint gate/`fetchFields` dependency written into the code | **PASS** |
-| 6 | D2.8 promoted to doctrine with the standing question and the seven-instance evidence base | **PASS** (with a citation correction — see §2c) |
-| 7 | Live: connect, positions, balance, margin verified on clientId=905 with real figures | **PASS** |
-| 8 | Live: reconnect proves `_wire_events` idempotency by handler count | **PASS** |
-| 9 | Live: order lifecycle on MES — ack-once, per-unit `avg_price`, cancel, status | **PASS** |
-| 10 | Live: `flatten()` closes a real position with zero venue queries; venue confirms flat | **PASS** |
-| 11 | Ack-synthesis path either observed live or explicitly recorded as offline-proved only | **PASS** — recorded, with a partial live observation |
-| 12 | Account confirmed flat at close via fresh venue query | **PASS** |
-| 13 | `verify.py` exit 0; Tier-2 gates pass on the now-tracked tree | **PASS** |
+**STATUS: BANKED, NOT CERTIFIED — known-red `R1-A`.**
 
 ---
 
-## Part 1 — tracked, and the gate proved to follow
-
-### 1.1–1.2 What is now tracked, and the audit in full
-
-Committed: `scripts/broker/` (4 files, 2 488 lines), `scripts/tests/test_broker_order.py`
-(1 270 lines), and the ARC 014/015 infrastructure that had also never landed — `pyproject.toml`,
-`checks/pinned_deps.json`, `directory_structure.md` v1.4.0, `CHECK-DEBT.md`, 163 lines of
-`SESSION.md` history, and the ARC 015/016 briefs (following the existing `downloads/arc_*.md`
-convention). **Both commits were pushed to origin the moment they existed** — the risk this arc
-exists to retire is durability, and that should not wait for a merge.
-
-**Untracked audit — the full list, as required:**
+## 1. Verification — every number below is from a pasted command
 
 ```
-A. non-ignored untracked, whole tree            (none)
-B. scoped: scripts/ checks/ risks/ databases/ docs/   (none)
+$ .venv/bin/python scripts/verify.py
+  [ok]   check_python_runtime
+  [ok]   check_venv
+  [ok]   check_node_identity
+  [ok]   check_python_deps
+  [ok]   check_ibgateway_config
+  [ok]   check_ibgateway_service
+  [ok]   check_order_path_bans
+  [ok]   check_derived_claims
+
+  8 passed | 0 failed | 0 cannot measure | 0 skipped          exit 0
+verify exit=0
 ```
 
-**Zero.** Stated, not assumed. The *ignored* listing was the informative one and produced a finding:
-
-- **`state/encrypt_credentials.py` is real Python that no gate can see.** `.gitignore` excludes
-  `state/` wholesale — correctly, since it holds the hardware UUID and credential JSON — but
-  executable code lives there too, so it is untracked and outside `--all-files` for exactly the
-  reason D3.2 records. **Failure mode #14 sitting in the tree today.** Opened as **D1.16**; not
-  fixed, because the arc forbade behaviour changes and moving credential tooling is not trivial.
-
-**Gitignored rather than committed** (the arc's "check for anything that should not be tracked"):
-
-- `downloads/*.py` — superseded inbound drafts. The landed copies have grown 626→790, 258→525 and
-  489→1270 lines, so committing them would plant a **second, stale source of truth** for live code.
-- `.testmondata-shm` / `.testmondata-wal` — the bare `.testmondata` rule did not cover the SQLite
-  WAL sidecars, and a `git add -A` duly staged them.
-- `__pycache__/`, `.DS_Store`, `._*` were already covered.
-
-### 1.3 The gate proof — scope, not invocation
-
-**Non-vacuity first (§7.3), before any plant.** `pre-commit --all-files` derives its file list from
-`git ls-files`:
-
 ```
-at HEAD (untracked = invisible):   (no broker files at all)
-after git add:                     scripts/broker/broker_order_ibkr.py
-                                   scripts/broker/broker_seam.py
-                                   scripts/broker/ibkr_mapping.py
-                                   scripts/broker/seam_simulate.py
-                                   scripts/tests/test_broker_order.py
+$ .venv/bin/python -m pytest scripts/tests -q
+pytest exit=0
+159 passed in 10.77s
 ```
 
-| step | command | result |
-|---|---|---|
-| CONTROL | `pre-commit run --all-files` | **8/8 Passed, exit 0** |
-| PLANT | `F821` undefined name in `broker_seam.py` | — |
-| CAN-FAIL | `pre-commit run --all-files` — **no path named anywhere** | **exit 1** |
-| RESTORE | plant removed | **all five files byte-identical (sha256)** |
-| CONTROL | `pre-commit run --all-files` | **8/8 Passed, exit 0** |
-
-Three independent hooks failed and **each named the planted site**:
-
 ```
-ruff    F821 Undefined name `ARC016_THIS_NAME_IS_DELIBERATELY_UNDEFINED`
-             --> scripts/broker/broker_seam.py:648:12
-pylint  scripts/broker/broker_seam.py:648:11: E0602: Undefined variable ... (undefined-variable)
-mypy    scripts/broker/broker_seam.py:648: error: Name "..." is not defined  [name-defined]
-        Found 1 error in 1 file (checked 36 source files)
+$ .venv/bin/pre-commit run --all-files
+pre-commit exit=0
+ruff check...............................................................Passed
+ruff format..............................................................Passed
+pylint...................................................................Passed
+mypy.....................................................................Passed
+bandit (production)......................................................Passed
+bandit (tests)...........................................................Passed
+complexipy...............................................................Passed
+Stage 3 — runtime pass...................................................Passed
 ```
 
-A defect that ruff **cannot auto-fix** was chosen deliberately: `ruff-check` runs with `--fix`, so an
-unused import would have been silently repaired and the evidence would have been "files were
-modified by this hook" rather than a named line. This is a *report*, not a repair.
+### Check count — derived, against no stated expectation
+
+The brief states no expected value (§0a). Three independent derivations, reported as found:
+
+```
+--- (a) the brief's prescribed command, against the corrected path ---
+brief's expression over scripts/verify.py: 1
+--- (b) two independent derivations that actually measure it ---
+registry.json registered : 8
+checks/check_*.py on disk: 8
+agree                    : True
+--- (c) what verify.py itself executed ---
+  8 passed | 0 failed | 0 cannot measure | 0 skipped          exit 0
+```
+
+**The count is 8.** Derivation (a) is the brief's own §7 expression and it returns **1** — see §5.
+
+### Test count delta
+
+**159 → 159, flat, and the flatness is explained rather than waved past.** Sub-agent A's adapter
+driver is a *single* pytest test, so new proofs raise assertions and not the collected count. Its
+executed assertions grew **79 → 108** (baseline driver re-run at 92f9f17 in an isolated checkout:
+`79 passed, 0 failed`; current: `108 passed, 0 failed`). AST-derived `record()` call sites: 78 → 107.
+
+### Hooks now proven able to say no: 7 of 8 (was 5 of 8)
+
+`ruff-check`, `pylint`, `mypy`, `complexipy`, `bandit (production)`, **`bandit (tests)`**,
+**`pytest-affected`**. The eighth, `ruff-format`, is classified a **formatter, not a gate** — see §3.
 
 ---
 
-## Part 2 — the cheap debts
+## 2. Sub-agent A — broker-order
 
-### 2a. `seam_simulate.py` into pytest — D1.15 **discharged**
+**Both hard prerequisites were checked before the work they gated, not alongside it.**
 
-`scripts/tests/test_seam_simulate.py`. **It does not live inside `seam_simulate.py`**, deliberately:
-`testpaths = ["scripts/tests"]`, so a `test_*` function added to `scripts/broker/` would have looked
-converted and been collected **never** — strictly worse than the honest status quo. The driver stays
-runnable standalone.
+- **A2 prerequisite passed.** Nothing reads the order fetches. The only candidate hit,
+  `ibkr_mapping.py:115` naming `IB.reqAllOpenOrdersAsync()`, is a string literal inside a
+  `Finding(...)` documentation record; the implementation reads `self._trades[cid].orderStatus`.
+- **A3 prerequisite passed.** `_rebuild_mirror()` does **not** depend on `_startup_complete`, so the
+  reorder was correct and no separate internal flag was needed. `_connected` stayed at its old
+  position because the rebuild needs it; only the gate moved.
 
-Controls asserted **verdict-by-verdict**, not inferred from a green aggregate (§7.7):
+**A1(a) — `UP_DATA_LOSS` as a third enum member, not a boolean beside `UP`.** Both options are
+prose-free, so the tiebreaker was *what an un-updated consumer does*. A boolean defaults `False`: an
+unaware consumer reads a lossy restore as clean `UP` and resumes against state it has no reason to
+distrust — the fact is present but **silently ignorable**, which is the defect being removed. A
+distinct member makes `state is SessionState.UP` simply `False`. IBKR precedes 1101 with 1100, so
+that consumer is already in DOWN and stays there: **it fails toward halted.** Declared as a Nix
+addition following the `feed_lag()` precedent; **frozen spec not edited**. Invariant 2 asserted
+mechanically — `"1100"/"1101"/"1102"` absent from every session `reason`.
 
-| control | required behaviour | measured |
-|---|---|---|
-| `HollowBrokerOrder` | must **FAIL** behaviourally | **9 failures** |
-| working `StubBrokerOrder` | must **PASS** | **0 failures** — this is what makes the row above discriminating |
-| `AwaitDivergentBrokerOrder` | must be **NAMED** | exactly **1** divergence: `query_positions: port declares async, adapter is sync` |
+**A1(b) — the adapter re-reconciles before publishing.** Non-vacuity proven by populating the mirror
+with a position the venue would *contradict* (`MESU6 +2` in mirror, venue returns `MNQU6 -1`), so the
+re-read is observable in contents, not just call count. Ordering proven by an instrument recording
+how many session events the sink had received at the instant the venue was queried — not inferred.
+A clean restore still does **not** rebuild, so the two paths stay asymmetric.
 
-**The can-fail immediately caught a defect in the brand-new test.** The hollow control was written
-with **two separate `RecordingSink` instances** — the adapter emitted into one, the assertions read
-the other. Driven against a *working* adapter it **still reported failures**: it could not tell
-"hollow" from "behaving", and would have stayed green through the exact regression it exists to
-catch. Fixed to share one sink; 4/4 can-fails then demonstrated. Recorded in doctrine as the eighth
-instance, and the first found *by applying the new principle*.
+**A3 — the window is closed, and the plant reproduces the probe's defect end to end:**
 
-### 2b. The joint dependency, written where both are set
+```
+E  A3: an execDetails injected DURING the mirror rebuild produces NO on_fill
+     -> fills 0 -> 1: [('c-window','e-window-1','MESU6',1,7785.0,1)]
+E  A3: it produces NO on_ack either — _ensure_acked is not reached
+     -> acks 0 -> 1: [('c-window',<AckStatus.ACCEPTED>,'synthesised: fill arrived with no prior ack')]
+```
 
-ARC 015 framed the `fetchFields` narrowing as "belt and braces over the gate". **That framing is
-wrong**, and it is the framing that invites a future author to restore `EXECUTIONS`. Corrected at all
-three sites read in isolation: `_startup_fetch_fields()`, the `connect()` docstring, and the line
-where the gate opens.
+**A2 — resolved `fetchFields`, enum evaluated at run time:**
 
-**The gate does not cover `fetchFields`.** `_startup_complete` is set `True` the instant
-`connectAsync` returns, and `_rebuild_mirror()` awaits **after** that — so the whole mirror rebuild
-runs with the gate **OPEN**. Worse, `_connected` is already `True` there, so a concurrently scheduled
-task can call `place_order` inside the same window and populate `_from_ib`; and **IBKR order ids reset
-across sessions**, so a replayed *historical* execution can carry an id that now matches a *live*
-order → a phantom fill reported to the Limiter.
+```
+StartupFetchALL     = <POSITIONS|ORDERS_OPEN|ORDERS_COMPLETE|ACCOUNT_UPDATES|SUB_ACCOUNT_UPDATES|EXECUTIONS: 63>
+passed after change = <POSITIONS|ACCOUNT_UPDATES|SUB_ACCOUNT_UPDATES: 25>
+  EXECUTIONS False · ORDERS_OPEN False · ORDERS_COMPLETE False
+  POSITIONS True · ACCOUNT_UPDATES True · SUB_ACCOUNT_UPDATES True
+```
 
-**`fetchFields` does not cover the gate.** It suppresses one replay source *by name*. The gate is
-venue-agnostic, catches whatever a future `ib_async` decides to fetch, and re-arms on every reconnect
-for free.
+Built **up** from the three wanted members, not subtracted from `ALL` — subtraction anchors to a
+value that moves, so anything a future `ib_async` adds to `ALL` would arrive switched on.
 
-Jointly sufficient. Individually not. Removing either opens a path the other does not close.
+**An ARC 016 claim is overturned.** "Jointly sufficient, individually insufficient" was wrong twice:
+its stated reason no longer exists after A3, **and its symmetry claim was never true even in ARC
+016** — it was argued for EXECUTIONS only, while `ORDERS_COMPLETE` replays onto `orderStatusEvent`,
+reaching `_ensure_acked`/`on_cancel`. Corrected at all three sites.
 
-### 2c. Promoted to doctrine — `debug.md` v1.2.0
+**A4 — the asymmetry is deliberate; no new debt.** Six of seven §2A events emit; exactly three are
+deduped, and the split is precisely edge-versus-level. `on_cancel` is **not** in the suspected gap and
+`on_position` does not need to be. D1.17 left deliberately per §2.5.
 
-**§7.12 — THE STANDING QUESTION:** *what would have to be true for this to pass while measuring
-nothing?* — required of every new gate and **answered in writing, beside the gate**, not in an arc
-report. The seven instances are tabulated as the evidence base, each with *what it measured* and
-*how it stayed green*, so the principle arrives with proof rather than as an assertion. Also added:
-failure mode **#14 — scope set by an external mutable list** (distinct from #2: the gate is
-configured exactly as intended and the *list it consults* moved, so no diff to the gate ever
-appears). Linked from the trigger table, the §9 per-instrument checklist, and §11.
-
-> ### ⚠ Citation correction — please read
->
-> The brief directed this promotion at debt item **D2.8**. **D2.8 is doctrine B.7 — *"no harness
-> parses a constant out of a document and asserts the code equals it"*** — which is the
-> **derive-never-restate** class, **not** the vacuous-pass class. It remains **open and unassigned**;
-> nothing about it was discharged, and a future arc reading "D2.8 was promoted" would find a doctrine
-> section with nothing to do with parsing constants out of documents.
->
-> The ledger items that actually carry the promoted class are **D1.10** (each hook actually capable
-> of failing), **D2.7** (nothing baselined on a pristine tree — bandit scanning nothing is its
-> measured instance), **D2.12** (a suite that silently skips a gate reports GREEN) and the whole of
-> **D3**, whose header states the principle outright. §7.12 now stands over those.
->
-> Recorded in the ledger rather than silently redirected, because **a pointer that reads as
-> authoritative while naming the wrong target is itself a stale literal anchor** — §7.4, and the same
-> class as the ledger's own miscounted series row.
+**Controls still fail as controls** — driven verdict-by-verdict, not inferred from a green aggregate:
+Hollow 9 behavioural failures, working Stub 0, `AwaitDivergent` still names `query_positions`.
+`test_seam_simulate.py` byte-identical to baseline (empty diff vs `92f9f17`).
 
 ---
 
-## Part 3 — live re-validation, clientId=905
+## 3. Sub-agent B — gate coverage
 
-**28 PASS · 0 FAIL · 2 CANNOT-MEASURE.** Market state: **OPEN**.
+**Non-vacuity first.** Scope derived using pre-commit's own `Classifier.filenames_for_hook`, not a
+reimplementation: `37/37/37/37/18/19/37/87`, **none zero**. The two bandit hooks partition the
+37-file set exactly (18+19) — that cross-check is what makes the claim measured rather than asserted.
 
-### 3a. Read-only
-
-| assertion | measured |
+| hook | verdict |
 |---|---|
-| `connect()` succeeds | **311 ms** |
-| `on_session(UP)` emitted | `[('up', None)]` |
-| mirror rebuild does not raise | clean, `mirror={}` |
-| no ack **or** fill from startup replay — **1st connect** | `acks=[]` `fills=[]` |
-| `query_positions()` — account flat | `[]` |
-| `query_balance()` real figures | cash **20 334.15**, netliq **20 339.43**, maint 0.00, init 0.00 |
-| `ts_is_venue_sourced=False` still set (GAP-2) | `False` |
-| `get_margin("MESU6")` via `whatIfOrderAsync` under timeout | **2 449.13 USD/contract in 84 ms** (ARC 012 trap avoided) |
+| `bandit (tests)` | **CAUGHT** — B602 High/High, `./scripts/tests/test_systemd_units.py:77:4` |
+| `pytest-affected` | **CAUGHT**, selection proven — collected **9**, neither 0 (skipped) nor 159 (swept) |
+| `ruff-format` | **CAUGHT BUT DID NOT NAME THE SITE** — partial, **not rounded up** |
 
-**The zero-qty filter was proved live and NON-VACUOUSLY.** The arc anticipated this might be
-unprovable — it was not. The venue **did** emit a `position=0` row on the flat account:
+**`ruff-format` is a formatter, not a gate — and no pass was manufactured.** `ruff format` itself
+exits 0 having rewritten the file; the exit 1 comes from pre-commit's before/after tree hash. That
+attribution was proven **not causal**: during a concurrent write by another sub-agent, pre-commit
+reported `bandit … Failed — files were modified by this hook` though bandit never writes a file. It
+names no site, and a second run over the same defect passes because the gate consumed its own
+subject. `ruff format --check` was demonstrated as a working reporting configuration (exit 1, sha256
+unchanged, names `<file>:1:1`) but adopting it is a behaviour change this arc was not scoped to make.
+**D3.5 opened and left OPEN.**
 
-```
-venue raw rows : [('MESU6', 0, 0.0)]      <- a genuine zero-qty row
-adapter returned: []                       <- filtered
-```
+**Three findings beyond scope:**
 
-This is a *venue* behaviour offline could only assert about, and it reproduced. Criterion met without
-needing the "say so if it doesn't occur" escape.
+1. **D2.13 — D2.12 standing in the config today.** A warm `pytest --testmon` prints `collected 0
+   items`, `no tests ran`, and **exits 0**. The hook's own comment claimed removing exit-5 tolerance
+   closed this; it does not — exit 5 belongs to the deselect path, which testmon's empty run never
+   reaches. Compounding it, `.testmondata` is gitignored: an untracked, per-machine,
+   reviewer-invisible file sets what the runtime gate measures.
+2. **The pre-ARC-010 bandit env is still on disk** in `~/.cache/pre-commit` and still reproduces the
+   original defect verbatim (`exception while scanning file` ×18/19, **rc=0**). Only the `rev: 1.9.4`
+   pin routes around it.
+3. **The `~100 B101 sites` restatement was also wrong** — derived count **318**.
 
-### 3b. The reconnect — what offline genuinely could not prove
-
-Non-vacuity established first: the id map was **populated** before the disconnect
-(`_to_ib={'arc016-3b-map': 29}` via a far-off LMT), so "does not carry across" is not empty→empty.
-
-| assertion | measured |
-|---|---|
-| **`_wire_events` idempotent — handler count per event unchanged** | `{orderStatus 1, execDetails 1, error 2, position 1, accountValue 1, disconnected 1}` — **identical before and after the 2nd connect** |
-| id map does not carry across | `_to_ib={}` `_from_ib={}` (was `{'arc016-3b-map': 29}`) |
-| no ack from startup replay, 2nd connect | `1 → 1` |
-| no fill from startup replay, 2nd connect | `0 → 0` |
-
-The duplicate-handler bug only manifests on a real second connect. It did not manifest.
-
-### 3c. Order lifecycle — MES, qty 1, flat between tests
-
-| assertion | measured |
-|---|---|
-| ack via the event stream **exactly once** | 1 ack |
-| ack **precedes** fill in arrival order | `['on_ack:arc016-3c-buy:accepted', 'on_fill:...:1@7772.5']` |
-| `on_fill` carries `cumQty` | `filled_qty=1 cumulative_qty=1` |
-| **`avg_price` per-unit, not notional** | see below |
-| **`flatten()` returns without blocking** | **0.292 ms** |
-| **`flatten()` — zero `reqPositionsAsync` during the call** | **0** (wrapped and counted) |
-| venue confirms flat after `flatten()` | fresh query → `[('MESU6', 0)]` |
-| far-off LMT → `query_order_status` | `working`, non-terminal |
-| `cancel_order` → `on_cancel` → status | `cancelled`, terminal |
-
-**`avg_price` re-proved live against a *derived* anchor, not a literal band:**
-
-```
-fill price (Execution, per-unit)  7772.50
-venue avgCost (Position, notional) 38863.11
-multiplier                             5
-avgCost / multiplier              7772.6220
-adapter Position.avg_price        7772.6220   <- matches
-the ARC 014 defect would have reported 38863.11
-```
-
-The residual 0.122 gap between fill price and `avgCost/mult` is the commission, exactly as ARC 014
-measured — a fraction of a tick, not 5×.
-
-### The two CANNOT-MEASURE results — stated, not implied
-
-**1. `PendingSubmit → Filled` with no intermediate state was NOT observed.** Both fills went
-`PreSubmitted → Filled`:
-
-```
-observed venue status sequences: {31: ['PreSubmitted','Filled'],
-                                  32: ['PreSubmitted','Filled'],
-                                  33: ['Submitted','PendingCancel','Cancelled']}
-```
-
-Not manufactured, per scope ("observe, do not force"). **For that trigger the synthesis path remains
-offline-proved only.**
-
-**But it is not untested live.** An earlier run of the identical harness *did* fire the synthesis, via
-the `Cancelled` trigger rather than the `Filled` one:
-
-```
-no venue ack seen for arc016-3b-map before Cancelled — synthesised ACCEPTED (§2c)
-('arc016-3b-map', AckStatus.ACCEPTED, 'synthesised: Cancelled arrived with no prior ack')
-```
-
-The second run did not reproduce it. **That difference is itself the evidence**: the §2c race is real
-and timing-dependent, which is precisely the argument for synthesising rather than trusting that a
-venue ack always arrives first.
-
-**2. D1.17 — one requested `disconnect()` emits TWO `on_session(DOWN)` events.**
-
-```
-[('down', 'transport disconnected'),   <- _on_ib_disconnected, via ib_async's disconnectedEvent
- ('down', 'requested')]                <- disconnect() itself
-```
-
-Acks are deduped through `_ack_once`; **session events are not deduped at all.** Benign if the
-Limiter treats DOWN as an idempotent *level*, a defect if it ever counts *edges*. Note the two carry
-different reasons, so the provenance channel is intact and the fix is **not** simply "drop one" — §4
-wants an unrequested drop distinguishable from a requested one. Not fixed here: the arc forbade
-behaviour changes. **Discharge with the Limiter**, which owns that contract.
-
-**Account confirmed FLAT by a fresh venue query at close**; the `finally` cleanup ran.
+**D3.1 corrected** to name `bandit (production)` as the only hook its ARC 010 plant could have
+covered; the second entry became **D3.6**, opened and discharged with its plant inside
+`^scripts/tests/`.
 
 ---
 
-## Gates
+## 4. Sub-agent C — checks
 
-```
-verify.py                6 passed | 0 failed | 0 cannot measure | 0 skipped   exit 0
-pytest (full, not -testmon)                              159 passed
-pre-commit run --all-files       8/8 Passed  exit 0  — for the first time this
-                                 includes scripts/broker/
-```
+**`check_order_path_bans.py`.** Both ban classes in one gate, bans as data, scope derived by `rglob`
+at run time. FAIL-with-CONTROL run **separately per ban class**, plus a decorator form. It
+discriminates code from prose — a docstring containing the literal `run_until_complete` is not
+flagged. **Arm (ii) proven not redundant:** a planted `importlib.import_module("backoff")` is
+invisible to the AST arm (no `Import` node — the name is a string) and was caught by the subprocess
+`sys.modules` arm.
 
-Suites: project pytest 155 → **159**. Debt **26 → 27** (D1.15 discharged; D1.16, D1.17 opened) —
-recounted mechanically, not by hand, per the ledger's own lesson.
+A `__main__`-guarded `asyncio.run` at `seam_simulate.py:525`, **pre-existing at baseline** (verified
+against `git show 92f9f17:`), is ADVISORY and printed on every run so it cannot go invisible. That
+was a repair to the gate's **logic**, never its scope — the file is not excluded and never will be.
+Prohibition 2 scopes the ban to the sync send path; a driver entry point is not on it.
+
+**`check_derived_claims.py` + `derived_claims.json` — D2.8 discharged, open since ARC 010.** Seven
+claims, each a set of *commands that compute a number at run time*. **The registry stores no integer
+anywhere** — banking "16" beside the claim that §2A has 16 elements would rebuild the exact defect
+the instrument exists to catch. Every claim needs ≥2 sources; one source, or two sources that are the
+same computation, is CANNOT-MEASURE.
+
+**§2A broker-order = 16**, derived by identifier, with the wrong number's origin reproduced
+mechanically: broker-order 15 bullets / **16 identifiers**; **19 bullets across both libraries** — the
+19 that survived three arcs; 22 identifiers across both; 23 declared in code (22 + the flagged
+`feed_lag` Nix addition).
+
+**The ARC 014 classification re-derived: CLEAN 9, FRICTION 4, GAP 3 = 16.** The banked "19 — 8/7/4"
+is wrong in a way worse than the count. Ground truth is `ibkr_mapping.FINDINGS`, which genuinely
+holds 19 Findings graded 8/7/4 — but **a Finding is not a verb/event**. `summarise()` prints them
+under a column header reading `VERB / EVENT`, and that mislabel is the wound: `"connect / disconnect"`
+is one Finding grading two §2A verbs, `"subscribe / on_tick"` grades two *datafeed* elements, and
+`"client_order_id mapping"`, `"symbol resolution"`, `"feed_lag"` are not §2A elements at all. **One
+judgment call, stated rather than hidden:** `"connect / disconnect"` carries a single CLEAN grade,
+propagated to both verbs. All 16 elements graded; zero ungraded.
 
 ---
 
-## Findings for claude.ai
+## 5. Defects in the arc brief itself — found by applying §0a, reported not reconciled
 
-1. **The D2.8 citation is wrong** (§2c above). Substance delivered; the pointer needs correcting in
-   whatever the brief was generated from, or the next arc inherits it.
-2. **`state/encrypt_credentials.py` is invisible to every gate** (D1.16). This is the same class the
-   arc was written about, still live in the tree. Needs an arc to move code out of `state/` while
-   leaving the data behind — do **not** un-ignore `state/`.
-3. **`disconnect()` emits two DOWN events** (D1.17). Needs a Limiter-side decision on edge vs level
-   before it is "fixed" in the adapter.
-4. **The series table had silently skipped two arcs** — ARC 014 and ARC 015 added no row at all.
-   Reconstructed mechanically. A ledger that stops being written is indistinguishable from one with
-   nothing to report.
-5. **ARC 013's commit was also unmerged**, stranded on `arc-013-delayed-feed`. It rides to `main` in
-   this PR, so nothing is left behind.
+§0a banked one instance and asked that the same reading be applied to the rest of the file. It found
+five more.
+
+| # | defect | disposition |
+|---|---|---|
+| 1 | `python` is not on PATH — **every** §7 command fails as written | used `.venv/bin/python` |
+| 2 | `verify.py` is at `scripts/verify.py`, not repo root | corrected |
+| 3 | **§7's prescribed check-count derivation returns 1, not 6** | replaced with two agreeing derivations |
+| 4 | `scratch/instrument/` was already absent | confirmed; **not** created-then-deleted to manufacture a discharge |
+| 5 | §9 attributes the series table to `SESSION.md`; it lives in `CHECK-DEBT.md` | routed correctly |
+| 6 | §5's premise that ARC 014/015 series rows are missing is stale | ARC 016 reconstructed them; verified no gaps 010–017 — **disk wins** |
+
+**Defect 3 is the significant one.** `scripts/verify.py` contains no check names at all — it loads a
+manifest, and registration lives entirely in `checks/registry.json`. The brief's remedy for the
+derive-never-restate class was itself an instrument that silently measured the wrong thing, and would
+have reported a catastrophic-looking 6 → 1 regression. It is banked as an evidence instance and the
+registry carries a verbatim note forbidding its reintroduction.
+
+**A seventh, from A, affecting all future FAIL-with-CONTROL work:** a sha256-identical restore is
+**not** by itself evidence that the restored code is what ran. A3's plant is a pure line swap, so
+file size is unchanged, and CPython validates `.pyc` on `(mtime, size)` — a rapid plant/unplant
+within one shell tick can leave planted bytecode resident behind byte-identical source. It produced a
+false red in A's own first pass. Purge `__pycache__` between every step.
+
+---
+
+## 6. Phase 4 — the harness corrected the ledger, twice
+
+Both gates registered in `checks/registry.json` in a new `code-invariants` block, deliberately last
+and deliberately **not** `on_fail: halt` — neither is a bootstrap floor component, and a
+code-invariant breach must not stop the environment checks that follow from being measured.
+
+Three rows added that A and C owed but were forbidden to write: **D1.18** (an IBKR error integer
+still crosses the seam inside `on_ack(reason)` — a genuine tension between invariant 2 and the
+declared provenance channel, reported rather than silently decided), **D2.14** (a hand-rolled retry
+loop is banned by §2.1 and undetected — a PASS means "no retry *library* and no loop-blocking
+*call*", never "nothing retries"), **D2.15** (a new *file* under `scripts/broker/` is covered
+automatically; a new *home* is not).
+
+The series row was then **left deliberately stale** to test the new harness. It caught it, unprompted:
+
+```
+detail: derived_claims.json:check_debt_open_items: sources disagree
+        — derived:ledger_rows=31, stated:series_table_latest_row=28
+GATE_EXIT=1
+```
+
+Discharging D2.8 itself then removed a row, making the freshly-written 31 stale in turn — **and it
+caught that too** (`derived:ledger_rows=30, stated:series_table_latest_row=31`). The row reads **30**
+because a machine derived 30. This is the first time in the series that the number was produced by an
+instrument rather than asserted by a person, and it closes the loop the ARC 012 note opened.
+
+**Debt 27 → 30** (six opened, three discharged: D2.8, D3.4, D3.6).
+
+**No plants remain.** `git status --porcelain` clean of them, `scratch/` absent, no stray worktrees,
+sha256 spot-checks match the sub-agents' reported finals.
+
+---
+
+## 7. D1.17 — left deliberately
+
+Confirmed per §2.5: the double `DOWN` on a requested disconnect was **not** touched. §4 wants an
+unrequested drop distinguishable from a requested one, and dropping one event destroys that. A4
+independently concluded it is the one genuine residual and that the fix is a Limiter-side
+edge-versus-level decision.
+
+---
+
+## 8. Phase 5 — NOT CERTIFIED, known-red `R1-A`
+
+No live confirmation was run and **no 2FA tap was requested**. IB Gateway was up and listening on
+4002, but the clock decided it: **15:59 CDT**, one minute from the MES 16:00 CT close and the
+maintenance break. Connecting at the session boundary would have produced ambiguous evidence about a
+gate re-arm, which is worse than no evidence. **1101 cannot be induced on demand in any case** — the
+offline proof is the proof, and is recorded as such rather than implied to be more.
+
+RED withholds certification, not durability. The arc is banked, committed, and pushed.
+
+**Nothing measured on IBKR at Stage 0 means anything about latency, fill realism, slippage, or
+strategy performance — the feed is delayed ~600 s.**
+
+---
+
+## 9. Percent moved — each derived, naming what from
+
+- **broker-order: ~13%.** Derived from the §2A roster of **16** elements (machine-derived by
+  `check_derived_claims --probe spec_order_identifier_count`): both session-integrity defects the
+  ARC 017 probe identified are closed (2/2), and 2/16 = 12.5%. The roster gained no elements and lost
+  none; what changed is that the protective path can no longer be confidently wrong. Grade profile is
+  now **CLEAN 9 / FRICTION 4 / GAP 3**, re-derived. The 3 GAPs need components that do not exist
+  (Limiter, broker-datafeed), so they are not this module's to close.
+- **apparatus: ~30%.** Derived from two counts, both pasted: registered gates **6 → 8** (+33%), and
+  hooks with a demonstrated can-fail **5/8 → 7/8** (+25 points). D2.8 — the instrument that makes
+  every future banked number self-checking — was open across seven arcs and is now discharged.
+- **whole project: ~2%.** Derived from the ledger: **3 rows discharged of 37 total** (8% of the
+  ledger), scaled down because the ledger covers the *apparatus* only. The trading core — Limiter,
+  strategy runtime, broker-datafeed, Crucible — has no rows and no code, so apparatus progress is a
+  small fraction of the whole. **This is the honest denominator, not a flattering one.**
+
+---
+
+## 10. Named gaps — what was not proven
+
+1. **No live confirmation.** Offline proof only for A1(b) and A3. 1101 cannot be induced on demand.
+2. **Hand-rolled retry loops on the order path are undetected** (D2.14). Banned by §2.1, invisible to
+   both arms of the new gate.
+3. **A second home for the order path** (D2.15). `ORDER_PATH_DIRS` is the single fix point; no
+   mechanical guard.
+4. **Dynamic/indirect evasion** inside a function body that never runs at import time is invisible to
+   both arms.
+5. **Registry coverage** — `check_derived_claims` proves every *registered* number is right; it cannot
+   prove the registry covers the numbers that matter. Failure mode #14, inherent to a registry-driven
+   instrument, stated beside the gate rather than papered over.
+6. **The ARC 014 grade *values*.** The re-derivation pins the roster and the total three ways, but a
+   grade *flip* would keep the sum at 16 and pass. Inventing a second source by banking today's
+   tallies would be the anchor the gate exists to remove.
+7. **`_mirror_stale` has no consumer** — it is observable adapter state, but the Limiter that would
+   read it does not exist.
+8. **A plant that testmon *skips*** was not constructed. Selection was proven positively; the
+   zero-selection green is D2.13 and remains open.
