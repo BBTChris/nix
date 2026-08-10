@@ -1,0 +1,28 @@
+{
+  "manifest_version": "1.0.0",
+  "comment": "Single source of what is registered (VERIFY-AND-CHECKS.md D.5) plus ordering, parallelism, and failure policy. What a check needs (privilege, interactive, disruptive) is declared in the check module \u2014 see nix_check_contract.md \u00a76.",
+  "blocks": [
+    {
+      "name": "bootstrap-floor",
+      "on_fail": "halt",
+      "checks": [
+        "check_python_runtime",
+        "check_venv"
+      ]
+    },
+    {
+      "name": "identity",
+      "checks": [
+        "check_node_identity"
+      ]
+    },
+    {
+      "name": "trading-stack",
+      "checks": [
+        "check_python_deps",
+        "check_ibgateway_config",
+        "check_ibgateway_service"
+      ]
+    }
+  ]
+}

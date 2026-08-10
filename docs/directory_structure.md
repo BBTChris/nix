@@ -1,11 +1,12 @@
-# directory_structure — `~/nix` directory topology — v1.2.0
+# directory_structure — `~/nix` directory topology — v1.3.0
 
 Application root: `~/nix`. Everything for Nix is self-contained here, **except the system PostgreSQL
 cluster** (lives at the OS default per CLAUDE.md).
 
 ```
 ~/nix
-  |-- scripts      All Python and shell scripts
+  |-- scripts      All Python and shell scripts; verify.py engine (nixverify/)
+  |                and its test suite (scripts/tests/)
   |-- docs         Reference documentation and markdown files (incl. the frozen risk spec)
   |-- checks       Check modules for verify.py and JSON execution map
   |-- risks        Library of risk rules and JSON execution map — data-role expression of the
@@ -22,6 +23,11 @@ cluster** (lives at the OS default per CLAUDE.md).
   |-- state        Hardware identity + encrypted credential storage. `chmod 600` throughout;
                    gitignored wholesale (defense in depth beyond the `*credentials*.json` rule).
 ```
+
+**v1.3.0 changes:** `scripts/` line expanded to name the `nixverify/` engine package
+and `scripts/tests/`. Tests deliberately live under `scripts/` rather than a new
+top-level `tests/` — "All Python and shell scripts" already covers them, and adding
+an undocumented top-level directory is the exact gap v1.2.0 closed for `state/`.
 
 **v1.2.0 changes:** Added `state/` — created by Arc 006's `install.sh` (hardware-UUID capture +
 credential-encryption mechanism) but never added to this list at the time, same category of gap

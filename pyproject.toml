@@ -9,3 +9,25 @@ target-version = "py314"
 [tool.mypy]
 python_version = "3.14"
 ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+pythonpath = ["scripts"]
+testpaths = ["scripts/tests"]
+
+[tool.pylint.MAIN]
+# checks/*.py import nixverify from scripts/ via checks/_preamble.py at runtime.
+# pylint does static resolution and cannot see that, so a commit touching only
+# checks/ files failed E0401 while the code was correct. Mirrors pytest's
+# pythonpath = ["scripts"] above. pre-commit runs hooks from the repo root.
+#
+# "checks" added alongside "scripts" (final whole-branch review): the mirror-
+# image problem. scripts/tests/test_check_node_identity.py and
+# test_check_venv.py do `import check_node_identity` / `import check_venv`
+# directly, relying on nixverify.loader.load_check() having appended checks/
+# to sys.path at runtime — invisible to pylint's static resolution, same as
+# the scripts/ case above. This surfaced only when a commit touched those
+# test files without also touching the corresponding checks/*.py in the same
+# pre-commit invocation (pylint's per-run module search path depends on which
+# files are in that run's batch) — a latent fragility, not something the test
+# changes themselves introduced.
+init-hook = 'import sys; sys.path.insert(0, "scripts"); sys.path.insert(0, "checks")'

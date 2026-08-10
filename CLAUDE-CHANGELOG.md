@@ -61,3 +61,13 @@ reporting `**** ARC completed ****`. Prompted by the prior arc (public
 visibility + branch protection) where RESULTS.md was skipped on first pass
 and only caught retroactively — this closes that gap mechanically rather
 than relying on memory.
+
+## 2026-08-09 — ARC 008 — verify.py v2 doc reconciliation
+
+- Added `VERIFY-AND-CHECKS.md` to CLAUDE.md's spec table; it is the authority for
+  the provisioning/verification layer.
+- `elements_v2.md` §1.2/§1.3 reconciled: three semantic modes, `scripts/` location,
+  systemd-creds supersedes Fernet (decision recorded; migration itself not yet
+  landed — `install.sh` still contains the Fernet block).
+- `directory_structure.md` v1.3.0: `scripts/` names the engine package
+  (`nixverify/`) and its test suite (`scripts/tests/`).

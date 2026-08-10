@@ -351,3 +351,249 @@ resting on corrupted authoritative text. Part 3 fully done. ~2-3% of whole-proje
 was a merge/audit/hygiene arc, not new capability; its main value is the negative result (frozen
 docs confirmed clean) and catching a second live instance of the graphify fence-stripping bug
 before it could propagate.
+
+---
+
+## ARC 008 (partial) + verify.py v2 — 2026-08-09/10
+
+**ARC 008 is not complete.** Parts 2 (`ib_async==2.1.0`, pinned) and 4 (clientId scheme: 1=engine
+reserved, 905=diagnostic, 0 permanently excluded) are done. Parts 1, 3 and 5 remain blocked on the
+IB Gateway GUI login + IB Key 2FA. Re-measured twice, hours apart: no `jts.ini` anywhere on the
+filesystem, `~/Jts` empty, no Gateway/Xvfb process, nothing listening on 4001/4002/7496/7497.
+Byte-for-byte the state Arc 006 recorded at Step 7. The arc's premise that the login was done was
+false; its stated fallback (infer from a live connection) is blocked by the same cause. Part 5 is
+blocked twice over — §5.1's cycle needs two PASS legs, and with nothing listening every path
+returns exit 2.
+
+**`VERIFY-AND-CHECKS.md` did not exist.** Arc 008 Part 5 required following it exactly; a
+filesystem-wide search, all of git history, and `~/.claude` turned up only the arc's own citation.
+`checks/` was empty; no check had ever been written. Authored it (now v1.0.1 and indexed in
+CLAUDE.md's spec table, so it is an authority by the project's own rule), wrote a 13-task plan
+against it, and executed the plan with an independent review after every task.
+
+**Landed:** `scripts/verify.py` over `scripts/nixverify/{contract,manifest,loader,engine,render}`,
+four checks passing against real machine state, 126 tests, three systemd runners (boot user
+non-disruptive; weekly user maintenance; weekly root maintenance), `install.sh` installing all of
+them. Root `verify.py` deleted. The §5.1 FAIL-with-CONTROL cycle demonstrated verbatim with a
+planted pin drift and a clean control.
+
+**Load-bearing design decisions:** five-state results so a downed service is distinguishable from
+a broken one; non-vacuity enforced mechanically (a PASS with no `evidence` is downgraded, on both
+the plugin and standalone paths); disruptive gates the *repair* not the inspection, so drift is
+reported at boot and the mutation refused; `systemd-creds`+TPM2 recorded as superseding Fernet
+(TPM 2.0 confirmed present) with the migration explicitly **not** yet performed.
+
+**Two commit gates were found silently non-functional.** bandit has never scanned anything —
+bandit 1.8.6 uses `ast.Str.s`, removed in Python 3.12, so it AttributeErrors mid-parse, marks the
+file skipped, and exits 0; proven by watching it pass `subprocess.run(..., shell=True)`. Repo-wide
+since Arc 006, **still outstanding**. pylint could not resolve `nixverify` for check-only commits
+and its duplicate-code pragma was silently inert; both fixed and proven to fail on a planted
+defect before being trusted. The pytest hook's exit-5 tolerance was removed and proven to fail.
+
+**Process note worth keeping.** Nearly every real defect was in the *plan*, not the
+implementations — reviewers caught a `validate_result` that destroyed diagnostics, a loader
+leaking `sys.modules`, an ASCII fallback still emitting Unicode, a node-identity check reading a
+JSON key `install.sh` never writes (permanently failing on every correctly-provisioned node), and
+a `pip install` of the order-placing library that could fire unattended on any boot. The pattern
+that caught them was constructing the real artifact rather than a stand-in: reading pylint's
+source, injecting `import yaml`, running a guard from inside the venv it guards. Three controller
+verification errors were caught the same way — twice by building a probe that differed from the
+real thing in exactly the dimension under test.
+
+Branch `arc-009-verify-v2`, 52 commits off `arc-006-provisioning-v2`. Not merged.
+
+---
+
+## ARC 010 — VERIFY-AND-CHECKS reconciliation · bandit repair · ARC 008 Parts 1/3/5 (2026-08-10)
+
+**Complete.** All seven success boxes checked.
+
+**The real `VERIFY-AND-CHECKS.md` arrived, and it is not a version of what I wrote.** It is an
+external doctrine document about a *different project's* verification machinery — its paths are
+`~/luna/`, its enforcement point is a `bank.sh` Nix does not have. My v1.0.1 was a Nix
+provisioning-engine spec. They overlap on principles and share almost nothing else, so the
+reconciliation was rule-by-rule, not line-by-line. Real doc installed at
+`docs/VERIFY-AND-CHECKS.md`; mine renamed `docs/nix_check_contract.md` and demoted to derived
+(v1.1.0) — it could not just be deleted, since every check and engine module cites its section
+numbers. 26 live references repointed; banked history left alone.
+
+**Corrections against the real doc:** `verify_manifest.json` → `checks/registry.json` (A.4/D.5);
+`docs/CHECK-DEBT.md` created (A.4); §1 restated from an implied build gate to a **ledger
+obligation** (A.7 warns explicitly against a "fully drained" gate against a series that rose
+95→190 over seventeen arcs and never fell); B.4, C.8, C.9 added as §5.2/§5.4/§5.5; C.3's real
+requirement — *scope contains subject*, which is not the same as "evidence is non-empty" — found
+missing and added as §5.3. Twelve doctrine rules Nix does not satisfy recorded rather than
+quietly skipped.
+
+**A claim from my last handoff is withdrawn.** I reported "amending §8 to match" the real doc's
+disruptive-repair rule. **The real document has no §8** and says nothing about disruptive actions,
+privilege, or maintenance windows. I was describing an amendment to my own file while implying
+alignment with one I had never read. The rule is retained, now labelled as a Nix addition with its
+own reasoning. Five-state `Status` and the three-runner split are likewise additions, not
+quotations — the doctrine specifies only three *exit codes*.
+
+**bandit had scanned nothing since ARC 006, and now cannot.** Python 3.14 removed `.s` from
+`ast.Constant`; bandit 1.8.6's `visit_Str` does `node.s`, so every file containing a string
+literal aborted mid-parse, was recorded "exception while scanning file", and the run exited **0**.
+27 of 27 files skipped, green. Bumped to 1.9.4 and put through the full can-fail cycle: 2667 lines
+now actually scanned (0 skipped), planted `subprocess.run(cmd, shell=True)` into a real production
+file, B602 HIGH at `check_venv.py:204:11`, old version green on the identical plant, unplanted
+byte-identical, control PASS reproduced. **My first bait file was self-suppressing** — the comment
+`# nosec-free: ... B602` parsed as a `nosec B602` directive. The instrument testing the instrument
+was itself defective, on the first try.
+
+**Gateway, finally measurable.** Connected clientId=905, account DUR250018, clean disconnect.
+**Err 10189 confirmed** — no market-data permission for CME FUT, zero tick-by-tick — and
+`reqHistoricalTicks` returns 20 ticks fine. This is the predecessor's outcome exactly: no true
+stream, so **bar immutability is a design obligation Nix must enforce, not a property of the
+feed.** Incidental: the paper account cannot afford one ES contract (margin 35,067 vs net liq
+20,344).
+
+**The arc's Part 3a premise was wrong and it changed the design.** `jts.ini` does **not** contain
+the socket port, `ReadOnlyApi`, or the localhost-only flag — this Gateway keeps them in an
+`IBGZENC`-encrypted store. Worse, its `LocalServerPort=4000` is the SSL tunnel, not the API port,
+so a check "reading the port from jts.ini" as instructed would read 4000 and be confidently wrong.
+Expected values moved to `checks/ibgateway_expected.json` as declared state. Read-only had to be
+established by watching a `whatIf` order reach IBKR's *margin engine* (err 201) rather than being
+refused; localhost-only by sourcing connections from the box's real LAN and Tailscale addresses
+and watching Gateway accept the TCP then close without answering. Auto-restart is enabled, but the
+**03:00 time is not verifiable** from outside the encrypted store and is reported as such.
+
+`check_ibgateway_config.py` does the IB v100+ handshake in **stdlib socket** — no `ib_async`, so
+it runs under the system interpreter before `.venv` exists. Full FAIL-with-CONTROL demonstrated,
+including the plant that proves an unreachable Gateway returns CANNOT_MEASURE and not FAIL. No
+plant ever touched `jts.ini` (sha identical throughout) and the authenticated session survived, so
+no 2FA was spent. 126 → 140 tests, all eight hooks green.
+
+PR #8 confirmed merged (`47ea580` on `origin/main`). `arc-009-verify-v2` is 55 ahead / 1 behind,
+that one commit *being* the merge commit — no conflict, no rebase needed, nothing pushed.
+
+---
+
+## ARC 011 — Xvfb + IB Gateway boot persistence (2026-08-10)
+
+**6 of 7 boxes. One deliberately not performed and reported as such.**
+
+Both units written, installed, enabled: `nix-xvfb.service` (`:99`, `1440x900x24`,
+`Restart=always`) and `nix-ibgateway.service` (`BindsTo=`+`After=nix-xvfb.service`,
+`DISPLAY=:99`, `Restart=on-failure`). Neither was **started**, and no reboot was performed —
+taking systemd over from the manually-started processes kills the JVM, drops the authenticated
+paper session, and costs a VNC login plus an IB Key tap. I put that to the human as an explicit
+choice rather than absorbing it; the answer was don't cut over. `systemctl is-enabled` is a
+*declaration* that they start at boot, not evidence — recorded as CHECK-DEBT D1.12.
+
+**What was proven without paying that cost.** The Xvfb unit's `ExecStart` was read back out of
+the installed unit (never retyped), run as a transient unit on scratch display `:98` with the same
+Service block, confirmed serving a real X client at 1440x900, SIGKILLed, and confirmed returning —
+`NRestarts=1`, new MainPID, display served again. So the invocation and the restart policy are
+real; only "systemd starts it at boot on `:99`" remains unverified.
+
+**Deriving the Gateway invocation from `/proc` changed the answer.** The live argv still holds
+unsubstituted install4j placeholders (`${installer:jtsConfigDir}`, `${installer:cmdLineArgs}`) and
+a hash-bearing JRE path — copying it into a unit would have been brittle and wrong. Reading the
+launcher showed both branches `exec` the JVM rather than forking, so `ExecStart` is the launcher
+and `Type=simple` tracks the real process. The JVM's PPID 1 is reparenting after the VNC shell
+exited, not evidence of a fork.
+
+**`BindsTo=`, not `Requires=`, and it was a real choice.** `Requires=` leaves Gateway running when
+Xvfb dies on its own — an AWT app that lost its display can sit holding port 4002 in a broken
+state, which is exactly the "unit active, thing unusable" case the new gate exists to catch.
+BindsTo makes it impossible rather than merely detectable. Ordering alone would not have been a
+real dependency either: the Xvfb unit is `active` milliseconds before the display accepts clients,
+so there is an `ExecStartPre` that polls `xdpyinfo` until it genuinely answers.
+
+**`systemd-analyze verify` caught a defect worth remembering:** `StartLimitIntervalSec` in
+`[Service]` is *silently ignored* — a restart loop with no brake in a config that reports no
+error. It is a `[Unit]` property. Moved and confirmed effective (`StartLimitIntervalUSec=5min`).
+
+**Slice: neither unit joins `nix-trading.slice`.** The arc cites `elements_v2.md` §1.4, which does
+not exist — that file has §1.1–1.3, §2–4. The real authorities are the slice's own
+`AllowedCPUs=0-5` and risk spec §10's locked core map, in which neither process appears. Decisive
+detail, measured from the live argv: the JVM runs `-XX:ParallelGCThreads=20`, sized for this
+20-core box. Confining it to six cores while it still spawns 20 GC threads would put GC pauses
+directly on the cores §11 exists to keep clear — worse than leaving it out, not merely different.
+Recorded for the next author: Tradovate's membership gets decided against §10 on its own merits.
+
+`check_ibgateway_service.py` **imports** `api_handshake` from `check_ibgateway_config` rather than
+reimplementing it, so two gates can never disagree about "reachable" (C.9), with a test asserting
+no second implementation exists. The same observation carries opposite verdicts in the two gates
+by design — unreachable is CANNOT_MEASURE for the config gate (it reads settings through the
+connection) and FAIL for this one (persistence that does not persist). Full FAIL-with-CONTROL via
+`systemctl disable`: it named only the disabled unit **while reporting the display still
+answering**, which is the gate discriminating "comes back after a reboot" from "works right now" —
+the two properties a proxy check collapses.
+
+142 → 153 tests, all eight hooks green, six checks passing through verify.py. CHECK-DEBT 22 → 21,
+the first fall in the series.
+
+---
+
+## ARC 012 — systemd cutover · MES · entitlement clarification (2026-08-10)
+
+**Complete.** All nine boxes, with the reboot box checked as the arc's "explicitly left open"
+alternative.
+
+**Ran Part 2 before Part 1, deliberately.** Part 2's measurements need an authenticated Gateway and
+Part 1 destroys that authentication; written order would have parked the MES work behind a human
+login. No dependency ran backwards.
+
+**Prerequisite unmet and reported, not assumed:** the arc requires `arc-009-verify-v2` merged
+first. It is not — `origin/main` is still `47ea580`, branch 57 ahead / 1 behind. Repo hygiene with
+no bearing on the work, and console availability was the perishable resource, so I proceeded and
+flagged it. Still owed.
+
+**Cutover done, and proven by cgroup rather than unit status.** Before: both processes in
+`user.slice/user-1000.slice/session-231.scope` — a login-session scope, which is what "shell-owned"
+actually looks like. After: Xvfb PID 260814 in `/system.slice/nix-xvfb.service`, Gateway PID 261046
+in `/system.slice/nix-ibgateway.service`. The decisive evidence is that the 4002 listener's PID
+equals the unit's own `MainPID` — not a shell orphan that happens to be listening. `ExecStartPre`
+(the xdpyinfo readiness gate) exited `0/SUCCESS`, so the display dependency was a real precondition
+rather than incidental ordering. Both units `NRestarts=0`. Post-login `verify.py`: 6 passed, exit 0,
+with the service gate now reading `enabled/active` where it read `enabled/inactive`. Gateway's API
+config survived the restart untouched.
+
+**The ARC 010/011 design met reality and held.** With the Gateway genuinely down — nothing planted
+— `check_ibgateway_config` returned CANNOT_MEASURE (exit 2) and `check_ibgateway_service` returned
+FAIL (exit 1) naming the endpoint. One observation, two gates, two different and correct verdicts.
+That distinction had only ever been demonstrated with a planted wrong port.
+
+**I stopped and handed off for the VNC login rather than working around it.** No VNC server was
+running (the old one died with the torn-down session) and I did not start one — an unauthenticated
+VNC exposing a live broker Gateway is an operator decision.
+
+**Reboot offered as a separate authorization and declined**, so **D1.12 stays open**: boot
+behaviour is unverified and `is-enabled` is a declaration, not evidence.
+
+**MES fixes margin and does not fix data — both measured separately.** MESU6 conId 793356217,
+multiplier 5. Initial margin **3,503.59** vs net liq 20,344.34 → **5 contracts affordable**; ES
+**35,035.87** → 0, rejected with err 201. Exactly 10.0×, tracking the multiplier. But
+`reqTickByTickData` on MES returns **Err 10189, "No market data permissions for CME FUT"** — the
+error names the *product class*, not the contract, so a smaller instrument cannot dodge an
+account-level subscription. `reqHistoricalTicks` returned 25 ticks. **No CME futures tick stream is
+available on this account at all**, now confirmed across two instruments rather than inferred from
+one; the polled path stands and bar immutability remains Nix's own obligation. Whether to buy CME
+data on a throwaway Stage 0 broker is surfaced as a human decision, deliberately not recommended.
+
+**Method trap worth remembering:** `ib.whatIfOrder()` (sync) returns an *empty* OrderState here —
+its wait expires before IB answers, and the rejection then surfaces seconds later against an
+unrelated request. My first pass called both contracts UNDETERMINED on that basis, and **ARC 010
+made the same mistake**, recording ES margin as undetermined when it was merely late. Use
+`whatIfOrderAsync` under an explicit timeout.
+
+**A defect in the ledger itself.** CHECK-DEBT's series column read 22 (ARC 010) then 21 (ARC 011).
+Both wrong — I hand-counted twice and missed both times. Mechanically counted it is 24, 23, and 24
+today. Corrected in the doc with the error named; these banked entries are left as written, since
+history is appended and never rewritten. The count is hand-maintained prose asserting a number the
+table already determines — a `derive, never restate` violation, which is exactly doctrine B.7 and
+already on the books as debt D2.8. D2.8 now has a measured motivating instance.
+
+CHECK-DEBT 23 → 24 (D1.13 opened, nothing discharged). 153 tests, verify.py exit 0.
+
+**Correction, appended same-arc (ARC 012).** The entry above states that ARC 010 "recorded ES
+margin as UNDETERMINED where it was merely late." That is wrong. ARC 010's `whatIf` did come back
+empty, but it read the correct figure out of the **err 201 rejection text** and reported 35,067.37
+against net liq 20,344.34 — a sound conclusion from a sound source. The real lesson is narrower and
+more useful: the empty-`OrderState` trap is harmless on a **rejected** order, because the error
+itself carries the margin number, and only bites on an **affordable** one, where no error exists to
+correct it. That is exactly the MES case. Appended rather than edited above, per directive 6.
+(ARC 010 measured ES at 35,067.37, ARC 012 at 35,035.87 — IBKR margin moves intraday; both stand.)

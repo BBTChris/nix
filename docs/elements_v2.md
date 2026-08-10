@@ -43,17 +43,29 @@ Fresh headless Ubuntu node, secure download-verify-execute:
 - Pre-installs base dependencies (`python3`, `git`, `python3-venv`, cryptography libs) before any
   interactive prompt.
 - **Hardware identity:** the node is identified by the v4 full UUID of the primary partition.
-- **Secure storage:** broker accounts and API keys are prompted for, encrypted via Python
-  `cryptography` (Fernet) under a master node password, stored in a local JSON with `chmod 600`.
+- **Secure storage:** operator-supplied secrets are sealed with `systemd-creds`
+  to this node's TPM 2.0 and delivered to units via `LoadCredentialEncrypted=`.
+  **Supersedes the Fernet-under-master-password mechanism** — that design could
+  not decrypt at boot without a human present, contradicting the headless
+  self-healing invariant. See `nix_check_contract.md` §11. This documents the
+  decision; the migration itself is a separate plan, and until it lands,
+  `install.sh` still contains the Fernet block.
 
 ### 1.3 State Maintenance (verify.py)
 Idempotent, plugin-based inspection and remediation engine enforcing known-good node state.
 - **Execution:** end of `install.sh`, every boot, and weekly (Saturday 03:00 America/Chicago —
   ops schedule, outside trading sessions).
-- **Modes:** Quick Summary, Verbose, Verify+Repair.
-- **Verify+Repair:** pulls repository updates, resolves missing dependencies, configures systemd
-  units, returns the node to known-good state. Note v1.3 §12.11: config changes take effect only
-  through restart — verify.py repairs the *environment*; it never hot-edits live tunables.
+- **Modes:** `verify` (detect and report), `correct` (verify + repair), `install`
+  (correct + install what is absent, idempotent). `--verbose` is orthogonal to mode.
+  **Superseded by `nix_check_contract.md` §4 — that file is the authority for the
+  check contract; this section is a summary only.**
+- **Location:** `scripts/verify.py` per `directory_structure.md`.
+- **Correct/Install actions:** resolves missing dependencies, configures systemd units, returns the
+  node to known-good state. No unattended `git pull` — verify.py never updates its own code; an
+  autonomous update to a trading node's codebase with no human review would be a §7-class hazard
+  (auto-chasing latest without a decision or test cycle). Note v1.3 §12.11: config changes take
+  effect only through restart — verify.py repairs the *environment*; it never hot-edits live
+  tunables.
 
 ## 2. Data Ingestion — implementation notes for the v1.3 price firehose
 v1.3 locks the design: the **sole** raw-shared-memory path is the per-tick price firehose,
