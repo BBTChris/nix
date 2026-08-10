@@ -75,6 +75,17 @@ while measuring nothing?
     here so it is not mistaken for a mechanical one: whenever an arc writes a
     number into a document, it adds the claim. There is no machine that can find
     a claim nobody registered.
+    RE-CONFIRMED ARC 018 (named gap 5), and deliberately NOT repaired. The
+    statement above is still accurate and still where it was. ARC 018 tested it
+    the only way it can be tested — by adding three registered numbers
+    (`order_path_scope_files`, `broker_order_percent_sec2a_element_v1`, and the
+    scheme's canonical-form restatement scan) and observing that nothing in this
+    gate asked for them, noticed they were missing, or would have gone red had
+    they never been added. The gap is therefore not shrinking as the registry
+    grows; it is exactly as large as the set of numbers nobody has thought of.
+    An instrument that could prove its own completeness would be a different and
+    much larger thing, and building a half-version of it would make the gap look
+    addressed. Left open, on purpose, in writing.
 
  8. UNGUARDED — a `restatement_scans` pattern that matches nothing reports "0
     restatements (preferred)", which is indistinguishable from a pattern that
@@ -369,6 +380,72 @@ def _p_arc014_grade_tally_sum(home: Path) -> tuple[int, str]:
     return sum(tally.values()), f"re-derived over the §2A roster: {breakdown}"
 
 
+def _p_order_path_anchor_files(home: Path) -> tuple[int, str]:
+    """`.py` files under the gate's STATED anchor `ORDER_PATH_DIRS` (ARC 018, D2.15).
+
+    The anchor constant is read out of `check_order_path_bans.py` by AST rather
+    than retyped here — retyping it would make this probe a restatement of the
+    thing it is supposed to check, inside the instrument built to catch that.
+    """
+    rel = "checks/check_order_path_bans.py"
+    dirs = _module_tuples(home, rel, ("ORDER_PATH_DIRS",))["ORDER_PATH_DIRS"]
+    if not dirs:
+        raise ProbeError(f"{rel}: ORDER_PATH_DIRS is empty")
+    files = sorted({p for d in dirs for p in (home / d).rglob("*.py") if p.is_file()})
+    return len(files), f"anchor {list(dirs)}: " + ", ".join(p.name for p in files)
+
+
+# --------------------------------------------------------------------------
+# C4 — THE BROKER-ORDER PERCENT SCHEME, `sec2a-element-v1`.
+# --------------------------------------------------------------------------
+# Definition, so the series is reproducible and a scheme change is visible:
+#
+#   percent(level) = 100 * |roster elements graded CLEAN| / |roster|
+#   roster         = the §2A broker-order element set, BY IDENTIFIER
+#   grades         = ARC 014's FINDINGS, re-derived over that roster
+#
+# and an arc's "percent moved" is the CHANGE in that level, in percentage
+# points, over the same denominator. Both terms are re-derived on every run;
+# neither is stored anywhere.
+_SCHEME_ID = "sec2a-element-v1"
+
+
+def _clean_fraction(roster: list[str], grades: dict[str, str]) -> tuple[int, int, int]:
+    """(clean, total, integer percent) for one roster under one grade map."""
+    if not roster:
+        raise ProbeError("empty roster — a percent over nothing is not a percent")
+    clean = sum(1 for name in roster if grades.get(name) == "CLEAN")
+    return clean, len(roster), 100 * clean // len(roster)
+
+
+def _p_broker_order_percent_spec(home: Path) -> tuple[int, str]:
+    """Scheme `sec2a-element-v1`, denominator from the FROZEN SPEC."""
+    roster = _spec_identifiers(home, "### broker-order")
+    clean, total, pct = _clean_fraction(roster, _arc014_roster_grades(home))
+    return pct, (
+        f"scheme {_SCHEME_ID}, spec denominator: CLEAN {clean} of {total} "
+        f"§2A broker-order identifiers = {pct}% (level, not a per-arc delta)"
+    )
+
+
+def _p_broker_order_percent_seam(home: Path) -> tuple[int, str]:
+    """Scheme `sec2a-element-v1`, denominator from the CODE's restatement."""
+    tuples = _module_tuples(
+        home, "scripts/broker/broker_seam.py", ("ORDER_PORT_VERBS", "ORDER_EVENTS")
+    )
+    roster = list(tuples["ORDER_PORT_VERBS"]) + list(tuples["ORDER_EVENTS"])
+    grades: dict[str, str] = {}
+    for verb, grade in _arc014_findings(home):
+        for name in _normalise_verb(verb):
+            if name in roster:
+                grades[name] = grade
+    clean, total, pct = _clean_fraction(roster, grades)
+    return pct, (
+        f"scheme {_SCHEME_ID}, seam denominator: CLEAN {clean} of {total} "
+        f"broker_seam.py ORDER_PORT_VERBS+ORDER_EVENTS = {pct}%"
+    )
+
+
 _SEAM_TUPLES = (
     "ORDER_PORT_VERBS",
     "ORDER_EVENTS",
@@ -430,6 +507,9 @@ PROBES = {
     "arc014_grade_tally_sum": _p_arc014_grade_tally_sum,
     "seam_declared_total": _p_seam_declared_total,
     "spec_plus_flagged_additions": _p_spec_plus_flagged_additions,
+    "order_path_anchor_files": _p_order_path_anchor_files,
+    "broker_order_percent_spec": _p_broker_order_percent_spec,
+    "broker_order_percent_seam": _p_broker_order_percent_seam,
 }
 
 
