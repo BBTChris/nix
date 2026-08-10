@@ -71,14 +71,20 @@ from __future__ import annotations
 # pylint: disable=too-many-positional-arguments,too-many-instance-attributes
 # pylint: disable=too-many-lines,super-init-not-called,import-outside-toplevel
 # pylint: disable=duplicate-code
+import ast
 import asyncio
+import pathlib
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from types import MethodType, SimpleNamespace
 
 import pytest  # pylint: disable=import-error
-from broker_order_ibkr import IBKRBrokerOrder
+from broker_order_ibkr import (
+    IB_REJECT_EVIDENCE,
+    IB_REJECT_RULES,
+    IBKRBrokerOrder,
+)
 from broker_seam import (
     ORDER_PORT_VERBS,
     AckStatus,
@@ -89,9 +95,11 @@ from broker_seam import (
     NeutralOrder,
     OrderType,
     RecordingSink,
+    RejectCategory,
     SessionState,
     Side,
     TimeInForce,
+    ack_category_violation,
     check_await_conformance,
     check_structural_conformance,
 )
@@ -651,6 +659,301 @@ async def _section_rejection_paths() -> None:
     ib3.push_error(t3.order.orderId, 2104, "Market data farm connection is OK:usfuture")
     ib3.push_error(t3.order.orderId, 2119, "Market data farm is connecting:usfuture")
     record("reject: informational codes (2104/2119) are NOT rejections", not sink3.acks)
+
+
+# ---------------------------------------------------------------------------
+# ARC 018 / D1.18 — the neutral rejection taxonomy.
+# ---------------------------------------------------------------------------
+
+# (errorCode, errorString, expected RejectCategory). Every row is either a code this
+# system has MEASURED, or a deliberately-unmapped code whose only correct answer is
+# UNKNOWN. Nothing here is a guess at what IBKR "probably" returns: the unmapped rows do
+# not depend on their text being accurate, because the assertion on them is that the
+# adapter declines to interpret them.
+REJECT_CASES: tuple[tuple[int, str, RejectCategory], ...] = (
+    # MEASURED, ARC 010/012 (see IB_REJECT_EVIDENCE[201]). The one mapped rejection this
+    # system has ever observed, and the only row that proves the taxonomy is not
+    # uniformly UNKNOWN.
+    (
+        201,
+        (
+            "Order rejected - reason:YOUR ORDER IS NOT ACCEPTED. NET LIQ [20299.32] "
+            "MUST EXCEED THE MARGIN REQ [35035.87]"
+        ),
+        RejectCategory.INSUFFICIENT_MARGIN,
+    ),
+    # 201 is a WRAPPER code. A 201 whose text is not the measured money text must NOT
+    # inherit INSUFFICIENT_MARGIN — that is the "unknown wearing a known's clothes"
+    # failure, and it is the reason the rule carries substrings at all.
+    (
+        201,
+        "Order rejected - reason:some other refusal entirely",
+        RejectCategory.UNKNOWN,
+    ),
+    # Unmapped codes. No evidence exists for these on this system, so the taxonomy owes
+    # them UNKNOWN and nothing else.
+    (
+        200,
+        "No security definition has been found for the request",
+        RejectCategory.UNKNOWN,
+    ),
+    (10147, "OrderId that needs to be cancelled is not found", RejectCategory.UNKNOWN),
+    (999999, "a code that does not exist", RejectCategory.UNKNOWN),
+)
+
+
+def _reject_site() -> str:
+    """Name the mapper's real location, DERIVED from the object — never typed.
+
+    A can-fail demonstration is only useful if the failure names where to look, and a
+    hand-typed path is a §7.4 anchor that rots the first time the function moves.
+    """
+    import inspect
+
+    import broker_order_ibkr as adapter_mod
+
+    fn = adapter_mod.ib_reject_category
+    return (
+        f"{inspect.getsourcefile(fn)}:{inspect.getsourcelines(fn)[1]} "
+        f"{fn.__qualname__}() + IB_REJECT_RULES"
+    )
+
+
+def _call_emits_rejected(node: ast.AST) -> bool:
+    """True if `node` is an ack emission carrying the literal `AckStatus.REJECTED`."""
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+    if name not in ("on_ack", "_ack_once"):
+        return False
+    args = list(node.args) + [kw.value for kw in node.keywords]
+    return any(isinstance(a, ast.Attribute) and a.attr == "REJECTED" for a in args)
+
+
+def _rejection_sites_in(tree: ast.AST, filename: str) -> list[str]:
+    """Enclosing function names in one parsed module that emit a REJECTED ack."""
+    return [
+        f"{filename}::{fn.name}"
+        for fn in ast.walk(tree)
+        if isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef)
+        and any(_call_emits_rejected(n) for n in ast.walk(fn))
+    ]
+
+
+def _rejection_emission_sites() -> list[str]:
+    """AST-scan scripts/broker/ for every call that emits a REJECTED ack.
+
+    DERIVED, not restated. The taxonomy assertions below drive ONE rejection path, and a
+    second path added later would be structurally invisible to them — the vacuous-control
+    shape (debug.md §7.12) one level up: the test would keep passing while an untested
+    rejection emitted no category at all. So the set of emission sites is recomputed from
+    the source on every run and compared against what this suite claims to cover.
+
+    NAMED GAP: it matches only calls that pass the literal `AckStatus.REJECTED`. A site
+    that passes the status in a variable is invisible here. That is accepted rather than
+    papered over — the alternative is dataflow analysis, and this catches the shape a new
+    rejection path actually takes.
+    """
+    broker_dir = pathlib.Path(__file__).resolve().parent.parent / "broker"
+    sites: list[str] = []
+    for path in sorted(broker_dir.glob("*.py")):
+        sites += _rejection_sites_in(
+            ast.parse(path.read_text(encoding="utf-8")), path.name
+        )
+    return sorted(set(sites))
+
+
+# The emission sites this suite drives. Compared against the AST scan above, so a new
+# rejection path fails loudly here instead of shipping untested.
+COVERED_REJECTION_SITES = ["broker_order_ibkr.py::_on_ib_error"]
+
+
+def _structured_payload(status: AckStatus, category: RejectCategory | None) -> str:
+    """Every STRUCTURED field of an ack, flattened to one string.
+
+    Both the member NAME and the member VALUE, because a consumer can read either and
+    invariant 2 has to hold for both spellings.
+    """
+    parts = [status.name, str(status.value), repr(status)]
+    if category is not None:
+        parts += [category.name, str(category.value), repr(category)]
+    return "|".join(parts)
+
+
+async def _drive_rejection(code: int, text: str):
+    """Place one order, refuse it with (code, text), return the single ack tuple."""
+    ad, ib, sink = new_adapter()
+    await ad.connect()
+    ad.place_order(
+        NeutralOrder(
+            f"c-rc-{code}", "ESU6", Side.BUY, 1, OrderType.MARKET, TimeInForce.DAY
+        )
+    )
+    ib.push_error(ib.placed[-1][2].order.orderId, code, text)
+    return sink.acks
+
+
+async def _section_reject_taxonomy() -> None:
+    """ARC 018 / D1.18 — the refusal cause as structured, vendor-neutral state.
+
+    What is being proved, in order: the mapping table cannot grow without evidence; the
+    suite covers every rejection emission site in the tree; the taxonomy actually fires
+    (non-vacuity); no IBKR spelling reaches any structured field (invariant 2, asserted
+    mechanically); and the human channel still carries the venue code and its figures.
+    """
+    # ------------------------------------------------- the mapping table is evidence-gated
+    unevidenced = [
+        code
+        for code, _needles, _cat in IB_REJECT_RULES
+        if not IB_REJECT_EVIDENCE.get(code)
+    ]
+    record(
+        "taxonomy: every mapped IBKR code carries a written evidence citation",
+        not unevidenced,
+        f"unevidenced codes={unevidenced} — a declaration is not evidence",
+    )
+
+    # ------------------------------------------------- coverage of every emission site
+    found_sites = _rejection_emission_sites()
+    record(
+        "taxonomy: the suite covers EVERY REJECTED-ack emission site in scripts/broker/",
+        found_sites == COVERED_REJECTION_SITES,
+        f"found={found_sites} covered={COVERED_REJECTION_SITES} — a new rejection path "
+        "must be driven here before it ships",
+    )
+    record(
+        "taxonomy: NON-VACUITY — at least one emission site exists to cover",
+        len(found_sites) >= 1,
+        f"found={found_sites} (an empty scan would make the assertion above vacuous)",
+    )
+
+    # ------------------------------------------------- no digit in ANY member, ever
+    digit_members = [
+        m.name
+        for m in RejectCategory
+        if any(c.isdigit() for c in m.name) or any(c.isdigit() for c in str(m.value))
+    ]
+    record(
+        "INVARIANT 2: no RejectCategory member name or value contains a digit",
+        not digit_members,
+        f"members carrying digits={digit_members} — a venue code in the taxonomy itself",
+    )
+
+    # ------------------------------------------------- drive every case
+    observed: list[RejectCategory] = []
+    for code, text, expected in REJECT_CASES:
+        acks = await _drive_rejection(code, text)
+        # The expectation is part of the label because code 201 appears TWICE with two
+        # different correct answers — that pair is the whole point of the wrapper-code
+        # argument, and two identically-named rows would hide which one moved.
+        label = f"code {code} -> {expected.name}"
+
+        # Reachability BEFORE any assertion about content — a taxonomy asserted on a path
+        # that never fires is the vacuous control (§7.12).
+        if len(acks) != 1:
+            record(
+                f"taxonomy ({label}): the rejection path is REACHABLE (exactly one ack)",
+                False,
+                f"acks={acks}",
+            )
+            continue
+        record(
+            f"taxonomy ({label}): the rejection path is REACHABLE (exactly one ack)",
+            True,
+        )
+
+        _cid, status, reason, category = acks[0]
+        observed.append(category)
+
+        record(
+            f"taxonomy ({label}): status is REJECTED",
+            status is AckStatus.REJECTED,
+            str(acks[0]),
+        )
+        record(
+            f"taxonomy ({label}): category is {expected.name}, never a nearest match",
+            category is expected,
+            f"got={category} expected={expected} — see {_reject_site()}",
+        )
+        record(
+            f"taxonomy ({label}): the (status, category) pairing is legal",
+            ack_category_violation(status, category) == "",
+            ack_category_violation(status, category),
+        )
+
+        # THE MECHANICAL INVARIANT-2 ASSERTION. Two independent forms: this venue's code
+        # must not appear anywhere in the structured payload, AND the payload must contain
+        # no digit at all — the second catches a code this case does not happen to drive.
+        payload = _structured_payload(status, category)
+        record(
+            f"INVARIANT 2 ({label}): the venue code appears in NO structured field",
+            str(code) not in payload,
+            f"payload={payload!r}",
+        )
+        record(
+            f"INVARIANT 2 ({label}): no structured field contains any digit",
+            not any(c.isdigit() for c in payload),
+            f"payload={payload!r}",
+        )
+
+        # ...and the human channel is UNCHANGED. `reason` deliberately still carries the
+        # venue's code and text; the fix is that it is no longer the only carrier.
+        record(
+            f"taxonomy ({label}): `reason` still carries the venue code (human channel)",
+            str(code) in (reason or ""),
+            f"reason={reason!r}",
+        )
+
+    # Non-vacuity of the taxonomy ITSELF, and the can-fail target. A mapper collapsed to a
+    # single category satisfies every per-case assertion that expects UNKNOWN; only this
+    # one notices, so it is the one that has to name the site.
+    distinct = set(observed)
+    record(
+        "NON-VACUITY: the taxonomy is not collapsed — >1 category observed, and at least "
+        "one is a MAPPED category rather than UNKNOWN",
+        len(distinct) > 1 and distinct - {RejectCategory.UNKNOWN} != set(),
+        f"observed={sorted(c.name for c in distinct)} over {len(REJECT_CASES)} driven "
+        f"rejections — SITE: {_reject_site()}",
+    )
+    record(
+        "taxonomy: the evidenced 201 margin rejection maps to INSUFFICIENT_MARGIN — "
+        f"SITE: {_reject_site()}",
+        RejectCategory.INSUFFICIENT_MARGIN in distinct,
+        f"observed={sorted(c.name for c in distinct)}",
+    )
+
+    # ------------------------------------------------- the ACCEPTED half of the pairing
+    adA, ibA, sinkA = new_adapter()
+    await adA.connect()
+    adA.place_order(
+        NeutralOrder("c-acc", "ESU6", Side.BUY, 1, OrderType.MARKET, TimeInForce.DAY)
+    )
+    ibA.push_status(ibA.placed[-1][2], "PreSubmitted")
+    record(
+        "taxonomy: an ACCEPTED ack carries reject_category=None (the pairing, both ways)",
+        len(sinkA.acks) == 1
+        and sinkA.acks[0][1] is AckStatus.ACCEPTED
+        and sinkA.acks[0][3] is None,
+        str(sinkA.acks),
+    )
+
+    # ------------------------------------------------- UNKNOWN is the floor, never None
+    adU, _ibU, sinkU = new_adapter()
+    await adU.connect()
+    adU._ack_once("c-floor", AckStatus.REJECTED)  # no category supplied at all
+    record(
+        "taxonomy: a REJECTED ack emitted with NO category is coerced to UNKNOWN, not None",
+        len(sinkU.acks) == 1 and sinkU.acks[0][3] is RejectCategory.UNKNOWN,
+        str(sinkU.acks),
+    )
+    record(
+        "taxonomy: ack_category_violation CAN fail (REJECTED + None is named a violation)",
+        ack_category_violation(AckStatus.REJECTED, None) != ""
+        and ack_category_violation(AckStatus.ACCEPTED, RejectCategory.UNKNOWN) != ""
+        and ack_category_violation(AckStatus.ACCEPTED, None) == "",
+        "the pairing validator must reject both bad pairings and accept the good one",
+    )
 
 
 async def _section_connectivity() -> None:
@@ -1562,6 +1865,7 @@ async def main() -> None:
     await _section_session_discipline()
     await _section_order_lifecycle()
     await _section_rejection_paths()
+    await _section_reject_taxonomy()
     await _section_connectivity()
     await _section_margin()
     await _section_balance()
