@@ -1,11 +1,10 @@
-# RESULTS — ARC 012: systemd cutover, MES verification, entitlement clarification
+# RESULTS — ARC 013: delayed market data verified; the Stage 0 data decision recorded
 
-**Status: ARC 012 complete.** Every success box checked. One is checked as *"D1.12 explicitly left
-open"* — the arc's own alternative — because the reboot test was offered as a separate
-authorization and declined.
+**Status: ARC 013 complete.** Every success box checked.
 
-**Headline: MES fixes margin. It does not fix data.** The entitlement is account-level; no
-instrument choice and no code change reaches it.
+**Headline: a delayed CME futures stream *does* flow on this account, at a measured 10 minutes —
+not the documented 15–20.** ARC 012's "no tick stream at all" was accurate for what it measured and
+is now **narrowed to real-time**, not overturned.
 
 ---
 
@@ -13,282 +12,199 @@ instrument choice and no code change reaches it.
 
 | Box | State |
 |---|---|
-| Pre-cutover state recorded (PIDs, listener, verify.py baseline) | ✅ |
-| Both units started; Xvfb serving `:99`; Gateway under systemd, not a shell | ✅ — proven by cgroup, not unit status |
-| Unreachable Gateway confirmed `CANNOT_MEASURE`, not `FAIL`, in the **real** case | ✅ |
-| Human VNC re-login completed; `verify.py` green with unit-owned processes | ✅ — 6 passed, exit 0 |
-| Reboot test performed under separate authorization, **or** D1.12 explicitly left open | ✅ — **offered, declined, D1.12 left open** |
-| MES resolved; margin measured vs net liq; affordability stated as a number | ✅ — 3,503.59 vs 20,344.34 → **5 contracts** |
-| `reqTickByTickData` attempted on MES; 10189 recurrence recorded | ✅ — **it recurs** |
-| `reqHistoricalTicks` confirmed working for MES | ✅ — 25 ticks |
-| `dev_and_services_plan.md` and `CHECK-DEBT.md` updated | ✅ |
-
-**Ordering note.** Part 2 ran **before** Part 1. Part 2 needs an *authenticated* Gateway and Part 1
-deliberately destroys that authentication, so written order would have parked the MES work behind
-a human login. Nothing in Part 1 depends on Part 2. This banked the measurements before anything
-was torn down and cut the operator's wait.
-
-**Prerequisite not met, reported rather than assumed.** The arc requires `arc-009-verify-v2` to be
-merged first. Measured fresh: `origin/main` is still `47ea580`, the branch is **57 ahead / 1
-behind**, and `git merge-base --is-ancestor HEAD origin/main` says **not merged**. Repo hygiene
-with no bearing on Parts 1–3, and console availability was the perishable resource, so the arc
-proceeded. **The merge is still owed.**
+| All three modes attempted on MES; requested vs **granted** recorded | ✅ |
+| Measured lag from multiple ticks, not the documented figure, not one sample | ✅ — n=8 and n=9 distinct exchange timestamps |
+| Market-open state stated; closed ⇒ CANNOT-MEASURE | ✅ — **CME was open**, established two ways |
+| Errors recorded verbatim with codes | ✅ — 354, 300, 10167, 2119, 2104 |
+| ARC 012's claim confirmed or narrowed, with the change and reason visible | ✅ — narrowed, with a "correction of record" block |
+| Stage 0 data decision written with reasoning and the explicit constraint | ✅ |
+| `CHECK-DEBT.md` updated; D1.13 closed or re-scoped | ✅ — re-scoped, D1.14 split out |
 
 ---
 
-## Part 1 — systemd cutover
+## Part 0 — Was CME actually open? (precondition, established before anything else)
 
-### 1. Pre-cutover state
+A closed market produces no ticks regardless of entitlement, so an absence of ticks is only
+evidence about *entitlement* if the market was open. Established two ways deliberately, because
+neither alone is sufficient — a schedule can be right while a venue is halted:
 
-```
-=== manual processes ===
- PID    PPID USER   ELAPSED  COMMAND
- 236457    1 bbt    08:35:21 Xvfb :99 -screen 0 1440x900x24
- 236482    1 bbt    08:35:19 .../java ... install4j.ibgateway.GWClient
-
-=== who owned them ===
-PID 236457 -> cgroup: 0::/user.slice/user-1000.slice/session-231.scope
-PID 236482 -> cgroup: 0::/user.slice/user-1000.slice/session-231.scope
-
-=== listener ===
-LISTEN 0 50 *:4002 *:* users:(("java",pid=236482,fd=81))
-
-=== units ===  enabled/enabled, inactive/inactive
-=== verify.py === 6 passed | 0 failed | 0 cannot measure | 0 skipped   exit 0
-```
-
-`session-231.scope` is the load-bearing detail: a **login-session scope**, not a service unit. That
-is the concrete evidence the processes were shell-owned, and it is exactly what the cutover changes.
-
-### 2–3. Cutover, and the measurement the arc singled out
-
-Manual Gateway stopped (SIGTERM, exited cleanly), then manual Xvfb; `:99` confirmed gone. Then:
+**Declared** — IBKR's own `tradingHours` for `MESU6`:
 
 ```
-$ systemctl start nix-xvfb.service
-active
-$ xdpyinfo -display :99
-name of display:    :99
-  dimensions:    1440x900 pixels (366x229 millimeters)
-Xvfb MainPID=260814 cgroup: 0::/system.slice/nix-xvfb.service
+tradingHours : 20260809:1700-20260810:1600;20260810:1700-20260811:1600;...
+liquidHours  : 20260810:0830-20260810:1600;...
+timeZoneId   : US/Central
+
+wall clock UTC : 2026-08-10 12:04:16 UTC
+wall clock CT  : 2026-08-10 07:04:16 CDT (Monday)
+  20260809:1700-20260810:1600   <== NOW INSIDE THIS SEGMENT
+--> declared open right now: True
+--> inside LIQUID (RTH) hours: False
 ```
 
-**Display up, nothing on 4002 — the real unreachable case, nothing planted:**
+**Empirical** — trades were present in the tape.
 
-```
---- check_ibgateway_config ---
-cannot_measure: no API endpoint at 127.0.0.1:4002 — ConnectionRefusedError: [Errno 111]
-Connection refused. Gateway down or not logged in; that is not a misconfiguration (§4.1)
-exit=2                                    <-- 2 = CANNOT MEASURE, not 1 = FAIL
+**Verdict: open, in the Globex overnight session, outside RTH.** So the market was thin but
+trading, and an absence of ticks would have been interpretable. It did not come to that — ticks
+flowed. Had the market been closed, every null result below would have been reported as
+CANNOT-MEASURE rather than as evidence of absence.
 
---- check_ibgateway_service ---
-fail_needs_operator: ... 127.0.0.1:4002 handshake: unreachable (ConnectionRefusedError...)
-  site: 127.0.0.1:4002 (nix-ibgateway.service)
-exit=1
-```
-
-**This is the ARC 010/011 design meeting reality instead of a plant.** One observation yields
-`CANNOT_MEASURE` in the gate that reads configuration *through* the connection and `FAIL` in the
-gate asserting the connection should exist at all. Both correct; the distinction now rests on
-real-world evidence rather than a planted wrong port.
-
-### Gateway under systemd
-
-```
-● nix-ibgateway.service - IB Gateway (paper, Stage 0) — API endpoint on 127.0.0.1:4002
-     Active: active (running)
-    Process: 261042 ExecStartPre=/bin/sh -c for _ in $(seq 30); do xdpyinfo -display :99 ...
-             (code=exited, status=0/SUCCESS)
-   Main PID: 261046 (java)
-     CGroup: /system.slice/nix-ibgateway.service
-DISPLAY: DISPLAY=:99
-```
-
-`ExecStartPre` — the display-readiness gate — exited `0/SUCCESS`, so the Gateway→display
-dependency behaved as a real precondition rather than incidental ordering. Both units
-`NRestarts=0`.
-
-Gateway came up on its login screen with no API listener, as predicted. Confirmed on `:99` via
-`xwininfo`: `0x40000c "IBKR Gateway" 790x610+325+145`.
-
-### 4. Handoff and post-login state
-
-Stopped and handed off rather than working around the login. **No VNC server was running** — the
-previous one died with the session torn down — and I deliberately did **not** start one: an
-unauthenticated VNC exposing a live broker Gateway is an operator decision, not mine. The human
-logged in and approved IB Key.
-
-**The cutover's decisive proof:**
-
-```
-LISTEN 0 50 *:4002 *:* users:(("java",pid=261046,fd=78))
-unit MainPID = 261046
-listener PID = 261046
-cgroup of listener: 0::/system.slice/nix-ibgateway.service
-  --> MATCH: the API socket is served by the unit-owned process
-```
-
-The socket is served by the unit's own `MainPID`, inside the service cgroup — not by a shell orphan
-that merely happens to be listening.
-
-```
-  [ok]   check_python_runtime    | sys.version_info=3.14.4 at /usr/bin/python3
-  [ok]   check_venv              | /home/bbt/nix/.venv/bin/python3: Python 3.14.4
-  [ok]   check_node_identity     | stored == live == 0a2fe0d5-5eb2-46ae-a9f9-013dc7097003
-  [ok]   check_python_deps       | pins satisfied: ib_async==2.1.0
-  [ok]   check_ibgateway_config  | IB API handshake on 127.0.0.1:4002 -> serverVersion=187; ...
-  [ok]   check_ibgateway_service | nix-xvfb.service=enabled/active; nix-ibgateway.service=enabled/active;
-                                   display :99: dimensions: 1440x900 ...; handshake: answered (187)
-
-  6 passed | 0 failed | 0 cannot measure | 0 skipped          exit 0
-```
-
-The meaningful change from baseline is `enabled/`**`active`** where it read `enabled/inactive`.
-
-**API configuration survived the restart** — `check_ibgateway_config` passed unchanged, so
-TrustedIPs / AutoRestart / localhost-only live in the profile, not in process state. Live session
-re-confirmed on `clientId=905`: `managedAccounts ['DUR250018']`, `NetLiquidation 20344.34`, clean
-disconnect.
-
-### 5. Reboot test — offered, declined, D1.12 left open
-
-Put as an explicit separate authorization per the arc; the answer was no. **Boot behaviour is
-therefore NOT verified**, and nothing in this report claims otherwise. `systemctl is-enabled` is a
-*declaration* that these units start at boot, not evidence that they do.
-
-**D1.12 remains open**, narrowed to exactly the reboot. Discharge condition unchanged: reboot, then
-run `check_ibgateway_service` **before anyone touches the console** — a human logging in first
-creates the very state the check must observe independently.
+Contract re-resolved rather than trusting ARC 012's number: `MESU6`, conId **793356217**, expiry
+`20260918` — **matches** what ARC 012 recorded.
 
 ---
 
-## Part 2 — MES: two problems, measured separately
+## Part 1 — All three market-data modes on MES
 
-Account **DUR250018**, net liquidation **20,344.34 USD**.
+Measured 2026-08-10 12:05–12:07 UTC, `clientId=905`, 40 s observation window per mode.
 
-### Contract
+| requested | **granted by IBKR** | ticks / 40s | error (verbatim) | measured lag |
+|---|---|---|---|---|
+| 1 real-time | **none — no grant callback at all** | **0** | `354: Requested market data is not subscribed. Check API status … and/or availability of delayed data.Delayed market data is available.MES SEP'26 (MESU6) /TOP/ALL` · `300: Can't find EId with tickerId:5` | n/a |
+| 3 delayed | **3 = delayed** | 18 | `10167: Requested market data is not subscribed. Displaying delayed market data.` | **600.0–601.9 s**, mean 600.3 s, spread **1.9 s**, n=8 |
+| 4 delayed-frozen | **3 = delayed — silently downgraded** | 19 | `10167` (as above) | **600.1–604.9 s**, mean 600.6 s, spread 4.8 s, n=9 |
 
-```
-MES front month : MESU6   conId=793356217   expiry=20260918   exchange=CME   secType=FUT
-multiplier      : 5      (ES: 50 — MES is 1/10th notional, as expected)
-```
+Populated fields on both working modes: `bid, ask, last, close, volume, delayedLastTimestamp`.
+Also seen, connection-level: `2119 Market data farm is connecting:usfuture`, `2104 Market data farm
+connection is OK:usfuture`.
 
-### Margin — MES affordable, ES not
+### The granted type is not the requested type — twice over
 
-| | ES (`ESU6`) | MES (`MESU6`) |
-|---|---|---|
-| conId | 649180671 | 793356217 |
-| multiplier | 50 | 5 |
-| **initial margin** | **35,035.87** | **3,503.59** |
-| maintenance margin | 25,029.29 | 2,502.93 |
-| headroom vs 20,344.34 | **−14,691.53** | **+16,840.75** |
-| contracts affordable | **0** | **5** |
-| outcome | rejected, `Error 201` | margin returned normally |
+**Mode 4 was silently downgraded to 3.** Asking for delayed-frozen and assuming you received it
+would misdescribe the feed.
 
-Margin scales at exactly **10.0×**, tracking the multiplier. ES's rejection, verbatim:
+**Mode 1 received no grant at all, and this nearly produced a false report.** The first run showed
+`granted=1` for real-time — but `ib_async`'s `Ticker.marketDataType` **defaults to `1`**, so that
+was an unset field, not a grant. A naive read would have reported "IBKR granted real-time" for a
+subscription that returned **zero ticks and error 354**.
 
-```
-Error 201: Order rejected - reason:YOUR ORDER IS NOT ACCEPTED. IN ORDER TO OBTAIN THE DESIRED
-POSITION YOUR NET LIQ [20299.32 USD] MUST EXCEED THE MARGIN REQ [35035.87 USD]
-```
-
-**Method correction worth keeping.** The first pass reported *both* contracts UNDETERMINED:
-`ib.whatIfOrder()` (sync) returned an empty `OrderState` with `initMarginChange=None`. That was not
-a real result — its internal wait expires before IB answers, detectable because the ES rejection
-surfaced a whole section *later* in the same run, attributed to an unrelated request. Re-measured
-with `whatIfOrderAsync` awaited under an explicit 45s timeout, which is where every figure above
-comes from.
-
-**Correction to a claim made earlier in this arc:** I first wrote that ARC 010 "recorded ES margin
-as UNDETERMINED where it was merely late." That is wrong, and unfair to it. ARC 010's `whatIf` did
-also come back empty, but it recovered the correct figure from the **`err 201` rejection text** and
-reported 35,067.37 against net liq 20,344.34 — a sound conclusion from a sound source.
-
-The sharper point is *when the trap actually bites*: a **rejected** order leaves an error carrying
-the margin number, so the empty `OrderState` costs nothing. An **affordable** one does not — there
-is no error, so an empty `OrderState` reads as "undetermined" with nothing to correct it. That is
-precisely the MES case, and precisely why round one produced no MES figure. Anyone repeating this
-must use the async form.
-
-(ARC 010 measured ES at 35,067.37; today it measured 35,035.87. Both are correct — IBKR margin
-moves intraday. Neither contradicts the other.)
-
-### Market data — Err 10189 RECURS on MES
+Verified rather than assumed, by sentinelling the field to `0` immediately after subscribing so
+only a genuine callback could move it:
 
 ```
-Error 10189, reqId 23: Failed to request tick-by-tick data.
-  No market data permissions for CME FUT,
-  contract: Future(conId=793356217, symbol='MES', lastTradeDateOrContractMonth='20260918',
-                   multiplier='5', exchange='CME', currency='USD', localSymbol='MESU6')
-
-  tick-by-tick received : 0
-  --> Err 10189 on MES  : True
+requested=1  field after 12s=0  -> NO callback (field never set by IBKR)   errors=[354]
+requested=3  field after 12s=3  -> AFFIRMATIVE GRANT = 3                   errors=[]
+requested=4  field after 12s=3  -> AFFIRMATIVE GRANT = 3                   errors=[10167]
 ```
 
-**MES does not dodge the entitlement — measured, not assumed.** The error names the **product
-class**, `CME FUT`, not the contract. MES is CME FUT exactly as ES is. This is an **account-level
-market-data subscription**, so no instrument selection and no code change reaches it.
+### The lag is 10 minutes, measured — not the documented 15–20
 
-**Fallback confirmed working on MES:**
+Measured from the exchange timestamp the feed itself carries (tick **88** →
+`delayedLastTimestamp`) against wall clock at receipt, deduplicated on the exchange timestamp so
+repeated updates re-reporting one trade can't manufacture agreement:
 
 ```
-reqHistoricalTicks -> 25 ticks
-  2026-08-10 10:43:31+00:00  price=7785.00  size=5.0
-  2026-08-10 10:43:31+00:00  price=7784.75  size=3.0
-  2026-08-10 10:43:31+00:00  price=7784.75  size=1.0
+delayedLastTimestamp   exch=11:55:54 recv=12:05:55  lag=601.9s (10.03 min)
+delayedLastTimestamp   exch=11:55:59 recv=12:05:59  lag=600.1s (10.00 min)
+delayedLastTimestamp   exch=11:56:04 recv=12:06:04  lag=600.1s (10.00 min)
+delayedLastTimestamp   exch=11:56:09 recv=12:06:09  lag=600.1s (10.00 min)
+delayedLastTimestamp   exch=11:56:17 recv=12:06:17  lag=600.0s (10.00 min)
+delayedLastTimestamp   exch=11:56:24 recv=12:06:24  lag=600.1s (10.00 min)
+delayedLastTimestamp   exch=11:56:29 recv=12:06:29  lag=600.1s (10.00 min)
+delayedLastTimestamp   exch=11:56:32 recv=12:06:32  lag=600.1s (10.00 min)
+
+min 600.0s  max 601.9s  spread 1.9s  mean 600.3s
 ```
 
-Clean disconnect on every probe run.
+**The spread is what makes this a result rather than an anecdote.** 1.9 s across 8 distinct
+timestamps is a steady pipeline delay; a stale first tick followed by live data would have shown a
+collapsing lag. This is exactly why the arc demanded multiple samples.
 
-### What this settles
+### `reqHistoricalTicks` is delayed by the same ~10 minutes — and this was visible all along
 
-- **No CME futures tick stream is available on this account at all** — confirmed across two
-  instruments, not inferred from one.
-- The **polled `reqHistoricalTicks` path stands regardless of instrument.**
-- **Bar immutability remains an obligation Nix's broker-datafeed must enforce itself**, unchanged
-  by ARC 012 and now confirmed twice over. Polled history is re-requestable and can return revised
-  values, so the bar builder needs its own seal-and-never-rewrite rule.
-- **MES is the instrument to develop against at Stage 0** — but it fixes *margin only*. The two
-  problems were independent and exactly one is solved.
+It is **not** a real-time back door. Worse, the evidence was sitting in ARC 010's own banked output
+and went unread:
 
-**Surfaced as a decision, not a recommendation.** Whether to buy CME market data in IBKR Account
-Management is a human call. IBKR is permanently paper-only Stage 0 and Tradovate is the live broker
-at cutover, so a subscription bought here is discarded at that boundary — but so is the ability to
-exercise any streaming code path before then. Per the arc's out-of-scope: no purchase made, none
-recommended.
+```
+ARC 010 (reqHistoricalTicks)   now=09:39:54  newest tick=09:29:30  age=624.0s = 10.40 min
+ARC 013 (reqHistoricalTicks)   now=12:04:16  newest tick=11:54:12  age=604.0s = 10.07 min
+```
+
+ARC 010 printed both numbers — `connectionTime: 2026-08-10 09:39:54` and
+`HistoricalTickLast(time=2026-08-10 09:29:30 …)` — and I never computed the difference. The
+10-minute delay has been characterising this account since the first probe.
+
+**This is the same failure mode as ARC 012's CHECK-DEBT miscount**: a number present in the output,
+unread. Both are cheap to catch mechanically and expensive to catch by eye, which is the argument
+for doctrine B.7 (debt **D2.8**) rather than more careful reading.
+
+**Consequence:** the "polled fallback" ARC 010 and ARC 012 both relied on is a *delayed* polled
+fallback. The Stage 0 feed is delayed **and** polled, which is sharper than either arc recorded.
 
 ---
 
-## Part 3 — Records updated
+## Part 2 — Reconciling with ARC 012
 
-**`docs/dev_and_services_plan.md`** — IBKR section now carries the cutover before/after table
-(cgroups, not unit status), the `ExecStartPre` result, the **D1.12-still-open** warning box, the
-real-case `CANNOT_MEASURE` vs `FAIL` confirmation, the ES/MES margin table, the entitlement finding
-with the explicit statement that no CME futures tick stream exists on this account and that it is a
-subscription question rather than an instrument or code question, and the `whatIfOrder` async
-method note.
+**ARC 012's claim was too broad and is narrowed, not overturned.** It said *"no CME futures tick
+stream is available on this account at all."*
 
-**`docs/CHECK-DEBT.md`** — **D1.12 narrowed** (cutover done; only boot behaviour outstanding, with
-the discharge condition restated). **D1.13 opened**: no CME tick stream on the account, carrying
-both the pending human subscription decision and the owed bar-immutability gate for the polled path
-once broker-datafeed exists.
+That was **accurate for what it measured**. `reqTickByTickData` is a **real-time-only** request
+path — delayed data never arrives on it, which is exactly why `Err 10189` came back. ARC 012 did
+not test `reqMarketDataType` → `reqMktData`, so the delayed path was never in its scope.
 
-### A defect in the ledger itself
+Corrected in `dev_and_services_plan.md` under an explicit **"Correction of record"** block that
+states what the earlier arcs measured, why the conclusion was sound for that measurement, and what
+later measurement narrowed it. **Not silently overwritten** — the record shows why it changed.
 
-The series column previously read **22** for ARC 010 and **21** for ARC 011. **Both were wrong.** I
-hand-counted the rows and got it wrong twice. Counted mechanically: **24** and **23**, and **24**
-today (D1 ×11, D2 ×12, D3 ×1).
+Standing correctly, unchanged:
 
-Corrected in the doc with the error named. The banked `SESSION.md` entries still say 22→21 and are
-deliberately left alone — history is appended, never rewritten.
+- **No real-time stream.** Error 354 with zero ticks; `10189` on the tick-by-tick path.
+- **Not solvable by instrument selection or code.** `10189` names the product class `CME FUT`, not
+  the contract. Real-time is an account-level subscription.
 
-Worth stating plainly: **this is the ledger being its own instrument's defect** — the failure class
-`VERIFY-AND-CHECKS.md` Part C opens with (*roughly one defect in three was found inside the
-instrument doing the measuring*). The count is hand-maintained prose asserting a number the table
-already determines: a `derive, never restate` violation, which is precisely what doctrine **B.7**
-exists to catch and is already recorded as debt **D2.8**. A harness counting the rows and asserting
-the latest series figure would have caught it on the first commit. Not built this arc (out of
-scope), but D2.8 now has a concrete measured instance rather than a hypothetical.
+---
+
+## Part 3 — The Stage 0 data decision, written down
+
+Added to `dev_and_services_plan.md` as a top-level `## DECISION` section, deliberately written to
+be legible to someone arriving with none of this session's context.
+
+**Decision: Stage 0 runs on IBKR's free market data. No subscription will be purchased.** Recorded
+as *settled*, superseding the earlier records in that file which surfaced it as pending — with a
+note that only new information about the Tradovate cutover could reopen it.
+
+**What it forbids, stated as a constraint rather than a footnote.** On a 10-minute delayed polled
+feed these are meaningless and must not be produced, cited, or carried forward: latency
+measurements of any kind; fill realism, slippage or spread-capture estimates; strategy performance
+figures (P&L, Sharpe, hit rate, drawdown, expectancy); **any claim about edge** — including hedged
+ones like "directionally encouraging".
+
+What Stage 0 *is* for: the plumbing — connection handling, reconnect and session recovery, bar
+construction, persistence, the broker-datafeed interface shape, gate and risk-path wiring, order
+lifecycle mechanics. All fully exercisable on delayed data, because they are about structure and
+correctness rather than price.
+
+The section carries a direct address to a future reader:
+
+> **If you are reading this because a document you are holding cites a Stage 0 backtest or paper
+> P&L as evidence of anything — that document is misusing it.** The number is not weak evidence; it
+> is not evidence. The feed it was computed from was ten minutes behind the market, measured, on
+> 2026-08-10. Discard the conclusion, keep the plumbing lesson.
+
+Also recorded: the Crucible pipeline's scoring gates cannot be run to a *verdict* at Stage 0, only
+to prove the pipeline mechanically executes.
+
+**Carried forward for broker-datafeed** — four points, the last of which is new from this arc's
+measurements: build against delayed + polled as the Stage 0 shape; bar immutability stays Nix's own
+obligation regardless of feed; the vendor-neutral seam must encode no assumption that only holds
+for a delayed or polled feed (Tradovate is expected to be real-time and push-based, so "data
+arrives late" leaking into the interface is a defect); and **never infer the mode from the
+request** — read and record the *granted* type and treat a downgrade as a real event.
+
+---
+
+## CHECK-DEBT
+
+**D1.13 re-scoped.** Its subscription half is **closed** by the decision above. What remains is a
+gate: assert the *granted* `marketDataType` matches what Stage 0 declares and **FAIL on a silent
+downgrade** — motivated directly by mode 4 being granted as 3. To be built with broker-datafeed,
+not here (this arc is measurement and documentation; no new gates, per scope).
+
+**D1.14 split out**: bar immutability on a re-requestable feed. Separated because it discharges in
+a different arc and stays owed even after Tradovate's real-time feed arrives.
+
+**24 → 25 open**, counted mechanically (D1 ×12, D2 ×12, D3 ×1) — not hand-counted, after ARC 012
+established that hand-counting this table gets it wrong.
 
 ---
 
@@ -296,14 +212,13 @@ scope), but D2.8 now has a concrete measured instance rather than a hypothetical
 
 - `verify.py`: **6 passed, 0 failed, 0 cannot measure, 0 skipped — exit 0**
 - Test suite: **153 passed**
-- Xvfb `PID 260814` → `/system.slice/nix-xvfb.service`; Gateway `PID 261046` →
-  `/system.slice/nix-ibgateway.service`, serving 4002
-- Both units `NRestarts=0`, `enabled` and `active`
-- CHECK-DEBT: **24 open** (was 23; D1.13 opened)
+- Branch `arc-013-delayed-feed`, cut fresh from `main` at `7ebb32d` (PR #9 merge)
+- Docs changed: `dev_and_services_plan.md`, `CHECK-DEBT.md`
 
 ## Still owed
 
-1. **Merge `arc-009-verify-v2`** — the arc's own prerequisite, unmet. 57 ahead / 1 behind, no
-   conflict; nothing pushed this arc.
-2. **D1.12** — reboot test; boot behaviour unverified.
-3. **D1.13** — the CME market-data subscription decision.
+1. **D1.12** — reboot test; boot behaviour unverified (out of scope this arc).
+2. **D1.13** — granted-market-data-type gate, with broker-datafeed.
+3. **D1.14** — bar immutability gate, with broker-datafeed.
+4. **D2.8** — the doctrine-B.7 harness. Two measured instances now argue for it: the CHECK-DEBT
+   miscount and the unread 10-minute delay in ARC 010's own output.

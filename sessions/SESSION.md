@@ -597,3 +597,60 @@ more useful: the empty-`OrderState` trap is harmless on a **rejected** order, be
 itself carries the margin number, and only bites on an **affordable** one, where no error exists to
 correct it. That is exactly the MES case. Appended rather than edited above, per directive 6.
 (ARC 010 measured ES at 35,067.37, ARC 012 at 35,035.87 — IBKR margin moves intraday; both stand.)
+
+---
+
+## ARC 013 — delayed market data verified; Stage 0 data decision recorded (2026-08-10)
+
+**Complete.** All seven boxes.
+
+**A delayed CME futures stream does flow on this account, at a measured 10 minutes.** ARC 012's
+"no CME futures tick stream at all" is **narrowed to real-time**, not overturned — it was accurate
+for what it measured. `reqTickByTickData` is a real-time-only path, which is exactly why 10189 was
+the answer; neither ARC 010 nor ARC 012 tried `reqMarketDataType` → `reqMktData`, so the delayed
+path was never in scope. Corrected in `dev_and_services_plan.md` under an explicit
+"Correction of record" block rather than silently overwritten.
+
+**Checked market state before drawing any conclusion.** CME was open — 07:04 CT Monday, inside the
+Globex segment `20260809:1700-20260810:1600`, outside RTH — established from IBKR's own
+`tradingHours` and corroborated empirically. Thin but trading, so an absence of ticks would have
+been interpretable. It did not come to that.
+
+| requested | granted | ticks/40s | error | lag |
+|---|---|---|---|---|
+| 1 real-time | **no grant callback at all** | 0 | 354 | n/a |
+| 3 delayed | 3 delayed | 18 | 10167 | 600.0–601.9 s, spread 1.9 s, n=8 |
+| 4 delayed-frozen | **3 — silently downgraded** | 19 | 10167 | 600.1–604.9 s, n=9 |
+
+**The granted type nearly produced a false report.** The first run showed `granted=1` for
+real-time — but `ib_async`'s `Ticker.marketDataType` *defaults* to 1, so that was an unset field,
+not a grant, for a subscription that returned zero ticks and error 354. Verified by sentinelling
+the field to 0 after subscribing so only a real callback could move it: mode 1 never moved, modes
+3 and 4 both moved to 3. Report the granted type, never the requested one — and check the grant
+actually happened.
+
+**Lag is 10 minutes, not the documented 15–20**, measured from tick 88 (`delayedLastTimestamp`)
+against receipt wall clock, deduplicated on exchange timestamp. The 1.9 s spread across 8 samples
+is what makes it a steady pipeline delay rather than a stale first tick.
+
+**The delay was visible in ARC 010's own output and went unread.** Its banked record shows
+`connectionTime 09:39:54` and newest historical tick `09:29:30` — **624 s = 10.4 min**. So
+`reqHistoricalTicks` is delayed by the same ~10 minutes and is not a real-time back door; the
+"polled fallback" both earlier arcs leaned on is a *delayed* polled fallback. Same failure mode as
+ARC 012's CHECK-DEBT miscount: a number sitting in the output, never computed. Two measured
+instances now argue for the doctrine-B.7 harness already on the books as D2.8.
+
+**Part 3 is the durable half.** `dev_and_services_plan.md` now carries a top-level `## DECISION`
+section: Stage 0 runs on IBKR's free data, no subscription, settled — written for someone arriving
+with no session context. It states as a *constraint* that no latency measurement, fill-realism or
+slippage estimate, strategy performance figure, or claim about edge from the IBKR phase carries
+meaning, and addresses a future reader directly: if a document cites a Stage 0 backtest or paper
+P&L as evidence, that document is misusing it — the number is not weak evidence, it is not
+evidence. Stage 0 exercises plumbing, not edge. Four points carried forward for broker-datafeed,
+including that the vendor-neutral seam must encode no assumption that only holds for a delayed or
+polled feed, since Tradovate is expected to be real-time and push-based.
+
+CHECK-DEBT 24 → 25, counted mechanically: D1.13 re-scoped (subscription half closed by the
+decision; the owed gate is now "assert the *granted* marketDataType and FAIL on silent downgrade",
+motivated by mode 4), D1.14 split out for bar immutability since it discharges in a different arc.
+No gates built — this arc was measurement and documentation. 153 tests, verify.py exit 0.
