@@ -80,8 +80,63 @@ class AckStatus(enum.Enum):
 
 
 class SessionState(enum.Enum):
+    """Session lifecycle as seen ABOVE the seam. UP/DOWN are §2A. UP_DATA_LOSS is a
+    declared Nix addition — see below.
+
+    NIX ADDITION (ARC 017), flagged exactly as `feed_lag()`/`MarketDataMode` are:
+    `UP_DATA_LOSS` is NOT in frozen §2A, and the frozen spec CANNOT express it. §2A gives
+    on_session a two-valued state plus a free-text `reason`, so the one fact a restored
+    session must carry — *did the venue keep our event stream intact across the gap, or
+    did we lose events?* — had nowhere to live except that prose string. Before this arc
+    both restores emitted plain `UP` and the ONLY difference was the wording of `reason`,
+    which made a consumer's correctness depend on substring-matching venue prose. That is
+    the stale-literal anchor (debug.md §7.4) sitting on the protective path.
+
+    The frozen spec is not edited. The seam declares the extra state, names it as an
+    addition, and the risk spec remains the authority for the two states it does define.
+
+    VENDOR-NEUTRAL BY CONSTRUCTION (invariant 2). This carries the MEANING — "restored,
+    our view may have gaps" — not the venue's spelling of it. IBKR says 1101; another
+    venue will say something else; neither number crosses this line.
+
+    WHY A THIRD MEMBER RATHER THAN A `data_loss: bool` ALONGSIDE `UP`. Both are readable
+    without parsing prose, so the tiebreaker is what happens to a consumer that has NOT
+    been updated. A boolean defaults to False, so an unaware consumer reads a lossy
+    restore as a clean `UP` and resumes against state it has no reason to distrust —
+    the fact is present but silently ignorable, which is the defect this change exists to
+    remove. A distinct member cannot be ignored by omission: `state is SessionState.UP`
+    is simply False for it, so an unaware consumer does not resume. IBKR precedes 1101
+    with 1100, so that consumer is already in DOWN and stays there — it fails toward
+    halted, which is the correct direction on the protective path.
+
+    The cost of a third member is the opposite mistake: a consumer that wants "is the
+    session usable at all?" writing `is UP` and accidentally excluding a usable session.
+    That is why `is_up` and `data_loss` exist below — the two questions a caller can ask
+    each have ONE canonical spelling, so neither can be gotten wrong by forgetting a
+    member. Identity comparison still distinguishes the three states exactly.
+    """
+
     UP = "up"
     DOWN = "down"
+    UP_DATA_LOSS = "up_data_loss"
+    """Session restored, but the venue could not guarantee our event stream across the
+    gap: fills, cancels or position changes may have happened unobserved. The adapter
+    re-reads its own mirror from the venue BEFORE publishing this (see
+    IBKRBrokerOrder._on_data_loss_restore) — but events the *consumer* derives its own
+    state from (on_fill, on_cancel) cannot be replayed, so the consumer must still
+    reconcile anything it holds independently."""
+
+    @property
+    def is_up(self) -> bool:
+        """True for every state in which a session exists. The canonical spelling of
+        'is the session usable', so no caller has to enumerate members."""
+        return self in (SessionState.UP, SessionState.UP_DATA_LOSS)
+
+    @property
+    def data_loss(self) -> bool:
+        """True when our view of the account may have gaps. The canonical spelling of
+        'must I reconcile', readable with no reference to `reason` at all."""
+        return self is SessionState.UP_DATA_LOSS
 
 
 class FeedState(enum.Enum):
@@ -272,7 +327,14 @@ class OrderEventSink(Protocol):
 
     def on_position(self, symbol: Symbol, net_qty: int, avg_price: float) -> None: ...
 
-    def on_session(self, state: SessionState, reason: str | None = None) -> None: ...
+    def on_session(self, state: SessionState, reason: str | None = None) -> None:
+        """`state` is the whole fact. `reason` is human-readable colour ONLY.
+
+        ARC 017: a consumer must never have to read `reason` to learn anything it acts
+        on — in particular it must not substring-match for data loss. `SessionState`
+        carries that (`state.data_loss` / `state.is_up`), and `reason` is free to change
+        wording without breaking anyone. `reason` is also vendor-neutral on the session
+        path: no venue error code crosses this line (invariant 2)."""
 
 
 class DatafeedEventSink(Protocol):

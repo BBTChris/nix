@@ -1,0 +1,288 @@
+{
+  "schema_version": "1.0.0",
+  "comment": [
+    "THE DERIVED-CLAIMS REGISTRY — discharges CHECK-DEBT D2.8 (doctrine B.7).",
+    "",
+    "B.7: 'One harness parses a constant out of the bible and asserts the running module's",
+    "constants equal what the specification says. Changing the specification without changing",
+    "the code is RED, and changing the code without changing the specification is also RED.'",
+    "",
+    "THIS FILE STORES NO EXPECTED VALUES. There is not one integer in it. A claim is a set of",
+    "SOURCES that must agree; each source is a command that prints an integer it computed from",
+    "the tree at run time. Storing the number here would reproduce, inside the instrument built",
+    "to catch it, the exact defect the instrument exists to catch (arc_017 s0a records that",
+    "happening in the arc brief itself).",
+    "",
+    "ROLES. 'derived' = computed from ground truth (the frozen spec, the registry, the real",
+    "collector). 'stated' = a number a document, config, or code file asserts. A claim needs at",
+    "least two sources; a lone number is unchecked by construction.",
+    "",
+    "restatement_scans: OPTIONAL patterns naming places where this number has historically been",
+    "written down in prose. EVERY match must equal the agreed value; ZERO matches is the better",
+    "outcome and is reported as such — deleting a restatement is the doctrine-correct repair,",
+    "syncing it is only the second-best one.",
+    "",
+    "SCOPE, v1: numeric claims only. Prose facts are out of scope and must not be smuggled in as",
+    "a count of words that happen to match.",
+    "",
+    "EVIDENCE BASE — TEN measured instances of derive-never-restate failing in THIS project:",
+    " 1. CHECK-DEBT series hand-counted wrong (ARC 010 row).",
+    " 2. CHECK-DEBT series hand-counted wrong AGAIN (ARC 011 row) — same author, same table.",
+    " 3. The 10-minute feed delay sat uncomputed inside ARC 010's own banked output.",
+    " 4. avg_price unit mismatch: per-unit vs notional, both spellings live, last writer won.",
+    " 5. The ARC 016 brief cited D2.8 as the vacuous-pass class; D2.8 is the restatement class.",
+    " 6. The CHECK-DEBT series table silently skipped ARC 014 and ARC 015 entirely.",
+    " 7. '19 verbs/events' survived three arcs because TWO unrelated derivations both land on 19",
+    "    — 19 markdown BULLETS across both libraries, and 8+7+4 = 19 ARC 014 findings. By",
+    "    IDENTIFIER broker-order is 16. A coincidence is what made a wrong number look checked.",
+    " 8. The ARC 017 brief's own s7 anchored the expected check count while s6 asked for it to be",
+    "    derived; caught before execution and recorded in s0a.",
+    " 9. The s7 derivation command itself: re.findall('check_[a-z0-9_]+') over verify.py. The path",
+    "    was wrong, and against the corrected path it returns 1 — verify.py holds no check names",
+    "    at all. A derivation that cannot express the number it claims to derive.",
+    "10. .pre-commit-config.yaml restated '126 tests' in TWO comments while the real collected",
+    "    count was 159 — the first instance found inside a GATE'S OWN CONFIGURATION rather than a",
+    "    document. ARC 017 removed the restatements rather than syncing them, which is why the",
+    "    pytest claim below carries restatement_scans that should now match ZERO times.",
+    "",
+    "NOT REGISTERED, DELIBERATELY: the string '19 verbs/events - 8 CLEAN, 7 FRICTION, 4 GAP'.",
+    "It is not a literal anywhere in this tree; it is what summarise() PRINTS from FINDINGS, and",
+    "its defect is a mislabel (19 findings presented as 19 verbs/events), not a stale integer.",
+    "Registering the string would pin the gate to a number ARC 017 has established is wrong.",
+    "Claim arc014_broker_order_classification registers the RE-DERIVED total instead."
+  ],
+  "placeholders": {
+    "{nix_home}": "repo root",
+    "{checks_dir}": "{nix_home}/checks",
+    "{system_python}": "the interpreter running verify.py (stdlib-only floor)",
+    "{venv_python}": "{nix_home}/.venv/bin/python3",
+    "{self}": "checks/check_derived_claims.py, re-entered as a probe runner"
+  },
+  "claims": [
+    {
+      "id": "registered_check_count",
+      "property": "how many checks are registered, counted two ways that cannot share a bug",
+      "sources": [
+        {
+          "name": "registry_json",
+          "role": "derived",
+          "files": ["checks/registry.json"],
+          "probe": "registry_check_count"
+        },
+        {
+          "name": "checks_glob",
+          "role": "derived",
+          "files": ["checks"],
+          "probe": "checks_glob_count"
+        }
+      ],
+      "note": [
+        "The two answers are independent: registry.json is what verify.py RUNS, the glob is what",
+        "is on DISK. They diverge exactly when a check is written and never registered (invisible",
+        "to every runner) or registered and deleted (CANNOT_MEASURE at run time). Either is a real",
+        "defect and neither is visible from one side alone.",
+        "DO NOT reintroduce the naive derivation re.findall('check_[a-z0-9_]+') over verify.py:",
+        "verify.py contains no check names — it loads a manifest — and that expression returns 1."
+      ]
+    },
+    {
+      "id": "pytest_collected_tests",
+      "property": "how many tests the suite really collects",
+      "sources": [
+        {
+          "name": "pytest_collector",
+          "role": "derived",
+          "files": ["scripts/tests", "pyproject.toml"],
+          "argv": [
+            "{venv_python}",
+            "-m",
+            "pytest",
+            "{nix_home}/scripts/tests",
+            "-q",
+            "--collect-only",
+            "-p",
+            "no:cacheprovider"
+          ],
+          "extract": "(?m)^(\\d+) tests? collected"
+        },
+        {
+          "name": "source_ast",
+          "role": "derived",
+          "files": ["scripts/tests"],
+          "probe": "pytest_ast_count"
+        }
+      ],
+      "restatement_scans": [
+        {
+          "file": ".pre-commit-config.yaml",
+          "pattern": "there are now (\\d+)",
+          "note": "the pytest-affected hook's live claim; removed by ARC 017"
+        },
+        {
+          "file": ".pre-commit-config.yaml",
+          "pattern": "(\\d+)\\s*\\n\\s*#\\s*tests,",
+          "note": "the B101 comment's wrapped '126\\n tests, ~100 sites'; removed by ARC 017"
+        }
+      ],
+      "note": [
+        "source_ast counts `def test_*` and multiplies by each parametrize case list, so it is a",
+        "genuinely different mechanism from pytest's collector rather than the same walk twice.",
+        "They diverge when the collector stops seeing files it should see — a testpaths change, a",
+        "conftest that deselects, a module that fails to import. That is CHECK-DEBT D2.12's",
+        "property ('a suite that silently skips a gate reports GREEN') measured from outside the",
+        "suite. A dated historical measurement in prose ('ARC 017 derived 159 tests') is NOT",
+        "matched by the scans above and is deliberately out of scope: history is append-only.",
+        "MEASURED ARC 017: both scans now match ZERO times. ARC 017 DELETED the two live '126'",
+        "restatements rather than syncing them to 159, which is the doctrine-correct repair, so",
+        "these patterns are now a tripwire against reintroduction rather than a live comparison.",
+        "KNOWN FRAGILITY, stated so it is not discovered as a surprise: .pre-commit-config.yaml",
+        "still QUOTES the removed text as history ('It used to read \"126 tests\"', 'are now 126').",
+        "Those quotations are line-wrapped and the patterns do not reach them. Re-wrapping that",
+        "comment onto one line would make the first pattern match a historical quotation and turn",
+        "this claim red for the wrong reason. If that happens the repair is to the pattern."
+      ]
+    },
+    {
+      "id": "pinned_dependency_count",
+      "property": "how many venv pins exist, per the file and per its only validated reader",
+      "sources": [
+        {
+          "name": "pins_json",
+          "role": "derived",
+          "files": ["checks/pinned_deps.json"],
+          "probe": "pinned_deps_count"
+        },
+        {
+          "name": "print_pins_cli",
+          "role": "derived",
+          "files": ["checks/check_python_deps.py", "checks/pinned_deps.json"],
+          "argv": ["{system_python}", "{checks_dir}/check_python_deps.py", "--print-pins"],
+          "count_lines": true
+        }
+      ],
+      "note": [
+        "install.sh consumes `--print-pins`, not the JSON. If load_pins ever drops a pin on the",
+        "floor — a token-guard rejection, a key collision after lower-casing — the file and the",
+        "shell-visible list disagree and install.sh silently installs fewer packages than pinned."
+      ]
+    },
+    {
+      "id": "check_debt_open_items",
+      "property": "how many debts are open, counted from the rows vs what the series table says",
+      "sources": [
+        {
+          "name": "ledger_rows",
+          "role": "derived",
+          "files": ["docs/CHECK-DEBT.md"],
+          "probe": "check_debt_open_count"
+        },
+        {
+          "name": "series_table_latest_row",
+          "role": "stated",
+          "files": ["docs/CHECK-DEBT.md"],
+          "probe": "check_debt_series_latest"
+        }
+      ],
+      "note": [
+        "Evidence instances 1, 2 and 6. The stated source reads the LAST series row by position,",
+        "never by arc name — anchoring to 'ARC 016' would be the stale literal anchor this gate",
+        "exists to remove, and would go stale the next time a row is appended. A row that is never",
+        "appended still fails: the previous row's number will not match the new count."
+      ]
+    },
+    {
+      "id": "spec_2a_broker_order_elements",
+      "property": "how many broker-order verbs+events section 2A defines, spec vs seam code",
+      "sources": [
+        {
+          "name": "frozen_spec_identifiers",
+          "role": "derived",
+          "files": ["docs/nics_risk_subsystem_spec_v1.3.md"],
+          "probe": "spec_order_identifier_count"
+        },
+        {
+          "name": "seam_roster",
+          "role": "stated",
+          "files": ["scripts/broker/broker_seam.py"],
+          "probe": "seam_order_roster_count"
+        }
+      ],
+      "note": [
+        "THE B.7 PAIR. The frozen spec is the authority and may never be edited; broker_seam.py's",
+        "ORDER_PORT_VERBS + ORDER_EVENTS is the code restating it. Adding a verb to the seam",
+        "without the spec is RED; the spec growing one the seam has not implemented is RED.",
+        "COUNTED BY IDENTIFIER, NOT BY BULLET. 'connect() / disconnect()' is ONE markdown bullet",
+        "and TWO verbs. Counting bullets gives 15 here and 19 across both libraries, which is",
+        "evidence instance 7 — the number that survived three arcs."
+      ]
+    },
+    {
+      "id": "arc014_broker_order_classification",
+      "property": "ARC 014's CLEAN/FRICTION/GAP mapping re-derived against the real 16-element roster",
+      "sources": [
+        {
+          "name": "spec_roster_size",
+          "role": "derived",
+          "files": ["docs/nics_risk_subsystem_spec_v1.3.md"],
+          "probe": "spec_order_identifier_count"
+        },
+        {
+          "name": "findings_covering_roster",
+          "role": "derived",
+          "files": [
+            "docs/nics_risk_subsystem_spec_v1.3.md",
+            "scripts/broker/ibkr_mapping.py"
+          ],
+          "probe": "arc014_roster_covered"
+        },
+        {
+          "name": "grade_tally_sum",
+          "role": "derived",
+          "files": [
+            "docs/nics_risk_subsystem_spec_v1.3.md",
+            "scripts/broker/ibkr_mapping.py"
+          ],
+          "probe": "arc014_grade_tally_sum"
+        }
+      ],
+      "note": [
+        "THREE derivations, not two, and that is the point. Evidence instance 7 survived because",
+        "TWO unrelated derivations coincided on 19; a third breaks a coincidence that a second",
+        "cannot. Sources 2 and 3 also make a real assertion beyond arithmetic: source 2 says every",
+        "section 2A broker-order element is graded by ARC 014, so a NEW seam element with no",
+        "finding reddens this claim rather than passing unnoticed.",
+        "The grade breakdown itself is derived and printed to stderr by both probes on every run;",
+        "it is NOT stored here, because storing it would anchor the gate to today's grades."
+      ]
+    },
+    {
+      "id": "seam_declared_elements",
+      "property": "every element the seam declares is either in section 2A or a FLAGGED Nix addition",
+      "sources": [
+        {
+          "name": "seam_code_total",
+          "role": "stated",
+          "files": ["scripts/broker/broker_seam.py"],
+          "probe": "seam_declared_total"
+        },
+        {
+          "name": "spec_plus_flagged_additions",
+          "role": "derived",
+          "files": [
+            "docs/nics_risk_subsystem_spec_v1.3.md",
+            "scripts/broker/broker_seam.py"
+          ],
+          "probe": "spec_plus_flagged_additions"
+        }
+      ],
+      "note": [
+        "The frozen spec cannot be edited, so the seam legitimately declares more than section 2A",
+        "does — feed_lag() is the precedent, flagged 'Nix addition' in its own docstring. This",
+        "claim makes the FLAG load-bearing rather than decorative: an element the seam declares",
+        "that section 2A does not define and whose docstring does not name it as an addition is",
+        "counted by the code side and not by the spec side, and the two disagree. That is the",
+        "difference between an extension and a drift, made mechanical."
+      ]
+    }
+  ]
+}

@@ -94,9 +94,16 @@ from __future__ import annotations
 #       ib_async is imported lazily and BY NAME inside the two methods that need
 #       it, so a missing or renamed vendor symbol fails loudly at the call site
 #       rather than making this whole module unimportable in offline tests.
+#   too-many-lines
+#       Crossed 1000 in ARC 017 and the overage is entirely PROSE. Every design
+#       decision in this file is a claim about behaviour a reader has to be able
+#       to check — the §2b joint-sufficiency framing was wrong for two arcs
+#       precisely because nobody could check it against a shorter note. Deleting
+#       the reasoning to satisfy a line count would trade the one defence this
+#       file has against its own worst failure mode for a metric.
 # pylint: disable=invalid-name,missing-function-docstring,broad-exception-caught
 # pylint: disable=unused-argument,too-many-instance-attributes,too-many-arguments
-# pylint: disable=too-many-locals,import-outside-toplevel
+# pylint: disable=too-many-locals,import-outside-toplevel,too-many-lines
 import asyncio
 import itertools
 import logging
@@ -203,6 +210,19 @@ class IBKRBrokerOrder:
         # --- position mirror (GAP-1) ---
         # flatten() reads this, never the wire, so the protective path never round-trips.
         self._mirror: dict[Symbol, Position] = {}
+        # True while the mirror is known to be possibly-behind the venue: set on a
+        # data-loss restore, cleared when the re-read comes back. Observable state, not a
+        # log line, because "is the protective path's input trustworthy" is a fact a test
+        # and an operator both need to read (ARC 017 A1).
+        self._mirror_stale = False
+        # Monotonic count of rebuild ATTEMPTS. Exists so "the mirror was re-read" is
+        # directly measurable rather than inferred from the mirror's contents — which can
+        # be identical before and after and prove nothing (the empty->empty trap).
+        self._mirror_rebuilds = 0
+        # Strong refs to in-flight reconcile tasks: asyncio only holds a weak reference,
+        # so an untracked task can be collected mid-await and the rebuild simply never
+        # happens. See _on_data_loss_restore.
+        self._reconcile_tasks: set = set()
 
         # --- ack dedupe: IBKR re-emits orderStatus on every change ---
         self._acked: set[ClientOrderId] = set()
@@ -247,40 +267,62 @@ class IBKRBrokerOrder:
         so it re-arms on every reconnect for free — no separate reconnect path to
         maintain, which matters given the Gateway restarts daily at 03:00.
 
-        At the source: fetchFields drops EXECUTIONS so the replay is not requested in the
-        first place. Nothing here reads ib.fills()/ib.executions() — the adapter keeps its
-        own (order_id, exec_id) ledger — so dropping the fetch costs nothing.
+        At the source: fetchFields asks for POSITIONS + ACCOUNT_UPDATES +
+        SUB_ACCOUNT_UPDATES and nothing else, so neither the execution replay nor the
+        order replay is requested in the first place. Nothing in this adapter reads the
+        order fetches — verified in ARC 017 by deriving every `self._ib.<attr>` the file
+        touches from its AST: connectAsync, placeOrder, cancelOrder, reqPositionsAsync,
+        accountSummaryAsync, whatIfOrderAsync, disconnect. No `ib.orders()`, `ib.trades()`,
+        `ib.fills()`, `ib.executions()`, `reqAllOpenOrders` or `reqCompletedOrders`
+        anywhere. `query_order_status` reads the `Trade` that `placeOrder` handed back, not
+        a fetched one, so dropping the order fetches costs this adapter nothing.
 
-        JOINT DEPENDENCY — READ BEFORE REMOVING EITHER (ARC 016 §2b). The gate and the
-        fetchFields narrowing are **jointly** sufficient and **individually are not**.
-        ARC 015 described the fetchFields half as "belt and braces over the gate"; that
-        framing is wrong and is corrected here, because it invites a future author to
-        restore EXECUTIONS on the belief that the gate still catches it. It does not.
+        WHEN THE GATE OPENS — CORRECTED IN ARC 017. It opens AFTER `_rebuild_mirror()`
+        completes, not before it.
 
-          The gate does not cover fetchFields. `_startup_complete` is set True the instant
-          connectAsync returns, and `_rebuild_mirror()` awaits AFTER that. So the whole of
-          the mirror rebuild runs with the gate OPEN. If EXECUTIONS were restored, the
-          venue's replayed reports are dispatched on execDetailsEvent as they arrive, and
-          any that land during that await meet an already-open gate. Worse, `_connected`
-          is also already True, so a concurrently-scheduled task can call `place_order`
-          inside the same window and populate `_from_ib` — and IBKR order ids RESET across
-          sessions, so a replayed HISTORICAL execution can carry an id that now matches a
-          live order. That is a phantom fill on the order path, reported to the Limiter.
+          The previous ordering set `_startup_complete = True` the instant connectAsync
+          returned and then awaited the rebuild, so the entire rebuild ran with the gate
+          OPEN while `_connected` was also already True. All three conditions a phantom
+          fill needs held simultaneously across a real loop yield, and there is no mutual
+          exclusion of any kind in this adapter. A concurrently-scheduled `place_order`
+          could populate `_from_ib` inside that window, and because IBKR order ids RESET
+          across sessions, a replayed HISTORICAL report could carry an id that now matched
+          a live order — a phantom fill delivered to the Limiter.
 
-          The fetchFields narrowing does not cover the gate either. It suppresses one
-          known replay source by name. The gate is venue-agnostic and catches ANY startup
-          replay — including whatever a future ib_async version decides to fetch, and
-          including the reconnect case, since it is scoped to the call and re-arms for
-          free on every connect.
+          The old ordering was justified on the grounds that a GENUINE fill could land
+          during the rebuild and would be dropped. That argument does not survive being
+          checked: `_from_ib` is cleared at the top of this method, so at the moment the
+          rebuild runs the adapter knows of NO live order at all. The only way one can
+          exist is a caller placing an order concurrently with connect() — which §4's
+          cold-start ordering forbids, since the position set is not yet reconciled. So
+          the gate now closes a window that was reachable and forfeits nothing that was.
+          And should a caller do it anyway, the drop is LOUD rather than silent: both
+          gated handlers log at error level when the event they refuse carries an id this
+          adapter recognises. Startup replay never trips that — `_from_ib` is empty.
 
-        Neither is redundant. Removing either one opens a path the other does not close.
+        RELATIONSHIP TO fetchFields — the ARC 016 "joint sufficiency" framing was WRONG
+        and is corrected here. ARC 016 asserted the gate and the fetchFields narrowing
+        were jointly sufficient and individually insufficient. Two things were wrong with
+        that:
 
-        WHY THE GATE OPENS BEFORE THE MIRROR REBUILD, not after: _rebuild_mirror() awaits
-        reqPositionsAsync, and a GENUINE fill can land during that await (that is the D3
-        race the suite already covers). Holding the gate closed across it would drop a
-        real fill to close a historical one. There is no await between connectAsync
-        returning and the gate opening, so the loop cannot dispatch anything into the
-        window — the two statements are atomic with respect to event delivery.
+          1. It claimed the gate did not cover fetchFields, and gave the gate's premature
+             opening as the reason. That reason is now gone — the gate is closed for the
+             whole of connect(), so it covers any startup replay dispatched before
+             connectAsync returns, whatever ib_async decides to fetch.
+          2. Its symmetry claim was never true even in ARC 016. It was argued for
+             EXECUTIONS only. ORDERS_COMPLETE replays completed orders onto
+             orderStatusEvent -> _on_ib_order_status, whose Filled and Cancelled branches
+             reach `_ensure_acked` and `on_cancel` — gate-covered, and NOT covered by a
+             narrowing that only dropped EXECUTIONS. The order half of the surface was
+             asserted to be jointly protected while only one of the two mechanisms
+             actually touched it.
+
+        The honest statement is asymmetric, so state it asymmetrically: the GATE is the
+        mechanism of record — venue-agnostic, scoped to the call, re-arming free on every
+        reconnect, and covering executions and order statuses alike. The fetchFields
+        narrowing is DEFENCE IN DEPTH at the source: it stops Nix asking for data it would
+        only have to discard, so a future regression in the gate has less to catch. It is
+        not a substitute for the gate and the gate is not a reason to widen it back.
 
         Position and account-value events are NOT gated: startup position snapshots are
         exactly what the mirror wants, and they carry no order identity to confuse.
@@ -307,37 +349,56 @@ class IBKRBrokerOrder:
             timeout=10,
             fetchFields=self._startup_fetch_fields(),
         )
-        # No await between here and the gate opening — see the docstring.
+        # _connected must be True here and not later: _rebuild_mirror() goes through
+        # query_positions(), which calls _require_session(). The gate is a SEPARATE flag
+        # precisely so these two can open at different moments.
         self._connected = True
-        # HALF OF A JOINT GUARANTEE (ARC 016 §2b). The gate is open from this line onward,
-        # INCLUDING across the _rebuild_mirror() await below. It therefore does NOT make
-        # the fetchFields narrowing redundant — see _startup_fetch_fields() and the JOINT
-        # DEPENDENCY section above before changing either.
-        self._startup_complete = True
 
+        # ARC 017 A3. The gate stays CLOSED across the rebuild — see WHEN THE GATE OPENS.
         await self._rebuild_mirror()
+        self._startup_complete = True
         self._sink.on_session(SessionState.UP)
 
     @staticmethod
     def _startup_fetch_fields():
-        """StartupFetchALL minus EXECUTIONS — see connect().
+        """Ask the venue for POSITIONS + ACCOUNT_UPDATES + SUB_ACCOUNT_UPDATES, and
+        nothing else. Operator-ratified in ARC 017.
 
-        HALF OF A JOINT GUARANTEE. DO NOT RESTORE EXECUTIONS BELIEVING THE GATE COVERS IT.
-        This and `_startup_complete` are JOINTLY sufficient against startup execution
-        replay and INDIVIDUALLY are not. The gate does not cover this, because the gate is
-        already OPEN by the time `_rebuild_mirror()` awaits — see the WHY THE GATE OPENS
-        BEFORE THE MIRROR REBUILD and JOINT DEPENDENCY sections in connect().
+        BUILT UP FROM THE MEMBERS WE WANT, not subtracted from StartupFetchALL. Subtraction
+        is anchored to a value that moves: whatever a future ib_async adds to ALL arrives
+        switched ON, and the only defence would be someone noticing. Naming the three
+        members means a new fetch source arrives OFF and has to be argued for. That is the
+        same reasoning as debug.md §7.4 — never anchor to something that moves — applied
+        to a vendor's enum instead of to a document.
 
-        Imported lazily and by name so that if ib_async ever renames or removes the flag
-        the failure is a loud ImportError at connect time, not a silently-restored
-        historical execution replay.
+        WHAT WAS DROPPED AND WHY IT COSTS NOTHING:
+          EXECUTIONS       replays the account's historical fills onto execDetailsEvent —
+                           straight into the live fill handler. Nothing here reads
+                           ib.fills()/ib.executions(); the adapter keeps its own
+                           (order_id, exec_id) ledger.
+          ORDERS_OPEN      \\ replay completed/open orders onto orderStatusEvent, whose
+          ORDERS_COMPLETE  / Filled and Cancelled branches reach _ensure_acked and
+                           on_cancel. Nothing here reads ib.orders()/ib.trades() or calls
+                           reqAllOpenOrders/reqCompletedOrders — verified in ARC 017 by
+                           deriving every self._ib attribute from this file's AST.
+                           `query_order_status` reads the Trade placeOrder returned.
+
+        This is DEFENCE IN DEPTH, not half of a joint guarantee. ARC 016's "jointly
+        sufficient, individually insufficient" framing is corrected in connect(): the gate
+        is now closed for the whole of connect() and is the mechanism of record. This
+        narrowing means Nix does not ask for data it would only discard. Widening it back
+        does not become safe just because the gate exists.
+
+        Imported lazily and by name so that if ib_async ever renames or removes a flag the
+        failure is a loud ImportError at connect time, not a silently-restored replay.
         """
-        from ib_async.ib import (  # pylint: disable=import-error
-            StartupFetch,
-            StartupFetchALL,
-        )
+        from ib_async.ib import StartupFetch  # pylint: disable=import-error
 
-        return StartupFetchALL & ~StartupFetch.EXECUTIONS
+        return (
+            StartupFetch.POSITIONS
+            | StartupFetch.ACCOUNT_UPDATES
+            | StartupFetch.SUB_ACCOUNT_UPDATES
+        )
 
     def disconnect(self) -> None:
         self._connected = False
@@ -628,10 +689,35 @@ class IBKRBrokerOrder:
                 trigger,
             )
 
+    def _log_gated_drop(self, kind: str, ib_id) -> None:
+        """A refusal by the startup gate is silent by design — startup replay is noise and
+        `_from_ib` is empty across the whole window, so nothing is lost.
+
+        The ONE case that is not noise is an event whose id this adapter recognises. That
+        can only happen if a caller placed an order concurrently with connect(), which §4's
+        cold-start ordering forbids. Closing the gate across the mirror rebuild (ARC 017
+        A3) makes that drop possible where before it was a phantom fill instead, so it is
+        made LOUD: a real event refused must never be indistinguishable from replay noise.
+        """
+        if ib_id in self._from_ib:
+            log.error(
+                "startup gate refused a %s for %s, which is a LIVE order in this session "
+                "— an order was placed concurrently with connect(), violating §4 "
+                "cold-start ordering. The event was DROPPED.",
+                kind,
+                self._from_ib[ib_id],
+            )
+
     def _on_ib_order_status(self, trade) -> None:
         """IBKR re-emits orderStatus on every change, so ack and cancel are deduped."""
         if not self._startup_complete:
-            return  # ARC 015 §2b: startup replay of a previous session's orders
+            # §2b, gate CLOSED for the whole of connect() (ARC 017 A3). This is the venue
+            # replaying history, not reporting our activity. ORDERS_OPEN/ORDERS_COMPLETE
+            # are no longer requested either, so this should now be unreachable at
+            # startup — it stays because the gate is the mechanism of record and must not
+            # depend on what a future ib_async decides to fetch.
+            self._log_gated_drop("orderStatus", trade.order.orderId)
+            return
         ib_id = trade.order.orderId
         cid = self._from_ib.get(ib_id)
         if cid is None:
@@ -661,9 +747,11 @@ class IBKRBrokerOrder:
         cumulative_qty maps directly — this is the cleanest mapping in the set.
         """
         if not self._startup_complete:
-            # ARC 015 §2b: connectAsync's startup fetch replays HISTORICAL executions on
-            # this same event. Dropping them here is the deliberate mechanism; previously
-            # they were dropped only because the id map happened to be empty.
+            # §2b, gate CLOSED for the whole of connect() including the mirror rebuild
+            # (ARC 017 A3). Dropping here is the deliberate mechanism; before ARC 015 they
+            # were dropped only because the id map happened to be empty, and before
+            # ARC 017 the gate reopened before the rebuild had finished.
+            self._log_gated_drop("execution", fill.execution.orderId)
             return
         ib_id = fill.execution.orderId
         cid = self._from_ib.get(ib_id)
@@ -721,17 +809,22 @@ class IBKRBrokerOrder:
         """Rejections arrive here, not on orderStatus — the two streams must be joined
         to produce one neutral ack. Connectivity codes are also here."""
         if errorCode == IB_ERR_CONN_LOST:
-            self._sink.on_session(SessionState.DOWN, reason=f"1100 {errorString}")
+            # The venue's numeric code is LOGGED (inside the adapter) and not published:
+            # invariant 2 — no vendor spelling crosses the seam. See _on_data_loss_restore.
+            log.warning("IBKR %d: %s", errorCode, errorString)
+            self._sink.on_session(SessionState.DOWN, reason="connection to venue lost")
             return
         if errorCode == IB_ERR_CONN_RESTORED_DATA_LOST:
-            # Load-bearing: our mirror may have missed events. Surface the data loss so
-            # the Limiter re-reconciles rather than trusting a stale mirror.
-            self._sink.on_session(
-                SessionState.UP, reason="1101 restored WITH DATA LOSS — reconcile"
-            )
+            self._on_data_loss_restore(errorString)
             return
         if errorCode == IB_ERR_CONN_RESTORED_DATA_OK:
-            self._sink.on_session(SessionState.UP, reason="1102 restored, no data loss")
+            log.info("IBKR %d: %s", errorCode, errorString)
+            # No data loss: our mirror did not miss anything, so there is nothing to
+            # re-read. Deliberately NOT rebuilt — see _on_data_loss_restore for why the
+            # two restores must stay asymmetric.
+            self._sink.on_session(
+                SessionState.UP, reason="session restored, event stream intact"
+            )
             return
         if errorCode in IB_INFO_CODES:
             return
@@ -744,6 +837,100 @@ class IBKRBrokerOrder:
             self._ack_once(
                 cid, AckStatus.REJECTED, reason=f"{errorCode}: {errorString}"
             )
+
+    # ---------------------------------------------------- data-loss self-reconciliation
+
+    def _on_data_loss_restore(self, detail: str) -> None:
+        """ARC 017 A1(b). The session came back and the venue could NOT guarantee our
+        event stream across the gap. Re-read the mirror from the venue BEFORE publishing
+        the session state.
+
+        WHY THE ADAPTER DOES THIS ITSELF, and why it is not the adapter making a trading
+        decision. The mirror is the adapter's OWN state, not a view of the Limiter's. It
+        is the sole input to `flatten()`, which §2A designates the protective path and
+        which ARC 014 measured at 0.6 ms with ZERO venue queries — it reads memory and
+        fires. §14's "the exit path has no wire dependency" guarantee is therefore only
+        as good as the mirror behind it. Before this arc the adapter emitted UP and
+        returned, leaving `_rebuild_mirror()` un-run: one reconnect with data loss and
+        `flatten()` would fire opposing orders sized from a mirror that could be missing
+        an entire position, or holding one that was closed while we were blind. Not a
+        rare shape — it needs no coincidence at all, just one 1101.
+
+        The adapter is not deciding whether to trade, halt or reconcile; that stays with
+        the Limiter, and `UP_DATA_LOSS` is exactly how it is told to. The adapter is
+        refusing to PUBLISH a state it already knows may be backed by stale memory.
+
+        ORDERING IS THE GUARANTEE, not merely the rebuild. The session event is emitted
+        from inside `_revalidate_then_publish` AFTER the venue answers, so there is no
+        instant at which a consumer has been told the session is up while this adapter is
+        still holding a mirror it knows is suspect.
+
+        WHY A TASK, AND WHY THAT IS NOT A PROHIBITED BLOCKING WAIT. `errorEvent` is a SYNC
+        vendor callback dispatched from the loop; `_rebuild_mirror()` is a coroutine. The
+        three ways to bridge that are `asyncio.run`/`run_until_complete` (both forbidden —
+        invariant 5, and both deadlock from inside a running loop anyway), doing nothing
+        (the defect), or scheduling. Scheduling is the only admissible one. This is NOT a
+        retry: it runs exactly once per 1101, resends no order, and re-reads a read-only
+        endpoint.
+
+        WHY A BARE `create_task` HERE DESPITE THE MODULE'S TaskGroup POLICY. That policy
+        exists so a background task cannot die silently on the order path, and it assumes
+        an async caller that can own a scope. A sync vendor callback cannot own one. The
+        policy's actual requirement is met by other means: the task is held in
+        `_reconcile_tasks` so it cannot be garbage-collected mid-flight, and a done
+        callback re-raises nothing but LOGS any exception at error level, so the failure
+        mode the policy guards against — a silent death — is not reachable.
+        """
+        self._mirror_stale = True
+        log.warning(
+            "IBKR %d: %s — event stream not guaranteed across the gap; re-reading "
+            "position mirror before publishing session state",
+            IB_ERR_CONN_RESTORED_DATA_LOST,
+            detail,
+        )
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No loop to schedule on. Fail LOUD and publish the fact rather than a state
+            # we cannot back: the consumer is told the session is up AND that our view has
+            # gaps, so it can reconcile even though we could not.
+            log.error(
+                "data-loss restore arrived with no running event loop — mirror NOT "
+                "re-read; publishing UP_DATA_LOSS with the mirror still suspect"
+            )
+            self._sink.on_session(
+                SessionState.UP_DATA_LOSS,
+                reason="session restored with gaps; mirror could NOT be re-read",
+            )
+            return
+
+        task = loop.create_task(self._revalidate_then_publish())
+        self._reconcile_tasks.add(task)
+        task.add_done_callback(self._reconcile_tasks.discard)
+        task.add_done_callback(self._log_reconcile_failure)
+
+    async def _revalidate_then_publish(self) -> None:
+        """Re-read, THEN publish. Never the other way round — see _on_data_loss_restore."""
+        rebuilt = await self._rebuild_mirror()
+        self._mirror_stale = not rebuilt
+        self._sink.on_session(
+            SessionState.UP_DATA_LOSS,
+            reason=(
+                "session restored with gaps; position mirror re-read from venue"
+                if rebuilt
+                else "session restored with gaps; mirror re-read FAILED — mirror suspect"
+            ),
+        )
+
+    @staticmethod
+    def _log_reconcile_failure(task) -> None:
+        """A reconcile task that dies silently is a mirror nobody knows is stale."""
+        if task.cancelled():
+            log.error("data-loss mirror re-read was CANCELLED — mirror still suspect")
+            return
+        exc = task.exception()
+        if exc is not None:
+            log.error("data-loss mirror re-read raised: %s", exc)
 
     def _on_ib_position(self, position) -> None:
         sym = self._symbol_for(position.contract)
@@ -786,11 +973,23 @@ class IBKRBrokerOrder:
 
     # ------------------------------------------------------------------ helpers
 
-    async def _rebuild_mirror(self) -> None:
+    async def _rebuild_mirror(self) -> bool:
+        """Re-read the venue's position set into the mirror. True == the venue answered.
+
+        Returns a verdict rather than None (ARC 017): both callers now need to know
+        whether the mirror they are about to stand behind is venue-backed or is still the
+        pre-existing memory. Swallowing the exception is still right — a failed rebuild
+        must not kill connect(), and must not stop the data-loss session event from
+        reaching the Limiter — but swallowing it *and* reporting nothing was how a stale
+        mirror became indistinguishable from a fresh one.
+        """
+        self._mirror_rebuilds += 1
         try:
             await self.query_positions()
+            return True
         except Exception as exc:  # noqa: BLE001 — mirror rebuild must not kill connect
-            log.warning("mirror rebuild failed on connect: %s", exc)
+            log.warning("mirror rebuild failed: %s", exc)
+            return False
 
     def _contract_for(self, symbol: Symbol):
         if self._resolve_contract is None:

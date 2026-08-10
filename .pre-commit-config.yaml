@@ -1,3 +1,70 @@
+# =============================================================================
+# debug.md §7.12 — THE STANDING QUESTION, answered in writing beside the gate.
+#
+#   "What would have to be true for `pre-commit run --all-files` to pass while
+#    measuring nothing?"
+#
+# Every answer below is a condition you could plant, and every number quoted is
+# from a pasted command (ARC 017), not from memory.
+#
+# 1. THE SUBJECT IS NOT IN `git ls-files`.  `--all-files` means all *git-tracked*
+#    files, so anything untracked or gitignored is outside all seven file-scoped
+#    hooks below. This is failure mode #14 and it is LIVE IN THIS TREE TODAY:
+#    `.gitignore` excludes `state/` wholesale, and `state/encrypt_credentials.py`
+#    is real Python that no hook has ever read (CHECK-DEBT D1.16). It was also
+#    the ARC 015 instance — `scripts/broker/` sat untracked and permanently green.
+#    Plantable in one command: `git rm --cached <file>` silences every hook on it
+#    with no diff to this file.
+#    NUANCE, measured ARC 017 — pre-commit does NOT report a *totally* empty
+#    file-scoped hook as Passed; it prints "(no files to check) Skipped". So a
+#    scope collapse to ZERO is visible for the seven file-scoped hooks. What is
+#    invisible is a PARTIAL collapse — 36 files instead of 37 reads exactly like
+#    37 — and `pytest-affected` is exempt from the protection entirely, because
+#    `always_run: true` + `pass_filenames: false` means it is never "skipped for
+#    no files"; it reports **Passed** on zero tests. See answer 2.
+#
+# 2. testmon SELECTED NOTHING — AND THAT IS EXIT 0.  Measured ARC 017, pytest
+#    9.1.1 + testmon 2.2.0 on this repo: a warm `--testmon` run with an unchanged
+#    dependency graph prints `testmon: changed files: 0, unchanged files: 36`,
+#    `collected 0 items`, `no tests ran`, and exits **0**. The exit-5 tolerance
+#    removed from the pytest-affected hook below does NOT cover this case: exit 5
+#    is what a `-k` deselect produces; testmon's empty run never reaches it. So
+#    "Stage 3 — runtime pass" is green having executed zero tests on every commit
+#    where nothing testmon can see has changed — the normal steady state.
+#
+# 3. THE RUNTIME GATE'S SCOPE LIVES IN AN UNTRACKED FILE.  `.testmondata` is
+#    gitignored (`.gitignore:41`) and per-machine. Delete it and the next run is
+#    exhaustive; corrupt or stale it and the run is empty. No reviewer sees it and
+#    no commit records it. Failure mode #14 again, one layer down.
+#
+# 4. A STALE HOOK ENVIRONMENT IS STILL ON DISK.  `~/.cache/pre-commit` currently
+#    holds TWO bandit envs. The pre-ARC-010 one (repo rev 2d0b675) still
+#    reproduces the original defect exactly — 18/19 files "exception while
+#    scanning file", zero findings, **exit 0**. Only the `rev:` pin below routes
+#    around it. Checking out any commit that moves that pin re-arms the ARC 006
+#    vacuum with no visible change to the gate.
+#
+# 5. THE HOOK REPAIRED THE DEFECT INSTEAD OF REPORTING IT.  See the ruff-format
+#    ruling immediately below: run twice, the second run is green.
+#
+# 6. THE HOOK CANNOT REPORT ITS OWN SCOPE, so a collapse to zero is unobservable.
+#    As configured, `ruff-check` prints only "All checks passed!" and `pylint`
+#    prints only a 10.00/10 rating — neither emits a file count, though both can
+#    (`ruff check --show-files` -> 37; `pylint --reports=y` -> module 37). The
+#    other five self-report: ruff-format "37 files left unchanged", mypy "37
+#    source files", complexipy "37 files analyzed", bandit "Files skipped (0)" +
+#    LOC scanned, pytest "collected N items".
+#
+# Per-hook scope, derived ARC 017 via pre-commit's own Classifier (not a
+# reimplementation) over `git.get_all_files()` = 87 files:
+#   ruff-check 37 · ruff-format 37 · pylint 37 · mypy 37 ·
+#   bandit(production) 18 · bandit(tests) 19 · complexipy 37 ·
+#   pytest-affected  always_run, pass_filenames=false — scope is testmon's graph,
+#                    NOT a file list; see answer 2.
+# None were zero. `git ls-files '*.py'` is 38; the 38th is
+# databases/schema/extract_sources.py, excluded by every `exclude:` below.
+# =============================================================================
+
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.0
@@ -5,6 +72,28 @@ repos:
       - id: ruff-check
         args: [--fix, --exit-non-zero-on-fix]
         exclude: ^databases/schema/
+
+      # RULING, ARC 017 — this is a FORMATTER, not a gate. Do not count it as
+      # one. FAIL-with-CONTROL was run (CONTROL -> PLANT -> CAN-FAIL -> RESTORE
+      # -> CONTROL, plant inside its own 37-file scope) and the outcome is
+      # CAUGHT BUT DID NOT NAME THE SITE. Recorded as CHECK-DEBT D3.5, and left
+      # OPEN rather than rounded up to a pass. What was measured:
+      #   - The hook entry is `ruff format --force-exclude`. It REWRITES the
+      #     file. `ruff format` itself exits 0 — it succeeded at formatting.
+      #   - The exit 1 comes from pre-commit's own before/after tree hash, as
+      #     "files were modified by this hook". That signal is attributed by
+      #     tree-diff, not by causation: during ARC 017 a *concurrent* edit by
+      #     another process made the **bandit** hook report "files were modified
+      #     by this hook" though bandit never writes a file.
+      #   - It names no file and no line: "1 file reformatted, 36 files left
+      #     unchanged".
+      #   - Run it twice and the second run PASSES — the defect is gone because
+      #     the gate consumed it (failure mode #7, and §7.12 answer 5 above).
+      # A reporting configuration EXISTS and was demonstrated: `ruff format
+      # --check` exits 1, modifies nothing (sha256 identical before/after), and
+      # names `scripts/tests/<file>.py:1:1` with a diff. Adopting it is a
+      # behaviour change (commits stop being auto-formatted) and was out of ARC
+      # 017's scope, so it is recorded as owed, not done.
       - id: ruff-format
         exclude: ^databases/schema/
 
@@ -45,8 +134,31 @@ repos:
         # gate's *scope* — every file is still scanned, and every other rule
         # (B602 shell=True included) stays live here. See nix_check_contract.md
         # §5.2 on why scope exemptions are the wrong repair.
-        #   B101 assert_used  — asserts are pytest's assertion mechanism; 126
-        #                       tests, ~100 sites, zero of them a defect.
+        # CAN-FAIL DEMONSTRATED, ARC 017 — CHECK-DEBT D3.6, opened and
+        # discharged in the same arc because it was owed and unrecorded for
+        # four arcs. The plant landed inside this hook's OWN scope:
+        # `subprocess.run(cmd, shell=True)` appended to
+        # scripts/tests/test_systemd_units.py. CAUGHT as B602, Severity High /
+        # Confidence High, naming the site
+        # `./scripts/tests/test_systemd_units.py:77:4` and printing the line.
+        # Restored byte-identical (sha256 85d2b8d0…bee9a before and after) and
+        # the control re-passed. Non-vacuity first: bandit's own JSON metrics
+        # report 19 files / 3109 LOC / 0 errors here, matching the 19 files
+        # pre-commit's Classifier selects. D3.1's ARC 010 discharge covered
+        # bandit (production) ONLY — that plant landed in checks/check_venv.py,
+        # which this hook's `files: ^scripts/tests/` excludes.
+        #   B101 assert_used  — asserts are pytest's assertion mechanism, and
+        #                       zero of them is a defect. THE SITE COUNT IS
+        #                       DELIBERATELY NOT RESTATED HERE (doctrine B.7 /
+        #                       CHECK-DEBT D2.8). It used to read "126 tests,
+        #                       ~100 sites"; ARC 017 derived 159 tests and 318
+        #                       B101 sites — both restatements were stale, and
+        #                       this was the first D2.8 instance found inside a
+        #                       gate's own configuration rather than a document.
+        #                       Derive, do not read:
+        #                         bandit -c pyproject.toml -f json \
+        #                           $(git ls-files 'scripts/tests/*.py')
+        #                       then count results with test_id == "B101".
         #   B404 import subprocess — informational "consider the implications";
         #                       the suite must spawn interpreters to test the
         #                       checks that spawn interpreters.
@@ -68,10 +180,38 @@ repos:
         # Exit-5 ("no tests collected") tolerance removed (final whole-branch
         # review, I6). It existed only for the pre-R1 window when scripts/ had
         # no tests yet, with a comment promising removal once real tests
-        # existed — there are now 126. Tolerating exit 5 today would let a
-        # pythonpath/testpaths regression or a stale .testmondata collect zero
-        # tests and still pass the gate having run nothing (CLAUDE.md
-        # directive 4: fail closed and loud, not silently green on nothing).
+        # existed. Real tests exist now. THE COUNT IS DELIBERATELY NOT RESTATED
+        # HERE (doctrine B.7 / CHECK-DEBT D2.8) — this line used to read "there
+        # are now 126" and was stale; derive it instead:
+        #   .venv/bin/pytest scripts/tests -q --collect-only
+        #
+        # MEASURED CORRECTION, ARC 017 — removing the tolerance does NOT close
+        # the hole the sentence that followed it claimed to close. That sentence
+        # said a stale .testmondata could "collect zero tests and still pass the
+        # gate having run nothing". It still can, and exit 5 was never the route:
+        #   ./.venv/bin/pytest --testmon   (warm, nothing changed)
+        #     -> "testmon: changed files: 0, unchanged files: 36"
+        #     -> "collected 0 items" / "no tests ran"  -> EXIT 0
+        #   ./.venv/bin/pytest -q -k zzz_no_such_test  -> "159 deselected" -> EXIT 5
+        # Exit 5 belongs to the deselect path; testmon's empty run returns 0 and
+        # this gate reports GREEN having executed nothing. That is CHECK-DEBT
+        # D2.12 verbatim, standing in this file. Not repaired here because the
+        # repair is a behaviour change (a second, non-incremental full-suite
+        # hook, or a floor assertion on collected count) and ARC 017 scoped this
+        # sub-agent to demonstration and ledger truth. Recorded, not silently
+        # carried: CHECK-DEBT D2.13.
+        #
+        # CAN-FAIL DEMONSTRATED, ARC 017 (discharges D3.4). The plant must be
+        # proven SELECTED, not merely present, or it demonstrates nothing:
+        #   plant `assert 1 == 2` in scripts/tests/test_check_venv.py
+        #     -> "testmon: changed files: scripts/tests/test_check_venv.py,
+        #         unchanged files: 35"
+        #     -> "collected 9 items"  (not 0, not 159 — selection, not sweep)
+        #     -> FAILED scripts/tests/test_check_venv.py::test_arc017_plant_testmon
+        #        naming scripts/tests/test_check_venv.py:214  -> EXIT 1
+        #   restore -> sha256 fd5d4992…877b5 identical -> 8 passed -> EXIT 0
+        # (CLAUDE.md directive 4: fail closed and loud, not silently green on
+        # nothing.)
         # pre-commit runs local hooks with cwd = repo top level, so this
         # relative path to the venv is stable regardless of where `git commit`
         # was invoked from.
