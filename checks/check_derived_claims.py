@@ -118,6 +118,45 @@ while measuring nothing?
     done instead is that every selected row id is printed in the detail line on
     every run, so a selection that collapses from twelve to zero in one arc is
     readable rather than inferred — the same treatment condition 8 gets.
+
+10. ADDED ARC 023 (B3), for the DEMONSTRATION arm specifically. Every condition
+    above is about a NUMBER. A claim of the form *"X is proven to Y"* has no
+    number in it, so none of them reaches it, and the measured consequence is
+    CHECK-DEBT D1.14: that row banks `FeedLag` as "constructed twice from
+    synthesised values differing in one field, and proven to refuse a field
+    write". It was true on the branch it was written on. It stopped being true
+    at the merge (CHECK-DEBT D3.15, root cause a `float | None` annotation the
+    synthesiser cannot resolve), and this gate reported 13/13 across it for two
+    arcs, because a claim about a DEMONSTRATION was outside everything it
+    measures. The arm below re-executes such claims instead of reading them.
+    GUARDED, and each guard is stated so it could be planted:
+      a. `demonstrations` absent or empty -> CANNOT_MEASURE, never PASS. An arm
+         with no subject is the whole subject of §7.12.
+      b. A registered demonstration whose banked assertion no longer appears
+         where it says it is banked -> FAIL. A registration outliving its claim
+         is failure mode #14 pointed the other way.
+      c. The re-execution not running, or exiting outside `accept_exit` ->
+         CANNOT_MEASURE for that demonstration, never FAIL (doctrine B.2).
+      d. Neither observation pattern matching, OR both matching -> the
+         observation is INDETERMINATE and is CANNOT_MEASURE, never a verdict. A
+         pattern that quietly stopped matching is `debug.md` §7.4 and must not
+         read as "the demonstration performs".
+      e. Observed state != declared state, IN EITHER DIRECTION -> FAIL. A
+         demonstration that stopped performing is the D1.14 defect; one that
+         started performing while still registered as owed means its debt row
+         should have been closed and was not.
+      f. A demonstration declared `does-not-perform` must name an `owed_row`
+         that is OPEN by the ledger's own bold-span rule -> otherwise FAIL. A
+         demotion may not outlive the debt that justifies it.
+    NOT GUARDED, DELIBERATELY, and it is condition 7 in this arm's clothing: the
+    arm proves every REGISTERED demonstration still performs and cannot find a
+    demonstration nobody registered. The ledger banks dozens of "proven" and
+    "demonstrated" spans and two of them are registered here. Registering them
+    all by regex was considered and refused: most are DATED history ("MEASURED
+    ARC 018"), which is append-only and must not be re-executed, and no
+    mechanical rule separates a dated record from a standing claim. So the
+    obligation is procedural and is written here rather than implied: an arc
+    that banks a demonstration in the present tense registers it below.
 """
 
 from __future__ import annotations
@@ -1095,27 +1134,187 @@ def _evaluate_claim(claim: dict, home: Path) -> tuple[list[tuple[str, str]], str
     return defects, f"{cid}={agreed} [{rendered}; {scan_note}]", True
 
 
+# ===========================================================================
+# DEMONSTRATION CLAIMS — ARC 023 (B3). A claim that cannot be re-executed is
+# not a claim. See §7.12 condition 10 in the module docstring for the measured
+# instance (CHECK-DEBT D1.14 / D3.15) this arm exists to catch.
+# ===========================================================================
+
+DEMOS = "demonstrations"
+_STATES = ("performs", "does-not-perform")
+
+
+def _demo_output(demo: dict, home: Path) -> tuple[str | None, str]:
+    """Re-execute the demonstration. Returns (combined output | None, complaint).
+
+    Anything that prevents the re-execution from happening is a complaint, which
+    the caller turns into CANNOT_MEASURE — never into a FAIL. A demonstration
+    that could not be re-run has not been shown to have stopped performing.
+    """
+    spec = demo["reexecute"]
+    argv = _argv_for({"argv": spec["argv"]}, home)
+    try:
+        proc = subprocess.run(  # nosec B603 - argv from a repo-controlled registry
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=_TIMEOUT,
+            check=False,
+            cwd=str(home),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"re-execution did not run: {exc!r}"
+    accept = spec.get("accept_exit")
+    if accept is not None and proc.returncode not in accept:
+        return (
+            None,
+            f"re-execution exited {proc.returncode}, outside accept_exit {accept}",
+        )
+    return proc.stdout + proc.stderr, ""
+
+
+def _demo_observed(demo: dict, output: str) -> tuple[str | None, str]:
+    """Read the demonstration's state out of its own output. None = indeterminate."""
+    hits = [state for state in _STATES if re.search(demo["observe"][state], output)]
+    if len(hits) != 1:
+        return None, (
+            f"observation INDETERMINATE — {len(hits)} of the two patterns matched "
+            f"{hits}; a pattern that stopped matching is never a verdict (§7.4)"
+        )
+    return hits[0], ""
+
+
+def _demo_stale(demo: dict, home: Path) -> str:
+    """'' if the banked assertion is still where the registry says it is."""
+    banked = demo["banked"]
+    if not (home / banked["file"]).exists():
+        return f"{banked['file']} is absent — the banked assertion cannot be located"
+    if not re.search(banked["pattern"], _read(home, banked["file"])):
+        return (
+            f"nothing in {banked['file']} still asserts this demonstration — the "
+            f"registration outlived the claim, or the claim was reworded without "
+            f"re-registering it"
+        )
+    return ""
+
+
+def _evaluate_demo(
+    demo: dict, home: Path, open_rows: set[str]
+) -> tuple[list[tuple[str, str]], str, bool]:
+    """One demonstration. Returns (defects, line, measured)."""
+    did = demo["id"]
+    site = f"{REGISTRY}:{DEMOS}/{did}"
+    stale = _demo_stale(demo, home)
+    if stale:
+        return [(site, stale)], f"{did}: STALE REGISTRATION", True
+    declared = demo["currently"]
+    owed = demo.get("owed_row", "")
+    if declared == "does-not-perform" and owed not in open_rows:
+        return (
+            [
+                (
+                    site,
+                    (
+                        f"declared {declared!r} against owed_row {owed!r}, which is not "
+                        f"an OPEN row of docs/CHECK-DEBT.md — a demotion may not "
+                        f"outlive its debt"
+                    ),
+                )
+            ],
+            f"{did}: ORPHANED DEMOTION",
+            True,
+        )
+    output, complaint = _demo_output(demo, home)
+    if output is None:
+        return [], f"{did}: NOT MEASURED — {complaint}", False
+    observed, why = _demo_observed(demo, output)
+    if observed is None:
+        return [], f"{did}: NOT MEASURED — {why}", False
+    if observed != declared:
+        return (
+            [
+                (
+                    site,
+                    (
+                        f"registered as {declared!r}; the re-execution observed "
+                        f"{observed!r} — a banked demonstration changed state and "
+                        f"nothing else in this tree would have said so"
+                    ),
+                )
+            ],
+            f"{did}: {observed} != registered {declared}",
+            True,
+        )
+    return [], f"{did}={observed}" + (f" (owed {owed})" if owed else ""), True
+
+
+def _evaluate_claims(
+    claims: list[dict], home: Path
+) -> tuple[list[tuple[str, str]], list[str], int]:
+    """Every registered claim, re-derived. Returns (defects, lines, measured).
+
+    Extracted from `run()` ARC 023 so that adding the demonstration arm did not
+    push one function past pylint's local-variable ceiling — the arms are
+    symmetrical in shape, so they are symmetrical in the code as well.
+    """
+    defects: list[tuple[str, str]] = []
+    lines: list[str] = []
+    measured = 0
+    for claim in claims:
+        claim_defects, line, was_measured = _evaluate_claim(claim, home)
+        defects.extend(claim_defects)
+        lines.append(line)
+        measured += int(was_measured)
+    return defects, lines, measured
+
+
+def _evaluate_demonstrations(
+    demos: list[dict], home: Path
+) -> tuple[list[tuple[str, str]], list[str], int]:
+    """Every registered demonstration, re-executed. Returns (defects, lines, measured)."""
+    open_rows = {rid for rid, _ in _open_debt_rows(home)}
+    defects: list[tuple[str, str]] = []
+    lines: list[str] = []
+    measured = 0
+    for demo in demos:
+        demo_defects, line, was_measured = _evaluate_demo(demo, home, open_rows)
+        defects.extend(demo_defects)
+        lines.append(line)
+        measured += int(was_measured)
+    return defects, lines, measured
+
+
 def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argument
     """Re-derive every registered claim and compare. Never repairs a document."""
     try:
         registry_path = Path(__file__).resolve().parent / REGISTRY
-        claims = json.loads(registry_path.read_text(encoding="utf-8"))["claims"]
+        payload = json.loads(registry_path.read_text(encoding="utf-8"))
+        claims = payload["claims"]
+        demos = payload.get(DEMOS, [])
         if not claims:
             return CheckResult(
                 name=NAME,
                 status=Status.CANNOT_MEASURE,
                 detail=f"{REGISTRY} registers no claims (§7.12 condition 1)",
             )
-        defects: list[tuple[str, str]] = []
-        lines: list[str] = []
-        measured = 0
-        for claim in claims:
-            claim_defects, line, was_measured = _evaluate_claim(claim, ctx.nix_home)
-            defects.extend(claim_defects)
-            lines.append(line)
-            measured += int(was_measured)
-
-        evidence = f"{measured}/{len(claims)} claim(s) compared — " + " | ".join(lines)
+        if not demos:
+            return CheckResult(
+                name=NAME,
+                status=Status.CANNOT_MEASURE,
+                detail=f"{REGISTRY} registers no demonstrations (§7.12 condition 10) "
+                f"— an arm with no subject is never a PASS",
+            )
+        defects, lines, measured = _evaluate_claims(claims, ctx.nix_home)
+        demo_defects, demo_lines, demo_measured = _evaluate_demonstrations(
+            demos, ctx.nix_home
+        )
+        defects.extend(demo_defects)
+        evidence = (
+            f"{measured}/{len(claims)} claim(s) compared — "
+            + " | ".join(lines)
+            + f" || {demo_measured}/{len(demos)} demonstration(s) re-executed — "
+            + " | ".join(demo_lines)
+        )
         if defects:
             return CheckResult(
                 name=NAME,
@@ -1124,7 +1323,7 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
                 evidence=evidence,
                 detail="; ".join(f"{site}: {why}" for site, why in defects),
             )
-        if measured != len(claims):
+        if measured != len(claims) or demo_measured != len(demos):
             return CheckResult(name=NAME, status=Status.CANNOT_MEASURE, detail=evidence)
         return CheckResult(name=NAME, status=Status.PASS, evidence=evidence)
     except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
