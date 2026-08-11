@@ -586,11 +586,50 @@ def _arm1(
 # test of either spelling and still fails — PLANT P4 below proves it after this repair,
 # not before it.
 #
-# THE RESIDUAL, NAMED (CHECK-DEBT D2.21): polarity is still not checked, exactly as it
-# was not checked for the membership form (§7.12 condition 5) — `if found is not None:`
-# guarding a store reads the same as `if found is None:`. Arm 4's behavioural drive is
-# the compensating control, and the residual is unchanged in size by this repair rather
-# than introduced by it.
+# THE RESIDUAL AS ARC 021 LEFT IT (CHECK-DEBT D2.21): polarity was not checked, exactly
+# as it was not checked for the membership form (§7.12 condition 5) — `if found is not
+# None:` guarding a store read the same as `if found is None:`.
+#
+# ARC 022 (C4) CLOSES IT. `_absent_proofs` below replaces the polarity-blind
+# `_guard_keys`: a test no longer yields one undifferentiated set of guarded
+# `(key, container)` pairs applied to BOTH branches. It yields TWO sets — what the test
+# proves ABSENT when it is true, and what it proves absent when it is false — and the
+# `If` handler applies the first to `body` and the second to `orelse`.
+#
+# WHY THIS CANNOT BE A WEAKENING, structurally and not by assertion: every branch now
+# receives a SUBSET of what it received before. `body` used to receive
+# `In ∪ NotIn ∪ Is ∪ IsNot` and now receives `NotIn ∪ Is`; `orelse` used to receive the
+# same union and now receives `In ∪ IsNot`. A store that failed before therefore cannot
+# pass now. MEASURED, seven guard spellings in a throwaway copy of the tree, plus the
+# real adapter as the control:
+#
+#   spelling                                                   before   after
+#   ---------------------------------------------------------  ------   -----
+#   `if key not in store: store[k]=v`            correct        PASS     PASS
+#   `found=store.get(k); if found is None: store[k]=v` correct   PASS     PASS
+#   `if found is not None: revise() else: store[k]=v`  correct   PASS     PASS
+#   `store[k]=v`                                 unguarded      FAIL     FAIL
+#   guarded, emits no datafeed event (arm 3)                    FAIL     FAIL
+#   `if key in store: store[k]=v`                INVERTED       PASS     FAIL
+#   `found=store.get(k); if found is not None: store[k]=v` INV   PASS     FAIL
+#   `if key not in store or self._force: store[k]=v`  ESCAPE     PASS     FAIL
+#
+# The last three are the repair. The two INVERTED rows are D2.21 verbatim — a guard that
+# overwrites every sealed entry and only ever stores on the re-poll. The ESCAPE row was
+# NOT in D2.21 and was found by building the table rather than reasoned about: a
+# disjunction weakens the proof to nothing, and the old walk-every-Compare reader counted
+# it as a guard because it never looked at how the tests were combined.
+#
+# B.4's OTHER EDGE, and it is the row that matters most here: `check_datafeed_bar_seal`
+# has already reddened the correct implementation of its own subject once (the
+# lookup-then-sentinel repair above). The real adapter was re-run as a CONTROL after this
+# change and its output is BYTE-IDENTICAL to the output before it, exit 0 either way. The
+# gate's arms 1 and 4 are untouched — the blast radius is `_guard_keys` and the one `If`
+# branch in `_guarded_assigns`, both read only by arms 2 and 3.
+#
+# WHAT THIS DOES NOT DO, AND IT IS NOT WHAT D2.21 ASKED: a PASS from arm 2 still is not a
+# binding of this gate to the real adapter. D3.9/D3.10 stay open and this gate stays
+# UNBOUND — see the ARC 022 rule of record at the head of `docs/CHECK-DEBT.md`.
 def _lookup_binding(node: ast.stmt) -> tuple[str, tuple[str, str]] | None:
     """`name = <container>.get(<key>)` -> (name, (key, container)). Else None."""
     if not isinstance(node, ast.Assign) or len(node.targets) != 1:
@@ -605,31 +644,68 @@ def _lookup_binding(node: ast.stmt) -> tuple[str, tuple[str, str]] | None:
     return tgt.id, (ast.unparse(val.args[0]), ast.unparse(fn.value))
 
 
-def _guard_keys(
+def _compare_absence(
+    test: ast.expr, binds: dict[str, tuple[str, str]]
+) -> tuple[frozenset[tuple[str, str]], frozenset[tuple[str, str]]]:
+    """One comparison's absence proofs, per polarity. Split out of
+    `_absent_proofs` so neither function exceeds the return-count and
+    cognitive-complexity ceilings the hook suite enforces; the split is
+    structural and changes no verdict."""
+    empty: frozenset[tuple[str, str]] = frozenset()
+    if not isinstance(test, ast.Compare) or len(test.ops) != 1:
+        return empty, empty
+    op, cmp_ = test.ops[0], test.comparators[0]
+    if isinstance(op, (ast.In, ast.NotIn)):
+        member = frozenset({(ast.unparse(test.left), ast.unparse(cmp_))})
+        return (member, empty) if isinstance(op, ast.NotIn) else (empty, member)
+    left = test.left
+    sentinel = (
+        isinstance(op, (ast.Is, ast.IsNot))
+        and isinstance(left, ast.Name)
+        and left.id in binds
+        and isinstance(cmp_, ast.Constant)
+        and cmp_.value is None
+    )
+    # The second clause is redundant at run time and is what carries the `ast.Name`
+    # narrowing across the boolean into the line below; mypy does not propagate it
+    # out of the conjunction above.
+    if not sentinel or not isinstance(left, ast.Name):
+        return empty, empty
+    pair = frozenset({binds[left.id]})
+    return (pair, empty) if isinstance(op, ast.Is) else (empty, pair)
+
+
+def _absent_proofs(
     test: ast.expr, lookups: dict[str, tuple[str, str]] | None = None
-) -> frozenset[tuple[str, str]]:
-    """(key, container) pairs `test` establishes, in EITHER spelling.
+) -> tuple[frozenset[tuple[str, str]], frozenset[tuple[str, str]]]:
+    """POLARITY-AWARE (ARC 022, D2.21). What `test` proves ABSENT, per branch.
+
+    Returns `(absent_if_true, absent_if_false)` as `(key, container)` pairs. A
+    seal is only proven when the store sits on the branch where the key is known
+    NOT to be there, so the two branches must be answered separately — `if key in
+    store:` proves absence on its ELSE and `if key not in store:` on its THEN, and
+    the pre-ARC-022 reader gave both branches the union of the two.
 
     `lookups` carries the `name -> (key, container)` bindings a preceding
-    `container.get(key)` created, so an `is None` test on that name proves the same
-    guard a membership test would."""
-    out: set[tuple[str, str]] = set()
+    `container.get(key)` created, so an `is None` test on that name proves the
+    same guard a membership test would.
+
+    Boolean combination is handled explicitly rather than by walking every
+    `Compare` in the tree: under `and`, truth implies every operand's truth, so
+    the true-sets union and nothing is known on the false side; under `or` the
+    reverse. That is what makes `if key not in store or force:` unguarded on the
+    branch that stores, which the old reader could not express."""
+    empty: frozenset[tuple[str, str]] = frozenset()
     binds = lookups or {}
-    for node in ast.walk(test):
-        if not isinstance(node, ast.Compare):
-            continue
-        for op, cmp_ in zip(node.ops, node.comparators):
-            if isinstance(op, (ast.In, ast.NotIn)):
-                out.add((ast.unparse(node.left), ast.unparse(cmp_)))
-            elif (
-                isinstance(op, (ast.Is, ast.IsNot))
-                and isinstance(node.left, ast.Name)
-                and node.left.id in binds
-                and isinstance(cmp_, ast.Constant)
-                and cmp_.value is None
-            ):
-                out.add(binds[node.left.id])
-    return frozenset(out)
+    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+        true_abs, false_abs = _absent_proofs(test.operand, binds)
+        return false_abs, true_abs
+    if isinstance(test, ast.BoolOp):
+        parts = [_absent_proofs(v, binds) for v in test.values]
+        if isinstance(test.op, ast.And):
+            return frozenset().union(*(p[0] for p in parts)), empty
+        return empty, frozenset().union(*(p[1] for p in parts))
+    return _compare_absence(test, binds)
 
 
 def _emits_event(fn: ast.AST, events: tuple[str, ...]) -> bool:
@@ -699,9 +775,9 @@ def _guarded_assigns(
     binds = dict(lookups or {})
     for node in nodes:
         if isinstance(node, ast.If):
-            inner = guards | _guard_keys(node.test, binds)
-            out += _guarded_assigns(node.body, inner, binds)
-            out += _guarded_assigns(node.orelse, inner, binds)
+            true_abs, false_abs = _absent_proofs(node.test, binds)
+            out += _guarded_assigns(node.body, guards | true_abs, binds)
+            out += _guarded_assigns(node.orelse, guards | false_abs, binds)
             continue
         if isinstance(node, ast.Assign):
             out.append((node, guards))
