@@ -16,7 +16,15 @@
 #     place under 0600
 #   - copying `.venv/` costs disk and drifts the moment a pin changes
 #   - both targets are gitignored, so the symlinks cannot be committed and cannot
-#     reach a diff
+#     reach a diff — BUT ONLY SINCE ARC 022, AND THE ORIGINAL CLAIM WAS FALSE.
+#     `.gitignore` spelled these `state/` and `.venv/`, with trailing slashes, which
+#     match a DIRECTORY only. In the primary tree they are directories and are ignored;
+#     here they are SYMLINKS and were not. ARC 022 measured `git check-ignore` exiting 1
+#     in a provisioned worktree, so the `git add -A` this project mandates before every
+#     gate measurement staged a symlink pointing at the 0600 credential directory. Both
+#     slashless spellings were added to `.gitignore`, and the assertion at the bottom of
+#     this script now PROVES the ignore rather than asserting it in a comment — which is
+#     the whole reason this defect survived: the guarantee lived in prose.
 #
 # BASE IS EXPLICIT AND VERIFIED, NEVER DEFAULTED (ARC 019 finding: all three
 # worktrees were provisioned from `main` rather than session HEAD, silently). This
@@ -84,4 +92,20 @@ fi
 		exit 1
 	}
 echo "verified     : check_node_identity passes inside the worktree"
+
+# The symlinks must be IGNORED, not merely untracked (ARC 022). Untracked-but-not-
+# ignored is invisible until `git add -A`, and this project mandates `git add -A`
+# before every gate measurement — so an unignored symlink to the credential directory
+# reaches the index on the first measurement any agent takes. Proven per target,
+# inside the worktree, because that is the only place the symlink exists.
+for gitignored in state .venv; do
+	if ! git -C "${WT_ABS}" check-ignore -q "${gitignored}"; then
+		echo "FATAL: ${gitignored} is NOT ignored inside the worktree — a git add -A" >&2
+		echo "       would stage a symlink to ${PRIMARY}/${gitignored}. Check that" >&2
+		echo "       .gitignore carries the SLASHLESS spelling; a trailing slash" >&2
+		echo "       matches directories only and these are symlinks." >&2
+		exit 1
+	fi
+done
+echo "verified     : state and .venv are IGNORED inside the worktree, not just untracked"
 echo "PROVISIONED OK"

@@ -20,6 +20,18 @@ databases/backups/
 # public repo: the hardware UUID is machine-fingerprinting info, not a secret exactly,
 # but not something to publish either. credentials.json is already covered above by
 # *credentials*.json but state/ is excluded wholesale for defense in depth.
+#
+# BOTH SPELLINGS, AND THE SLASHLESS ONE IS LOAD-BEARING (ARC 022). `state/` matches a
+# DIRECTORY only. In the primary tree state/ is a directory, so it is ignored — but
+# `scripts/provision_worktree.sh` links it into every worktree as a SYMLINK, which the
+# trailing-slash pattern does not match. ARC 022 measured `git check-ignore` exiting 1
+# in a provisioned worktree: the symlink was untracked-but-not-ignored, and the
+# mandatory `git add -A` before every gate measurement staged a symlink pointing at the
+# 0600 directory holding the hardware UUID and credential JSON. The provisioning
+# script's own docstring asserted these "cannot be committed"; that claim was false.
+# This is the same defect as the .testmondata sidecars below — a bare pattern not
+# covering every spelling of its subject — caught by ARC 016 in this same file.
+state
 state/
 
 # Env / master-password material
@@ -32,6 +44,9 @@ state/
 __pycache__/
 *.pyc
 *.pyo
+# `.venv` slashless for the same ARC 022 reason as `state` above: the provisioned
+# worktree holds a SYMLINK, and `.venv/` matches directories only.
+.venv
 .venv/
 venv/
 # testmon's SQLite database and its WAL/shared-memory sidecars. The bare name alone
