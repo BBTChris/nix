@@ -15,8 +15,16 @@ runs and nothing is stored in the registry.
 
 THE REGISTRY CONTAINS NO EXPECTED VALUES — not one integer. Storing "16" beside
 the claim that section 2A has 16 elements would rebuild, inside the instrument,
-the exact defect the instrument exists to catch. `nix_check_contract.md` §2.4:
-never anchor to a moving value.
+the exact defect the instrument exists to catch. `debug.md` §7.4: never anchor
+an assertion to something that moves (doctrine C.4).
+
+CITATION CORRECTED ARC 019, by the gate built to correct it. This paragraph
+cited "§2.4" of the check contract from ARC 017 until `check_spec_citations`
+resolved it: that document has no 2.4 — its labelled headings run 1, 2, 3, 4,
+4.1, 4.2, 5, 5.1-5.5, 6-15 and 15.1-15.4 — and the rule being invoked is
+doctrine C.4, which `debug.md` operationalises as §7.4. The same phantom is
+still live in the check contract's own conformance map, which is an external
+document this arc does not own; recorded as CHECK-DEBT D1.21.
 
 SCOPE, v1: numeric claims only. Prose-fact verification is a different
 instrument and is not attempted here.
