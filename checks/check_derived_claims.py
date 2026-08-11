@@ -141,6 +141,23 @@ from nixverify.contract import CheckResult, Context, Mode, Status
 # §4.2 is precisely what forbids. Same reasoning as the tail pragma every other
 # check carries, hoisted to module scope because R0801 is reported at line 1.
 # pylint: disable=duplicate-code
+# C0302 (too-many-lines) disabled, ARC 021. The module went over pylint's
+# 1000-line default when the three broker-datafeed claims were added (B3), and
+# the split was MEASURED rather than assumed. The measurement is deliberately
+# NOT restated here — that would be the exact defect this module exists to
+# catch (doctrine B.7 / CHECK-DEBT D2.8), and `check_order_path_bans.py` carries
+# the same refusal for the same reason. Derive it, do not read it:
+#   .venv/bin/python -c "import ast,pathlib;s=pathlib.Path(
+#     'checks/check_derived_claims.py').read_text();d=ast.get_docstring(
+#     ast.parse(s),clean=False);print(len(s.splitlines()),
+#     len(d.splitlines())+2)"
+# Why the file may not be split to satisfy the count: `nix_check_contract.md`
+# §4.2 requires every checks/check_*.py be independently runnable, so a shared
+# helper module is not available; and this gate re-enters ITSELF as the probe
+# runner ({self} in derived_claims.json), so its probes must live in the module
+# the registry names. Splitting would either break §4.2 or create a second
+# instrument for one property, which §5.5 forbids.
+# pylint: disable=too-many-lines
 PRIVILEGE = "user"
 INTERACTIVE = False
 DISRUPTIVE = False
@@ -692,6 +709,145 @@ def _p_spec_plus_flagged_additions(home: Path) -> tuple[int, str]:
     return base + len(flagged), detail
 
 
+# --------------------------------------------------------------------------
+# BROKER-DATAFEED — ARC 021 (B3). The second §2A library's claims.
+# --------------------------------------------------------------------------
+# The datafeed roster and the order roster SHARE `connect`/`disconnect`, so a
+# vocabulary built from the raw datafeed roster would select every order row
+# that mentions connecting. Every probe below therefore works on the
+# DISTINCTIVE vocabulary — the datafeed roster minus the order roster — and the
+# subtraction is derived from the same two sources as the roster itself.
+
+
+def _spec_datafeed_flagged(home: Path) -> tuple[list[str], list[str]]:
+    """(§2A datafeed identifiers, flagged Nix additions on the datafeed port)."""
+    spec_feed = _spec_identifiers(home, "### broker-datafeed")
+    tuples = _module_tuples(
+        home,
+        "scripts/broker/broker_seam.py",
+        ("DATAFEED_PORT_VERBS", "DATAFEED_EVENTS"),
+    )
+    code_feed = list(tuples["DATAFEED_PORT_VERBS"]) + list(tuples["DATAFEED_EVENTS"])
+    source = _read(home, "scripts/broker/broker_seam.py")
+    extras = [n for n in code_feed if n not in spec_feed]
+    return spec_feed, [n for n in extras if _flagged_addition(source, n)]
+
+
+def _p_spec_datafeed_plus_flagged(home: Path) -> tuple[int, str]:
+    """§2A's datafeed roster PLUS the additions the seam flags as Nix's own.
+
+    The bare §2A count cannot be compared with the seam's, and that is not a
+    defect on either side: `feed_lag()` is a declared Nix addition and §2A is
+    frozen. This is `seam_declared_elements`' mechanism narrowed to one library
+    so the datafeed's own drift is visible rather than averaged into a
+    both-libraries total.
+    """
+    spec_feed, flagged = _spec_datafeed_flagged(home)
+    unflagged_detail = ""
+    tuples = _module_tuples(
+        home,
+        "scripts/broker/broker_seam.py",
+        ("DATAFEED_PORT_VERBS", "DATAFEED_EVENTS"),
+    )
+    code_feed = list(tuples["DATAFEED_PORT_VERBS"]) + list(tuples["DATAFEED_EVENTS"])
+    unflagged = [n for n in code_feed if n not in spec_feed and n not in flagged]
+    if unflagged:
+        unflagged_detail = f"; UNFLAGGED (not counted): {', '.join(unflagged)}"
+    return len(spec_feed) + len(flagged), (
+        f"§2A broker-datafeed by identifier: {', '.join(spec_feed)}; "
+        f"flagged Nix additions {flagged or '[]'}{unflagged_detail}"
+    )
+
+
+def _p_seam_datafeed_roster_count(home: Path) -> tuple[int, str]:
+    tuples = _module_tuples(
+        home,
+        "scripts/broker/broker_seam.py",
+        ("DATAFEED_PORT_VERBS", "DATAFEED_EVENTS"),
+    )
+    total = sum(len(v) for v in tuples.values())
+    parts = ", ".join(f"{k}={len(v)}" for k, v in sorted(tuples.items()))
+    return total, f"broker_seam.py {parts}"
+
+
+def _port_implementors(home: Path, verbs: list[str], quorum: int) -> set[str]:
+    """Module basenames under scripts/ defining `quorum` of `verbs` as methods."""
+    out: set[str] = set()
+    for path in sorted((home / "scripts").rglob("*.py")):
+        if any(part in {".venv", "__pycache__"} for part in path.parts):
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except OSError, SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            methods = {
+                b.name
+                for b in node.body
+                if isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef))
+            }
+            if len(methods & set(verbs)) >= quorum:
+                out.add(path.name)
+    return out
+
+
+def _datafeed_only_modules(home: Path) -> list[str]:
+    """Modules implementing the datafeed port and NOT the order port.
+
+    TODAY THIS IS EMPTY, and that is the honest answer rather than a defect:
+    the only class implementing the datafeed port outside the seam lives in
+    `ibkr_mapping.py`, which implements the order port too, so counting its
+    basename would select order rows as datafeed debt. A dedicated datafeed
+    module joins this set by being written — no edit here.
+    """
+    tuples = _module_tuples(
+        home,
+        "scripts/broker/broker_seam.py",
+        ("ORDER_PORT_VERBS", "DATAFEED_PORT_VERBS"),
+    )
+    feed = _port_implementors(home, list(tuples["DATAFEED_PORT_VERBS"]), 3)
+    order = _port_implementors(home, list(tuples["ORDER_PORT_VERBS"]), 4)
+    return sorted(feed - order)
+
+
+def _datafeed_scoped(home: Path, feed: list[str], order: list[str]) -> tuple[int, str]:
+    """The module-scoping rule, datafeed edition, with one supplied vocabulary."""
+    distinctive = [n for n in feed if n not in order]
+    if not distinctive:
+        raise ProbeError("datafeed roster is a subset of the order roster")
+    files = _datafeed_only_modules(home)
+    pats = [re.compile(r"\b" + re.escape(name) + r"\b") for name in distinctive]
+    picked = [
+        rid
+        for rid, line in _open_debt_rows(home)
+        if any(f in line for f in files) or any(p.search(line) for p in pats)
+    ]
+    return len(picked), (
+        f"NOT A PERCENT — open ledger rows naming a broker-datafeed artefact; "
+        f"vocabulary {len(files)} datafeed-only module(s) {files or '[]'} + "
+        f"{len(distinctive)} distinctive identifier(s) {distinctive}; "
+        f"selected: {', '.join(picked) or 'NONE'}"
+    )
+
+
+def _p_datafeed_debt_rows_spec(home: Path) -> tuple[int, str]:
+    """Vocabulary's roster half read from the FROZEN SPEC (plus flagged additions)."""
+    spec_feed, flagged = _spec_datafeed_flagged(home)
+    return _datafeed_scoped(
+        home, spec_feed + flagged, _spec_identifiers(home, "### broker-order")
+    )
+
+
+def _p_datafeed_debt_rows_seam(home: Path) -> tuple[int, str]:
+    """Vocabulary's roster half read from the SEAM CODE's restatement."""
+    tuples = _module_tuples(home, "scripts/broker/broker_seam.py", _SEAM_TUPLES)
+    feed = list(tuples["DATAFEED_PORT_VERBS"]) + list(tuples["DATAFEED_EVENTS"])
+    order = list(tuples["ORDER_PORT_VERBS"]) + list(tuples["ORDER_EVENTS"])
+    return _datafeed_scoped(home, feed, order)
+
+
 PROBES = {
     "registry_check_count": _p_registry_check_count,
     "checks_glob_count": _p_checks_glob_count,
@@ -710,6 +866,10 @@ PROBES = {
     "broker_order_coverage_seam": _p_broker_order_coverage_seam,
     "broker_order_debt_rows_spec": _p_broker_order_debt_rows_spec,
     "broker_order_debt_rows_seam": _p_broker_order_debt_rows_seam,
+    "spec_datafeed_plus_flagged": _p_spec_datafeed_plus_flagged,
+    "seam_datafeed_roster_count": _p_seam_datafeed_roster_count,
+    "datafeed_debt_rows_spec": _p_datafeed_debt_rows_spec,
+    "datafeed_debt_rows_seam": _p_datafeed_debt_rows_seam,
 }
 
 
