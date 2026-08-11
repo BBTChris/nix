@@ -330,8 +330,8 @@
       ]
     },
     {
-      "id": "broker_order_percent_sec2a_element_v1",
-      "property": "the broker-order module percent under scheme `sec2a-element-v1`, both terms re-derived",
+      "id": "broker_order_element_coverage_v1",
+      "property": "broker-order ELEMENT COVERAGE (breadth) under scheme `sec2a-element-v1`, both terms re-derived",
       "sources": [
         {
           "name": "spec_denominator",
@@ -340,7 +340,7 @@
             "docs/nics_risk_subsystem_spec_v1.3.md",
             "scripts/broker/ibkr_mapping.py"
           ],
-          "probe": "broker_order_percent_spec"
+          "probe": "broker_order_coverage_spec"
         },
         {
           "name": "seam_denominator",
@@ -349,24 +349,43 @@
             "scripts/broker/broker_seam.py",
             "scripts/broker/ibkr_mapping.py"
           ],
-          "probe": "broker_order_percent_seam"
+          "probe": "broker_order_coverage_seam"
         }
       ],
       "restatement_scans": [
         {
           "file": "downloads/RESULTS.md",
+          "pattern": "broker-order element coverage = (\\d+)% \\[scheme sec2a-element-v1\\]",
+          "note": "the CANONICAL written form of this scheme's level AFTER the ARC 020 rename. Zero matches is the preferred outcome; the pattern is a tripwire that goes live the moment anyone writes the level down in prose. It deliberately does NOT match a per-arc DELTA — a delta and a level are different quantities over the same denominator, and matching both would redden this claim for the wrong reason. Only downloads/RESULTS.md is scanned, because it is overwritten every arc and is therefore always current; sessions/SESSION.md and the CHECK-DEBT series table are APPEND-ONLY history, and a dated historical figure there is correct forever and must never be compared against today's derivation."
+        },
+        {
+          "file": "downloads/RESULTS.md",
           "pattern": "broker-order level = (\\d+)% \\[scheme sec2a-element-v1\\]",
-          "note": "the CANONICAL written form of this scheme's level. Zero matches is the preferred outcome and is what ARC 018 measured; the pattern is a tripwire that goes live the moment anyone writes the level down in prose. It deliberately does NOT match a per-arc DELTA — a delta and a level are different quantities over the same denominator, and matching both would redden this claim for the wrong reason. Only downloads/RESULTS.md is scanned, because it is overwritten every arc and is therefore always current; sessions/SESSION.md and the CHECK-DEBT series table are APPEND-ONLY history, and a dated historical percent there is correct forever and must never be compared against today's derivation."
+          "note": "THE PRE-RENAME CANONICAL FORM, kept as a tripwire rather than deleted. ARC 020 renamed the claim but did NOT change the scheme or the derivation, so a document still written in the old form is stating this same quantity and must still state it correctly. Measured ARC 018 and again ARC 020: zero matches. If a future arc confirms the old spelling is gone from every live document, deleting this pattern is the doctrine-correct repair; syncing it would be the second-best one."
         }
       ],
       "note": [
-        "ARC 018 / C4 — ONE SCHEME REGISTERED, THE OTHER RETIRED FROM PERCENT FORM.",
-        "THE SCHEME. `sec2a-element-v1`. percent(level) = 100 * |§2A broker-order elements graded",
-        "CLEAN| / |§2A broker-order roster|. An arc's 'percent moved' is the CHANGE in that level, in",
-        "percentage points, over the same denominator. The identifier is registered ALONGSIDE the",
-        "value — it is this claim's id and it is printed by both probes on every run — so a future",
-        "change of scheme appears as a new claim id rather than as a silent discontinuity in a series",
-        "that kept its name.",
+        "RENAMED ARC 020 (C1, operator ruling) from `broker_order_percent_sec2a_element_v1`. THE",
+        "RENAME IS A FRAMING CORRECTION, NOT A NEW MEASUREMENT — the scheme identifier, both probes",
+        "and the cross-derivation are unchanged, and the value is continuous across the rename.",
+        "WHY IT WAS RENAMED. The old name said 'percent' and the number read as completeness. It is",
+        "not completeness; it is BREADTH, and it is blind to depth. ARC 019 is the measured instance:",
+        "an arc that closed four defects, discovered five more, corrected a banked performance figure",
+        "fivefold and produced the module's first Tier-3 traversal registered as ZERO MOVEMENT under",
+        "this scheme — correctly, because it added no elements. The name now carries the limitation.",
+        "'PERCENT MOVED' IS RETIRED AS A FRAMING FOR THIS SCHEME. A change in this level is a change",
+        "in ELEMENT COVERAGE and is named as such; it is never presented as how far the module moved.",
+        "The depth companion is the separate claim `broker_order_open_debt_rows`, which is a COUNT and",
+        "is deliberately not a percent.",
+        "NO CONFIDENCE DIMENSION WAS INVENTED, and that is a decision rather than an omission. A",
+        "per-element confidence score is a hand-maintained rubric, which is the stale-anchor class",
+        "this whole registry exists to remove.",
+        "THE SCHEME. `sec2a-element-v1`. coverage(level) = 100 * |broker-order elements graded",
+        "CLEAN| / |broker-order roster|, the roster being the frozen spec's section 2A set BY",
+        "IDENTIFIER. The identifier is registered ALONGSIDE the",
+        "value — it is carried in this claim's id and it is printed by both probes on every run — so a",
+        "future change of scheme appears as a new claim id rather than as a silent discontinuity in a",
+        "series that kept its name.",
         "THE OTHER NUMBER. A prior architect estimate used a readiness-weighted decomposition and",
         "produced ~42% for the same module. It is NOT comparable to this scheme and both called",
         "themselves 'broker-order percent' — the 19-vs-16 shape recurring inside the progress number.",
@@ -395,7 +414,113 @@
         "derived roster size and 2 is an ARC-LOCAL HAND COUNT of defects closed. The DENOMINATOR was",
         "derivable; the NUMERATOR was not, and no gate can make an arc's own count of what it closed",
         "machine-derivable. What is registered here is the reproducible part — the denominator and",
-        "the level — so a future delta is at least stated over a denominator that cannot drift."
+        "the level — so a future delta is at least stated over a denominator that cannot drift.",
+        "ARC 020 ADDS THE OTHER HALF OF THAT SENTENCE. A delta over a denominator that cannot drift",
+        "is still a delta in BREADTH. It was never the module's progress, and the ARC 019 measurement",
+        "above is the proof. That is what the rename fixes and what `broker_order_open_debt_rows`",
+        "exists to stand beside."
+      ]
+    },
+    {
+      "id": "broker_order_open_debt_rows",
+      "property": "how many OPEN ledger rows are scoped to broker-order — A COUNT, NEVER A PERCENT",
+      "sources": [
+        {
+          "name": "spec_roster_vocabulary",
+          "role": "derived",
+          "files": [
+            "docs/CHECK-DEBT.md",
+            "docs/nics_risk_subsystem_spec_v1.3.md",
+            "checks/check_order_path_bans.py",
+            "scripts/broker"
+          ],
+          "probe": "broker_order_debt_rows_spec"
+        },
+        {
+          "name": "seam_roster_vocabulary",
+          "role": "stated",
+          "files": [
+            "docs/CHECK-DEBT.md",
+            "scripts/broker/broker_seam.py",
+            "checks/check_order_path_bans.py",
+            "scripts/broker"
+          ],
+          "probe": "broker_order_debt_rows_seam"
+        }
+      ],
+      "note": [
+        "ARC 020 / C2 — THE DEPTH COMPANION TO `broker_order_element_coverage_v1`.",
+        "",
+        "WHY IT EXISTS. Element coverage is breadth and cannot see the work. It does not move when a",
+        "defect inside an already-CLEAN element is found and it does not move when one is fixed, so",
+        "ARC 019 — four defects closed, five discovered, the module's first Tier-3 traversal — scored",
+        "zero. This number moves in both of those directions: it RISES when a traversal finds defects",
+        "and FALLS when they are paid. It is fully derivable from the ledger and it needs no rubric,",
+        "which is precisely why it was chosen over a confidence score.",
+        "",
+        "IT MUST NEVER BE EXPRESSED AS A PERCENT. THIS IS THE REASON, REGISTERED BESIDE THE CLAIM SO",
+        "A FUTURE READER CANNOT RE-DERIVE ONE. Making a percent of it requires a denominator, and the",
+        "only honest denominator is the total number of outstanding obligations this module has —",
+        "which is the same quantity as 'how much do we trust this module', and is unknowable. That is",
+        "NAMED GAP 5 exactly: condition 7 of the standing question in check_derived_claims.py states",
+        "that this instrument proves every REGISTERED number right and cannot prove the registry",
+        "covers the numbers that matter, so the denominator would be the size of a set nobody can",
+        "enumerate. A percent over an unknowable denominator is a confidence score wearing arithmetic",
+        "— the very rubric the C1 rename removed — and it would read as completeness for the second",
+        "time in the same module. The count is a FLOOR on outstanding broker-order obligations. It is",
+        "never a fraction of them.",
+        "",
+        "THE MODULE-SCOPING RULE, stated so it can be argued with rather than inferred:",
+        "  A row is BROKER-ORDER SCOPED iff it is OPEN — by the ledger's own bold-span rule, the same",
+        "  regex `check_debt_open_items` uses — AND its row text names at least one order-path",
+        "  artefact, being either (i) the basename of a Python module that exists under the order",
+        "  path, or (ii) a broker-order roster identifier, matched on word boundaries.",
+        "NOTHING IN THE RULE IS TYPED. The order path is read by AST out of check_order_path_bans.py's",
+        "ORDER_PATH_DIRS anchor — the same non-restating technique order_path_scope_files uses — and",
+        "the basenames come off the disk.",
+        "",
+        "HOW THE SOURCES ARE INDEPENDENT, AND WHERE THEY ARE NOT — stated because condition 3 of the",
+        "standing question requires it and because overstating it is the defect this file exists to",
+        "catch. INDEPENDENT: the roster half of the vocabulary. One side parses the frozen spec's",
+        "broker-order bullets by identifier; the other AST-reads broker_seam.py's ORDER_PORT_VERBS +",
+        "ORDER_EVENTS. That is the derive-never-restate pair, and the sources diverge exactly when the",
+        "seam drifts from the spec by NAME — which is a stronger assertion than",
+        "spec_2a_broker_order_elements makes, since that claim compares COUNTS and two rosters can",
+        "agree on 16 while disagreeing on which 16.",
+        "NOT INDEPENDENT, AND SAID PLAINLY: the ledger walk, the open-row rule and the module-basename",
+        "half of the vocabulary are SHARED by both sources. A defect in any of those three moves both",
+        "sides together and this claim would not see it. Two of the three are already asserted",
+        "elsewhere — the open-row rule by check_debt_open_items against the series table, the module",
+        "set by order_path_scope_files against the gate's content-derived scope — so this claim is a",
+        "third assertion layered on those, not a replacement for either.",
+        "",
+        "WHAT IS AMBIGUOUS. Mechanical attribution is not the same as correct attribution, and the",
+        "rule's misses are named here rather than discovered later:",
+        " a. APPARATUS-ABOUT-THE-MODULE versus DEFECT-IN-THE-MODULE. Two of the selected rows are not",
+        "    defects in the order path at all: D2.14 is a residual in the GATE that scans the order",
+        "    path, and D3.8 is a test instrument that happens to live in a seam module. Both are",
+        "    genuine outstanding broker-order obligations and both are counted. Whether 'scoped to",
+        "    broker-order' means defects IN the code or obligations ABOUT it is a judgment; the rule",
+        "    does not make it, it counts both, and this paragraph is the disclosure.",
+        " b. IT UNDER-COUNTS ROWS THAT TALK ABOUT THE MODULE WITHOUT NAMING ANYTHING IN IT. D1.11 is",
+        "    deferred until 'broker-order code exists and can host the probe' and names no artefact, so",
+        "    it is not selected — correct by the rule, arguably wrong in substance.",
+        " c. THE RULE READS PROSE. Rewording a row to drop the verb name silently removes it from the",
+        "    count. That is failure mode #14 one level down — a scope set by text a person edits — and",
+        "    the only mitigation is that every selected row id is printed on every run.",
+        " d. A ROW IS NOT A DEFECT. D1.24 lists five observed symptoms of one repair; D1.27 holds two",
+        "    separate specification gaps. The claim counts the ledger's unit of account, which is the",
+        "    row. Hence FLOOR, not census.",
+        " e. THE TWO ROSTERS CAN LEGITIMATELY DIVERGE. If the seam declares a broker-order element the",
+        "    spec does not — a flagged Nix addition, the feed_lag() precedent — the seam-side",
+        "    vocabulary gains a word the spec-side one lacks and the two sources can disagree. That is",
+        "    the instrument working, not a defect in it, and it is the shape a future arc should expect",
+        "    the first time an addition is declared on the order port.",
+        "",
+        "NO restatement_scans ARE REGISTERED, DELIBERATELY. This number has never been written into a",
+        "document, and registering a pattern for a canonical prose form would invite one to be written",
+        "— in percent form, by the next person who wants a progress figure. If it is ever banked, the",
+        "form must be a bare count with the word 'rows' in it and a scan may be added then."
       ]
     }
   ]
