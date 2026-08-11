@@ -1,284 +1,304 @@
-# ARC 021 — R1-B broker-datafeed · RESULTS
+# ARC 022 — RESULTS
 
-**Status: COMPLETE.** Two sub-agents, offline-first, disjoint from broker-order by invariant.
-Base `94ac5b5` (verified on `origin/main` after `git fetch`, per §0b).
-
-**No tap session ran.** `~/nix/downloads/TAP_SESSION.md` does not exist. §4 and §5 proceeded with
-declared reds, as §0b directs.
+**Datafeed port sync/async split · gate binding and the UNBOUND census · Tier 3 on broker-datafeed**
+Staged: Stage 1 (A) serial, then Stage 2 (B ‖ C). Not compressed.
+Merged and confirmed on `origin/main`. 2026-08-11.
 
 ---
 
-## 1. THE HEADLINE, AND IT IS NOT THE GREEN
+## 0. The headline, first, because it is a negative result
 
-Both gates were built, both bound to the real adapter, both pass. Then **two real D1.13 defects
-were planted in the real adapter and BOTH GATES PASSED — and so did all 49 of the adapter's own
-tests.**
+**Neither datafeed gate caught either of ARC 021's two real plants.**
 
-| plant | what it breaks | gate | pytest (before Phase 4) |
-|---|---|---|---|
-| delete the sentinel write in `subscribe()` | a RE-subscribe inherits the previous subscription's grant | **PASS** | **49 passed** |
-| substitute requested for granted in the adapter-wide accessor | reports the requested mode as the grant — D1.13 verbatim | **PASS** | **49 passed** |
+Re-run against the settled adapter in a throwaway tree. Control pristine, both restores byte-identical
+by sha256, `__pycache__` purged between every step. Verdict-by-verdict, never in aggregate (§7.7):
 
-Both gates' can-fail had been proven — six plants, every one failing and naming its site — but
-**every plant was against a purpose-built fake**, because the adapter did not exist while the gates
-were being written. The gates' structural arms key on the fake's shape: a vendor field read and
-written by name, and a `granted_mode=` keyword. The real adapter has neither, because the mode
-arrives as a callback parameter into per-symbol state. **Discrimination against a fake did not
-transfer to the real subject.**
-
-Recorded as **D3.10** with the plants as evidence. The immediate hole is closed by two pytest cases
-added in Phase 4, each proven to fail its own plant and nothing else, four outputs each, controls
-restored byte-identical. What stays owed is the gates' own binding — their structural arms still
-measure little against this adapter, and the next adapter will present a third shape.
-
-This is the arc's most important result and it exists only because Phase 4 re-ran the plants against
-the merged tree rather than trusting two green sub-agent reports.
-
----
-
-## 2. BOTH GATES REDDENED CORRECT CODE FIRST — doctrine B.4, repaired at the instrument
-
-On first binding, both gates FAILED the real adapter. Both were wrong.
-
-- **`check_datafeed_granted_mode` arm B3** approximates dataflow by intersecting two sets of NAMES.
-  Every method call contributes the receiver to both sets, so `self._ib.reqMarketDataType(...)` and
-  `granted_mode=self.granted_mode(symbol)` intersected to `{'self'}` — and the gate reported a
-  correct adapter as deriving the grant from the request, which is the opposite of what that code
-  does. Binding names excluded; plant P3 still fails; nothing added to any suppression list.
-- **`check_datafeed_bar_seal` arm 2** recognised only the membership spelling of a seal guard
-  (`if key not in store`). The adapter used the lookup-then-sentinel spelling
-  (`found = store.get(key)` / `if found is None`), which proves the same property and hashes the key
-  once. The gate was taught the second spelling rather than the code being asked to adopt the first.
-
-`VERIFY-AND-CHECKS.md` doctrine B.4: a gate that reddens the correct implementation of its own
-subject is BROKEN, not strict. **Neither ban nor behaviour was weakened.** Both residuals are named:
-D2.20 (B3 is name-identity, not dataflow) and D2.21 (guard polarity still unchecked, unchanged in
-size by the repair rather than introduced by it).
-
----
-
-## 3. PROHIBITION 3 — did not fire, and the reason is structural
-
-`check_order_path_bans` **exit 0**, scope `5 → 6` files. The datafeed joined via the unconditional
-`("scripts/broker",)` anchor floor exactly as predicted. It did not redden, because send-path verbs
-derive to `cancel_order` / `flatten` / `place_order` — none of which exists in a datafeed library,
-*because invariant 3 keeps them apart*. Invariant 3 is what kept the ban and the spec-mandated poll
-retry from colliding. **No scope-boundary repair was needed and no ban was touched.**
-
----
-
-## 4. INVARIANT 3 — verified at AST level, not accepted on report
-
-**Zero import edges between the two libraries, both directions.**
-
-```
-broker_datafeed_ibkr.py -> ['__future__', 'broker_seam', 'dataclasses', 'logging', 'time']
-broker_order_ibkr.py    -> ['__future__', 'asyncio', 'broker_order_config', 'broker_seam', ...]
-order-library import edges from datafeed: 0
-```
-
-Duplicated rather than imported, each argued at the site: connection lifecycle, the single-emission
-choke point, the evidence-gated error table, the retained-observable accessor, the clientId refusal.
-
-**Three extractions considered and REFUSED**, none performed, none escalated:
-1. `IB_ERR_CONN_LOST` / `IB_INFO_CODES` — same 1100/1101/1102 integers, **different meanings**. The
-   order library reads 1101 as *our position mirror may have missed events*; the datafeed must read
-   it as *our subscriptions may have been dropped and the grant re-negotiated*. A shared table forces
-   one meaning on both — the `avg_price` defect at module scale.
-2. `ibkr_mapping.py` — read, never imported; it carries the order mapping too.
-3. `BrokerCapabilities` — a separate `DatafeedCapabilities` instead, on the same argument that makes
-   the two ports separate Protocols.
-
-**clientId 2**, decided and argued. 905 rejected because IBKR refuses a duplicate clientId, so a
-diagnostic probe run against a live capture would displace the production feed — a diagnostics action
-reaching a production data path, which is the coupling V24 exists to disprove. A distinct clientId is
-a distinct TCP session: **invariant 3 realised at the transport layer, not only in the type system.**
-
----
-
-## 5. FEEDLAG — the decision the arc turned on
-
-Shape: `declared_lag_s: float|None`, `observed_lag_s: float|None`, `observed_n`, `provenance`
-(UNOBSERVED / VENDOR_DECLARED / PRIOR_ARC / OBSERVED), `granted_mode`, `divergence_tolerance_s`.
-Agreement is a readable finding (NOT_DECLARED / NOT_OBSERVED / AGREES / **DIVERGED**). Every tick and
-bar carries `recv_ts` alongside `venue_ts`.
-
-Vendor-blind primitive: **`excess_staleness_s = (now - venue_ts) - effective_lag_s`**. On a 0-lag
-vendor it reduces to raw data-age; on IBKR a healthy 600 s tick yields ~0.3. Same consumer, same
-threshold, right answer on both. Returns `None` for cannot-compute, never 0.0 — which would be the
-healthiest possible answer to a question that could not be asked.
-
-**Proven as a 2×3 matrix, and the third condition is the non-vacuity:**
-
-| vendor | healthy | transport dead | data-clock stalled |
-|---|---|---|---|
-| Tradovate-shaped (0.0) | FRESH | STALE | STALE |
-| IBKR Stage 0 (~600) | FRESH | STALE | STALE |
-
-A transport-only implementation was **planted** and failed exactly the two `data-stalled` cells,
-passing the other four. Both naive consumers are additionally *executed* in the suite and shown
-failing on their own cell, so the design argument is asserted rather than only written down.
-
-**Lag provenance corrected.** The brief attributes 600.3 s to **ARC 010**; the tree attributes it to
-**ARC 013** (`sessions/SESSION.md:622`, `broker_seam.py`, CHECK-DEBT D1.13). Further, the banked
-record is a **range** — `600.0–601.9 s, spread 1.9 s, n=8` — and the scalar 600.3 appears only in
-derived copies. Carried as a range with the mean named as a summary, `provenance=PRIOR_ARC`,
-`agreement=NOT_OBSERVED`, and re-measurement recorded as owed (D1.33). ARC 010 does have a real
-624 s figure — `reqHistoricalTicks` staleness, visible in its own output and never computed. The
-brief appears to have merged the two.
-
----
-
-## 6. THE ABSENCE PRINCIPLE (AMENDMENT 3) — and what it costs
-
-Recorded **verbatim** in `docs/SPEC-AMENDMENTS.md` as AMENDMENT 3, in AMENDMENTS 1–2's format,
-attributed as an operator ruling issued in ARC 021, **not spec text**, pending a v1.4.
-
-Applied throughout: `FeedLag`'s two `float|None` terms, all tick fields and all five OHLCV fields
-`| None`, the `UNKNOWN` grant sentinel, `excess_staleness_s -> None`, and `poll_history` **raising**
-on exhaustion rather than returning zero rows — *the venue had nothing* and *we could not reach the
-venue* must not read the same. It also **fixed a live instance of the defect it forbids**:
-`StubBrokerDatafeed.feed_lag()` was returning `declared_lag_s=0.0, measured=False,
-granted_mode=REALTIME` — three fabrications in the one object built to prevent them.
-
-**Where it is expensive, reported because the ruling is ratified but its cost was never measured:**
-every price-shaped field becomes `float|None`, adding a `None` branch at every consumer arithmetic
-site — **and the cost lands entirely on consumers that do not exist yet**. This arc paid none of it.
-The bill is real and unmeasured (D1.36 area, tracked). It is cheap exactly where an enum already
-exists and expensive exactly where a *number* is involved, because a number has no spare member.
-
----
-
-## 7. BAR IMMUTABILITY (D1.14)
-
-Seal key `(symbol, bar_start_venue_ts, period_s)`. An unseen key publishes once on `on_bar`; a
-sealed key is never written over. A differing re-poll publishes `BarRevision` on its **own event**,
-not a flag on `on_bar` — a defaulted flag is silently ignorable, and the ignorable default here
-reads as *ordinary new data*, which is D1.14's defect verbatim. `BarRevision.__post_init__` refuses
-to exist with empty `differing_fields` or a payload equal to the sealed one, so a hollow revision
-cannot be constructed by any future call site.
-
-**Non-vacuity asserted first**: the test asserts the two payloads are unequal *before* re-polling, so
-it cannot degrade into one whose second poll returns identical data.
-
----
-
-## 8. COUNTS — all derived, none typed
-
-| measure | baseline `94ac5b5` | final | delta | derived from |
+| | control | plant 1 — sentinel write deleted | plant 2 — requested-for-granted | discriminates? |
 |---|---|---|---|---|
-| pytest | 242 | **293** | **+51** | `pytest_collector` ∧ `source_ast` |
-| registered checks | 10 | **12** | +2 | `checks_glob` ∧ `registry_json` |
-| claims compared | 10/10 | **13/13** | +3 | `check_derived_claims` |
-| CHECK-DEBT rows | 40 | **53** | **+13** | `ledger_rows` ∧ series row |
-| pre-commit | 8/8 | **8/8** | 0 | hook suite |
-| `seam_declared_elements` | 23 | **25** | +2 | `spec_plus_flagged` ∧ `seam_code_total` |
-| `order_path_scope_files` | 5 | **6** | +1 | `gate_derived_scope` ∧ anchor |
+| `check_datafeed_granted_mode` | exit 2 | exit 2 | exit 2 | **no** |
+| `check_datafeed_bar_seal` | exit 0 PASS | exit 0 PASS | exit 0 PASS | **no** |
+| pytest | 321 passed, 0 failed | **3 failed** | **1 failed** | yes |
 
-**Datafeed roster, all three counts derived from §2A directly:**
-**4 bullets · 6 identifiers · 9 including flagged Nix additions** (`feed_lag`, plus `on_bar` and
-`on_bar_revision` added this arc). The bullet/identifier disagreement is real —
-`connect() / disconnect()` is one bullet declaring two identifiers. No disagreement was found
-between spec and seam.
+Identical gate verdicts either side of both plants is what *not discriminating* looks like.
 
-### Coverage — level and delta distinguishable
+**The two channels are reported separately on purpose.** ARC 021 closed the immediate hole with pytest
+cases; D3.10 says the gates' own binding stays owed. Reading a pytest catch as a gate catch is the
+exact conflation D3.10 exists to prevent. Two of the three catches on plant 1 were sub-agent B's
+**brand-new Tier 3 traversals**, which discriminated where both gates did not.
 
-- **broker-order element coverage: 56 → 56, delta 0.** Derived `spec_denominator` ∧ stated
-  `seam_denominator`. **Expected not to move and did not** — this arc did not touch broker-order.
-- **broker-order depth (`broker_order_open_debt_rows`): 11 → 16, delta +5 — AND THIS IS
-  CONTAMINATION, NOT WORK.** Nothing touched broker-order. Rows naming `ibkr_mapping.py`, a file
-  hosting both §2A adapters, are claimed by the order-side rule's module-basename half. Measured, not
-  worked around; recorded as **D2.19**.
-- **broker-datafeed element coverage: NO FIGURE EXISTS, deliberately.** It needs a grade tally this
-  module has never had. Registering a number without one would have invented a denominator. What was
-  registered instead is `spec_2a_broker_datafeed_elements = 9`, cross-derived.
-- **broker-datafeed depth (`broker_datafeed_open_debt_rows`): new, 10.** **A FLOOR ON OUTSTANDING
-  OBLIGATIONS, NEVER A FRACTION OF THEM** — the only honest denominator would be *how much do we
-  trust this module*, which is unknowable, and a percent over an unknowable denominator is a
-  confidence score wearing arithmetic.
+**D3.10 stands, unnarrowed. Both datafeed gates remain UNBOUND.**
 
 ---
 
-## 9. FIVE RAW GATES
+## 1. Baseline, confirmed not assumed (§0b)
+
+| metric | measured | ARC 021 reported |
+|---|---|---|
+| HEAD | `08d9c56`, on `origin/main` | — |
+| pytest | 293 passed | 293 |
+| registered checks | 12 | 12 |
+| derived claims | 13/13, exit 0 | 13/13 |
+| CHECK-DEBT rows | 53 | 53 |
+| pre-commit | 8/8 (after `git add -A`) | 8/8 |
+| `verify.py` | exit 1 — **only** the two Gateway items | exit 1 |
+| `TAP_SESSION.md` | absent | — |
+
+No third verify failure at baseline. **§0a's tier map verified first-hand, not taken second-hand**:
+`docs/debug.md` §2.1 overview · §3 TIER 1 · §4 TIER 2 · **§5 "TIER 3 — END-OF-MODULE CERTIFICATION"**.
+The correction holds — the prior brief's §5 citation resolved cleanly and pointed at the banned tier.
+
+---
+
+## 2. Stage 1 (A) — D1.38 and two amendments
+
+**The port split.** `connect`, `disconnect`, `subscribe`, `unsubscribe`, `poll_history` are coroutine
+functions; `feed_lag` and `granted_mode` stay sync. `DATAFEED_PORT_VERBS` 5 → 7. Ruling recorded
+verbatim and attributed as an operator ruling, never as spec text.
+
+**`check_await_conformance()` extended, not duplicated** (check-rule 8), three both-directional
+comparisons: adapter vs Protocol · Protocol vs the one declared partition constant per port · roster ⊆
+Protocol. Can-fail demonstrated both directions, four outputs each, plus both drift directions of the
+new comparison. Two permanent instruments banked beside `AwaitDivergentBrokerOrder`.
+
+**The third comparison closed a hole open since ARC 014.** `if want is None: continue` silently skipped
+any roster verb the Protocol did not declare — which is how `poll_history` and `granted_mode` sat
+outside the datafeed contract for the whole of ARC 021 with the checker reporting clean.
+
+**The architect's design sketch was refused, with measurement, and the refusal was correct.** The brief
+asked for the roster to be derived by concatenating the partition constants. In a scratch tree that
+spelling blinds **both** datafeed gates to CANNOT_MEASURE and reddens **four** claims: both gates
+AST-read the roster and accept only a literal `Tuple`/`List`, and a `BinOp` yields nothing. Verified
+independently at `check_datafeed_granted_mode.py:391` and `check_datafeed_bar_seal.py:370`. Roster
+stays literal; the partition is the one declared constant per port.
+
+**Amendment 4 — enforced, not documented.** `BarSource.TICK_AGGREGATED` exists only to be refused;
+`Bar.__post_init__` refuses via an **allowlist**, so a future member added without an argument fails
+closed. Proof-by-absence half (§7.6): an AST test asserts exactly one `Bar(...)` construction in the
+adapter and that it sits inside `_ingest_history`.
+
+**Amendment 3's refinement — applied, including where it meant removing optionality.**
+`Bar.open/high/low/close` lost `| None`: a venue with no open has no bar, absence is a malformed row,
+now refused by `MalformedBarRow`. Survivors each carry a stated observable absence — the `on_tick` trio
+rests on ARC 013's **measured** 18 delayed ticks in 40 s on MESU6, a contract that does not print 18
+trades in that window. One survivor honestly downgraded: `Bar.volume` rests on IBKR's *documented* `-1`
+sentinel at **VENDOR_DECLARED** grade, never measured on this system, and the `-1` is not translated at
+the vendor boundary. **D1.39 and D1.40.** Sub-agent B reached the same finding independently (F20).
+
+---
+
+## 3. D1.38 currently buys nothing behaviourally — stated, not glossed
+
+All five async verbs contain **zero `await` expressions** (verified by AST at integration):
 
 ```
-verify.py            10 passed | 1 failed | 1 cannot measure | 0 skipped   exit 1
-pytest               293 passed
-pre-commit           8/8 Passed
-check_derived_claims 13/13 claim(s) compared                              exit 0
-check_spec_citations                                                      exit 0
+connect 0 · disconnect 0 · subscribe 0 · unsubscribe 0 · poll_history 0
 ```
 
-**`verify.py` exit 1 is the ACCEPTED BASELINE and there is no third failure.** The single failure is
-`check_ibgateway_service`, with `check_ibgateway_config` cannot-measure, both from the IB Gateway's
-daily session expiry (it expired at 03:00:04 UTC with `status=0/SUCCESS` — not a crash, not code).
-Both new gates report **[ok]**, bound to the real adapter.
+So `asyncio.gather` cannot interleave them and a `Task` cannot be cancelled mid-flight. The atomicity
+B's traversals observe is a property of the current bodies, **not of the contract**.
+
+Two agents reached this from opposite directions: A left `connect()` still driving the injected
+client's sync `connect(...)` as explicitly owed; B could not satisfy the concurrency half of its brief.
+**B proved the absence three ways with a working interleave-detector control rather than manufacturing
+an overlap**, and left an AST guard that reddens when `connectAsync` lands, so six traversals are
+re-read rather than re-run.
+
+The split's value is that the future swap is local and a sync signature can no longer conceal a round
+trip — the ruling's own rationale. It is not yet a concurrency change.
 
 ---
 
-## 10. §0a — CONTRADICTIONS FOUND IN THE BRIEF (reported, not reconciled)
+## 4. Stage 2 (B) — Tier 3: RUN with findings, NOT PASSED
 
-The architect asked for these by name. Four, one of them sharp:
+The verdict is `debug.md` §5.8's own criterion, not an opinion: PASS requires *bounds defined and
+enforced at every edge*, and `Bar` validates provenance and nothing else — `period_s=0` collides seal
+keys, `high<low` and infinities admitted. 27 tests over 22 sequences (the ten tabled plus ten added
+with reasoning). No production code written; no writes into `scripts/broker/`.
 
-1. **`debug.md §5` is Tier 3, not Tiers 1–2.** §4/A6 says *"Tier 1 and Tier 2. Per `debug.md` §5"* —
-   but `debug.md:388` is `## 5. TIER 3 — END-OF-MODULE CERTIFICATION`. Tier 1 is §3, Tier 2 is §4,
-   the tier overview is §2.1. **A6's citation points at precisely the section prohibition 6
-   forbids.** Sub-agent A followed the intent and refused Tier 3; a literal reader would have built
-   the one thing the arc bans.
-2. **The lag is attributed to ARC 010; the tree says ARC 013**, and the banked figure is a range, not
-   the scalar 600.3. (§5 above.)
-3. **The brief violates its own §0a rule.** §0a states §13 numbers objectives 1–23 plainly and adopts
-   the `V` prefix at V24, so the brief writes *"§13 objective N"* for 1–23 only. It then writes
-   *"§13 objective 24"* twice. Verified: the spec's line 919 is `V24`. The substantive claim is
-   correct — V24's text is *"kill/reconnect the datafeed under load and prove the order path is
-   undisturbed"* — only the citation form contradicts the rule stated fourteen lines earlier.
-4. **10189 vs 354 is NOT a contradiction** — resolved rather than reported. `reqTickByTickData` is a
-   real-time-only path and returns **10189**; `reqMarketDataType(1)` + `reqMktData` returns **354**
-   with no grant callback. Both banked, both encoded, each attributed to its own call.
+Sharpest findings:
 
-**Also found, in the tree rather than the brief:**
-- A pylint suppression in the new adapter disabled `import-outside-toplevel` with a five-line
-  rationale describing a lazy `ib_async` import. **There is no such import** — the vendor client is
-  injected. `debug.md` §7.4's stale-anchor class, banked on day one. Removed, not reworded.
-- The seal gate's new `too-many-lines` disable was written with a rationale **measured for that
-  file** rather than copied from its sibling, where the copied claim (*"exceeds 1000 even with all
-  docstring prose removed"*) would have been **false** — 1039 total against 820 without. Copying it
-  would have committed the same defect in the act of citing doctrine.
-- **`pre-commit run --all-files` does not scan untracked files.** Sub-agent B measured this live:
-  all 8 hooks reported green over its new gates for the entire build, and ~30 findings appeared the
-  moment they were `git add`ed. **The brief's Phase 4 step 6 is not a valid gate over untracked
-  work.** Every run reported here was made with everything tracked.
+- **F21 — fit-for-purpose failure (§5.2).** `evaluate_freshness` reads `last_tick_venue_ts` only. At
+  Stage 0 the tick stream does not exist, so a symbol fed entirely by **successful, current polls** is
+  permanently STALE → §6.4 halt + flatten. The module fail-closes on the only margin-class path it has.
+  **Spec gap, section named, answer not invented.**
+- **F13.** A sink that raises leaves a bar sealed-but-unpublished; every later poll drops it as an
+  identical re-poll. Permanently lost, no revision, no error — while the attempt record says
+  `ok=True, rows=4`.
+- **F17.** `lag_samples` unbounded; the session-wide mean reads `AGREES` at 602.97 s while the last 100
+  packets sit at 900 s — 60 tolerances out. Measured at 10,100 ticks.
+- **F12.** `poll_history` calls `setdefault`, so polling manufactures a subscription record and a later
+  `unsubscribe` sends a real `cancelMktData` for a symbol never subscribed.
+
+**Non-vacuity held.** Two of B's own traversals were caught vacuous during construction — one whose
+first spelling would have **inverted** its finding.
+
+§5.6 and §5.7 land across the arc's own gate runs and C's census rather than inside B's file.
 
 ---
 
-## 11. WHAT IS EXPLICITLY NOT DONE
+## 5. Stage 2 (C) — the census, and what re-taking it corrected
 
-- **No Tier 3.** Tiers are sequential; a module written this morning has no Tier 3. **ARC 022.**
-- **No live IBKR measurement.** Everything is offline against a fake. D1.13's live half is
-  **D1.33**, worded as *re-confirm on a current session* rather than *never observed*, because
-  ARC 013 already measured the sentinel and the silent 4→3 downgrade on this account and banked it.
-- **V24 remains KNOWN-RED.** Two distinct clientIds is the precondition; nothing has killed the
-  datafeed under load and measured the order path. **R1-D.**
-- **`on_bar` / `on_bar_revision` widen a LOCKED signature** and are flagged Nix additions awaiting an
-  architect ruling (**D1.36**). §2A declares two datafeed events and says capture builds bars. The
-  argument for adding them is written at the site; it is not this arc's to ratify.
-- No Limiter, no Allocator, no `capture.py` wiring, no consumer. No config JSON (**D1.35**).
+**7 BOUND, 5 UNBOUND.** Gate list derived from `registry.json` ∪ `checks/*.py` — they agree at 12.
+**Five of the seven BOUND verdicts were re-taken as live four-output plants rather than read off the
+record.** "I believe so" was not accepted, and re-taking corrected the record twice:
 
-**Nothing measured on IBKR at Stage 0 means anything about latency, fill realism, slippage, or
-strategy performance — the feed is delayed ~600 s.**
+- `check_order_path_bans` — the `import tenacity` plant is **ARC 017's**, not ARC 020's, and its target
+  file is recorded nowhere. Re-planted today against **both** real subjects instead.
+- `check_derived_claims` — it never edited a banked number. It **left one stale**, which proves
+  detection while skipping the unplant/restore leg entirely. A genuine plant/unplant cycle was taken.
+
+Opened per UNBOUND gate: **D3.11–D3.14**, plus **D3.15**, **D3.16**, **D2.23**.
+
+**D3.15 changes another row's meaning.** `check_datafeed_bar_seal` arm 4 — named by *both* D2.20 and
+D2.21 as their compensating control — reports `not synthesisable from annotations` for **all five**
+published types and measures nothing. One-line root cause: `_synth_value` cannot resolve a union, and
+`Bar.volume` is `float | None`. Already true on the ARC 021 merged tree, so D1.14's banked claim that
+`FeedLag` "is constructed twice … and is proven to refuse a field write" became untrue at merge and no
+instrument said so.
+
+### D2.19 — fixed; the root cause was worse than the row said
+
+The order-side basename vocabulary held **three** shared-host modules, including
+`broker_datafeed_ibkr.py` itself. Clause (i) now subtracts modules implementing the datafeed port, read
+from the seam's own roster.
+
+| tree | old rule | new rule |
+|---|---|---|
+| ARC 020 (`436933e`) | 11 | **11** — identical eleven-row selection |
+| ARC 021 (`842edb5`) | 16 | **13** |
+
+**The ARC 021 rise of 11 → 16 was +3 contamination and +2 work. The corrected series is 11 → 13.** The
+ARC 020 anchor re-derives identical, so the repair does not rewrite banked history.
+
+**Residual named:** the roster half is still not distinctive. Measured false positive — **D1.38, a row
+whose entire subject is the datafeed port, is still counted as broker-order depth on the single word
+`connect`.** Disclosed, not papered over.
+
+### D2.20 refused · D2.21 discharged · neither gate weakened
+
+**D2.20 REFUSED** on the ARC 020 D3.7 standard, and the assessment made the refusal stronger than the
+row: on its real subject arm B3's granted-side name set is **empty**, so the arm is not approximate
+there — it is **vacuous**.
+
+**D2.21 DISCHARGED**, proven in both directions over eight guard spellings: three correct spellings
+still pass, both pre-existing detections still fail and still name their sites, and three
+inverted-or-disjunctive spellings that used to pass now fail. The disjunctive escape was **not** in
+D2.21 and was found by building the table rather than by reasoning.
+
+**Not a weakening, and not asserted as one:** the change is strictness-only *by construction* — every
+branch receives a strict subset of the guards it received before, so nothing that failed can now pass.
+B.4's other edge was checked too: the real adapter's output is **byte-identical** across the change.
 
 ---
 
-## 12. FOR THE ARCHITECT
+## 6. D3.16 — attribution corrected by measurement, and the correction makes it worse
 
-1. **Ratify or overturn `on_bar` / `on_bar_revision`** (D1.36). If overturned, the seal and its
-   revision event move to `capture.py` and D1.14's adapter half moves with them.
-2. **AMENDMENT 3 is recorded and pending a v1.4**, with its cost stated and unpaid.
-3. **D1.38** — the datafeed port's sync/async split has never been argued as ARC 015 argued the
-   order port's. A port change binds every vendor; it is not an adapter's call.
-4. **D3.10 is the transferable lesson**: can-fail against a purpose-built fake proves the gate can
-   discriminate, not that it discriminates *against the real subject*. Both gates passed two real
-   planted defects. Consider requiring, as a standing rule, that a gate's can-fail be re-run against
-   its first real subject before the debt it covers is called narrowed.
-5. **The next tap discharges D1.33** and the owed lag re-measurement. `tap_session_runbook.md` is
-   still valid and unrun; D1.12's reboot capture is also still unfired.
+C2 attributed the broken B1 drive to A's port split. **That is wrong.** `_observers()` discovers
+subjects **by return annotation** (`-> MarketDataMode`), explicitly not from the roster. Running the
+repaired gate against the ARC 021 tree — where `granted_mode` is **absent** from `DATAFEED_PORT_VERBS`
+— reproduces the identical three `AttributeError` legs.
+
+**This gate has never once driven `IBKRBrokerDatafeed.granted_mode` since the adapter landed in ARC
+021, and reported PASS across two arcs over a subject it never executed.** That is exactly why it
+passed ARC 021's plant 2, whose target is that method. A citation that resolves, pointing at a cause
+that is not the cause.
+
+**Half-repaired at integration.** A leg raising anything other than `NotImplementedError` is now
+returned as `broken` and the verdict is **CANNOT_MEASURE, never PASS** (`nix_check_contract.md` §5.3).
+`NotImplementedError` stays a note deliberately — `ibkr_mapping.IBKRDatafeedAdapter` is a refusing
+skeleton, and reddening it for honouring its own contract is doctrine **B.4's forbidden direction**;
+verified absent from `broken`. Strictness-only. Control: the gate still passes a tree where its subject
+is drivable.
+
+**The gate is now HONEST but still NOT BOUND** — exit 2 on the control and exit 2 on both plants.
+
+---
+
+## 7. A fourth instance of git's tracking state setting gate scope
+
+`.gitignore` spelled `state/` and `.venv/` with **trailing slashes** — directories only. In a
+provisioned worktree both are **symlinks**, so `git check-ignore` exited 1: untracked but **not
+ignored**. Because this project mandates `git add -A` before every gate measurement, the first
+measurement any sub-agent took staged a symlink pointing at `~/nix/state`, the 0600 directory holding
+the hardware UUID and credential JSON.
+
+`provision_worktree.sh`'s own docstring asserted these *"cannot be committed and cannot reach a diff."*
+The claim was false, and it survived because **the guarantee lived in prose**. Both slashless spellings
+added; the script now *proves* the ignore per target and exits 1 with the cause named:
+
+```
+verified     : state and .venv are IGNORED inside the worktree, not just untracked
+```
+
+Same defect class as the `.testmondata` sidecars ten lines away in the same file (ARC 016). Fourth
+instance overall: ARC 016 untracked broker package · ARC 020 stale local `main` · ARC 021 pre-commit
+not scanning untracked · now this. **D2.24.**
+
+---
+
+## 8. Close-out — all five raw, `git add -A` first
+
+```
+verify.py                 exit 1   9 passed | 1 failed | 2 cannot measure | 0 skipped
+pytest                             338 passed, 2 xfailed
+pre-commit                         8/8 Passed
+check_derived_claims      exit 0   13/13
+check_spec_citations      exit 0   2286 §-citations scanned
+```
+
+**`verify.py`'s decomposition, because the count changed and it is not a regression.**
+`check_ibgateway_service` FAIL and `check_ibgateway_config` cannot-measure are the Gateway's daily
+session expiry, unchanged from baseline. **The second cannot-measure is new and deliberate**:
+`check_datafeed_granted_mode` was reporting PASS over a subject it could not drive, and now says so.
+A third *failure* would have been a finding; this is a third *non-pass* that is a repair, and it is
+named rather than absorbed.
+
+No plants survive · `__pycache__` purged (0) · `core.bare = false` · `git fsck` clean but for two
+dangling blobs · scratch trees deleted · adapter sha `0e1897028e7f4617…` identical to the plant-run
+control.
+
+### Coverage — level and delta distinguishable, each naming its derivation
+
+| figure | level | Δ this arc | derives from |
+|---|---|---|---|
+| `spec_2a_broker_order_elements` | 16 | 0 | frozen-spec identifiers ∥ seam roster |
+| `broker_order_element_coverage_v1` | 56 | 0 | spec denominator ∥ seam denominator |
+| `arc014_broker_order_classification` | 16 | 0 | findings ∥ grade tally ∥ spec roster |
+| **`broker_order_open_debt_rows`** | **13** | **+2 real** | order vocabulary, **D2.19-corrected** |
+| `spec_2a_broker_datafeed_elements` | 11 | +2 | frozen spec + flagged additions ∥ seam roster |
+| `seam_declared_elements` | 27 | +2 | spec + flagged additions ∥ seam code total |
+| `broker_datafeed_open_debt_rows` | 13 | +3 | datafeed roster vocabulary |
+| `check_debt_open_items` | 62 | +9 | ledger rows ∥ series row |
+| `pytest_collected_tests` | 340 | +47 | pytest collector ∥ source AST |
+| `registered_check_count` | 12 | 0 | checks glob ∥ registry.json |
+
+**The corrected broker-order depth series, with the prior value named as contamination:**
+
+```
+ARC 020: 11  →  ARC 021: 13  →  ARC 022: 13
+                   ^^ the previously reported 16 was CONTAMINATION, not work:
+                      +3 contamination (rows naming a shared-host module,
+                      attributed to broker-order by basename alone) and +2 work.
+```
+
+Nothing in this document was hand-typed; every count is read back from a command.
+
+---
+
+## 9. Findings the architect owns
+
+1. **Both datafeed gates are unbound and did not catch either real plant.** The arc's stated outcome.
+2. **`check_datafeed_granted_mode` never drove its subject across two arcs** (D3.16). Half-repaired to
+   honest; binding still owed.
+3. **`check_datafeed_bar_seal` arm 4 measures nothing** (D3.15), and two other rows lean on it as their
+   compensating control.
+4. **Tier 3 is RUN, not PASSED**, by §5.8's own criterion.
+5. **F21**: the module fail-closes on the only data path Stage 0 has. Spec gap — §6.4:371-374 and
+   §2A's absent freshness-stamp declaration. **No answer invented.**
+6. **D1.38 is declarative only** until `connectAsync` binds.
+7. **`Bar.volume`'s justification is unmeasured** (D1.39/D1.40).
+8. **D2.19's residual**: D1.38 is still miscounted as broker-order depth on the word `connect`.
+
+**Not in this arc, as scoped:** V24's kill-under-load drill · `capture.py` wiring, ZMQ, the
+shared-memory ring · the Limiter and every consumer · D1.22 · D1.19 · D1.20's consumer half · D1.35
+config JSON · a v1.4 of the frozen spec · the tap itself. No tap was requested.
