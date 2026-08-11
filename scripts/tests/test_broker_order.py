@@ -172,6 +172,21 @@ def notional_avg_cost(
     return price * multiplier_for(local_symbol) + commission
 
 
+def _advance_order_status(trade, cum: int) -> None:
+    """Move a Trade's cumulative order state to `cum`, as IBKR does on every execution.
+
+    `remaining` is derived from the order's own quantity where the fake has one. The
+    isolation section deliberately synthesises a FOREIGN trade with only an `orderId` —
+    another clientId's order, which this adapter must ignore entirely — so the quantity is
+    read defensively rather than assumed. Inventing a totalQuantity for that object would
+    make the fake describe an order it is not supposed to know anything about.
+    """
+    trade.orderStatus.filled = cum
+    total = getattr(trade.order, "totalQuantity", None)
+    if total is not None:
+        trade.orderStatus.remaining = max(0, int(total) - int(cum))
+
+
 @dataclass
 class FakeIB:
     """Reproduces ib_async 2.1.0's real surface and its real misbehaviours."""
@@ -263,9 +278,20 @@ class FakeIB:
         return self.whatif_result
 
     # --- drivers used by tests to simulate venue pushes ---
-    def push_status(self, trade, status, filled=0):
+    def push_status(self, trade, status, filled=None):
+        """ARC 019 A2 — `filled` now defaults to LEAVE AS IS, not to 0.
+
+        FIDELITY, not convenience. IBKR's orderStatus carries a MONOTONIC cumulative
+        `filled`; it never resets to zero because the order changed state. The old default
+        of 0 meant any status push after a partial fill silently erased the fill from the
+        orderStatus stream, so the one thing a remainder-cancel has to read — how much was
+        already done — could not be represented at all. Every existing caller either passes
+        `filled` explicitly or pushes on an order that has not filled, so the default
+        change is observationally identical for them and only ADDS reachable states.
+        """
         trade.orderStatus.status = status
-        trade.orderStatus.filled = filled
+        if filled is not None:
+            _advance_order_status(trade, filled)
         self.orderStatusEvent.emit(trade)
 
     def make_fill(self, trade, exec_id, shares, price, cum, contract=None, side=None):
@@ -282,9 +308,28 @@ class FakeIB:
         )
 
     def push_exec(self, trade, exec_id, shares, price, cum, contract=None, side=None):
+        """ARC 019 A2 — an execution now also ADVANCES the order's cumulative state.
+
+        THE FIDELITY GAP THIS CLOSES (the ARC 015 lesson, second instance). Before this
+        arc `push_exec` emitted on execDetailsEvent and touched nothing else, so
+        `trade.orderStatus.filled` stayed at 0 through any number of partial fills. Two
+        whole behaviours were therefore UNREPRESENTABLE offline, which is not the same as
+        untested — no assertion could have been written that would fail:
+
+          - `query_order_status` reads `trade.orderStatus.filled` for `cumulative_qty`,
+            so it reported 0 for a partially-filled order no matter what had filled.
+          - the Cancelled branch of `_on_ib_order_status` emits
+            `on_cancel(cid, int(trade.orderStatus.filled))` — §2A:78's `done_qty` — so a
+            remainder-cancel after a partial fill could only ever report 0 done.
+
+        A fake that cannot express the difference it is asked to detect is debt, not
+        coverage (debug.md §7.12, instances #4 and #5). Real IBKR advances both fields on
+        every execution, so the fake does too, and the two now move together as one fact.
+        """
         self.execDetailsEvent.emit(
             trade, self.make_fill(trade, exec_id, shares, price, cum, contract, side)
         )
+        _advance_order_status(trade, cum)
 
     def push_position(self, local_symbol, qty, price, commission=0.0):
         """positionEvent with avgCost as NOTIONAL, as IBKR sends it (ARC 015 §2d)."""
@@ -1815,6 +1860,691 @@ async def _section_ack_race() -> None:
     )
 
 
+async def _section_mirror_stale_and_reconnect() -> None:
+    """ARC 019 A3 (D1.20) + A4 — the latch, plain reconnect, and every UP emission.
+
+    §7.12, THE STANDING QUESTION — what would have to be true for this section to pass
+    while measuring nothing?
+
+      1. `_mirror_stale` was never True in the first place, so "it cleared" is a vacuous
+         False -> False. This is THE vacuity risk for a boolean that clears, and it is
+         guarded explicitly: the flag is asserted True immediately before the clearing
+         reconnect, and the assertion below names both endpoints of the transition.
+      2. The rebuild is measured by the mirror's CONTENTS, which can be identical before
+         and after (the empty -> empty trap). GUARDED: `_mirror_rebuilds` and
+         `FakeIB.reqpos_calls` are the observables, and the venue's answer is made to
+         DIFFER from what the mirror held so contents corroborate the counters.
+      3. The "no clean UP over a suspect mirror" invariant is asserted over an empty set
+         of session events. GUARDED: the emission count is asserted non-zero and the
+         invariant is driven across all three publishing paths (connect, 1101, 1102).
+      4. The failing rebuild does not actually fail — e.g. the injected error is swallowed
+         somewhere else and `query_positions` succeeds anyway. GUARDED: the rebuild
+         COUNTER is asserted to have advanced, so the failure happened on a re-read that
+         genuinely ran.
+    """
+    # ---- A3: the latch. Populate, fail a re-read, prove True, then clear it ----------
+    adS, ibS, sinkS = new_adapter()
+    ibS.positions_to_return = [ibS.position_row("MESU6", 2, 7773.50)]
+    await adS.connect()
+    record(
+        "NON-VACUITY A3: the mirror starts POPULATED and NOT stale after a good connect",
+        adS._mirror.get("MESU6") is not None and adS._mirror_stale is False,
+        f"mirror={ {k: v.net_qty for k, v in adS._mirror.items()} } "
+        f"stale={adS._mirror_stale}",
+    )
+
+    # Force the re-read to fail on the next connect.
+    async def _refuse():
+        raise BrokerSeamError("reqPositions refused")
+
+    good_reqpos = ibS.reqPositionsAsync
+    ibS.reqPositionsAsync = _refuse
+    rebuilds_before = adS._mirror_rebuilds
+    adS.disconnect()
+    await adS.connect()
+    record(
+        "NON-VACUITY A3: the failing re-read genuinely RAN (the rebuild counter moved), "
+        "so the flag below is set by a real failure and not by never trying",
+        adS._mirror_rebuilds == rebuilds_before + 1,
+        f"rebuilds {rebuilds_before} -> {adS._mirror_rebuilds}",
+    )
+    record(
+        "NON-VACUITY A3: _mirror_stale is genuinely True BEFORE the clearing reconnect — "
+        "'cleared' is therefore a True -> False transition, not False -> False",
+        adS._mirror_stale is True,
+        f"stale={adS._mirror_stale}",
+    )
+    record(
+        "A4: a connect whose rebuild FAILED does not publish a clean UP — it publishes "
+        "UP_DATA_LOSS, because the mirror behind it was never rebuilt",
+        sinkS.sessions[-1][0] is SessionState.UP_DATA_LOSS,
+        str(sinkS.sessions[-1]),
+    )
+
+    # Now a reconnect whose rebuild SUCCEEDS. This is D1.20.
+    ibS.reqPositionsAsync = good_reqpos
+    ibS.positions_to_return = [ibS.position_row("MNQU6", -1, 20000.00)]
+    stale_before = adS._mirror_stale
+    adS.disconnect()
+    await adS.connect()
+    record(
+        "A3/D1.20: a successful rebuild CLEARS _mirror_stale — the latch is gone",
+        stale_before is True and adS._mirror_stale is False,
+        f"stale {stale_before} -> {adS._mirror_stale}",
+    )
+    record(
+        "A3/D1.20: and the clearing reconnect really did re-read — the mirror now holds "
+        "the venue's truth, not the pre-existing memory",
+        "MESU6" not in adS._mirror and adS._mirror.get("MNQU6") is not None,
+        f"mirror={ {k: v.net_qty for k, v in adS._mirror.items()} }",
+    )
+    record(
+        "A3: a cleared flag publishes a clean UP again — the door opens both ways",
+        sinkS.sessions[-1][0] is SessionState.UP,
+        str(sinkS.sessions[-1]),
+    )
+
+    # A failed rebuild must still NOT clear a previously-good flag in the wrong direction.
+    ibS.reqPositionsAsync = _refuse
+    adS.disconnect()
+    await adS.connect()
+    record(
+        "A3: a FAILED rebuild sets the flag rather than leaving a stale False — the "
+        "verdict is honoured in both directions, not just the clearing one",
+        adS._mirror_stale is True,
+        f"stale={adS._mirror_stale}",
+    )
+    ibS.reqPositionsAsync = good_reqpos
+
+    # ---- A4 Q2: does a PLAIN reconnect re-reconcile? (not just the 1101 path) --------
+    adP, ibP, _sinkP = new_adapter()
+    ibP.positions_to_return = [ibP.position_row("MESU6", 2, 7773.50)]
+    await adP.connect()
+    ibP.push_position("ZZZZ", 7, 100.0)  # drift the mirror away from venue truth
+    record(
+        "NON-VACUITY A4: the mirror holds something the venue will CONTRADICT before the "
+        "plain reconnect",
+        adP._mirror.get("ZZZZ") is not None,
+        f"mirror={ {k: v.net_qty for k, v in adP._mirror.items()} }",
+    )
+    reqpos_before, rebuilds_before = ibP.reqpos_calls, adP._mirror_rebuilds
+    adP.disconnect()
+    await adP.connect()  # a PLAIN reconnect — no 1101, no data-loss path
+    record(
+        "A4 Q2: a PLAIN reconnect re-reconciles the position mirror — the venue was "
+        "re-queried (not only the 1101 data-loss path does this)",
+        ibP.reqpos_calls == reqpos_before + 1
+        and adP._mirror_rebuilds == rebuilds_before + 1,
+        f"reqpos {reqpos_before}->{ibP.reqpos_calls} "
+        f"rebuilds {rebuilds_before}->{adP._mirror_rebuilds}",
+    )
+    record(
+        "A4 Q2: and the re-read REPLACED the drifted contents rather than merging them",
+        "ZZZZ" not in adP._mirror and adP._mirror.get("MESU6") is not None,
+        f"mirror={ {k: v.net_qty for k, v in adP._mirror.items()} }",
+    )
+
+    # ---- A4 Q1: are subscriptions re-established, or silently lost? ------------------
+    # broker-order has NO subscribe/unsubscribe verb — those are on BrokerDatafeedPort and
+    # invariant 3 keeps the two disjoint. What this adapter must re-establish is (a) its
+    # venue-side startup fetch and (b) its own event handlers.
+    record(
+        "A4 Q1: subscribe/unsubscribe are NOT on the order port — nothing for this "
+        "adapter to lose (invariant 3: the two contracts are disjoint)",
+        "subscribe" not in ORDER_PORT_VERBS and "unsubscribe" not in ORDER_PORT_VERBS,
+        str(ORDER_PORT_VERBS),
+    )
+    fetch_ok, fetch_detail = _fetch_narrowed_to_positions_and_account(
+        ibP.last_fetch_fields
+    )
+    record(
+        "A4 Q1: the venue-side startup fetch is RE-REQUESTED on every reconnect, so the "
+        "position/account subscriptions are re-established rather than silently lost",
+        fetch_ok and ibP.connect_count >= 2,
+        f"connects={ibP.connect_count} {fetch_detail}",
+    )
+    record(
+        "A4 Q1: event handlers survive the reconnect and are still registered EXACTLY "
+        "once — neither lost nor duplicated",
+        len(ibP.orderStatusEvent._handlers) == 1
+        and len(ibP.execDetailsEvent._handlers) == 1
+        and len(ibP.positionEvent._handlers) == 1,
+        f"status={len(ibP.orderStatusEvent._handlers)} "
+        f"exec={len(ibP.execDetailsEvent._handlers)} "
+        f"pos={len(ibP.positionEvent._handlers)}",
+    )
+    record(
+        "A4 Q3: the startup gate still re-arms across a reconnect after the A1/A3 "
+        "changes — it is open once connect() returns and was closed before it",
+        adP._startup_complete is True,
+        f"_startup_complete={adP._startup_complete}",
+    )
+
+    # ---- A4 Q4: is there ANY path that reports UP over a mirror it did not rebuild? ---
+    # Driven across all three publishing paths, and asserted as one invariant rather than
+    # three separate observations: plain SessionState.UP is emitted ONLY while the mirror
+    # is not flagged suspect.
+    adI, ibI, sinkI = new_adapter()
+    watch: list[tuple] = []
+    real_on_session = sinkI.on_session
+
+    def watching_on_session(state, reason=None):
+        watch.append((state, adI._mirror_stale))
+        real_on_session(state, reason)
+
+    sinkI.on_session = watching_on_session
+
+    await adI.connect()  # path 1: clean connect
+    ibI.push_error(-1, 1102, "Connectivity restored - data maintained")  # path 2: clean
+    ibI.push_error(-1, 1101, "Connectivity restored - data lost")  # path 3: lossy
+    for _ in range(4):
+        await asyncio.sleep(0)
+    # path 4: a 1102 arriving while the mirror is ALREADY suspect
+    adI._mirror_stale = True
+    ibI.push_error(-1, 1102, "Connectivity restored - data maintained")
+
+    record(
+        "NON-VACUITY A4: session events were actually emitted for the invariant to "
+        "range over",
+        len(watch) >= 4,
+        f"{len(watch)} emissions: {[(s.name, st) for s, st in watch]}",
+    )
+    violations = [
+        (s.name, stale) for s, stale in watch if s is SessionState.UP and stale
+    ]
+    record(
+        "A4 Q4: THE INVARIANT — plain SessionState.UP is published ONLY while the mirror "
+        "is not flagged suspect. There is no path to a clean UP over an unrebuilt mirror",
+        not violations,
+        f"violations={violations} over emissions {[(s.name, st) for s, st in watch]}",
+    )
+    record(
+        "NON-VACUITY A4: the invariant CAN be violated — a 1102 arriving over an already-"
+        "suspect mirror is the path that used to launder it clean, and it now reports "
+        "UP_DATA_LOSS",
+        watch[-1][0] is SessionState.UP_DATA_LOSS and watch[-1][1] is True,
+        f"last emission={(watch[-1][0].name, watch[-1][1])}",
+    )
+
+    # ---- A1: disconnect must publish DOWN even when the vendor teardown raises -------
+    # MEASURED in ARC 019 A1 against a real ib_async client over a real asyncio transport
+    # whose peer had vanished: transport.write_eof() raised OSError 107 and on_session was
+    # never reached. Reproduced here as the unit-level regression.
+    adD2, ibD2, sinkD2 = new_adapter()
+    await adD2.connect()
+
+    def _raising_disconnect():
+        raise OSError(107, "Transport endpoint is not connected")
+
+    ibD2.disconnect = _raising_disconnect
+    sessions_before = len(sinkD2.sessions)
+    raised = False
+    try:
+        adD2.disconnect()
+    except OSError:
+        raised = True
+    record(
+        "A1: disconnect() does not propagate a vendor teardown failure to the caller",
+        not raised,
+        "OSError escaped disconnect()",
+    )
+    record(
+        "A1: disconnect() publishes DOWN even when the vendor teardown RAISES — the "
+        "consumer is never left believing a dismantled session is live",
+        len(sinkD2.sessions) == sessions_before + 1
+        and sinkD2.sessions[-1][0] is SessionState.DOWN,
+        str(sinkD2.sessions[sessions_before:]),
+    )
+    record(
+        "A1: and the failure is not swallowed — the reason says the teardown raised",
+        "raised" in (sinkD2.sessions[-1][1] or ""),
+        f"reason={sinkD2.sessions[-1][1]!r}",
+    )
+    record(
+        "A1: the adapter is internally DOWN too, so no verb can be issued afterwards",
+        adD2._connected is False and adD2._startup_complete is False,
+    )
+    # NON-VACUITY: the same verb on a HEALTHY teardown still reports DOWN exactly once,
+    # so the assertions above are not passing because DOWN is emitted unconditionally
+    # from somewhere else.
+    adD3, _ibD3, sinkD3 = new_adapter()
+    await adD3.connect()
+    n_before = len(sinkD3.sessions)
+    adD3.disconnect()
+    record(
+        "NON-VACUITY A1: a HEALTHY disconnect emits exactly one DOWN with the plain "
+        "reason — the raising case above is a distinguishable path",
+        len(sinkD3.sessions) == n_before + 1
+        and sinkD3.sessions[-1][0] is SessionState.DOWN
+        and sinkD3.sessions[-1][1] == "requested",
+        str(sinkD3.sessions[n_before:]),
+    )
+
+
+def _partial_fill_site() -> str:
+    """Name the fill-accumulation site, DERIVED from the object — never typed.
+
+    Same reasoning as `_reject_site()`: a can-fail demonstration is only useful if the
+    failure says where to look, and a hand-typed path is a §7.4 anchor that rots the first
+    time the method moves.
+    """
+    import inspect
+
+    fn = IBKRBrokerOrder._on_ib_exec_details
+    blend = IBKRBrokerOrder.__dict__["_blend_avg_price"].__func__
+    return (
+        f"{inspect.getsourcefile(fn)}:{inspect.getsourcelines(fn)[1]} "
+        f"{fn.__qualname__}() + {blend.__qualname__}():"
+        f"{inspect.getsourcelines(blend)[1]}"
+    )
+
+
+# §13 objective 9 (spelled "V9" by project convention; the spec's §13 list numbers items
+# 1-23 bare and only prefixes V from V24 on — see the citation note in this arc's report):
+# "Partial-fill + remainder-cancel behavior on marketable orders."
+#
+# ORDER: BUY 5, filling 2 @ 7000, 2 @ 7010, 1 @ 7020. Three DIFFERENT prices on purpose —
+# a single price makes a weighted average numerically identical to the last fill price,
+# which is precisely how the avg_price defect survived until partials were driven. The
+# quantities differ too, so a mirror that added `cumQty` instead of `shares` lands on a
+# visibly different number rather than coincidentally the right one.
+PARTIALS: tuple[tuple[str, int, float, int], ...] = (
+    ("e-p-1", 2, 7000.00, 2),
+    ("e-p-2", 2, 7010.00, 4),
+    ("e-p-3", 1, 7020.00, 5),
+)
+PARTIAL_QTY = 5
+PARTIAL_VWAP = (2 * 7000.00 + 2 * 7010.00 + 1 * 7020.00) / 5  # 7008.0
+
+
+async def _drive_partials(count: int):
+    """Place BUY 5 MESU6 and deliver the first `count` partial executions."""
+    ad, ib, sink = new_adapter()
+    await ad.connect()
+    ad.place_order(
+        NeutralOrder(
+            "c-part", "MESU6", Side.BUY, PARTIAL_QTY, OrderType.MARKET, TimeInForce.DAY
+        )
+    )
+    trade = ib.placed[-1][2]
+    ib.push_status(trade, "PreSubmitted")
+    for exec_id, shares, price, cum in PARTIALS[:count]:
+        ib.push_exec(trade, exec_id, shares, price, cum, side="BOT")
+    return ad, ib, sink, trade
+
+
+def _ack_ordering_holds(sink, cid: str) -> tuple[bool, str]:
+    """Exactly one on_ack for `cid`, and it PRECEDES the first on_fill.
+
+    Asserted on the cross-stream `sequence`, not on the per-stream lists: "the ack came
+    first" is an ORDERING property, and an adapter that emitted the fill first would
+    satisfy every per-stream count assertion. This is the §2c guarantee re-checked under
+    partials specifically, because the partial path reaches `_ensure_acked` once per
+    execution and the dedupe set is the only thing stopping three acks for one order.
+    """
+    acks_for_cid = [a for a in sink.acks if a[0] == cid]
+    order_path = [e for e in sink.sequence if e in ("on_ack", "on_fill", "on_cancel")]
+    if len(acks_for_cid) != 1:
+        return False, f"{len(acks_for_cid)} acks for {cid}: {acks_for_cid}"
+    if "on_fill" in order_path and order_path.index("on_ack") > order_path.index(
+        "on_fill"
+    ):
+        return False, f"ack did not precede the first fill: {order_path}"
+    if order_path[0] != "on_ack":
+        return False, f"first order-path event was {order_path[0]}, not on_ack"
+    return True, str(order_path)
+
+
+async def partial_fill_assertions() -> list[str]:
+    """Returns failed assertion names. Empty == the partial-fill path is correct.
+
+    Isolated exactly as `avg_price_assertions()` is, so the SAME assertions can be run
+    twice: once against the real adapter (must pass) and once with a defect planted (must
+    fail). Same instrument, two subjects. Split into three drivers only to stay under the
+    complexity gate — they share one failure list and are always run together, because a
+    partial fill and the cancel of its remainder are one behaviour, not three.
+    """
+    return (
+        await _partials_accumulate_assertions()
+        + await _remainder_cancel_by_us_assertions()
+        + await _remainder_cancel_by_venue_assertions()
+    )
+
+
+async def _partials_accumulate_assertions() -> list[str]:
+    """Three partials at three prices: accumulation, weighted average, no double-count."""
+    failed: list[str] = []
+    ad, ib, sink, trade = await _drive_partials(3)
+
+    # NON-VACUITY FIRST. Everything below is about PARTIALS, so prove partials were
+    # actually delivered before asserting anything about how they were handled. A suite
+    # that only ever saw one complete fill would satisfy the end-state assertions and
+    # demonstrate nothing — that is this project's characteristic failure (§7.12).
+    observed = [(f[3], f[5]) for f in sink.fills]  # (filled_qty, cumulative_qty)
+    if observed != [(2, 2), (2, 4), (1, 5)]:
+        failed.append(
+            f"NON-VACUITY: the observed fill SEQUENCE is three partials "
+            f"[(2,2),(2,4),(1,5)], got {observed}"
+        )
+    if not any(cum < PARTIAL_QTY for _shares, cum in observed):
+        failed.append(
+            f"NON-VACUITY: at least one fill was genuinely PARTIAL "
+            f"(cumulative_qty < {PARTIAL_QTY}); observed cums {[c for _s, c in observed]}"
+        )
+    if len({p for _e, _s, p, _c in PARTIALS}) < 3:
+        failed.append("NON-VACUITY: the three partials are at three DISTINCT prices")
+
+    # ---- fills accumulate, without double-counting ----------------------------------
+    pos = ad._mirror.get("MESU6")
+    if pos is None:
+        failed.append("partials reach the mirror at all")
+    else:
+        if pos.net_qty != PARTIAL_QTY:
+            failed.append(
+                f"mirror net_qty accumulates to {PARTIAL_QTY}, got {pos.net_qty} "
+                f"(sum of cumQty would be 11; sum of shares is 5)"
+            )
+        if abs(pos.avg_price - PARTIAL_VWAP) > 0.0001:
+            failed.append(
+                f"mirror avg_price is the WEIGHTED AVERAGE {PARTIAL_VWAP}, got "
+                f"{pos.avg_price} (the last fill price is {PARTIALS[-1][2]})"
+            )
+        if abs(pos.avg_price - PARTIALS[-1][2]) < 0.0001:
+            failed.append(
+                "mirror avg_price is the LAST FILL PRICE, not the weighted average "
+                "— the ARC 019 A2 defect"
+            )
+
+    # The venue's own cumulative figure must travel unmodified, and must not be summed.
+    if [f[5] for f in sink.fills] != [2, 4, 5]:
+        failed.append(
+            f"cumulative_qty carried from Execution.cumQty unaltered, got "
+            f"{[f[5] for f in sink.fills]}"
+        )
+
+    failed += _replayed_partial_changes_nothing(ad, ib, sink, trade)
+
+    ok, detail = _ack_ordering_holds(sink, "c-part")
+    if not ok:
+        failed.append(f"ACK ORDERING across accumulating partials: {detail}")
+    return failed
+
+
+def _replayed_partial_changes_nothing(ad, ib, sink, trade) -> list[str]:
+    """§4 idempotency by (order_id, exec_id), checked on a PARTIAL specifically.
+
+    The existing suite proves a duplicated COMPLETE fill is dropped. A partial is the
+    harder case and the one that matters: a replayed partial that got through would not
+    just add a spurious event, it would corrupt the running position AND the running
+    average, and the resulting mirror is still internally plausible — nothing downstream
+    could tell it had happened. So all three are asserted, not just the event count.
+    """
+    failed: list[str] = []
+    fills_before = len(sink.fills)
+    qty_before = ad._mirror["MESU6"].net_qty
+    avg_before = ad._mirror["MESU6"].avg_price
+    ib.push_exec(trade, "e-p-2", 2, 7010.00, 4, side="BOT")  # exact duplicate of #2
+    if len(sink.fills) != fills_before:
+        failed.append("a duplicated PARTIAL emits no second on_fill")
+    if ad._mirror["MESU6"].net_qty != qty_before:
+        failed.append(
+            f"a duplicated PARTIAL does not double-count into the mirror "
+            f"({qty_before} -> {ad._mirror['MESU6'].net_qty})"
+        )
+    if abs(ad._mirror["MESU6"].avg_price - avg_before) > 0.0001:
+        failed.append("a duplicated PARTIAL does not perturb the average price")
+    return failed
+
+
+def _filled_portion_survives(pos, expect_qty, before, expect_price) -> list[str]:
+    """THE FILLED PORTION STAYS. Shared by both remainder-cancel drivers.
+
+    A cancel of the remainder must not reverse or discard the part that already traded.
+    That part is a REAL position and `flatten()` sizes the protective order from it, so a
+    cancel that quietly removed it would leave the exit path blind to something the
+    account actually holds. Asserted three ways — the position exists, it holds exactly
+    what filled, and the cancel moved it by nothing at all — because "still there" is the
+    easiest thing in this suite to assert vacuously: it was already there, and a defect
+    has to actively remove it for the assertion to have done any work.
+    """
+    if pos is None:
+        return [
+            (
+                "the FILLED portion survives the remainder cancel — mirror still holds "
+                "it (a cancel must not discard a real position)"
+            )
+        ]
+    failed = []
+    if pos.net_qty != expect_qty:
+        failed.append(
+            f"the filled portion stays at {expect_qty} after the remainder cancel, got "
+            f"{pos.net_qty}"
+        )
+    if before is not None and pos.net_qty != before.net_qty:
+        failed.append(
+            f"the cancel did not move the mirror at all "
+            f"({before.net_qty} -> {pos.net_qty})"
+        )
+    if abs(pos.avg_price - expect_price) > 0.0001:
+        failed.append(
+            f"the surviving portion keeps its own fill price, got {pos.avg_price}"
+        )
+    return failed
+
+
+async def _remainder_cancel_by_us_assertions() -> list[str]:
+    """A partial fill, then WE cancel the remainder."""
+    failed: list[str] = []
+    # ---- remainder cancel, BY US ----------------------------------------------------
+    # §2A:78 declares `on_cancel(client_order_id, done_qty)` — the DONE quantity, i.e. the
+    # portion that FILLED. Both halves are pinned below so there is no ambiguity about
+    # which number the seam carries: done == 2 and the unfilled remainder == 3.
+    adC, ibC, sinkC, tradeC = await _drive_partials(1)  # filled 2 of 5
+    adC.cancel_order("c-part")
+    if not ibC.cancelled:
+        failed.append("cancel_order actually reached the venue")
+    mirror_before_cancel = adC._mirror.get("MESU6")
+    ibC.push_status(tradeC, "Cancelled", filled=2)
+
+    if len(sinkC.cancels) != 1:
+        failed.append(f"exactly one on_cancel, got {sinkC.cancels}")
+    else:
+        cid, done_qty = sinkC.cancels[0]
+        if cid != "c-part":
+            failed.append(f"on_cancel names the order, got {cid}")
+        if done_qty != 2:
+            failed.append(
+                f"on_cancel carries done_qty=2 (§2A:78 — the FILLED portion), got "
+                f"{done_qty}"
+            )
+        if PARTIAL_QTY - done_qty != 3:
+            failed.append(
+                f"the unfilled remainder implied by done_qty is 3, got "
+                f"{PARTIAL_QTY - done_qty}"
+            )
+
+    failed += _filled_portion_survives(
+        adC._mirror.get("MESU6"), 2, mirror_before_cancel, 7000.00
+    )
+
+    # query_order_status must agree — it is §4's pending-timeout resolution, and it reads
+    # the cumulative figure the fake could not previously represent.
+    st = adC.query_order_status("c-part")
+    if st.cumulative_qty != 2:
+        failed.append(
+            f"query_order_status reports cumulative_qty=2 after a partial+cancel, got "
+            f"{st.cumulative_qty}"
+        )
+    if not st.terminal or st.state != "cancelled":
+        failed.append(
+            f"query_order_status reports terminal cancelled, got "
+            f"terminal={st.terminal} state={st.state!r}"
+        )
+
+    ok, detail = _ack_ordering_holds(sinkC, "c-part")
+    if not ok:
+        failed.append(f"ACK ORDERING across partial+remainder-cancel: {detail}")
+    return failed
+
+
+async def _remainder_cancel_by_venue_assertions() -> list[str]:
+    """A partial fill, then the VENUE kills the remainder unprompted."""
+    failed: list[str] = []
+    # ---- remainder cancel, BY THE VENUE ---------------------------------------------
+    # Same end state, different cause: nobody called cancel_order. An IOC remainder is
+    # killed by the venue (§13 objective 9's "marketable orders"), and the adapter has no
+    # local record of a cancel request to correlate against.
+    adV, ibV, sinkV, tradeV = await _drive_partials(2)  # filled 4 of 5
+    ibV.push_status(tradeV, "ApiCancelled", filled=4)
+    if ibV.cancelled:
+        failed.append(
+            f"NON-VACUITY: the VENUE-side cancel was not requested by us "
+            f"(ib.cancelled must be empty, got {ibV.cancelled})"
+        )
+    if len(sinkV.cancels) != 1 or sinkV.cancels[0][1] != 4:
+        failed.append(
+            f"a venue-cancelled remainder still reports on_cancel with done_qty=4, got "
+            f"{sinkV.cancels}"
+        )
+    posV = adV._mirror.get("MESU6")
+    if posV is None or posV.net_qty != 4:
+        failed.append(
+            f"the 4 filled lots survive a VENUE-side remainder cancel, got {posV}"
+        )
+    ok, detail = _ack_ordering_holds(sinkV, "c-part")
+    if not ok:
+        failed.append(f"ACK ORDERING across partial+venue-cancel: {detail}")
+
+    # A re-emitted terminal status must not produce a second cancel.
+    ibV.push_status(tradeV, "Cancelled", filled=4)
+    if len(sinkV.cancels) != 1:
+        failed.append(
+            f"a re-emitted Cancelled does not duplicate on_cancel: {sinkV.cancels}"
+        )
+
+    return failed
+
+
+async def replanted_partial_double_count_is_caught() -> tuple[bool, list[str]]:
+    """Plant a double-counting partial and check the suite catches it.
+
+    THE PLANT is the classic partial-fill defect, not an arbitrary mutation: accumulate
+    the venue's CUMULATIVE quantity as though it were this execution's increment. It is
+    invisible on a single complete fill — where shares == cumQty — and wrong on every
+    partial, which is exactly why it is the defect worth planting here. 2+4+5 = 11 instead
+    of 5.
+
+    Kept permanently rather than demonstrated once and deleted, following
+    `replanted_unit_bug_is_caught()`: removing the plant removes the evidence, and the next
+    author would have to take the demonstration on trust. Restored in `finally` so a
+    mid-way failure cannot leave the defect live for the rest of the session.
+    """
+    original = IBKRBrokerOrder.__dict__["_on_ib_exec_details"]
+
+    def double_counting(self, trade, fill):  # the defect, verbatim
+        cum = int(fill.execution.cumQty)
+        fill.execution.shares = cum
+        return original(self, trade, fill)
+
+    IBKRBrokerOrder._on_ib_exec_details = double_counting  # type: ignore[method-assign]
+    try:
+        caught = await partial_fill_assertions()
+    finally:
+        IBKRBrokerOrder._on_ib_exec_details = original  # type: ignore[method-assign]
+    return bool(caught), caught
+
+
+async def replanted_cancel_discard_is_caught() -> tuple[bool, list[str]]:
+    """Plant the OTHER half of the defect class: a remainder cancel that discards the
+    filled portion.
+
+    Planted separately from the double-count because they fail DIFFERENT assertions, and a
+    single plant that happened to trip several would not tell us the remainder-cancel
+    assertions can fail at all. The mirror-preservation assertions are the ones with the
+    most at stake — flatten() sizes from that mirror — and they are the easiest to write
+    vacuously, because the position is already there and nothing has to happen for them to
+    pass.
+    """
+    original = IBKRBrokerOrder.__dict__["_on_ib_order_status"]
+
+    def discarding(self, trade, _orig=original):
+        _orig(self, trade)
+        if trade.orderStatus.status in ("Cancelled", "ApiCancelled"):
+            sym = self._symbol_for(trade.contract)
+            self._mirror.pop(sym, None)  # the defect: cancel throws the fills away
+
+    IBKRBrokerOrder._on_ib_order_status = discarding  # type: ignore[method-assign]
+    try:
+        caught = await partial_fill_assertions()
+    finally:
+        IBKRBrokerOrder._on_ib_order_status = original  # type: ignore[method-assign]
+    return bool(caught), caught
+
+
+async def _section_partial_fills() -> None:
+    """ARC 019 A2 — §13 objective 9: partial fills, remainder cancel, ack ordering.
+
+    §7.12, THE STANDING QUESTION — what would have to be true for this section to pass
+    while measuring nothing?
+
+      1. `FakeIB` never delivers a genuinely partial execution — every fill arrives with
+         cumQty == the order quantity. Then "partials accumulate correctly" is a statement
+         about a sequence of length one. GUARDED: the first assertions in
+         `partial_fill_assertions()` compare the OBSERVED fill sequence against
+         [(2,2),(2,4),(1,5)] and separately require at least one fill with
+         cumulative_qty < 5, before any claim about handling is made.
+      2. All three partials arrive at the SAME price. Then the weighted average and the
+         last fill price are the same number and the avg_price assertion cannot fail.
+         GUARDED: the prices are asserted distinct, and a separate assertion fails if
+         avg_price equals the last fill price.
+      3. The mirror is empty, so "the filled portion survived the cancel" is vacuously
+         true of a position that never existed. GUARDED: the cancel path asserts the
+         mirror is non-None AND holds exactly 2 AND is unchanged across the cancel.
+      4. `orderStatus.filled` stays 0 because the fake never advances it, so `done_qty`
+         and `query_order_status` both read a constant. This was REAL until this arc —
+         see `FakeIB.push_exec`. GUARDED: done_qty is asserted == 2 (not merely
+         non-zero), and its complement, the unfilled 3, is asserted too.
+      5. The section passes because the defect is unreachable rather than absent.
+         GUARDED: two independent plants below, each failing a different assertion group.
+      6. The venue-cancel case is secretly the same as the we-cancel case. GUARDED:
+         `ib.cancelled` is asserted EMPTY there, so it is provably not our request.
+    """
+    failures = await partial_fill_assertions()
+    record(
+        "A2/§13.9: partial fills accumulate, remainder cancel preserves the filled "
+        "portion, and the ack ordering holds throughout",
+        not failures,
+        f"{len(failures)} failed: {failures} — SITE: {_partial_fill_site()}",
+    )
+
+    caught, detail = await replanted_partial_double_count_is_caught()
+    record(
+        "NON-VACUITY A2: a planted DOUBLE-COUNTING partial is CAUGHT — "
+        f"SITE: {_partial_fill_site()}",
+        caught,
+        f"caught {len(detail)}: {detail}",
+    )
+    caught2, detail2 = await replanted_cancel_discard_is_caught()
+    record(
+        "NON-VACUITY A2: a planted cancel that DISCARDS the filled portion is CAUGHT — "
+        f"SITE: {_partial_fill_site()}",
+        caught2,
+        f"caught {len(detail2)}: {detail2}",
+    )
+    # The two plants must fail DIFFERENT assertions, or one of them is redundant and the
+    # suite has one instrument wearing two labels.
+    record(
+        "NON-VACUITY A2: the two plants are distinguishable — they trip different "
+        "assertions, so each measures its own defect class",
+        set(detail) != set(detail2),
+        f"double-count={sorted(detail)}\n       cancel-discard={sorted(detail2)}",
+    )
+    record(
+        "A2: both plants were removed — the assertions pass again afterwards",
+        not await partial_fill_assertions(),
+    )
+
+
 async def _section_avg_price_fidelity() -> None:
     """ARC 015 §2d — per-unit avg_price, and the re-planted unit bug."""
     # ---------------------------------------------------------------- ARC 015 §2d
@@ -1877,6 +2607,8 @@ async def main() -> None:
     await _section_startup_window()
     await _section_ack_race()
     await _section_avg_price_fidelity()
+    await _section_partial_fills()
+    await _section_mirror_stale_and_reconnect()
     await _report()
 
 
