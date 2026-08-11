@@ -2,7 +2,7 @@
 Description=Nix D1.12 — capture IB Gateway service state at boot, before console access
 # After, NOT Requires: if the gateway unit failed, that IS the measurement. Requiring it
 # would make this unit fail to run in exactly the case it exists to record.
-After=multi-user.target ibgateway.service
+After=multi-user.target nix-xvfb.service nix-ibgateway.service
 Wants=multi-user.target
 
 [Service]

@@ -62,7 +62,7 @@ UNIT_TEXT = """\
 Description=Nix D1.12 — capture IB Gateway service state at boot, before console access
 # After, NOT Requires: if the gateway unit failed, that IS the measurement. Requiring it
 # would make this unit fail to run in exactly the case it exists to record.
-After=multi-user.target ibgateway.service
+After=multi-user.target nix-xvfb.service nix-ibgateway.service
 Wants=multi-user.target
 
 [Service]
@@ -160,16 +160,38 @@ def capture() -> dict:
     """
     presence = observe_operator_presence()
     check_rc, check_out = _run([str(VENV_PYTHON), str(CHECK)])
-    unit_rc, unit_out = _run(
-        [
-            "systemctl",
-            "show",
-            "ibgateway.service",
-            "--no-pager",
-            "--property=ActiveState,SubState,Result,ExecMainStartTimestamp,NRestarts",
-        ]
-    )
-    enabled_rc, enabled_out = _run(["systemctl", "is-enabled", "ibgateway.service"])
+    # UNIT NAMES ARE `nix-`PREFIXED. Corrected ARC 020, and the correction is the whole
+    # reason this capture is worth taking. Every reference here read `ibgateway.service`,
+    # which IS NOT A UNIT ON THIS SYSTEM — the units are `nix-ibgateway.service` and
+    # `nix-xvfb.service`. `systemctl show` on an unknown unit does not error: it returns
+    # `ActiveState=inactive SubState=dead Result=success` with rc=0, which is
+    # INDISTINGUISHABLE from a real unit that genuinely failed to start, and the only tell
+    # is an empty ExecMainStartTimestamp. Armed as written, the reboot would have recorded
+    # "the Gateway did not come back" about a unit that does not exist, and it would have
+    # spent the operator tap doing it. ARC 019's demonstration of this file exercised only
+    # the operator-presence half, so the unit half was never driven and the defect survived.
+    units = {}
+    for unit in ("nix-xvfb.service", "nix-ibgateway.service"):
+        show_rc, show_out = _run(
+            [
+                "systemctl",
+                "show",
+                unit,
+                "--no-pager",
+                (
+                    "--property=Id,LoadState,ActiveState,SubState,Result,"
+                    "ExecMainStartTimestamp,NRestarts"
+                ),
+            ]
+        )
+        en_rc, en_out = _run(["systemctl", "is-enabled", unit])
+        # LoadState is recorded FIRST and deliberately: `not-found` is how this record
+        # says "you asked about a unit that does not exist" instead of silently reporting
+        # it as inactive. A future rename fails loudly here rather than measuring nothing.
+        units[unit] = {
+            "systemctl_show": {"exit": show_rc, "output": show_out},
+            "systemctl_is_enabled_DECLARATION_ONLY": {"exit": en_rc, "output": en_out},
+        }
 
     return {
         "captured_at_utc": datetime.now(UTC).isoformat(),
@@ -179,13 +201,18 @@ def capture() -> dict:
         # The verdict is only as good as the precondition. Both are recorded; neither is
         # allowed to stand in for the other.
         "trustworthy": presence["untouched"],
-        "check_ibgateway_service": {"exit": check_rc, "output": check_out},
-        # `is-enabled` is a DECLARATION and is recorded as one — it is never the evidence.
-        "systemctl_is_enabled_DECLARATION_ONLY": {
-            "exit": enabled_rc,
-            "output": enabled_out,
+        # THE API CHECK IS EXPECTED TO FAIL AT BOOT AND THAT IS NOT THE D1.12 VERDICT.
+        # IB Gateway does not serve its API until someone completes an IB Key login, so a
+        # capture taken before the operator taps will show this unreachable no matter how
+        # correctly systemd started the process. D1.12 asks whether systemd STARTS the
+        # units at boot; the evidence for that is `units[...].ActiveState`, not this.
+        # Recorded side by side so neither can stand in for the other.
+        "check_ibgateway_service_NOT_THE_D1_12_VERDICT": {
+            "exit": check_rc,
+            "output": check_out,
         },
-        "systemctl_show": {"exit": unit_rc, "output": unit_out},
+        "units": units,
+        # `is-enabled` is a DECLARATION and is recorded as one — it is never the evidence.
     }
 
 
