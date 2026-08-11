@@ -327,3 +327,60 @@ reboot no longer costs a live session. The tap that logs it back in is owed rega
 D1.12 can now be taken in front of it for free.
 
 **Known-red, named:** R1-A and D1.12 remain owed. `verify.py` is exit 1 until the tap.
+
+---
+
+## 13. A defect found in the tap mechanism itself — before the tap was spent
+
+**Phase 5 pre-flight found that `nix-reboot-capture.service` would have wasted the reboot and
+the IB Key tap, and it was repaired before arming. Nothing is armed; D1.12 stays open.**
+
+Every reference to the Gateway unit in `scripts/d1_12_reboot_capture.py` and
+`scripts/nix-reboot-capture.service` read `ibgateway.service`. **That is not a unit on this
+system** — the units are `nix-ibgateway.service` and `nix-xvfb.service`.
+
+The failure is silent and points the wrong way:
+
+```
+$ systemctl show ibgateway.service --property=Id,LoadState,ActiveState,SubState
+Id=ibgateway.service
+LoadState=not-found      <-- the only tell, and the capture never requested it
+ActiveState=inactive
+SubState=dead
+
+$ systemctl show nix-ibgateway.service --property=Id,LoadState,ActiveState,SubState
+Id=nix-ibgateway.service
+LoadState=loaded
+ActiveState=inactive     <-- identical
+SubState=dead            <-- identical
+```
+
+`systemctl show` on an unknown unit does **not** error. Armed as written, the reboot capture
+would have recorded **"the Gateway did not come back"** about a unit that does not exist, and
+would have spent the operator tap to do it. `After=` was equally stale, and systemd treats an
+`After=` on an unknown unit as a **silent no-op**, so the ordering constraint the unit's own
+comment carefully explains was absent.
+
+**Why it survived ARC 019.** That arc demonstrated the file could say no by running it
+interactively, and it correctly returned `NOT TRUSTWORTHY`, naming three `loginctl` sessions and
+a 744803.6 s uptime. That exercises the **operator-presence** half only. The unit half was never
+driven, so the demonstration proved the part that worked and the defect rode through underneath
+it — `debug.md` §5.7 instrument-audit debt, about the instrument built to discharge this row.
+
+**Repair.** Both unit names corrected; `nix-xvfb.service` added, because D1.12's own subject
+names **both** units and the capture only ever looked at one; `Id` and `LoadState` recorded
+**first**, so a future rename reports `not-found` loudly instead of measuring nothing; and the
+API-reachability check renamed `check_ibgateway_service_NOT_THE_D1_12_VERDICT`, because IB
+Gateway serves no API until an IB Key login completes — a boot capture will show it unreachable
+no matter how correctly systemd started the process, and the D1.12 evidence is `ActiveState`.
+
+Driven interactively after the repair: both units resolve `LoadState=loaded`, and the capture
+still refuses trust on operator presence. `ruff` caught an implicit string concatenation inside
+the `systemctl` argv on the way through — the "did you forget a comma" hazard, which there would
+have silently passed a wrong property list.
+
+**This is the arc's own theme landing on the arc itself.** A3's first plant did not perturb
+because two mechanisms guarded one observable; C3 refused a canary partly because a fixture set
+is a rubric of *believed* tool behaviour; and D1.12's mechanism passed its ARC 019 demonstration
+because the demonstration drove the half that worked. Three instances, one shape.
+

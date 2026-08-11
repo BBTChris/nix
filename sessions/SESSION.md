@@ -1668,3 +1668,27 @@ or strategy performance — the feed is delayed ~600 s.** No tap session was tak
 confirmation both remain RED, naming D1.12 and R1-A. RED withholds certification, not
 durability. One thing changed in the tap's favour: the Gateway has already expired on its own,
 so a reboot no longer costs a live session.
+
+### Phase 5 pre-flight — a defect in the tap mechanism, found before the tap was spent
+
+**Nothing armed, no reboot taken, D1.12 still open.** Checking what could be armed without the
+operator found that every Gateway-unit reference in `scripts/d1_12_reboot_capture.py` and
+`scripts/nix-reboot-capture.service` read `ibgateway.service`, which is not a unit on this
+system — the units are `nix-ibgateway.service` and `nix-xvfb.service`. `systemctl show` on an
+unknown unit does not error: it returns `ActiveState=inactive SubState=dead Result=success` at
+rc=0, **byte-identical to the real unit while genuinely stopped**, the only tell being
+`LoadState`, which the capture never requested. Armed as written, the reboot would have recorded
+"the Gateway did not come back" about a unit that does not exist and spent the IB Key tap doing
+it. `After=` was equally stale and systemd treats it as a silent no-op.
+
+**It survived ARC 019 because that arc's demonstration drove the operator-presence half only** —
+it correctly returned NOT TRUSTWORTHY on three loginctl sessions — and never drove the unit half.
+The demonstration proved the part that worked. That is the same shape as A3's non-perturbing
+first plant and as C3's reason for refusing the canary: three instances in one arc of an
+instrument certified on the half that happened to work.
+
+Repaired before arming: unit names corrected, `nix-xvfb.service` added (the row names both units,
+the capture watched one), `Id`/`LoadState` recorded first so a rename fails loudly, and the API
+check renamed `check_ibgateway_service_NOT_THE_D1_12_VERDICT` because the Gateway serves no API
+until an IB Key login completes and the D1.12 evidence is `ActiveState`, not reachability.
+
