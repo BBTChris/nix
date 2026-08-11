@@ -355,6 +355,93 @@ class BrokerCapabilities:
 
 
 @dataclass(frozen=True)
+class DatafeedCapabilities:
+    """Which §2A datafeed paths a venue can actually serve. Declared Nix addition (ARC 021).
+
+    NIX ADDITION, flagged exactly as `feed_lag()` is, and DELIBERATELY A SEPARATE OBJECT FROM
+    `BrokerCapabilities` rather than four more fields on it.
+    `nics_risk_subsystem_spec_v1.3.md` §2A:105-106 invariant 3: *"order and datafeed contracts
+    are disjoint — no shared object, so a datafeed fault cannot reach the order library"*. The
+    two ports are separate Protocols for that reason and not one Protocol with a flag; a
+    capability object shared between the libraries would re-introduce at the declaration layer
+    exactly what the port split removes at the call layer, and §13:919-920 objective 24's whole
+    subject is proving a datafeed fault leaves the order path undisturbed. Duplication here is
+    the design.
+
+    KNOWN OVERLAP, REPORTED RATHER THAN REPAIRED: `BrokerCapabilities.realtime_ticks` above is
+    an ORDER-side declaration of a DATAFEED fact, added when no datafeed adapter existed. It is
+    a second spelling of `realtime_tick_stream` below and the two can drift. Repairing it means
+    editing the order library, which ARC 021 sub-agent A is not the right party to do on a
+    datafeed argument.
+
+    WHAT THIS OBJECT IS FOR (`nics_risk_subsystem_spec_v1.3.md` §2A:103-104 invariant 1): the
+    command and event SET is identical across vendors, and that holds. What differs is which
+    paths are LIVE. A capability that is absent is STATED as absent here, and the adapter
+    REFUSES the corresponding call with `BrokerUnsupported` rather than returning silence —
+    coverage differences are declared above the seam, never silently degraded."""
+
+    realtime_tick_stream: bool
+    """§2A:91 `on_tick` as "the raw firehose". False on this IBKR account: ARC 012 measured
+    `reqTickByTickData` -> Err 10189 "No market data permissions for CME FUT", which names the
+    PRODUCT CLASS, so no instrument choice reaches around it."""
+
+    delayed_tick_stream: bool
+    """`reqMarketDataType(3)` + `reqMktData`. True on IBKR (ARC 013, 18 ticks in 40 s), and the
+    only streaming path that exists at Stage 0."""
+
+    polled_history: bool
+    """`reqHistoricalTicks` / historical bars. True on IBKR — AND DELAYED BY THE SAME ~10
+    MINUTES (ARC 013 re-measured 604 s; ARC 010's own output showed 624 s and went unread). It
+    is NOT a real-time back door, and `revisable_history` below is the price of it."""
+
+    revisable_history: bool
+    """True when a re-request can return DIFFERENT values for a bar already published. True for
+    any polled feed. This is what makes CHECK-DEBT D1.14's seal-and-never-rewrite rule Nix's own
+    obligation rather than a venue's, and it does not become False when a real-time feed
+    arrives — it becomes False when the history stops being re-requestable, which is a
+    different question."""
+
+    venue_sourced_tick_ts: bool
+    """§2A:106-107 invariant 4. True on IBKR's delayed stream, which carries
+    `delayedLastTimestamp` — the field ARC 013 measured the 600 s lag FROM. Where it were
+    False, `venue_ts` would be emitted as `None` and never as a local clock (AMENDMENT 3)."""
+
+    pushes_feed_status: bool
+    """§2A:92 `on_feed_status`. False on IBKR: there is no feed-health push. Status transitions
+    are derived by this adapter from connection events and from freshness, and the derivation
+    is stated rather than passed off as a venue signal."""
+
+    def unmet_contract_paths(self) -> list[str]:
+        """Names every §2A datafeed path this venue cannot serve. Empty == full coverage.
+
+        Same shape as `BrokerCapabilities.unmet_contract_paths` and deliberately NOT the same
+        function: see the class docstring on invariant 3. A shared helper here is a shared
+        object between the two libraries wearing a convenience argument."""
+        unmet = []
+        if not self.realtime_tick_stream:
+            unmet.append(
+                "on_tick real-time firehose (§2A:91) — Err 10189 on CME FUT; "
+                "delayed stream + polled history are the only paths"
+            )
+        if not self.venue_sourced_tick_ts:
+            unmet.append(
+                "venue-sourced tick timestamp (§2A:106-107 invariant 4) — "
+                "venue_ts emitted as None, never as a local clock"
+            )
+        if not self.pushes_feed_status:
+            unmet.append(
+                "on_feed_status (§2A:92) as a venue push — derived from connection "
+                "events and freshness by this adapter, not reported by the venue"
+            )
+        if self.revisable_history:
+            unmet.append(
+                "bar immutability is NOT a venue property (CHECK-DEBT D1.14) — "
+                "polled history is re-requestable and revisable; the seal is Nix's"
+            )
+        return unmet
+
+
+@dataclass(frozen=True)
 class Position:
     symbol: Symbol
     net_qty: int  # signed; negative = short
@@ -575,16 +662,369 @@ class FlattenAttempt:
         return not self.intents and not self.suppressed and not self.failures
 
 
+class LagProvenance(enum.Enum):
+    """WHERE a `FeedLag.declared_lag_s` came from. Declared Nix addition (ARC 021).
+
+    NIX ADDITION (ARC 021, D1.13/D1.14 neighbourhood), flagged exactly as `feed_lag()`
+    is. It exists because the old `FeedLag.measured: bool` could express only two of the
+    four states this system actually occupies, and the two it could not express are the
+    two that matter:
+
+      * a lag figure carried forward from a PRIOR ARC's measurement, which is evidence
+        but is not evidence about *this* session or *this* subscription; and
+      * a vendor that declares nothing at all, which under a bool renders as
+        `measured=False, declared_lag_s=0.0` — a fabricated zero, i.e. the exact defect
+        `docs/SPEC-AMENDMENTS.md` AMENDMENT 3 forbids.
+
+    A bool plus one float cannot separate "0.0 because the vendor is real-time" from
+    "0.0 because nobody looked". This enum makes the difference a member, so an unaware
+    consumer cannot read the second as the first by omission — the same argument
+    `SessionState.UP_DATA_LOSS` records against a defaulted boolean."""
+
+    UNOBSERVED = "unobserved"
+    """Nothing about the lag has been observed, here or anywhere. THE FLOOR. Pairs with
+    `declared_lag_s is None`: there is no figure, and none is invented."""
+
+    VENDOR_DECLARED = "vendor_declared"
+    """The figure is a configuration/vendor claim that this adapter has NOT checked.
+    A real number, with no measurement behind it in this tree."""
+
+    PRIOR_ARC = "prior_arc"
+    """The figure is a MEASUREMENT, banked by an earlier arc, replayed here. Honest about
+    what it is: evidence about the venue at a past moment, not about this session. Use
+    `detail` to carry the citation."""
+
+    OBSERVED = "observed"
+    """Measured by this adapter, in this session, from packets it received. The only
+    provenance under which `observed_lag_s` is not None."""
+
+
+class LagAgreement(enum.Enum):
+    """Whether a DECLARED lag survived contact with an OBSERVED one. Declared Nix addition.
+
+    NIX ADDITION (ARC 021). The task the frozen spec never sets: `nics_risk_subsystem_spec_v1.3.md`
+    §2A:86-92 declares no lag concept at all, so it also declares no way to say that the
+    configured figure and the measured figure disagree. Without a member for it, a
+    divergence has only two homes — a log line nothing reads, or silence.
+
+    IT IS AN ENUM AND NOT A `bool diverged`, on the `UP_DATA_LOSS` argument: a boolean
+    defaults to False and an unaware consumer reads "never compared" as "agrees". Here the
+    two not-compared cases are their own members and `agreement is LagAgreement.AGREES` is
+    simply False for both, so an unaware consumer fails toward distrusting the figure."""
+
+    NOT_DECLARED = "not_declared"
+    """No declared figure exists, so there is nothing to check. Not a pass."""
+
+    NOT_OBSERVED = "not_observed"
+    """A declared figure exists and has NOT been checked against observation. Not a pass —
+    this is the honest reading of every Stage 0 lag that was banked by a prior arc."""
+
+    AGREES = "agrees"
+    """Observed and declared are within `divergence_tolerance_s`."""
+
+    DIVERGED = "diverged"
+    """Observed and declared differ by more than `divergence_tolerance_s`. A FINDING the
+    consumer reads off the object — never a log line — because the configured figure is an
+    input to every freshness computation downstream of it."""
+
+
 @dataclass(frozen=True)
 class FeedLag:
-    """Not in §2A. ARC 013 measured a steady 600.3s pipeline delay on the Stage 0
-    IBKR feed. Session-gating and staleness logic must be able to ask the feed how
-    far behind it is, or every bar looks stale at Stage 0 and fresh in prod for
-    reasons unrelated to correctness. Tradovate/DataBento report 0.0."""
+    """How far behind the venue's own clock this feed runs, WITH the provenance of the answer.
 
-    declared_lag_s: float
-    measured: bool
+    NIX ADDITION (declared by ARC 013, restructured ARC 021), flagged exactly as
+    `MarketDataMode` and `SessionState.UP_DATA_LOSS` are. `nics_risk_subsystem_spec_v1.3.md`
+    §2A:86-92 gives broker-datafeed four commands and two events and no lag concept, and the
+    frozen spec cannot express one. Session-gating and staleness logic must be able to ask the
+    feed how far behind it is, or every bar looks stale at Stage 0 and fresh in production for
+    reasons unrelated to correctness.
+
+    THE MEASUREMENT, cited rather than restated. ARC 013 measured the Stage 0 IBKR delayed
+    stream on MESU6 at **600.0-601.9 s, spread 1.9 s, n=8** (`sessions/SESSION.md` ARC 013
+    table; `docs/dev_and_services_plan.md` records the same row with the mean, 600.3 s). The
+    RANGE is the banked record and the mean is a summary of it. A separate ARC 010 figure —
+    624 s, `reqHistoricalTicks` staleness — measures a DIFFERENT thing and is not this number;
+    conflating the two is how "the ARC 010 lag" entered circulation. Tradovate and DataBento
+    are expected to report 0.0, and that expectation is `VENDOR_DECLARED`, not measured.
+
+    WHY THE OLD SHAPE WAS REPLACED, recorded so it is not relitigated. It was
+    `(declared_lag_s: float, measured: bool, granted_mode)`. Three defects, all one defect:
+
+      1. `measured=False` forced `declared_lag_s` to hold SOMETHING, and
+         `StubBrokerDatafeed` held `0.0`. A fabricated zero on a lag is not a small lie: it
+         is the difference between "this venue is real-time" and "nobody has looked", and a
+         consumer computing freshness cannot tell them apart. AMENDMENT 3 in
+         `docs/SPEC-AMENDMENTS.md` names exactly this.
+      2. A bool cannot say WHERE a figure came from, so a value banked by a prior arc and a
+         value measured five seconds ago read identically.
+      3. There was nowhere to put a DISAGREEMENT between the configured figure and the
+         observed one, so a drifting venue would be invisible above the seam.
+
+    THE VENDOR-BLIND PRIMITIVE IS `excess_staleness_s()`, and it is the whole point of this
+    object. See its docstring for why neither `now - venue_ts` nor `now - recv_ts` is
+    correct on its own, and why this one is correct on both vendors with one threshold."""
+
+    declared_lag_s: float | None
+    """The configured/claimed pipeline delay in seconds. `None` == NOT REPORTED — never 0.0
+    standing in for an absence (AMENDMENT 3). 0.0 means a venue that genuinely claims no
+    delay."""
+
+    observed_lag_s: float | None
+    """The delay this adapter MEASURED from packets, `None` == not observed. Distinct from
+    0.0 for the same reason as above, and the CANNOT-MEASURE floor `debug.md` §7.9 requires."""
+
+    observed_n: int
+    """How many samples `observed_lag_s` rests on. Zero if and only if `observed_lag_s` is
+    None — asserted by `__post_init__`, because a mean over an unstated sample count is the
+    shape ARC 013's own 1.9 s spread exists to argue against."""
+
+    provenance: LagProvenance
+    """Where `declared_lag_s` came from. THE FLOOR IS `UNOBSERVED`, never a nearest match."""
+
     granted_mode: MarketDataMode
+    """The mode IBKR actually GRANTED, never the mode requested. `MarketDataMode.UNKNOWN` is
+    the floor: ARC 013 measured `ib_async`'s `Ticker.marketDataType` DEFAULTING to 1, so an
+    unset field is indistinguishable from a real-time grant unless it is sentinelled first."""
+
+    divergence_tolerance_s: float = 5.0
+    """How far observed may sit from declared before `agreement` reads DIVERGED. Default is
+    derived from the measured spread, not chosen: ARC 013's widest banked spread on this feed
+    is mode 4's 600.1-604.9 s, i.e. 4.8 s, so 5.0 s is the smallest round tolerance that does
+    not call a feed behaving exactly as measured a divergence. A consumer with a §12A
+    `PRICE_STALE_MS` budget of its own supplies its own value."""
+
+    detail: str = ""
+    """Why a reading is absent, or the citation behind a `PRIOR_ARC` figure. Human channel
+    only — never parsed. Nothing a consumer acts on may live here (`debug.md` §7.4)."""
+
+    def __post_init__(self) -> None:
+        if (self.observed_lag_s is None) != (self.observed_n == 0):
+            raise ValueError(
+                f"observed_lag_s={self.observed_lag_s!r} and observed_n={self.observed_n} "
+                "disagree: a sample count without a value, or a value without samples"
+            )
+        if (
+            self.observed_lag_s is not None
+            and self.provenance is not LagProvenance.OBSERVED
+        ):
+            raise ValueError(
+                f"observed_lag_s is set but provenance is {self.provenance.value} — an "
+                "observation that does not declare itself observed is unattributable"
+            )
+        if (
+            self.declared_lag_s is None
+            and self.provenance is not LagProvenance.UNOBSERVED
+        ):
+            raise ValueError(
+                f"declared_lag_s is None but provenance is {self.provenance.value} — a "
+                "provenance for a figure that does not exist"
+            )
+
+    @property
+    def effective_lag_s(self) -> float | None:
+        """The figure a consumer should compute against, or `None` if there is none.
+
+        OBSERVATION OUTRANKS DECLARATION (CLAUDE.md directive 2, prefer direct measurement),
+        so this returns `observed_lag_s` when it exists and `declared_lag_s` otherwise. It
+        returns `None` rather than 0.0 when neither exists, which is what forces
+        `excess_staleness_s` to answer `None` instead of a confident wrong number."""
+        return (
+            self.observed_lag_s
+            if self.observed_lag_s is not None
+            else self.declared_lag_s
+        )
+
+    @property
+    def agreement(self) -> LagAgreement:
+        """Whether the declared figure survived contact with observation. THE FINDING."""
+        if self.declared_lag_s is None:
+            return LagAgreement.NOT_DECLARED
+        if self.observed_lag_s is None:
+            return LagAgreement.NOT_OBSERVED
+        if abs(self.observed_lag_s - self.declared_lag_s) > self.divergence_tolerance_s:
+            return LagAgreement.DIVERGED
+        return LagAgreement.AGREES
+
+    @property
+    def divergence_s(self) -> float | None:
+        """`observed - declared`, or `None` when either side is absent. Signed on purpose: a
+        feed that has fallen FURTHER behind and one that has caught up are different facts."""
+        if self.declared_lag_s is None or self.observed_lag_s is None:
+            return None
+        return self.observed_lag_s - self.declared_lag_s
+
+    def excess_staleness_s(self, venue_ts: float | None, now: float) -> float | None:
+        """THE VENDOR-BLIND FRESHNESS PRIMITIVE: `(now - venue_ts) - effective_lag_s`.
+
+        `None` == CANNOT COMPUTE, which is either an absent `venue_ts` or an unknown lag.
+        Never 0.0 for either, because 0.0 is the healthiest possible answer and would read as
+        a pass.
+
+        WHY THE TWO OBVIOUS COMPUTATIONS ARE BOTH WRONG, stated here so neither is written by
+        a consumer who has not thought about it:
+
+          `now - venue_ts` against a fixed threshold is correct on a 0-lag vendor and WRONG on
+          the Stage 0 IBKR feed, where a perfectly healthy tick is ~600 s old by construction
+          (ARC 013, see the class docstring). That consumer calls a healthy feed stale, and
+          `nics_risk_subsystem_spec_v1.3.md` §6.4:373-374 makes stale mean *halt new entries
+          AND flatten open* — so the error direction is a spurious liquidation.
+
+          `now - recv_ts` is correct on both healthy feeds and WRONG on a wedged one: a feed
+          that keeps delivering packets whose `venue_ts` has stopped advancing has a fresh
+          receipt clock and dead data. That consumer trades on a frozen market.
+
+        THIS ONE IS CORRECT ON ALL THREE. On a 0-lag vendor it reduces to raw data-age. On the
+        Stage 0 IBKR feed a healthy tick measured at 600.3 s yields ~0.3. Transport death and a
+        frozen data clock BOTH make it grow, because `now` advances while `venue_ts` does not.
+        Same consumer code, same threshold, right answer on both vendors and in both faults —
+        which is `nics_risk_subsystem_spec_v1.3.md` §2A:103-104 invariant 1 (the seam is
+        identical across vendors) applied to a quantity §2A does not name.
+
+        WHAT IT IS NOT: a verdict. The threshold is a §12A tunable (`PRICE_STALE_MS`) owned by
+        the consumer, and `nics_risk_subsystem_spec_v1.3.md` §6.4:373 puts the halt+flatten
+        decision on the Limiter. This returns a NUMBER and takes no view."""
+        lag = self.effective_lag_s
+        if venue_ts is None or lag is None:
+            return None
+        return (now - venue_ts) - lag
+
+    @staticmethod
+    def transport_age_s(recv_ts: float | None, now: float) -> float | None:
+        """How long since a packet last ARRIVED, `None` if none ever has.
+
+        The companion half of `excess_staleness_s`, and it is carried separately rather than
+        folded in because the two distinguish the two faults: transport age alone rises when
+        the socket dies and stays flat on a wedged feed, and excess staleness rises in both.
+        A consumer that wants to name WHICH fault it is has to be able to read both, which is
+        why every emission below carries `recv_ts` alongside `venue_ts`."""
+        return None if recv_ts is None else now - recv_ts
+
+
+class BarSource(enum.Enum):
+    """How a bar reached this seam. Declared Nix addition (ARC 021).
+
+    Load-bearing for D1.14: `POLLED_HISTORY` is re-requestable and therefore revisable, and
+    `STREAM_BUILT` is not. A consumer that must know whether its history can change under it
+    reads this rather than knowing which vendor it is talking to."""
+
+    POLLED_HISTORY = "polled_history"
+    STREAM_BUILT = "stream_built"
+
+
+@dataclass(frozen=True)
+class Bar:
+    """One SEALED bar. Declared Nix addition (ARC 021, CHECK-DEBT D1.14).
+
+    NIX ADDITION, flagged exactly as `feed_lag()` is. `nics_risk_subsystem_spec_v1.3.md`
+    §2A:91 says on_tick is "the raw firehose; capture builds bars, never broker-order", so
+    §2A gives broker-datafeed no bar concept at all.
+
+    WHY ONE IS OWED ANYWAY, and this is the argument to check rather than take on trust: at
+    Stage 0 the tick firehose DOES NOT EXIST. ARC 012 measured `reqTickByTickData` returning
+    Err 10189 ("No market data permissions for CME FUT"), and ARC 013 measured
+    `reqMarketDataType(1)` receiving error 354 and no grant callback at all. What the venue
+    will actually hand over on the history path is BARS. An adapter that insisted on §2A's
+    tick shape would have to synthesise ticks from an OHLC aggregate — inventing trades at
+    prices and sizes that no venue ever reported, which is precisely the fabrication
+    `docs/SPEC-AMENDMENTS.md` AMENDMENT 3 forbids. Declaring the bar is the honest option;
+    faking the tick is not.
+
+    §2A's SENTENCE IS NOT VIOLATED. Its subject is *"never broker-order"* — the prohibition is
+    on the ORDER library building bars, and `nics_risk_subsystem_spec_v1.3.md` §2A:86 puts
+    broker-datafeed in-process INSIDE capture.py, which is the process §2A names as the bar
+    builder. What crosses this seam is what the venue said, sealed; the transform library's
+    Renko/M1 construction (§2A:98) is unaffected and still capture.py's.
+
+    EVERY PRICE FIELD IS `float | None`. AMENDMENT 3 again: a venue that reports no volume for
+    a bar reports no volume. Zero is a real volume and means something else."""
+
+    symbol: Symbol
+    bar_start_venue_ts: float
+    """The venue's own bar-open timestamp. HALF THE SEAL KEY, and venue-sourced by
+    requirement — `nics_risk_subsystem_spec_v1.3.md` §2A:106-107 invariant 4. A local clock
+    here would make two adapters disagree about which bar they are talking about."""
+
+    period_s: float
+    """The other half of the seal key. Without it a 1-minute and a 5-minute bar opening at the
+    same instant are the same bar."""
+
+    open: float | None
+    high: float | None
+    low: float | None
+    close: float | None
+    volume: float | None
+
+    recv_ts: float
+    """LOCAL receipt time. Not venue-sourced and never claimed to be — it is the transport
+    clock `FeedLag.transport_age_s` reads, and mixing it with `bar_start_venue_ts` is the
+    error this pair of fields exists to prevent."""
+
+    source: BarSource
+    seal_seq: int
+    """Monotonic per-adapter publication number. Lets a consumer order two seals whose
+    contents are identical, and lets a revision name the seal it contradicts."""
+
+    @property
+    def seal_key(self) -> tuple[Symbol, float, float]:
+        """The identity a seal is held under. Spelled once here so no caller re-derives it."""
+        return (self.symbol, self.bar_start_venue_ts, self.period_s)
+
+    def payload(self) -> tuple[float | None, ...]:
+        """The five values a re-poll could contradict. NOT the timestamps or the sequence —
+        those are about the delivery, not about what the venue claims happened."""
+        return (self.open, self.high, self.low, self.close, self.volume)
+
+
+@dataclass(frozen=True)
+class BarRevision:
+    """The venue told a DIFFERENT story about a bar that was already published (D1.14).
+
+    NIX ADDITION (ARC 021), flagged exactly as `feed_lag()` is.
+
+    WHY IT IS OWED. `docs/dev_and_services_plan.md` records the Stage 0 shape as delayed AND
+    polled, and polled history is re-requestable: a later poll can return different values for
+    a bar a consumer has already written down. Two responses are available and only one is
+    defensible. Rewriting the published bar makes every downstream consumer's history
+    unreproducible and does it silently, because *the revision arrives looking exactly like new
+    data*. Dropping it silently discards the venue's correction. So the bar is SEALED and the
+    contradiction is published as its own event — the consumer learns that the venue's story
+    changed and decides what that is worth, which is a decision the adapter has no standing
+    to make.
+
+    `differing_fields` IS NON-EMPTY BY CONSTRUCTION (`__post_init__`). An identical re-poll is
+    not a revision and must never be reported as one: a stream of no-op "revisions" is how a
+    real one becomes invisible, and a test whose second poll returns identical data would
+    prove nothing (`debug.md` §7.3 — prove non-vacuity first)."""
+
+    sealed: Bar
+    """The published bar, UNCHANGED. Carried whole so a consumer can diff without having kept
+    its own copy."""
+
+    revised_payload: tuple[float | None, ...]
+    """What the later poll said instead, in `Bar.payload()` order."""
+
+    differing_fields: tuple[str, ...]
+    """Which of open/high/low/close/volume differ. Never empty."""
+
+    recv_ts: float
+    revision_seq: int
+
+    def __post_init__(self) -> None:
+        if not self.differing_fields:
+            raise ValueError(
+                "BarRevision with no differing field — an identical re-poll is not a "
+                "revision, and reporting one would bury the real ones"
+            )
+        if self.revised_payload == self.sealed.payload():
+            raise ValueError(
+                "BarRevision whose revised payload equals the sealed payload — "
+                "differing_fields and the payloads disagree"
+            )
+
+
+BAR_PAYLOAD_FIELDS: tuple[str, ...] = ("open", "high", "low", "close", "volume")
+"""The field names `Bar.payload()` returns, in order. Derived from once, never retyped:
+`BarRevision.differing_fields` and every consumer diff index into this."""
 
 
 # ---------------------------------------------------------------------------
@@ -659,12 +1099,48 @@ class OrderEventSink(Protocol):
 
 
 class DatafeedEventSink(Protocol):
-    """Events pushed to capture.py. §2A broker-datafeed events."""
+    """Events pushed to capture.py. §2A broker-datafeed events, plus two declared additions."""
 
     def on_tick(
-        self, symbol: Symbol, price: float, size: float, venue_ts: float
+        self,
+        symbol: Symbol,
+        price: float | None,
+        size: float | None,
+        venue_ts: float | None,
+        *,
+        recv_ts: float,
     ) -> None:
-        """Raw firehose. capture.py builds bars — never broker-order."""
+        """Raw firehose (`nics_risk_subsystem_spec_v1.3.md` §2A:91). capture.py builds bars.
+
+        `recv_ts` IS A NIX ADDITION and it is keyword-only and additive on purpose: §2A:91's
+        positional shape `(symbol, price, size, venue_ts)` is untouched, so this is visibly an
+        addition rather than a redefinition of the locked signature — the same construction
+        `on_ack`'s `reject_category` uses.
+
+        WHY IT IS OWED. `venue_ts` alone cannot distinguish a dead transport from a wedged
+        feed, and a consumer holding only `venue_ts` has exactly two computations available and
+        both are wrong on one of the two vendors — the argument is written out in full at
+        `FeedLag.excess_staleness_s`. `recv_ts` is the LOCAL receipt clock and is never
+        confused with a venue clock; §2A:106-107 invariant 4 governs `venue_ts`, and this field
+        is deliberately outside it.
+
+        `price`, `size` and `venue_ts` are `| None` per `docs/SPEC-AMENDMENTS.md` AMENDMENT 3:
+        a venue that reports no size reports no size, and 0.0 is a real size."""
+
+    def on_bar(self, sealed: Bar) -> None:
+        """A SEALED bar. NIX ADDITION (ARC 021) — see `Bar` for why one is owed at Stage 0.
+
+        Published exactly once per `Bar.seal_key`. A later poll that contradicts it arrives on
+        `on_bar_revision`, never here, so a consumer cannot mistake a correction for new data
+        (CHECK-DEBT D1.14)."""
+
+    def on_bar_revision(self, revision: BarRevision) -> None:
+        """The venue contradicted an already-sealed bar. NIX ADDITION (ARC 021, D1.14).
+
+        A SEPARATE EVENT rather than a flag on `on_bar`, on the `SessionState.UP_DATA_LOSS`
+        argument: a defaulted flag is silently ignorable by an unaware consumer, and the
+        ignorable default here reads as "this is ordinary new data" — which is the exact defect.
+        A distinct event cannot be ignored by omission."""
 
     def on_feed_status(
         self, state: FeedState, symbol: Symbol | None = None, reason: str | None = None
@@ -789,7 +1265,17 @@ DATAFEED_PORT_VERBS: tuple[str, ...] = (
     "feed_lag",
 )
 
-DATAFEED_EVENTS: tuple[str, ...] = ("on_tick", "on_feed_status")
+DATAFEED_EVENTS: tuple[str, ...] = (
+    "on_tick",
+    "on_feed_status",
+    # Declared Nix additions (ARC 021). Each is flagged as one in its own docstring on
+    # DatafeedEventSink above, which is what `checks/check_derived_claims.py` reads to
+    # keep `seam_declared_elements` balanced: an element the seam declares that §2A does
+    # not define and whose docstring does not name it an addition is counted by the code
+    # side and not by the spec side, and the claim reddens. The flag is load-bearing.
+    "on_bar",
+    "on_bar_revision",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -946,16 +1432,42 @@ class StubBrokerDatafeed:
         self._subs.discard(symbol)
 
     def feed_lag(self) -> FeedLag:
+        """A VENDORLESS stub declares no lag. It does not declare zero.
+
+        ARC 021 CORRECTION. This returned `FeedLag(declared_lag_s=0.0, measured=False,
+        granted_mode=REALTIME)` — three fabrications in one object, and the object exists to
+        prevent exactly that. `0.0` was a fabricated value for a quantity nothing had measured;
+        `REALTIME` was a granted mode nobody granted, which is the shape ARC 013 measured
+        `ib_async` producing by default and which `MarketDataMode.UNKNOWN` exists as the floor
+        for; and a consumer computing `excess_staleness_s` against that object would have got a
+        confident number off a stub. `docs/SPEC-AMENDMENTS.md` AMENDMENT 3 names the class."""
         return FeedLag(
-            declared_lag_s=0.0, measured=False, granted_mode=MarketDataMode.REALTIME
+            declared_lag_s=None,
+            observed_lag_s=None,
+            observed_n=0,
+            provenance=LagProvenance.UNOBSERVED,
+            granted_mode=MarketDataMode.UNKNOWN,
+            detail="vendorless stub: no venue, so no lag has been declared or observed",
         )
 
     def simulate_tick(
-        self, symbol: Symbol, price: float, size: float, venue_ts: float
+        self,
+        symbol: Symbol,
+        price: float | None,
+        size: float | None,
+        venue_ts: float | None,
+        *,
+        recv_ts: float | None = None,
     ) -> None:
         """Test hook — not part of the port."""
         if symbol in self._subs:
-            self._sink.on_tick(symbol, price, size, venue_ts)
+            self._sink.on_tick(
+                symbol,
+                price,
+                size,
+                venue_ts,
+                recv_ts=time.time() if recv_ts is None else recv_ts,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -999,6 +1511,40 @@ class HollowBrokerOrder:
         return 0.0
 
 
+class HollowBrokerDatafeed:
+    """Satisfies the datafeed shape. Does nothing. MUST fail behavioural assertions.
+
+    The datafeed counterpart of `HollowBrokerOrder`, added ARC 021 because the feed side had no
+    control at all — `debug.md` §7.12's table records instance 7 as *an order sink passed into
+    the datafeed port*, which survived precisely because no feed event was ever driven through
+    it. A conformance suite with no control cannot tell "the adapter works" from "the assertions
+    are shape-only".
+
+    ITS `feed_lag` IS THE INTERESTING PART. It returns a FULLY-POPULATED, PLAUSIBLE object —
+    declared 0.0, granted REALTIME — which is exactly the pre-ARC-021 stub's answer and exactly
+    what AMENDMENT 3 forbids. So a suite that only checks `feed_lag()` returns a `FeedLag` passes
+    this class, and a suite that checks the ABSENCE is declared does not. That discrimination is
+    what the control measures."""
+
+    def __init__(self, sink: DatafeedEventSink, **_: object):
+        self._sink = sink
+
+    def connect(self) -> None: ...
+    def disconnect(self) -> None: ...
+    def subscribe(self, symbol: Symbol) -> None: ...
+    def unsubscribe(self, symbol: Symbol) -> None: ...
+
+    def feed_lag(self) -> FeedLag:
+        return FeedLag(
+            declared_lag_s=0.0,
+            observed_lag_s=None,
+            observed_n=0,
+            provenance=LagProvenance.VENDOR_DECLARED,
+            granted_mode=MarketDataMode.REALTIME,
+            detail="HOLLOW CONTROL — a plausible answer with nothing behind it",
+        )
+
+
 # ---------------------------------------------------------------------------
 # EXCEPTIONS — neutral. A vendor exception must never escape the adapter.
 # ---------------------------------------------------------------------------
@@ -1020,6 +1566,16 @@ class BrokerUnsupported(BrokerSeamError):
 
 
 class SymbolNotResolved(BrokerSeamError): ...
+
+
+class FeedPollExhausted(BrokerSeamError):
+    """A bounded poll spent its whole attempt budget without a response. Nix addition (ARC 021).
+
+    A DISTINCT class rather than reusing `BrokerNotConnected`, because the two are different
+    facts with different responses: the session may be perfectly alive and the venue simply not
+    answering this request. Returning zero rows instead would make "the venue had nothing" and
+    "we could not reach the venue" the same reading, which is the AMENDMENT 3 failure on the
+    only market-data path Stage 0 has."""
 
 
 # ---------------------------------------------------------------------------
@@ -1112,12 +1668,31 @@ class RecordingFeedSink:
 
     ticks: list[tuple] = field(default_factory=list)
     feed_statuses: list[tuple] = field(default_factory=list)
+    bars: list[Bar] = field(default_factory=list)
+    bar_revisions: list[BarRevision] = field(default_factory=list)
 
-    def on_tick(self, symbol, price, size, venue_ts):
-        self.ticks.append((symbol, price, size, venue_ts))
+    sequence: list[str] = field(default_factory=list)
+    """Every feed event in ARRIVAL ORDER, across all four streams. The datafeed counterpart of
+    `RecordingSink.sequence`, and owed for the same reason: "the seal preceded the revision" is
+    a cross-stream ordering property, and the per-stream lists cannot express it."""
+
+    def on_tick(self, symbol, price, size, venue_ts, *, recv_ts):
+        # APPENDED, not inserted (same discipline as RecordingSink.on_ack): existing
+        # assertions read ticks[i][3] for venue_ts, so recv_ts goes on the end.
+        self.ticks.append((symbol, price, size, venue_ts, recv_ts))
+        self.sequence.append("on_tick")
+
+    def on_bar(self, sealed):
+        self.bars.append(sealed)
+        self.sequence.append("on_bar")
+
+    def on_bar_revision(self, revision):
+        self.bar_revisions.append(revision)
+        self.sequence.append("on_bar_revision")
 
     def on_feed_status(self, state, symbol=None, reason=None):
         self.feed_statuses.append((state, symbol, reason))
+        self.sequence.append("on_feed_status")
 
 
 @dataclass

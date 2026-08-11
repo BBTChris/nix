@@ -1,0 +1,1065 @@
+"""
+test_broker_datafeed.py — adversarial test of the IBKR broker-datafeed adapter (ARC 021).
+
+TIER 1 AND TIER 2 ONLY. `debug.md`'s tiers are sequential and Tier 3 is END-OF-MODULE
+certification (`debug.md` §5:388-397) — a module that did not exist this morning has no
+end-of-module to certify, so no test here is labelled Tier 3 and none attempts one. Tier 3 for
+this module is a later arc's.
+
+WHAT THIS SUITE IS BUILT TO CATCH, in the order the arc's obligations fall:
+
+  §1 ROSTER. The §2A broker-datafeed roster derived from the FROZEN SPEC FILE at run time and
+     compared against the seam's declared tuples. Neither number is typed into this file.
+
+  §2 FRESHNESS, PROVED WITH A MATRIX AND NOT WITH A PAIR. ONE vendor-blind consumer function,
+     ONE threshold, driven across 2 vendors x 3 conditions. The third condition is the
+     non-vacuity: a transport-only implementation passes cells (a) and (b) on both vendors and
+     fails (c), so dropping (c) would leave a suite that a wrong implementation passes.
+
+  §3 THE ABSENCE PRINCIPLE (`docs/SPEC-AMENDMENTS.md` AMENDMENT 3). Every place the adapter
+     could substitute a plausible value for a missing one, asserted to declare instead.
+
+  §4 BAR IMMUTABILITY (`docs/CHECK-DEBT.md` D1.14), with an explicit NON-VACUITY assertion that
+     the two payloads genuinely differ — so the test cannot silently degrade into one where the
+     second poll returns identical data and proves nothing.
+
+  §5 MULTI-WRITER FIELDS (ARC 020 A8). Every field written by more than one handler has its
+     meaning asserted PER WRITER. `avg_price` carried two meanings twice on the order path
+     (`docs/CHECK-DEBT.md` D1.29 is the third instance of the shape); a fresh module is the
+     cheap moment to prevent a fourth.
+
+  §6 STAGE 0 ABSENCES, declared through capabilities and REFUSED rather than silent.
+
+  §7 IDENTITY. clientId 0 and 1 refused at construction.
+
+  §8 CONTROLS. `HollowBrokerDatafeed` is structurally conformant and behaviourally empty, and
+     the assertions that matter MUST fail against it. `debug.md` §7.12's vacuity table lists as
+     instance 7 *an order sink passed into the datafeed port* — which survived precisely
+     because no feed event was ever driven through it. Every sink here is driven.
+
+THE FAKE IS AWKWARD ON PURPOSE. `FakeIBFeed` reproduces the behaviours ARC 013 measured, not a
+convenient idealisation: a `reqMarketDataType` request that is GRANTED AS SOMETHING ELSE with no
+error, and a subscription that receives no grant callback at all. A polite fake cannot express
+the defect the sentinel exists to catch.
+"""
+
+from __future__ import annotations
+
+# ---------------------------------------------------------------------------
+# pylint suppressions for THIS FILE, each with its reason. Named codes only.
+#
+#   invalid-name
+#       FakeIBFeed mirrors ib_async's surface: reqMarketDataType, reqMktData,
+#       cancelMktData, connect, disconnect. Renaming them to snake_case would
+#       make the fake stop standing in for the thing it fakes.
+#   protected-access
+#       The tests read `ad._symbols[sym].granted_mode` and call `ad._on_ib_tick`
+#       directly. That is deliberate: the grant sentinel and the per-symbol
+#       clocks are internal STATE whose correctness IS the property under test,
+#       and reading them is direct measurement rather than inference from an
+#       output that might mask them (CLAUDE.md directive 2).
+#   missing-function-docstring / missing-class-docstring
+#       Fake methods are named after the vendor calls they stand in for.
+#   unused-argument
+#       Fake vendor methods accept the arguments the real ones take.
+#   too-many-* / too-many-lines
+#       An adversarial driver's size IS its coverage. It is split into named
+#       sections; collapsing assertions to satisfy a count deletes tests.
+#   too-few-public-methods
+#       Two one-method stand-ins drive the poll loop's failure and success arms.
+#   too-many-instance-attributes
+#       FakeIBFeed's fields are one per vendor behaviour it must be able to
+#       express. Trimming them would make the fake unable to represent a defect,
+#       which is `debug.md` §7.12 instance 5 exactly.
+#   use-implicit-booleaness-not-comparison
+#       `== []` is deliberate on every conformance-checker result. `not x` is
+#       also true for `None`, so a checker that started returning None instead
+#       of a list would pass a `not` assertion while having measured nothing.
+#       The comparison asserts the TYPE and the emptiness together.
+#   duplicate-code
+#       Section banner comments are intentionally identical.
+# pylint: disable=invalid-name,protected-access,missing-function-docstring
+# pylint: disable=missing-class-docstring,unused-argument,too-many-locals
+# pylint: disable=too-many-statements,too-many-lines,too-few-public-methods
+# pylint: disable=too-many-instance-attributes,duplicate-code
+# pylint: disable=too-many-arguments,too-many-positional-arguments
+# pylint: disable=use-implicit-booleaness-not-comparison
+import pathlib
+import re
+
+import pytest  # pylint: disable=import-error
+from broker_datafeed_ibkr import (
+    DATAFEED_CLIENT_ID,
+    IB_MARKETDATA_EVIDENCE,
+    IB_STAGE0_DELAYED_LAG,
+    IBKRBrokerDatafeed,
+)
+from broker_seam import (
+    BAR_PAYLOAD_FIELDS,
+    DATAFEED_EVENTS,
+    DATAFEED_PORT_VERBS,
+    Bar,
+    BarRevision,
+    BarSource,
+    BrokerDatafeedPort,
+    BrokerNotConnected,
+    BrokerUnsupported,
+    FeedLag,
+    FeedPollExhausted,
+    FeedState,
+    HollowBrokerDatafeed,
+    LagAgreement,
+    LagProvenance,
+    MarketDataMode,
+    RecordingFeedSink,
+    StubBrokerDatafeed,
+    check_await_conformance,
+    check_structural_conformance,
+)
+
+NIX_HOME = pathlib.Path(__file__).resolve().parents[2]
+SPEC = NIX_HOME / "docs" / "nics_risk_subsystem_spec_v1.3.md"
+
+SYM = "MESU6"
+
+
+# ===========================================================================
+# THE FAKE — awkward on purpose
+# ===========================================================================
+
+
+class FakeIBFeed:
+    """Stands in for ib_async.IB on the market-data surface, with ARC 013's real behaviours.
+
+    `grant_map` is what makes it useful: it maps a REQUESTED marketDataType to the mode the
+    venue will actually grant, and `None` means *no grant callback at all*. Both are measured
+    behaviours (`sessions/SESSION.md` ARC 013 table): mode 4 was granted as 3, and mode 1
+    received no callback and zero ticks. A fake that always grants what was asked cannot
+    express either, which is exactly the shape `debug.md` §7.12 instance 5 records — the
+    instrument could not represent the difference it was asked to detect.
+    """
+
+    def __init__(self, grant_map=None):
+        self.connected = False
+        self.client_id = None
+        self.requested: list[int] = []
+        self.subscribed: list[str] = []
+        self.cancelled: list[str] = []
+        self.grant_map = {} if grant_map is None else grant_map
+        self._adapter = None
+        self._pending = None
+
+    def bind(self, adapter) -> None:
+        """Lets the fake deliver the grant callback the way IBKR does — asynchronously with
+        respect to the request, and only when it feels like it."""
+        self._adapter = adapter
+
+    def connect(self, host, port, clientId=None):
+        self.connected = True
+        self.client_id = clientId
+
+    def disconnect(self):
+        self.connected = False
+
+    def reqMarketDataType(self, mode_value):
+        self.requested.append(mode_value)
+        self._pending = mode_value
+
+    def reqMktData(self, symbol):
+        self.subscribed.append(symbol)
+        granted = self.grant_map.get(self._pending, self._pending)
+        if granted is not None and self._adapter is not None:
+            self._adapter._on_ib_market_data_type(symbol, granted)
+
+    def cancelMktData(self, symbol):
+        self.cancelled.append(symbol)
+
+
+def make_adapter(*, grant_map=None, history=None, **kwargs):
+    """A connected adapter over a bound fake. Returns (adapter, sink, fake)."""
+    sink = RecordingFeedSink()
+    fake = FakeIBFeed(grant_map=grant_map)
+    ad = IBKRBrokerDatafeed(sink, ib=fake, history_source=history, **kwargs)
+    fake.bind(ad)
+    ad.connect()
+    return ad, sink, fake
+
+
+def bar_row(start, *, period_s=60.0, o=1.0, h=2.0, low=0.5, c=1.5, v=10.0):
+    return {
+        "bar_start_venue_ts": start,
+        "period_s": period_s,
+        "open": o,
+        "high": h,
+        "low": low,
+        "close": c,
+        "volume": v,
+    }
+
+
+# ===========================================================================
+# §1 — THE ROSTER, DERIVED FROM THE FROZEN SPEC FILE
+# ===========================================================================
+
+
+def _spec_datafeed_block() -> str:
+    """The `### broker-datafeed` block of the frozen spec, read at run time.
+
+    Derived, never transcribed (`CLAUDE.md` directive 3). If the spec is ever re-versioned the
+    numbers below move with it instead of going stale silently, which is `debug.md` §7.4."""
+    text = SPEC.read_text(encoding="utf-8")
+    start = text.index("### broker-datafeed")
+    end = text.index("\n**Strategy isolation", start)
+    return text[start:end]
+
+
+def _spec_bullets(block: str) -> list[str]:
+    return [ln for ln in block.splitlines() if ln.startswith("- ")]
+
+
+def _spec_identifiers(block: str) -> list[str]:
+    """Identifiers, not bullets. Only the LEADING backtick span of a bullet is read, so a prose
+    mention later in the same bullet cannot be counted as a second declaration — the same rule
+    `checks/check_derived_claims.py` applies, reached the same way and deliberately not
+    imported (that module lives in `checks/`, which this arc may not write)."""
+    names: list[str] = []
+    for line in _spec_bullets(block):
+        span = re.match(r"-\s+`([^`]+)`", line)
+        if span:
+            names.extend(re.findall(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(", span.group(1)))
+    return names
+
+
+def test_roster_bullets_and_identifiers_disagree_and_both_are_derived():
+    """§2A's BULLET count and its IDENTIFIER count are different numbers, on purpose.
+
+    A single bullet — `connect() / disconnect()` — declares TWO identifiers, so counting
+    bullets under-reports the contract by exactly the number of slash-joined pairs. Both are
+    asserted so a future reader cannot pick whichever supports the claim they are making."""
+    block = _spec_datafeed_block()
+    bullets = _spec_bullets(block)
+    identifiers = _spec_identifiers(block)
+    assert len(bullets) == 4, bullets
+    assert len(identifiers) == 6, identifiers
+    assert identifiers == [
+        "connect",
+        "disconnect",
+        "subscribe",
+        "unsubscribe",
+        "on_tick",
+        "on_feed_status",
+    ]
+    # The disagreement itself is the property. If a future spec edit made them equal, that is a
+    # fact worth failing over rather than passing silently.
+    assert len(bullets) != len(identifiers)
+
+
+def test_seam_roster_is_spec_plus_flagged_additions():
+    """Every seam-declared datafeed element is in §2A or is a FLAGGED Nix addition.
+
+    The count is DERIVED from both sides. `check_derived_claims.py` enforces the same balance
+    tree-wide; this asserts it for the datafeed half specifically, so a seam edit that adds an
+    unflagged element reddens here too and not only in a check the suite does not run."""
+    spec = set(_spec_identifiers(_spec_datafeed_block()))
+    seam = set(DATAFEED_PORT_VERBS) | set(DATAFEED_EVENTS)
+    additions = seam - spec
+    assert spec <= seam, f"seam does not declare §2A element(s): {sorted(spec - seam)}"
+    assert additions == {"feed_lag", "on_bar", "on_bar_revision"}
+    assert len(seam) == len(spec) + len(additions) == 9
+
+
+def test_adapter_conforms_structurally_and_in_await_ness():
+    ad, _, _ = make_adapter()
+    assert check_structural_conformance(ad, DATAFEED_PORT_VERBS) == []
+    # callable() is true for `async def` too, so the structural check alone cannot tell a sync
+    # verb from a coroutine function. Both are required — ARC 014's finding.
+    assert check_await_conformance(ad, BrokerDatafeedPort, DATAFEED_PORT_VERBS) == []
+    assert isinstance(ad, BrokerDatafeedPort)
+
+
+def test_recording_sink_implements_every_declared_event():
+    """The sink a test drives must implement the whole event set, or a driven event silently
+    goes nowhere. `debug.md` §7.12 instance 7 is exactly this defect one type over."""
+    sink = RecordingFeedSink()
+    assert check_structural_conformance(sink, DATAFEED_EVENTS) == []
+
+
+def test_no_shared_object_with_the_order_library():
+    """§2A:105-106 invariant 3, asserted rather than asserted-in-prose.
+
+    `nics_risk_subsystem_spec_v1.3.md` §2A:105-106: *order and datafeed contracts are disjoint
+    — no shared object*. The datafeed module must not reach into the order library at all, and
+    the check is on the IMPORT GRAPH because that is where a shared base class or a shared
+    error table would show up."""
+    source = (NIX_HOME / "scripts" / "broker" / "broker_datafeed_ibkr.py").read_text(
+        encoding="utf-8"
+    )
+    import_lines = [
+        ln
+        for ln in source.splitlines()
+        if ln.startswith(("import ", "from ")) and "#" not in ln.split()[0]
+    ]
+    offenders = [
+        ln for ln in import_lines if "broker_order" in ln or "ibkr_mapping" in ln
+    ]
+    assert offenders == [], offenders
+    ad, _, _ = make_adapter()
+    # And no order verb reachable on the datafeed adapter.
+    for verb in (
+        "place_order",
+        "cancel_order",
+        "flatten",
+        "get_margin",
+        "query_positions",
+        "query_balance",
+        "query_order_status",
+    ):
+        assert not hasattr(ad, verb), verb
+
+
+# ===========================================================================
+# §2 — FRESHNESS: ONE CONSUMER, ONE THRESHOLD, SIX CELLS
+# ===========================================================================
+
+STALE_BUDGET_S = 30.0
+"""The consumer's threshold. ONE value across all six cells — if a cell needed its own, the
+interface would not be vendor-blind and the matrix would be proving nothing."""
+
+
+def consumer_verdict(lag: FeedLag, venue_ts, recv_ts, now) -> str:
+    """THE VENDOR-BLIND CONSUMER. One function, no vendor knowledge, used by all six cells.
+
+    This is what capture.py or the Limiter would write. It knows nothing about IBKR, about 600
+    seconds, or about which mode was granted — it asks the feed how far behind it is and
+    computes excess staleness against its own §12A-derived budget.
+
+    THE TWO WRONG CONSUMERS, written out so the difference is visible rather than asserted:
+      `now - venue_ts > BUDGET`  is right on a 0-lag vendor, and calls the healthy Stage 0
+        IBKR feed STALE on every single tick — a spurious halt+flatten
+        (`nics_risk_subsystem_spec_v1.3.md` §6.4:373-374).
+      `now - recv_ts > BUDGET`   is right on both healthy feeds, and calls a WEDGED feed FRESH
+        — packets keep arriving, so the receipt clock stays young while the data is dead.
+    Neither is used here. `excess_staleness_s` is right in all six cells with one threshold."""
+    excess = lag.excess_staleness_s(venue_ts, now)
+    if excess is None:
+        # CANNOT COMPUTE is not FRESH. Fail closed and loud (`CLAUDE.md` directive 4).
+        return "STALE"
+    transport = FeedLag.transport_age_s(recv_ts, now)
+    if transport is None or transport > STALE_BUDGET_S:
+        return "STALE"
+    return "STALE" if excess > STALE_BUDGET_S else "FRESH"
+
+
+def lag_for(declared: float) -> FeedLag:
+    """A vendor's lag declaration. The ONLY thing that differs between the two vendor columns."""
+    return FeedLag(
+        declared_lag_s=declared,
+        observed_lag_s=None,
+        observed_n=0,
+        provenance=LagProvenance.VENDOR_DECLARED,
+        granted_mode=MarketDataMode.DELAYED,
+    )
+
+
+TRADOVATE_LAG = 0.0
+IBKR_STAGE0_LAG = IB_STAGE0_DELAYED_LAG.mean_s  # derived, never typed
+
+
+# (vendor label, declared lag, condition label, venue_ts, recv_ts, now, expected)
+#
+# `now` is fixed at 10_000.0 in every cell so the arithmetic is readable. The three conditions:
+#   (a) healthy          — a packet just arrived carrying a venue_ts that is exactly `lag` old
+#   (b) transport dead   — the last packet arrived 300 s ago and nothing since
+#   (c) data-clock stalled — packets STILL ARRIVING (recv_ts is 1 s old) but venue_ts frozen
+#                            300 s in the past. THIS IS THE NON-VACUITY CELL.
+NOW = 10_000.0
+FRESHNESS_MATRIX = [
+    ("tradovate", TRADOVATE_LAG, "healthy", NOW - TRADOVATE_LAG, NOW - 1.0, "FRESH"),
+    ("tradovate", TRADOVATE_LAG, "transport-dead", NOW - 300.0, NOW - 300.0, "STALE"),
+    ("tradovate", TRADOVATE_LAG, "data-stalled", NOW - 300.0, NOW - 1.0, "STALE"),
+    (
+        "ibkr-stage0",
+        IBKR_STAGE0_LAG,
+        "healthy",
+        NOW - IBKR_STAGE0_LAG,
+        NOW - 1.0,
+        "FRESH",
+    ),
+    (
+        "ibkr-stage0",
+        IBKR_STAGE0_LAG,
+        "transport-dead",
+        NOW - IBKR_STAGE0_LAG - 300.0,
+        NOW - 300.0,
+        "STALE",
+    ),
+    (
+        "ibkr-stage0",
+        IBKR_STAGE0_LAG,
+        "data-stalled",
+        NOW - IBKR_STAGE0_LAG - 300.0,
+        NOW - 1.0,
+        "STALE",
+    ),
+]
+
+
+def test_freshness_matrix_two_vendors_three_conditions():
+    """2 vendors x 3 conditions, ONE consumer function, ONE threshold. All six must agree.
+
+    COMPARED CELL BY CELL, NOT IN AGGREGATE (`debug.md` §7.7). The two dicts below are keyed by
+    (vendor, condition), so a failure names the exact cell and shows the whole table rather than
+    reporting "5 of 6". A count would let one cell flip and be absorbed.
+
+    DELIBERATELY NOT `@pytest.mark.parametrize` OVER A NAME. `checks/check_derived_claims.py`'s
+    `pytest_collected_tests` claim counts tests by AST and refuses to count a parametrize whose
+    argvalues is not a literal sequence — correctly, because it cannot know how many cases a
+    name expands to. Parametrising over `FRESHNESS_MATRIX` turned that claim from a comparison
+    into a CANNOT_MEASURE, i.e. this suite would have silently disarmed a tree-wide gate to buy
+    itself prettier output. Measured, not guessed: the claim went `pytest_collected_tests=242`
+    to `NOT MEASURED` on the parametrised version and back to a live comparison on this one."""
+    expected = {(row[0], row[2]): row[5] for row in FRESHNESS_MATRIX}
+    actual = {
+        (vendor, condition): consumer_verdict(lag_for(declared), venue_ts, recv_ts, NOW)
+        for vendor, declared, condition, venue_ts, recv_ts, _ in FRESHNESS_MATRIX
+    }
+    assert actual == expected
+    assert len(actual) == 6
+
+
+def test_matrix_covers_six_distinct_cells():
+    """Non-vacuity of the matrix itself: six cells, two vendors, three conditions, and both
+    verdicts represented. A parametrised suite that silently lost half its rows would still
+    pass every row it kept."""
+    assert len(FRESHNESS_MATRIX) == 6
+    assert len({row[0] for row in FRESHNESS_MATRIX}) == 2
+    assert len({row[2] for row in FRESHNESS_MATRIX}) == 3
+    assert {row[5] for row in FRESHNESS_MATRIX} == {"FRESH", "STALE"}
+
+
+def test_the_two_wrong_consumers_are_actually_wrong():
+    """THE NON-VACUITY OF THE WHOLE §2. If the naive computations happened to be right, the
+    primitive would be buying nothing and the matrix would prove nothing.
+
+    So both wrong consumers are RUN, and each is shown to fail on the cell it fails on. This is
+    `debug.md` §7.3 — prove non-vacuity before you prove anything else — applied to a design
+    argument rather than to a gate."""
+    ibkr = lag_for(IBKR_STAGE0_LAG)
+
+    # (i) `now - venue_ts` on a HEALTHY IBKR tick: 600.3 s > 30 s budget -> calls it stale.
+    healthy_venue_ts = NOW - IBKR_STAGE0_LAG
+    assert (NOW - healthy_venue_ts) > STALE_BUDGET_S
+    assert consumer_verdict(ibkr, healthy_venue_ts, NOW - 1.0, NOW) == "FRESH"
+
+    # (ii) `now - recv_ts` on a WEDGED feed: 1 s -> calls dead data fresh.
+    wedged_venue_ts = NOW - IBKR_STAGE0_LAG - 300.0
+    assert (NOW - (NOW - 1.0)) < STALE_BUDGET_S
+    assert consumer_verdict(ibkr, wedged_venue_ts, NOW - 1.0, NOW) == "STALE"
+
+
+def test_excess_staleness_reduces_to_data_age_on_a_zero_lag_vendor():
+    """On a 0-lag vendor the primitive IS raw data-age — that is what makes it vendor-blind."""
+    zero = lag_for(0.0)
+    assert zero.excess_staleness_s(NOW - 7.0, NOW) == pytest.approx(7.0)
+    ibkr = lag_for(IBKR_STAGE0_LAG)
+    assert ibkr.excess_staleness_s(NOW - IBKR_STAGE0_LAG - 7.0, NOW) == pytest.approx(
+        7.0
+    )
+
+
+def test_adapter_freshness_uses_the_same_primitive():
+    """The adapter's own derived `on_feed_status` agrees with the vendor-blind consumer.
+
+    `capabilities.pushes_feed_status` is False, so §2A:92's event is DERIVED here. If the
+    adapter's derivation and the consumer's computation could disagree, one of them would be
+    the real definition and the other decoration."""
+    ad, sink, _ = make_adapter(grant_map={3: 3})
+    ad.subscribe(SYM)
+    now = 10_000.0
+    healthy_venue_ts = now - IB_STAGE0_DELAYED_LAG.mean_s
+    ad._on_ib_tick(SYM, 7782.5, 1.0, healthy_venue_ts, recv_ts=now - 1.0)
+    assert ad.evaluate_freshness(now) is FeedState.UP
+    assert sink.feed_statuses[-1][0] is FeedState.UP
+
+    # Same subscription, data clock frozen 300 s: packets are still arriving.
+    ad._on_ib_tick(SYM, 7782.5, 1.0, healthy_venue_ts - 300.0, recv_ts=now - 0.5)
+    assert ad.evaluate_freshness(now) is FeedState.STALE
+    assert sink.feed_statuses[-1][0] is FeedState.STALE
+
+
+def test_freshness_on_a_symbol_that_never_ticked_is_stale_not_fresh():
+    """CANNOT COMPUTE fails toward STALE. A symbol with no venue timestamp has no freshness,
+    and an unanswerable question is not an answer of 'fresh' (`CLAUDE.md` directive 4)."""
+    ad, _, _ = make_adapter(grant_map={3: 3})
+    ad.subscribe(SYM)
+    assert ad.evaluate_freshness(10_000.0) is FeedState.STALE
+
+
+# ===========================================================================
+# §3 — THE ABSENCE PRINCIPLE (SPEC-AMENDMENTS.md AMENDMENT 3)
+# ===========================================================================
+
+
+def test_unobserved_lag_is_a_distinct_state_not_a_fabricated_zero():
+    """The whole point of restructuring `FeedLag`. A vendorless stub declares NOTHING."""
+    stub_lag = StubBrokerDatafeed(RecordingFeedSink()).feed_lag()
+    assert stub_lag.declared_lag_s is None
+    assert stub_lag.observed_lag_s is None
+    assert stub_lag.provenance is LagProvenance.UNOBSERVED
+    assert stub_lag.granted_mode is MarketDataMode.UNKNOWN
+    assert stub_lag.agreement is LagAgreement.NOT_DECLARED
+    # And the consequence a consumer actually feels: no confident number falls out of it.
+    assert stub_lag.excess_staleness_s(NOW - 5.0, NOW) is None
+
+
+def test_a_prior_arc_figure_declares_itself_as_one():
+    """The Stage 0 figure is a REPLAY of ARC 013's measurement, and says so.
+
+    No tap session ran in ARC 021 (`~/nix/downloads/TAP_SESSION.md` does not exist), so the
+    figure must not read as a fresh observation. `agreement is NOT_OBSERVED` is the machine-
+    readable half of that; `detail` carries the citation and the re-measurement obligation."""
+    ad, _, _ = make_adapter(grant_map={3: 3})
+    lag = ad.feed_lag()
+    assert lag.provenance is LagProvenance.PRIOR_ARC
+    assert lag.observed_lag_s is None and lag.observed_n == 0
+    assert lag.agreement is LagAgreement.NOT_OBSERVED
+    assert lag.declared_lag_s == IB_STAGE0_DELAYED_LAG.mean_s
+    assert "RE-MEASUREMENT IS OWED" in lag.detail
+    assert "ARC 013" in lag.detail
+    # The banked record is a RANGE and the scalar says which summary of it it is.
+    assert f"{IB_STAGE0_DELAYED_LAG.low_s}-{IB_STAGE0_DELAYED_LAG.high_s}" in lag.detail
+
+
+def test_observation_promotes_provenance_and_a_divergence_is_readable():
+    """Where the lag CAN be observed, the declared figure is CHECKED — and a divergence is a
+    value on the object, not a log line."""
+    ad, _, _ = make_adapter(grant_map={3: 3})
+    ad.subscribe(SYM)
+    now = 10_000.0
+    for i in range(4):
+        ad._on_ib_tick(SYM, 1.0, 1.0, now - 600.0 - i, recv_ts=now - i)
+    lag = ad.feed_lag(SYM)
+    assert lag.provenance is LagProvenance.OBSERVED
+    assert lag.observed_n == 4
+    assert lag.observed_lag_s == pytest.approx(600.0)
+    assert lag.agreement is LagAgreement.AGREES
+    assert lag.divergence_s == pytest.approx(600.0 - IB_STAGE0_DELAYED_LAG.mean_s)
+
+    # Now a feed that has fallen far behind its declaration.
+    ad2, _, _ = make_adapter(grant_map={3: 3})
+    ad2.subscribe(SYM)
+    ad2._on_ib_tick(SYM, 1.0, 1.0, now - 900.0, recv_ts=now)
+    diverged = ad2.feed_lag(SYM)
+    assert diverged.agreement is LagAgreement.DIVERGED
+    assert diverged.divergence_s == pytest.approx(900.0 - IB_STAGE0_DELAYED_LAG.mean_s)
+    # OBSERVATION OUTRANKS DECLARATION: the consumer computes against what was measured.
+    assert diverged.effective_lag_s == pytest.approx(900.0)
+
+
+def test_feedlag_refuses_to_be_constructed_incoherently():
+    """A value with no samples, or samples with no value, is not a state this object may hold."""
+    with pytest.raises(ValueError, match="disagree"):
+        FeedLag(
+            declared_lag_s=1.0,
+            observed_lag_s=5.0,
+            observed_n=0,
+            provenance=LagProvenance.OBSERVED,
+            granted_mode=MarketDataMode.DELAYED,
+        )
+    with pytest.raises(ValueError, match="does not declare itself observed"):
+        FeedLag(
+            declared_lag_s=1.0,
+            observed_lag_s=5.0,
+            observed_n=3,
+            provenance=LagProvenance.PRIOR_ARC,
+            granted_mode=MarketDataMode.DELAYED,
+        )
+    with pytest.raises(ValueError, match="provenance for a figure that does not exist"):
+        FeedLag(
+            declared_lag_s=None,
+            observed_lag_s=None,
+            observed_n=0,
+            provenance=LagProvenance.VENDOR_DECLARED,
+            granted_mode=MarketDataMode.UNKNOWN,
+        )
+
+
+def test_absent_tick_fields_are_declared_not_defaulted():
+    """A packet with no size and no venue timestamp emits None for both, and the LOCAL receipt
+    clock is NOT substituted into the venue field (§2A:106-107 invariant 4)."""
+    ad, sink, _ = make_adapter(grant_map={3: 3})
+    ad.subscribe(SYM)
+    ad._on_ib_tick(SYM, None, None, None, recv_ts=123.0)
+    symbol, price, size, venue_ts, recv_ts = sink.ticks[-1]
+    assert (symbol, price, size, venue_ts) == (SYM, None, None, None)
+    assert recv_ts == 123.0
+    # An absent venue timestamp contributes NO lag sample — a fabricated 0 sample here would
+    # be a measurement of nothing entering a mean.
+    assert ad.feed_lag(SYM).observed_lag_s is None
+
+
+def test_absent_bar_fields_are_declared_not_defaulted():
+    """A bar the venue reported no volume for reports no volume. 0.0 is a real volume."""
+    row = bar_row(1000.0)
+    del row["volume"]
+    ad, sink, _ = make_adapter(grant_map={3: 3}, history=lambda s: [row])
+    ad.subscribe(SYM)
+    ad.poll_history(SYM)
+    assert sink.bars[-1].volume is None
+
+
+def test_no_grant_callback_reports_unknown_never_the_requested_mode():
+    """ARC 013's measured trap, encoded. `ib_async`'s `Ticker.marketDataType` DEFAULTS to 1, so
+    an unset field is indistinguishable from a real-time grant unless it is sentinelled."""
+    ad, _, _ = make_adapter(grant_map={3: None})  # request 3, venue says nothing
+    ad.subscribe(SYM)
+    assert ad.granted_mode(SYM) is MarketDataMode.UNKNOWN
+    assert "NO GRANT CALLBACK" in ad.granted_mode_divergence(SYM)
+    assert ad.feed_lag(SYM).granted_mode is MarketDataMode.UNKNOWN
+
+
+def test_silent_downgrade_is_a_readable_finding():
+    """`docs/CHECK-DEBT.md` D1.13: assert the GRANTED marketDataType and FAIL on a silent
+    downgrade. ARC 013 measured mode 4 requested and mode 3 granted, with no error."""
+    ad, _, _ = make_adapter(
+        grant_map={4: 3}, requested_mode=MarketDataMode.DELAYED_FROZEN
+    )
+    ad.subscribe(SYM)
+    assert ad.granted_mode(SYM) is MarketDataMode.DELAYED
+    finding = ad.granted_mode_divergence(SYM)
+    assert "SILENT DOWNGRADE" in finding
+    assert "DELAYED_FROZEN" in finding and "DELAYED" in finding
+
+
+def test_a_grant_the_adapter_cannot_interpret_lands_on_unknown():
+    """An unrecognised mode is never coerced to the requested one. An unknown that reads as a
+    known is worse than one that reads as unknown."""
+    ad, _, _ = make_adapter(grant_map={3: 77})
+    ad.subscribe(SYM)
+    assert ad.granted_mode(SYM) is MarketDataMode.UNKNOWN
+
+
+def test_mixed_grants_report_unknown_rather_than_one_of_them():
+    """Two subscriptions granted different modes have no single mode, and reporting one of them
+    adapter-wide would be a fabricated value."""
+    ad, _, _ = make_adapter(grant_map={3: 3})
+    ad.subscribe(SYM)
+    ad._symbols["OTHER"] = ad._symbols[SYM].__class__(
+        granted_mode=MarketDataMode.DELAYED_FROZEN
+    )
+    assert ad.granted_mode() is MarketDataMode.UNKNOWN
+
+
+def test_exhausted_poll_raises_rather_than_returning_zero_rows():
+    """'The venue had nothing' and 'we could not reach the venue' must never read the same."""
+
+    class AlwaysFails:
+        def __call__(self, symbol):
+            raise TimeoutError("no response")
+
+    ad, _, _ = make_adapter(grant_map={3: 3}, history=AlwaysFails(), poll_attempts=3)
+    ad.subscribe(SYM)
+    with pytest.raises(FeedPollExhausted, match="exhausted 3 attempt"):
+        ad.poll_history(SYM)
+    attempts = ad.poll_attempts()
+    assert len(attempts) == 3 and all(not a.ok for a in attempts)
+    assert all("TimeoutError" in a.error for a in attempts)
+
+
+def test_bounded_poll_retries_and_then_succeeds():
+    """The retry §6.4:373-374 mandates: it must actually retry, or the bound is decoration."""
+
+    class FailsThenWorks:
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(self, symbol):
+            self.calls += 1
+            if self.calls < 3:
+                raise OSError("transient")
+            return [bar_row(1000.0)]
+
+    source = FailsThenWorks()
+    ad, sink, _ = make_adapter(grant_map={3: 3}, history=source, poll_attempts=3)
+    ad.subscribe(SYM)
+    assert ad.poll_history(SYM) == 1
+    assert source.calls == 3
+    assert [a.ok for a in ad.poll_attempts()] == [False, False, True]
+    assert len(sink.bars) == 1
+
+
+def test_a_zero_attempt_budget_is_refused():
+    """A poll budget of zero would make the only Stage 0 market-data path a silent no-op."""
+    with pytest.raises(ValueError, match="floor is 1 attempt"):
+        IBKRBrokerDatafeed(RecordingFeedSink(), poll_attempts=0)
+
+
+def test_poll_without_a_history_source_refuses_rather_than_returning_nothing():
+    ad, _, _ = make_adapter(grant_map={3: 3})
+    ad.subscribe(SYM)
+    with pytest.raises(BrokerUnsupported, match="no history source"):
+        ad.poll_history(SYM)
+
+
+# ===========================================================================
+# §4 — BAR IMMUTABILITY (CHECK-DEBT D1.14)
+# ===========================================================================
+
+
+def test_a_sealed_bar_is_never_rewritten_and_the_revision_is_observable():
+    """SEAL AND NEVER REWRITE, with the revision surfaced as its own event.
+
+    The pathway, declared per `debug.md` §4 STAGE 4:
+      PRECONDITIONS  — a subscribed symbol and a history source under test control.
+      END STATE      — after a second poll returning DIFFERENT values for the same bar, the
+                       published bar is byte-for-byte what it was, AND a consumer has learned
+                       that the venue's story changed.
+      OBSERVABLES    — `sink.bars` (unchanged, still length 1), the sealed bar's payload
+                       (identical to the first poll's), `sink.bar_revisions` (length 1 naming
+                       the differing fields), and the arrival ORDER in `sink.sequence`.
+    'The call did not raise' is not one of those, deliberately."""
+    first = bar_row(1000.0, c=1.5, v=10.0)
+    revised = bar_row(1000.0, c=1.7, v=12.0)
+    polls = [[first], [revised]]
+    ad, sink, _ = make_adapter(grant_map={3: 3}, history=lambda s: polls.pop(0))
+    ad.subscribe(SYM)
+
+    ad.poll_history(SYM)
+    published = sink.bars[0]
+    payload_before = published.payload()
+    assert len(sink.bars) == 1
+
+    # NON-VACUITY, ASSERTED EXPLICITLY AND FIRST. A test whose second poll returns identical
+    # data proves nothing, and would pass against an adapter with no seal at all. This
+    # assertion is what stops this test silently degrading into that one.
+    assert tuple(first[f] for f in BAR_PAYLOAD_FIELDS) != tuple(
+        revised[f] for f in BAR_PAYLOAD_FIELDS
+    ), "the two polls must genuinely differ or this test measures nothing"
+
+    ad.poll_history(SYM)
+
+    # THE BAR IS UNCHANGED — not re-emitted, not mutated, same object, same payload.
+    assert len(sink.bars) == 1
+    assert sink.bars[0] is published
+    assert published.payload() == payload_before
+    assert ad.sealed_bar(SYM, 1000.0, 60.0).payload() == payload_before
+
+    # THE REVISION IS OBSERVABLE, on its own event and in the retained record.
+    assert len(sink.bar_revisions) == 1
+    rev = sink.bar_revisions[0]
+    assert isinstance(rev, BarRevision)
+    assert rev.sealed is published
+    assert set(rev.differing_fields) == {"close", "volume"}
+    assert rev.revised_payload == tuple(revised[f] for f in BAR_PAYLOAD_FIELDS)
+    assert ad.bar_revisions() == (rev,)
+
+    # AND IT DID NOT ARRIVE LOOKING LIKE NEW DATA — that is the D1.14 defect, and the ordering
+    # is the observable for it.
+    assert sink.sequence.count("on_bar") == 1
+    assert sink.sequence[-1] == "on_bar_revision"
+
+
+def test_an_identical_repoll_is_not_a_revision():
+    """A stream of no-op 'revisions' is how a real one becomes invisible."""
+    row = bar_row(1000.0)
+    ad, sink, _ = make_adapter(grant_map={3: 3}, history=lambda s: [dict(row)])
+    ad.subscribe(SYM)
+    ad.poll_history(SYM)
+    ad.poll_history(SYM)
+    assert len(sink.bars) == 1
+    assert sink.bar_revisions == []
+    assert ad.bar_revisions() == ()
+
+
+def test_bar_revision_refuses_to_exist_without_a_difference():
+    """The type itself enforces it, so no future call site can construct a hollow revision."""
+    sealed = Bar(
+        symbol=SYM,
+        bar_start_venue_ts=1000.0,
+        period_s=60.0,
+        open=1.0,
+        high=2.0,
+        low=0.5,
+        close=1.5,
+        volume=10.0,
+        recv_ts=5.0,
+        source=BarSource.POLLED_HISTORY,
+        seal_seq=1,
+    )
+    with pytest.raises(ValueError, match="no differing field"):
+        BarRevision(
+            sealed=sealed,
+            revised_payload=sealed.payload(),
+            differing_fields=(),
+            recv_ts=6.0,
+            revision_seq=1,
+        )
+    with pytest.raises(ValueError, match="equals the sealed payload"):
+        BarRevision(
+            sealed=sealed,
+            revised_payload=sealed.payload(),
+            differing_fields=("close",),
+            recv_ts=6.0,
+            revision_seq=1,
+        )
+
+
+def test_distinct_bars_are_distinct_seals():
+    """The seal key is (symbol, bar_start, period). Two periods opening at the same instant are
+    two bars, and collapsing them would make one silently overwrite the other."""
+    rows = [bar_row(1000.0, period_s=60.0), bar_row(1000.0, period_s=300.0)]
+    ad, sink, _ = make_adapter(grant_map={3: 3}, history=lambda s: rows)
+    ad.subscribe(SYM)
+    ad.poll_history(SYM)
+    assert len(sink.bars) == 2
+    assert {b.period_s for b in sink.bars} == {60.0, 300.0}
+    assert sink.bar_revisions == []
+
+
+def test_sealed_bars_carry_both_clocks_and_their_source():
+    """A consumer must be able to compute BOTH ages on a bar without knowing the vendor, and to
+    know whether its history is revisable at all."""
+    ad, sink, _ = make_adapter(grant_map={3: 3}, history=lambda s: [bar_row(1000.0)])
+    ad.subscribe(SYM)
+    ad.poll_history(SYM)
+    sealed = sink.bars[0]
+    assert sealed.bar_start_venue_ts == 1000.0  # venue clock
+    assert sealed.recv_ts > 0.0  # local clock, separate field
+    assert sealed.source is BarSource.POLLED_HISTORY
+    assert sealed.seal_key == (SYM, 1000.0, 60.0)
+
+
+# ===========================================================================
+# §5 — MULTI-WRITER FIELDS: ONE ASSERTION PER WRITER (ARC 020 A8)
+# ===========================================================================
+#
+# Two fields in this adapter are written by more than one handler. Each writer's MEANING is
+# asserted separately below, because that is the only thing that would have caught the
+# `avg_price` incidents: both writers were individually plausible, and only a test that pinned
+# each writer's meaning could expose that they disagreed.
+#
+# A third candidate was PREVENTED rather than asserted: "the last time we heard from the venue
+# about this symbol" has two natural writers — a stream packet and a poll response — with
+# genuinely different meanings, so it is TWO FIELDS (`last_tick_recv_ts`, `last_poll_recv_ts`)
+# and not one. `test_the_two_receipt_clocks_are_not_one_field` pins that decision.
+
+
+def test_granted_mode_writer_1_subscribe_means_no_callback_yet():
+    """WRITER 1 — `subscribe()`. MEANING: 'no grant callback has been received', which is NOT
+    'the venue granted UNKNOWN' and NOT the requested mode."""
+    ad, _, _ = make_adapter(grant_map={3: None})
+    ad.subscribe(SYM)
+    assert ad._symbols[SYM].granted_mode is MarketDataMode.UNKNOWN
+    assert ad._symbols[SYM].requested_mode is MarketDataMode.DELAYED
+    assert "NO GRANT CALLBACK" in ad.granted_mode_divergence(SYM)
+
+
+def test_granted_mode_writer_2_venue_callback_means_the_mode_in_effect():
+    """WRITER 2 — `_on_ib_market_data_type()`. MEANING: the venue affirmatively said which mode
+    it is serving. The ONLY writer entitled to report an actual mode."""
+    ad, _, _ = make_adapter(grant_map={3: 3})
+    ad.subscribe(SYM)
+    assert ad._symbols[SYM].granted_mode is MarketDataMode.DELAYED
+    assert ad.granted_mode_divergence(SYM) == ""
+
+
+def test_granted_mode_writer_3_disconnect_means_the_grant_died_with_the_session():
+    """WRITER 3 — `disconnect()`. MEANING: the session that granted this is gone, so the grant
+    is gone. Retaining it across a boundary is `docs/CHECK-DEBT.md` D1.24's shape."""
+    ad, _, _ = make_adapter(grant_map={3: 3})
+    ad.subscribe(SYM)
+    assert ad._symbols[SYM].granted_mode is MarketDataMode.DELAYED
+    ad.disconnect()
+    assert ad._symbols[SYM].granted_mode is MarketDataMode.UNKNOWN
+
+
+def test_feed_state_writer_1_connect_speaks_only_about_the_session():
+    """WRITER 1 — `connect()`. MEANING: a session exists. NOT a claim that data is fresh."""
+    ad, sink, _ = make_adapter()
+    assert ad.feed_state() is FeedState.UP
+    assert sink.feed_statuses[0] == (FeedState.UP, None, "session established")
+
+
+def test_feed_state_writer_2_disconnect_means_no_session_not_stale_data():
+    """WRITER 2 — `disconnect()`. MEANING: no session. DOWN and STALE are different facts and a
+    consumer's response to them differs."""
+    ad, sink, _ = make_adapter()
+    ad.disconnect()
+    assert ad.feed_state() is FeedState.DOWN
+    assert sink.feed_statuses[-1] == (FeedState.DOWN, None, "requested")
+
+
+def test_feed_state_writer_3_evaluate_freshness_is_the_only_writer_of_stale():
+    """WRITER 3 — `evaluate_freshness()`. MEANING: a session exists AND the data behind it is
+    (not) advancing. It is the only writer entitled to say STALE; conflating that with the
+    session writers is how a live socket with a dead feed reads as healthy."""
+    ad, sink, _ = make_adapter(grant_map={3: 3})
+    ad.subscribe(SYM)
+    assert ad.evaluate_freshness(10_000.0) is FeedState.STALE
+    state, _symbol, reason = sink.feed_statuses[-1]
+    assert state is FeedState.STALE
+    assert "excess staleness" in reason
+    # And the session writers never emit STALE, on any path.
+    session_states = [
+        s
+        for s, _, why in sink.feed_statuses
+        if why in ("session established", "requested")
+    ]
+    assert FeedState.STALE not in session_states
+
+
+def test_the_two_receipt_clocks_are_not_one_field():
+    """The PREVENTED multi-writer field, pinned so a later refactor cannot merge them.
+
+    A live stream with a dead poller and a dead stream with a live poller are opposite
+    conditions. One field written by both handlers would carry two meanings depending on which
+    wrote last — the `avg_price` shape, whose third instance `docs/CHECK-DEBT.md` D1.29
+    records."""
+    ad, _, _ = make_adapter(grant_map={3: 3}, history=lambda s: [bar_row(1000.0)])
+    ad.subscribe(SYM)
+    ad._on_ib_tick(SYM, 1.0, 1.0, 900.0, recv_ts=111.0)
+    assert ad.last_tick_recv_ts(SYM) == 111.0
+    assert ad.last_poll_recv_ts(SYM) is None
+    ad.poll_history(SYM)
+    assert ad.last_tick_recv_ts(SYM) == 111.0  # untouched by the poll
+    assert ad.last_poll_recv_ts(SYM) is not None
+
+
+# ===========================================================================
+# §6 — STAGE 0 ABSENCES, DECLARED AND REFUSED
+# ===========================================================================
+
+
+def test_capabilities_declare_every_stage0_absence():
+    caps = IBKRBrokerDatafeed.CAPABILITIES
+    assert caps.realtime_tick_stream is False  # GAP-D1
+    assert caps.delayed_tick_stream is True  # GAP-D3
+    assert caps.polled_history is True  # GAP-D2
+    assert caps.revisable_history is True  # GAP-D5
+    assert caps.venue_sourced_tick_ts is True
+    assert caps.pushes_feed_status is False  # GAP-D4
+    unmet = caps.unmet_contract_paths()
+    # THREE, not four: `venue_sourced_tick_ts` is True on this venue (the delayed stream
+    # carries `delayedLastTimestamp`, which is the field ARC 013 measured the lag FROM), so
+    # that path is MET and correctly absent from the list. Asserting the exact length is what
+    # makes a future capability flip visible rather than absorbed.
+    assert len(unmet) == 3, unmet
+    assert any("real-time firehose" in u for u in unmet)
+    assert any("on_feed_status" in u for u in unmet)
+    assert any("D1.14" in u for u in unmet)
+
+
+def test_the_realtime_path_refuses_loudly_and_names_both_error_codes():
+    """A consumer must not be able to call a path that does not exist and receive silence.
+
+    Both measured codes appear, attributed to their own API call — they are not two accounts of
+    one event: `reqTickByTickData` -> 10189 (ARC 012), `reqMarketDataType(1)`+`reqMktData` ->
+    354 with no grant callback (ARC 013)."""
+    ad, _, _ = make_adapter(grant_map={3: 3})
+    with pytest.raises(BrokerUnsupported) as exc:
+        ad.request_realtime_ticks(SYM)
+    message = str(exc.value)
+    assert "10189" in message and "354" in message
+    assert "PRODUCT CLASS" in message
+    # GAP-D2 is named AT THE PLACE SOMEBODY WOULD TRY IT.
+    assert "reqHistoricalTicks is NOT a back door" in message
+    assert "624" in message and "604" in message
+
+
+def test_subscribing_in_realtime_mode_refuses_rather_than_degrading():
+    """A silent degrade to delayed would be the contract rotting exactly as
+    `ibkr_mapping.py`'s header warns."""
+    ad, _, _ = make_adapter(grant_map={3: 3}, requested_mode=MarketDataMode.REALTIME)
+    with pytest.raises(BrokerUnsupported, match="GAP-D1"):
+        ad.subscribe(SYM)
+
+
+def test_every_mapped_error_code_carries_measured_evidence():
+    """A declaration is not evidence. The same gate `broker_order_ibkr.IB_REJECT_EVIDENCE`
+    carries, reached independently on this side of invariant 3."""
+    assert set(IB_MARKETDATA_EVIDENCE) == {10189, 354, 10167}
+    for code, evidence in IB_MARKETDATA_EVIDENCE.items():
+        assert "MEASURED" in evidence, code
+        assert "ARC 01" in evidence, code
+        assert "SESSION.md" in evidence or "CHECK-DEBT.md" in evidence, code
+
+
+def test_verbs_refuse_without_a_session():
+    ad = IBKRBrokerDatafeed(RecordingFeedSink(), ib=FakeIBFeed())
+    with pytest.raises(BrokerNotConnected, match="subscribe"):
+        ad.subscribe(SYM)
+    with pytest.raises(BrokerNotConnected, match="poll_history"):
+        ad.poll_history(SYM)
+
+
+def test_connect_without_a_client_refuses_rather_than_pretending():
+    ad = IBKRBrokerDatafeed(RecordingFeedSink())
+    with pytest.raises(BrokerNotConnected, match="no ib_async.IB supplied"):
+        ad.connect()
+
+
+# ===========================================================================
+# §7 — IDENTITY
+# ===========================================================================
+
+
+@pytest.mark.parametrize("bad", [0, 1])
+def test_reserved_client_ids_are_refused_at_construction(bad):
+    with pytest.raises(ValueError, match=f"clientId={bad} refused"):
+        IBKRBrokerDatafeed(RecordingFeedSink(), client_id=bad)
+
+
+def test_the_production_client_id_is_declared_and_used():
+    assert DATAFEED_CLIENT_ID == 2
+    _ad, _, fake = make_adapter()
+    assert fake.client_id == DATAFEED_CLIENT_ID
+    # And it is not the order path's. A shared id would put both libraries on ONE IBKR
+    # connection, which is §2A:105-106 invariant 3 false at the transport layer.
+    assert DATAFEED_CLIENT_ID != 1
+
+
+# ===========================================================================
+# §8 — CONTROLS: the assertions must be able to FAIL
+# ===========================================================================
+
+
+def test_hollow_control_is_structurally_indistinguishable():
+    """The control's job is to pass every SHAPE check. If it failed one, it would be failing
+    for the wrong reason and would have stopped measuring what it was built to measure."""
+    hollow = HollowBrokerDatafeed(RecordingFeedSink())
+    assert check_structural_conformance(hollow, DATAFEED_PORT_VERBS) == []
+    assert (
+        check_await_conformance(hollow, BrokerDatafeedPort, DATAFEED_PORT_VERBS) == []
+    )
+
+
+def test_hollow_control_fails_the_absence_assertions():
+    """AND behaviourally empty. Its `feed_lag()` returns a fully-populated, plausible object —
+    declared 0.0, granted REALTIME — which is precisely the pre-ARC-021 stub's answer and
+    precisely what AMENDMENT 3 forbids. A suite that only checked the TYPE would pass it."""
+    lag = HollowBrokerDatafeed(RecordingFeedSink()).feed_lag()
+    assert isinstance(lag, FeedLag)  # shape: indistinguishable
+    # behaviour: it fabricates, and every absence assertion in §3 rejects it.
+    assert lag.declared_lag_s == 0.0
+    assert lag.provenance is not LagProvenance.UNOBSERVED
+    assert lag.granted_mode is MarketDataMode.REALTIME
+    assert lag.agreement is LagAgreement.NOT_OBSERVED
+    # THE CONSEQUENCE, which is the whole point: it hands a consumer a confident number for a
+    # quantity nothing measured.
+    assert lag.excess_staleness_s(NOW - 5.0, NOW) == pytest.approx(5.0)
+
+
+def test_hollow_control_emits_nothing():
+    """Driven, not merely constructed — `debug.md` §7.12 instance 7 survived because no feed
+    event was ever driven through the sink."""
+    sink = RecordingFeedSink()
+    hollow = HollowBrokerDatafeed(sink)
+    hollow.connect()
+    hollow.subscribe(SYM)
+    hollow.disconnect()
+    assert sink.sequence == []
+    # The real adapter, driven identically, does emit.
+    ad, real_sink, _ = make_adapter(grant_map={3: 3})
+    ad.subscribe(SYM)
+    ad.disconnect()
+    assert real_sink.sequence == ["on_feed_status", "on_feed_status"]
