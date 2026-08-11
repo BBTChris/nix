@@ -65,12 +65,17 @@ from __future__ import annotations
 #       ib_async.ib is imported inside the one helper that reads StartupFetch.
 #   duplicate-code
 #       Section banner comments are intentionally identical.
+#   too-few-public-methods
+#       ARC 020 A7 uses two one-method stand-ins (a queue whose __len__ works and
+#       one whose __len__ raises) to drive send_backlog()'s measured and
+#       CANNOT-MEASURE branches. Each exists to have exactly one behaviour; a
+#       second method would be a method nothing calls.
 # pylint: disable=invalid-name,protected-access,missing-function-docstring
 # pylint: disable=missing-class-docstring,unused-argument,too-many-locals
 # pylint: disable=too-many-statements,too-many-branches,too-many-arguments
 # pylint: disable=too-many-positional-arguments,too-many-instance-attributes
 # pylint: disable=too-many-lines,super-init-not-called,import-outside-toplevel
-# pylint: disable=duplicate-code
+# pylint: disable=duplicate-code,too-few-public-methods
 import ast
 import asyncio
 import pathlib
@@ -203,6 +208,11 @@ class FakeIB:
     historical_order_statuses: list = field(default_factory=list)
     last_fetch_fields: object = None
     connect_count: int = 0
+    client: object = None
+    """ARC 020 A7. The real `ib_async.IB` carries `.client`, and `send_backlog()` reads
+    `client._msgQ` and `client.conn.transport` through it. Declared as a FIELD rather than
+    attached ad hoc so the fake's surface says what it stands in for: a `None` here is the
+    CANNOT-MEASURE case (no live client), which is a state the real vendor also has."""
     # ARC 017 A1(b): "the mirror was re-read" must be measured at the VENUE CALL, not
     # inferred from the mirror's contents — contents can be identical before and after
     # and prove nothing. This counter is the direct observable.
@@ -1617,7 +1627,7 @@ async def _section_startup_replay() -> None:
 
 
 async def _section_startup_window() -> None:
-    """ARC 017 A3 — the startup gate must be closed for the WHOLE rebuild interval.
+    """ARC 017 A3 + ARC 020 A4 — what the startup window admits, and what it refuses.
 
     THE WINDOW, as the ARC 017 probe traced it on main @ 92f9f17:
 
@@ -1628,16 +1638,34 @@ async def _section_startup_window() -> None:
 
     All three conditions a phantom fill needs held simultaneously across that await —
     session live, gate open, mirror not yet trustworthy — and there is no Lock, Semaphore
-    or re-entrancy guard anywhere in the adapter. `_require_session` gates only on
-    `_connected`, which is already True. So a `place_order` scheduled concurrently with
-    connect() populates `_from_ib`, and because IBKR order ids RESET across sessions a
-    replayed historical execution can carry an id that now MATCHES a live order — reaching
-    `_ensure_acked` and `on_fill`.
+    or re-entrancy guard anywhere in the adapter. ARC 017 closed the gate across the whole
+    of connect(), which removed the phantom fill and introduced a second problem in its
+    place: a PROTECTIVE exit fired during session re-establishment had its ack and its fill
+    discarded too, and re-establishment is exactly when a protective exit is most likely
+    (a stop hit while the session was down). ARC 019 measured that and recorded it as
+    D1.27(b) — a SPEC GAP, because §4 "Boot / known-state discipline" gates REGISTRATION on
+    the cold-start query and is silent on a protective exit during re-establishment.
 
-    This section reproduces exactly that, by injecting at the instant the venue is
-    queried, which is inside the rebuild await. The `reqpos_observer` hook is what makes
-    the timing real rather than approximated: injecting before or after connect() would
-    test nothing, because the gate's whole behaviour is defined by that interval.
+    ===================================================================================
+    THE RULING, ratified in ARC 020 (A4), and the reason this section's assertions are
+    INVERTED from ARC 017's:
+
+      The startup admission gate discriminates by ORDER OWNERSHIP, not by elapsed time.
+      Events whose `client_order_id` is present in the CURRENT session's order registry are
+      admitted regardless of startup state; all others are refused.
+
+    WHY THE ARC 017 PHANTOM FILL DOES NOT COME BACK, and it is a property rather than a
+    hope. `_from_ib` is cleared BEFORE `connectAsync`, and the venue's startup replay is
+    dispatched from INSIDE `connectAsync`. So at every instant of the startup window, every
+    id in the registry was minted by a `place_order` in THIS session, AFTER the replay had
+    already been dispatched. A replayed historical id therefore cannot be in the registry
+    at all — the collision ARC 017 closed is unreachable rather than merely improbable.
+    `_section_startup_replay` drives the true replay case and it is still REFUSED.
+
+    THE ARC 017 SEQUENCE IS STILL DRIVEN HERE, unchanged, because it is the one that puts a
+    live-order id into the registry mid-window. What changed is the verdict it earns.
+    BOTH DIRECTIONS ARE ASSERTED — an admission AND a refusal — because a gate that admits
+    everything and a gate that refuses everything each pass a one-sided test.
     """
     adW, ibW, sinkW = new_adapter()
     probe: dict = {"ran": False}
@@ -1686,26 +1714,69 @@ async def _section_startup_window() -> None:
         f"_from_ib={adW._from_ib}",
     )
     record(
-        "A3: the gate was CLOSED during the rebuild (this is the fix)",
+        "A3: the gate was CLOSED during the rebuild (`_startup_complete` is still False, "
+        "so admission below is decided by OWNERSHIP and not by the flag being open)",
         probe.get("gate_open") is False,
         f"_startup_complete at injection time={probe.get('gate_open')}",
     )
 
-    # ---- the property itself ------------------------------------------------------
+    # ---- the property itself, ARC 020 A4: an OWNED event is ADMITTED ---------------
     record(
-        "A3: an execDetails injected DURING the mirror rebuild produces NO on_fill",
-        len(sinkW.fills) == fills_before,
+        "A4: an execDetails for an order THIS SESSION placed IS admitted during the "
+        "startup window — the protective exit's outcome is observable (D1.27(b) ruling)",
+        len(sinkW.fills) == fills_before + 1,
         f"fills {fills_before} -> {len(sinkW.fills)}: {sinkW.fills}",
     )
     record(
-        "A3: it produces NO on_ack either — _ensure_acked is not reached",
-        len(sinkW.acks) == acks_before,
+        "A4: and its ack is admitted with it, so the §2c ordering guarantee still holds "
+        "for an order acknowledged inside the window",
+        len(sinkW.acks) >= acks_before + 1,
         f"acks {acks_before} -> {len(sinkW.acks)}: {sinkW.acks}",
     )
     record(
-        "A3: nothing at all escaped to the order path during connect()",
-        [e for e in sinkW.sequence if e in ("on_ack", "on_fill", "on_cancel")] == [],
+        "A4: the ack still PRECEDES the fill for that order — admission did not reorder "
+        "the guarantee _ensure_acked exists to provide",
+        sinkW.sequence.index("on_ack") < sinkW.sequence.index("on_fill"),
         str(sinkW.sequence),
+    )
+
+    # ---- and the refusal half, so this is not a gate that admits everything ---------
+    # A FOREIGN id — one no place_order in this session ever minted — must still be
+    # refused inside the window. Without this the section proves only that the gate
+    # stopped gating.
+    adF, ibF, sinkF = new_adapter()
+    foreign_probe: dict = {"ran": False}
+
+    def inject_foreign() -> None:
+        if foreign_probe["ran"]:
+            return
+        foreign_probe["ran"] = True
+        foreign_probe["gate_open"] = adF._startup_complete
+        alien = SimpleNamespace(
+            order=SimpleNamespace(orderId=424242),
+            contract=fut("MESU6"),
+            orderStatus=SimpleNamespace(status="Submitted", filled=0, remaining=1),
+        )
+        foreign_probe["owned"] = 424242 in adF._from_ib
+        ibF.push_status(alien, "Filled", filled=1)
+        ibF.push_exec(alien, "e-foreign-1", 1, 7785.0, 1, side="BOT")
+
+    ibF.reqpos_observer = inject_foreign
+    await adF.connect()
+    ibF.reqpos_observer = None
+    record(
+        "NON-VACUITY A4: the foreign injection RAN, inside the same window, with the gate "
+        "shut and the id genuinely NOT in this session's registry",
+        foreign_probe["ran"]
+        and foreign_probe.get("gate_open") is False
+        and foreign_probe.get("owned") is False,
+        str(foreign_probe),
+    )
+    record(
+        "A4: an event whose id is NOT in this session's registry is REFUSED inside the "
+        "startup window — the gate discriminates, it does not simply admit",
+        not sinkF.fills and not sinkF.acks,
+        f"fills={sinkF.fills} acks={sinkF.acks}",
     )
 
     # ---- the handler IS reachable in this harness ---------------------------------
@@ -1757,8 +1828,10 @@ async def _section_startup_window() -> None:
         probe2["ran"] and probe2.get("id_matches") is True,
     )
     record(
-        "A3: the gate is closed across the rebuild ON RECONNECT too — no fill, no ack",
-        len(sinkW.fills) == fills_before and len(sinkW.acks) == acks_before,
+        "A4: the ownership rule re-arms across a reconnect — an order placed in the NEW "
+        "session is admitted inside the new session's startup window, and the registry it "
+        "is matched against was rebuilt from empty at the boundary",
+        len(sinkW.fills) == fills_before + 1 and len(sinkW.acks) == acks_before + 1,
         f"fills {fills_before}->{len(sinkW.fills)} acks {acks_before}->{len(sinkW.acks)}",
     )
 
@@ -2568,6 +2641,646 @@ async def _section_avg_price_fidelity() -> None:
     )
 
 
+def _session_emission_sites() -> list[str]:
+    """Every site in the IBKR ADAPTER that calls `self._sink.on_session(...)`, DERIVED from
+    the AST rather than typed.
+
+    ARC 020 A3. §7.4: a hand-written list of emission sites is a fixture pinned to a stale
+    inventory, and the defect this asserts against is *a NEW emission site that does not
+    know about the rule* — exactly the thing a hand-written list cannot see. So the list is
+    recomputed from the subject on every run.
+
+    THE SCOPE IS DERIVED FROM THE SUBJECT ITSELF — `inspect.getsourcefile(IBKRBrokerOrder)`
+    — not from a typed path and not from a directory glob. debug.md failure mode #14: a gate
+    whose file list comes from something a person edits goes silent when the subject is
+    omitted from the list, with no diff to the gate. Here the class names its own file, so
+    the scope cannot drift away from the thing under judgement.
+
+    THE SCOPE IS THE ADAPTER AND NOT `scripts/broker/`, deliberately and with the reason
+    recorded: `StubBrokerOrder` in `broker_seam.py` emits `on_session` from `connect` and
+    `disconnect` directly, and correctly — it is the VENDORLESS stub, it has no deferred
+    task, no reconnect path and no mirror, so it has nothing for a choke point to protect
+    against. Widening this scan to cover it would force a mechanism onto a component with
+    no failure mode, and the failure would be a scope error rather than a finding.
+    """
+    import inspect
+
+    source = inspect.getsourcefile(IBKRBrokerOrder)
+    assert source is not None, "cannot locate the adapter's own source file"
+    path = pathlib.Path(source)
+    sites: list[str] = []
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for call in ast.walk(node):
+            if not isinstance(call, ast.Call):
+                continue
+            func = call.func
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "on_session"
+                and isinstance(func.value, ast.Attribute)
+                and func.value.attr == "_sink"
+            ):
+                sites.append(f"{path.name}:{node.name}:{call.lineno}")
+    return sites
+
+
+async def _section_arc020_session_emission() -> None:
+    """ARC 020 A3 — THE INVARIANT ASSERTED ONCE, ACROSS ALL EMISSION SITES.
+
+    D1.25 is the SAME defect shape ARC 019 closed in its §3 (a plain `UP` published over an
+    unrebuilt mirror) arriving by a different route: a deferred task publishing an UP-class
+    state over a session `disconnect()` had already torn down. It arrived by a different
+    route precisely because ARC 019's repair was made AT each site. A rule enforced at every
+    site is a rule a new site does not inherit.
+
+    So this section asserts the mechanism, not the instances, in two independent ways:
+
+      STRUCTURALLY — `self._sink.on_session(` occurs at exactly ONE place in
+        scripts/broker/, derived from the AST. A new emission path cannot be added without
+        this failing, which is the only defence against the next D1.25.
+      BEHAVIOURALLY — the sink is WRAPPED, so the invariant is observed at the CONSUMER
+        rather than self-reported by the adapter, and it is driven across every publishing
+        path this adapter has: connect (clean and failed-rebuild), 1100, 1101 (deferred),
+        1102 (clean and over-a-suspect-mirror), disconnect, transport drop, and an
+        abandoned connect. Then: NO UP-class state was ever published while `_connected`
+        was False.
+
+    §7.12 — what would have to be true for this to pass while measuring nothing?
+      1. No session events are emitted at all, so the invariant ranges over an empty set.
+         GUARDED: the emission count is asserted, and both an UP-class and a DOWN must
+         appear before any conclusion is drawn.
+      2. `_connected` is sampled after the adapter has already restored it, so a violation
+         cannot be seen. GUARDED: the wrapper samples at the INSTANT of emission, from
+         inside the sink call, which is the only moment at which the pairing exists.
+      3. The AST walk finds zero sites (a rename, a moved file) and "exactly one" becomes
+         "exactly zero, which is also not more than one". GUARDED: the count is asserted
+         `== 1`, and the site's identity is asserted to be the choke point by NAME.
+    """
+    # ---- STRUCTURAL: one emission site, derived ------------------------------------
+    sites = _session_emission_sites()
+    record(
+        "A3 NON-VACUITY: the AST scan FOUND emission sites at all (a scan that matches "
+        "nothing satisfies 'no site breaks the rule' trivially)",
+        len(sites) >= 1,
+        f"sites={sites}",
+    )
+    record(
+        "A3: `self._sink.on_session(` occurs at EXACTLY ONE site in scripts/broker/ — the "
+        "invariant lives at a choke point, so a new publishing path cannot bypass it",
+        len(sites) == 1,
+        f"sites={sites}",
+    )
+    record(
+        "A3: and that site is `_publish_session` — the choke point by name, not merely a "
+        "count that happens to be one",
+        len(sites) == 1 and ":_publish_session:" in sites[0],
+        f"sites={sites}",
+    )
+
+    # ---- BEHAVIOURAL: observed at the consumer, across every path ------------------
+    adE, ibE, sinkE = new_adapter()
+    watch: list[tuple] = []
+    real_on_session = sinkE.on_session
+
+    def watching(state, reason=None):
+        # Sampled AT the emission: the pairing (state, connected) exists at no other time.
+        watch.append((state, adE._connected))
+        real_on_session(state, reason)
+
+    sinkE.on_session = watching
+
+    await adE.connect()  # path 1: clean connect -> UP
+    ibE.push_error(-1, 1100, "Connectivity lost")  # path 2: DOWN
+    ibE.push_error(-1, 1102, "restored - data maintained")  # path 3: UP
+    ibE.push_error(-1, 1101, "restored - data lost")  # path 4: deferred UP_DATA_LOSS
+    for _ in range(4):
+        await asyncio.sleep(0)
+    adE.disconnect()  # path 5: DOWN
+    # path 6: the deferred publish racing a teardown — THE D1.25 SEQUENCE
+    await adE.connect()
+    ibE.push_error(-1, 1101, "restored - data lost")
+    adE.disconnect()
+    for _ in range(4):
+        await asyncio.sleep(0)
+    # path 7: transport drop
+    await adE.connect()
+    adE._on_ib_disconnected()
+
+    record(
+        "A3 NON-VACUITY: session events were actually emitted, and BOTH classes appear, so "
+        "the invariant below ranges over a set containing its own subject",
+        len(watch) >= 6
+        and any(s.is_up for s, _c in watch)
+        and any(s is SessionState.DOWN for s, _c in watch),
+        f"{len(watch)} emissions: {[(s.name, c) for s, c in watch]}",
+    )
+    violations = [(s.name, c) for s, c in watch if s.is_up and not c]
+    record(
+        "A3: THE INVARIANT — no UP-class session state is EVER published while the adapter "
+        "knows it is disconnected. D1.25's deferred publish is one path among seven and "
+        "the rule is asserted over all of them at once",
+        not violations,
+        f"violations={violations} over {[(s.name, c) for s, c in watch]}",
+    )
+
+    # ---- and the gate CAN refuse: drive it directly ---------------------------------
+    # A gate nobody has seen refuse is indistinguishable from one that cannot (§7.1).
+    adR, _ibR, sinkR = new_adapter()
+    await adR.connect()
+    adR.disconnect()
+    before = len(sinkR.sessions)
+    adR._publish_session(SessionState.UP, reason="planted: UP over a dead session")
+    record(
+        "A3 CAN-FAIL: the choke point REFUSES an UP-class publish over a dead session when "
+        "one is driven at it directly — the gate has been seen to fire",
+        len(sinkR.sessions) == before,
+        f"sessions grew by {len(sinkR.sessions) - before}: {sinkR.sessions[before:]}",
+    )
+    # ...and it is not simply refusing everything.
+    adR._connected = True
+    adR._publish_session(SessionState.UP, reason="live session")
+    record(
+        "A3 CAN-FAIL control: the same call over a LIVE session IS published, so the "
+        "refusal above is discrimination and not a dead path",
+        len(sinkR.sessions) == before + 1 and sinkR.sessions[-1][0] is SessionState.UP,
+        str(sinkR.sessions[before:]),
+    )
+
+
+async def _section_arc020_config() -> None:
+    """ARC 020 A6 — the §12A tunables are LOADED and BOOT-VALIDATED, not hardcoded."""
+    from broker_order_config import (  # pylint: disable=import-error
+        DEFAULT_CONFIG_PATH,
+        BrokerConfigError,
+        BrokerOrderConfig,
+        load_broker_order_config,
+    )
+
+    cfg = load_broker_order_config()
+    record(
+        "A6: the per-module config loads from risks/broker_order.config.json — the §12A "
+        "knobs have a physical home and the protective path reads it rather than a literal",
+        DEFAULT_CONFIG_PATH.exists() and cfg.flatten_idempotency_window_ms > 0,
+        f"{DEFAULT_CONFIG_PATH} -> {cfg}",
+    )
+    record(
+        "A6: the flatten window is DERIVED — it does not exceed PENDING_ACK_TIMEOUT_MS "
+        "(§12A:830), which is the instant the Limiter's §4 pending-timeout machinery takes "
+        "the question over",
+        cfg.flatten_idempotency_window_ms <= cfg.pending_ack_timeout_ms,
+        f"window={cfg.flatten_idempotency_window_ms} ack_timeout={cfg.pending_ack_timeout_ms}",
+    )
+    record(
+        "A6: terminal retention exceeds BOTH §4 pending-timeout knobs, so a terminal order "
+        "is still queryable when the Limiter asks about it",
+        cfg.terminal_order_retention_ms > cfg.pending_ack_timeout_ms
+        and cfg.terminal_order_retention_ms > cfg.fill_timeout_ms,
+        f"retention={cfg.terminal_order_retention_ms} ack={cfg.pending_ack_timeout_ms} "
+        f"fill={cfg.fill_timeout_ms}",
+    )
+
+    # CAN-FAIL: cross-knob boot validation must REJECT, or it is decoration (§12A: "Boot
+    # validation ... rejects an invalid set before any strategy registers").
+    caught = []
+    for label, kwargs in (
+        (
+            "window exceeds the ack timeout",
+            {"flatten_idempotency_window_ms": cfg.pending_ack_timeout_ms + 1},
+        ),
+        (
+            "retention below the ack timeout",
+            {"terminal_order_retention_ms": cfg.pending_ack_timeout_ms},
+        ),
+        (
+            "retention below the fill timeout",
+            {"terminal_order_retention_ms": cfg.fill_timeout_ms},
+        ),
+        ("a zero knob", {"flatten_idempotency_window_ms": 0}),
+    ):
+        base = {
+            "pending_ack_timeout_ms": cfg.pending_ack_timeout_ms,
+            "fill_timeout_ms": cfg.fill_timeout_ms,
+            "flatten_idempotency_window_ms": cfg.flatten_idempotency_window_ms,
+            "terminal_order_retention_ms": cfg.terminal_order_retention_ms,
+            "flatten_attempt_log_depth": cfg.flatten_attempt_log_depth,
+        }
+        base.update(kwargs)
+        try:
+            BrokerOrderConfig(**base)
+            caught.append((label, "ACCEPTED — validation did not fire"))
+        except BrokerConfigError:
+            pass
+    record(
+        "A6 CAN-FAIL: every cross-knob boot rule REJECTS an invalid set — the validation "
+        "has been seen to fire on all four, not merely reasoned about",
+        not caught,
+        f"not rejected: {caught}",
+    )
+    record(
+        "A6: a missing config is a LOUD failure, never a silent default (CLAUDE.md 4)",
+        _raises_config_error(
+            load_broker_order_config, DEFAULT_CONFIG_PATH.parent / "no_such.json"
+        ),
+        "a missing config did not raise",
+    )
+
+
+def _raises_config_error(fn, *args) -> bool:
+    from broker_order_config import BrokerConfigError  # pylint: disable=import-error
+
+    try:
+        fn(*args)
+    except BrokerConfigError:
+        return True
+    return False
+
+
+async def _section_arc020_send_backlog() -> None:
+    """ARC 020 A7 — D1.22's observability half. Absorption must be readable, not inferred.
+
+    NOT a resolution of D1.22 and NOT a bounded-queue policy: both are the Limiter's, and
+    the repair is never a resend (§2A:71, §4:241, §12A:830).
+    """
+    adB, _ibB, _sinkB = new_adapter()
+    backlog = adB.send_backlog()
+    record(
+        "A7: send_backlog() is readable against a vendor stand-in with no internals, and "
+        "reports CANNOT-MEASURE rather than zero (failure mode #10: a healthy idle pipe "
+        "and an unreadable one must never produce the same answer)",
+        backlog.measured is False
+        and backlog.vendor_queue_depth is None
+        and backlog.transport_write_buffer_bytes is None
+        and bool(backlog.detail),
+        str(backlog),
+    )
+
+    # NON-VACUITY: the reading is not simply always CANNOT-MEASURE. Give the fake the two
+    # internals the real vendor has and the values must come through.
+    class _Q(list):
+        pass
+
+    adB._ib.client = SimpleNamespace(
+        _msgQ=_Q([b"a", b"b", b"c"]),
+        conn=SimpleNamespace(
+            transport=SimpleNamespace(get_write_buffer_size=lambda: 10204)
+        ),
+    )
+    measured = adB.send_backlog()
+    record(
+        "A7 NON-VACUITY: with the vendor internals present the reading is MEASURED and "
+        "carries both figures — ARC 019 observed 155 queued and 10204 B buffered with "
+        "zero bytes delivered, and that state is now askable",
+        measured.measured is True
+        and measured.vendor_queue_depth == 3
+        and measured.transport_write_buffer_bytes == 10204,
+        str(measured),
+    )
+
+    # A diagnostic that can take down its caller is worse than the blindness it cures.
+    class _Boom:
+        def __len__(self):
+            raise RuntimeError("vendor internals moved")
+
+    adB._ib.client = SimpleNamespace(_msgQ=_Boom(), conn=None)
+    safe = adB.send_backlog()
+    record(
+        "A7: a reading that RAISES inside the vendor internals degrades to CANNOT-MEASURE "
+        "and never propagates — send_backlog() cannot fail its caller",
+        safe.measured is False and "moved" in safe.detail,
+        str(safe),
+    )
+
+
+async def _section_arc020_multi_writer_fields() -> None:
+    """ARC 020 A8 — THE PER-WRITER FIELD-MEANING RULE.
+
+    STANDING RULE: any field written by more than one event handler has its meaning asserted
+    PER WRITER. `avg_price` has now carried two meanings TWICE — ARC 014's notional-vs-
+    per-unit and ARC 019's last-fill-price-vs-weighted-average — and both times only a NEW
+    CLASS of test could expose it, because both writers were individually plausible. A field
+    with one writer needs no such rule; a field with two needs it precisely because each
+    writer is locally correct.
+
+    THE ENUMERATION. Every field in this adapter written by more than one handler, derived
+    by reading the writers rather than by memory:
+
+      | field                    | writers                                   | verdict   |
+      |--------------------------|-------------------------------------------|-----------|
+      | Position.avg_price       | _on_ib_position, query_positions          | AGREE*    |
+      |                          | (_avg_price_from_cost: notional/mult)     |           |
+      |                          | _on_ib_exec_details (_blend_avg_price)    |           |
+      | Position.net_qty         | _on_ib_position, query_positions (absolute)| AGREE**  |
+      |                          | _on_ib_exec_details (delta accumulation)  |           |
+      | on_ack `reason`          | _ack_once via 3 paths: venue accept (None)| AGREE     |
+      |                          | §2c synthesis, errorEvent rejection       | (by design)|
+      | Balance.net_liquidation  | query_balance, _on_ib_account_value       | AGREE     |
+      | Balance.cash /           | query_balance (real), _on_ib_account_value| DISAGREE  |
+      |   maint_margin/init_margin|  (hardcoded 0.0)                          | — FINDING |
+      | OrderStatus.cumulative_qty| query_order_status (Trade.orderStatus)   | AGREE     |
+      |                          | on_fill's cum (Execution.cumQty)          |           |
+      | _mirror_stale            | connect, _on_data_loss_restore,           | AGREE     |
+      |                          | _revalidate_then_publish                  |           |
+      | _connected/_startup_complete | connect, disconnect, _on_ib_disconnected,| AGREE   |
+      |                          | _abandon_session                          |           |
+
+    * `avg_price` AGREES on UNIT and on MEANING (per-unit weighted average cost basis) and
+      RETAINS A MEASURED RESIDUAL: `Position.avgCost` is COMMISSION-INCLUSIVE while
+      `Execution.price` is raw. ARC 014 measured 7773.500 vs 7773.622 on one MESU6 fill —
+      the 0.122 is 0.61 commission / 5. That is a sub-tick provenance difference, already
+      documented at `_avg_price_from_cost`, and it is asserted below rather than left as
+      prose so it cannot silently widen back into the 5x it used to be.
+
+    ** `net_qty` AGREES on meaning and DIFFERS in provenance (venue-absolute vs
+      fill-derived-delta), with NO ordering guard between the two. See the finding below.
+
+    ===================================================================================
+    FINDING F-A8-1 — `Balance.cash`, `Balance.maint_margin` and `Balance.init_margin` carry
+    TWO MEANINGS depending on which writer produced the object.
+      `query_balance` populates all four figures from `accountSummaryAsync`.
+      `_on_ib_account_value` — the PUSH path, which is what `on_balance` delivers — sets
+        `cash=0.0, maint_margin=0.0, init_margin=0.0` because the tag it fires on is
+        `NetLiquidation` and it has nothing else to report.
+    A consumer reading `on_balance(...).cash` therefore gets `0.0`, which is a confident
+    lie in the same shape as the two `avg_price` incidents: both writers are individually
+    plausible, and only a test that drives BOTH and compares can see it. §12A/§6.5 make
+    `cash` load-bearing — "**Survival is watched on net-liq; sizing is computed on cash.**
+    Never conflate" (§14) — so a zero cash from the push path is not cosmetic.
+    NOT FIXED HERE, and deliberately: the rule for this item is enumerate, assert, report,
+    and "where two writers disagree, that is a FINDING — do not pick one silently." The
+    two candidate repairs (an `Optional[float]` per figure, or a `partial: bool` on
+    `Balance`) are both seam changes with a consumer half, and the consumer is R2's.
+    The disagreement is PINNED by the assertion below, so the day a writer starts
+    populating those fields this test goes red and the decision is forced.
+    ===================================================================================
+    """
+    # ---- avg_price: assert what EVERY writer means, on one symbol, in one adapter ----
+    adM, ibM, sinkM = new_adapter()
+    await adM.connect()
+
+    # WRITER 1: the fill path (_blend_avg_price) — raw per-unit, weighted across partials.
+    adM.place_order(
+        NeutralOrder("m-buy", "MESU6", Side.BUY, 2, OrderType.MARKET, TimeInForce.DAY)
+    )
+    tM = ibM.placed[-1][2]
+    ibM.push_exec(tM, "m-e1", 1, 7000.00, 1, side="BOT")
+    ibM.push_exec(tM, "m-e2", 1, 7010.00, 2, side="BOT")
+    fill_derived = adM._mirror["MESU6"].avg_price
+    record(
+        "A8 WRITER 'fill': _on_ib_exec_details writes a WEIGHTED AVERAGE of raw per-unit "
+        "execution prices — not the last fill's price (the ARC 019 defect) and not "
+        "notional (the ARC 014 defect)",
+        abs(fill_derived - 7005.00) < 1e-9,
+        f"avg_price after 1@7000 + 1@7010 = {fill_derived} (expected 7005.0)",
+    )
+
+    # WRITER 2: the position push (_avg_price_from_cost) — venue notional / multiplier.
+    ibM.push_position("MESU6", 2, MES_PRICE, commission=MES_COMMISSION)
+    push_derived = adM._mirror["MESU6"].avg_price
+    record(
+        "A8 WRITER 'positionEvent': _on_ib_position writes the venue's own average, "
+        "NORMALISED from notional to per-unit — the same unit as the fill writer",
+        abs(push_derived - MES_AVG_FROM_COST) < 0.001,
+        f"avg_price from avgCost = {push_derived} (expected {MES_AVG_FROM_COST})",
+    )
+
+    # WRITER 3: the cold-start read — same normaliser, asserted separately because it is a
+    # separate call site and "same helper" is a claim about the code, not about behaviour.
+    ibM.positions_to_return = [
+        ibM.position_row("MESU6", 2, MES_PRICE, commission=MES_COMMISSION)
+    ]
+    await adM.query_positions()
+    read_derived = adM._mirror["MESU6"].avg_price
+    record(
+        "A8 WRITER 'query_positions': the cold-start read writes the same per-unit "
+        "meaning as the push path — three writers, one unit",
+        abs(read_derived - MES_AVG_FROM_COST) < 0.001,
+        f"avg_price from reqPositions = {read_derived}",
+    )
+    record(
+        "A8: THE RESIDUAL IS SUB-TICK AND BOUNDED — venue-sourced avg_price is "
+        "commission-INCLUSIVE and execution-sourced avg_price is raw. Asserted as a "
+        "measured bound (ARC 014: 0.61 commission / 5x multiplier = 0.122), so the 5x "
+        "unit divergence cannot silently return",
+        abs(read_derived - MES_PRICE) < 0.5,
+        f"venue-sourced {read_derived} vs raw {MES_PRICE}, delta="
+        f"{abs(read_derived - MES_PRICE)}",
+    )
+
+    # ---- net_qty: same meaning, two provenances, NO ordering guard between them -------
+    adN, ibN, _sinkN = new_adapter()
+    await adN.connect()
+    adN.place_order(
+        NeutralOrder("n-buy", "MESU6", Side.BUY, 1, OrderType.MARKET, TimeInForce.DAY)
+    )
+    tN = ibN.placed[-1][2]
+    ibN.push_exec(tN, "n-e1", 1, 7000.0, 1, side="BOT")
+    fill_qty = adN._mirror["MESU6"].net_qty
+    ibN.push_position("MESU6", 5, 7000.0)  # the venue's ABSOLUTE figure, disagreeing
+    push_qty = adN._mirror["MESU6"].net_qty
+    record(
+        "A8 WRITER 'fill' vs 'positionEvent' on net_qty: both mean SIGNED NET QUANTITY, "
+        "and the writers differ in PROVENANCE — the fill path accumulates a delta, the "
+        "position path asserts the venue's absolute. Last writer wins, unconditionally",
+        fill_qty == 1 and push_qty == 5,
+        f"fill-derived={fill_qty} then venue-absolute={push_qty}",
+    )
+    record(
+        "A8 FINDING F-A8-2 (reported, NOT repaired): there is no ordering guard between "
+        "those two writers. ARC 020 A5 added one for read-vs-read on this same field; a "
+        "positionEvent carrying a snapshot older than a fill this adapter has already "
+        "applied would overwrite it, and positionEvent carries no venue sequence to "
+        "order by (§2A invariant 4). Pinned here so the absence is recorded, not assumed",
+        push_qty == 5,
+        "positionEvent overwrote a fill-derived quantity with no ordering check",
+    )
+
+    # ---- Balance: the DISAGREEMENT, pinned ------------------------------------------
+    adB2, ibB2, sinkB2 = new_adapter()
+    ibB2.account_values = [
+        SimpleNamespace(tag="TotalCashValue", value="20344.34"),
+        SimpleNamespace(tag="NetLiquidation", value="20299.32"),
+        SimpleNamespace(tag="MaintMarginReq", value="3503.59"),
+        SimpleNamespace(tag="FullInitMarginReq", value="3853.95"),
+    ]
+    await adB2.connect()
+    queried = await adB2.query_balance()
+    record(
+        "A8 WRITER 'query_balance': populates ALL FOUR figures from the venue summary",
+        queried.cash == 20344.34
+        and queried.net_liquidation == 20299.32
+        and queried.maint_margin == 3503.59
+        and queried.init_margin == 3853.95,
+        str(queried),
+    )
+    ibB2.accountValueEvent.emit(
+        SimpleNamespace(tag="NetLiquidation", value="20299.32", account="DUR250018")
+    )
+    pushed = sinkB2.balances[-1]
+    record(
+        "A8 WRITER 'accountValueEvent': agrees with query_balance on net_liquidation — "
+        "the field the push path actually observes",
+        pushed.net_liquidation == queried.net_liquidation,
+        f"pushed={pushed.net_liquidation} queried={queried.net_liquidation}",
+    )
+    record(
+        "A8 FINDING F-A8-1 (reported, NOT repaired): cash / maint_margin / init_margin "
+        "MEAN DIFFERENT THINGS PER WRITER — real figures from query_balance, hardcoded "
+        "0.0 from the push path, with nothing on Balance to say which. §14 makes cash "
+        "load-bearing ('sizing is computed on cash. Never conflate'), so a 0.0 from the "
+        "push path is a confident lie. Pinned: the day a writer populates them, this "
+        "reddens and the decision is forced rather than made silently",
+        pushed.cash == 0.0
+        and pushed.maint_margin == 0.0
+        and pushed.init_margin == 0.0
+        and queried.cash != 0.0,
+        f"push path cash={pushed.cash} maint={pushed.maint_margin} "
+        f"init={pushed.init_margin}; query path cash={queried.cash}",
+    )
+    record(
+        "A8: both writers AGREE that the timestamp is not venue-sourced (GAP-2), so the "
+        "monotonic guard degrades knowingly from either provenance",
+        pushed.ts_is_venue_sourced is False and queried.ts_is_venue_sourced is False,
+        f"pushed={pushed.ts_is_venue_sourced} queried={queried.ts_is_venue_sourced}",
+    )
+
+    # ---- cumulative_qty: two sources for one neutral concept -------------------------
+    record(
+        "A8 WRITER 'query_order_status' vs 'on_fill' on cumulative_qty: both mean "
+        "CUMULATIVE FILLED QUANTITY and agree, though one reads Trade.orderStatus.filled "
+        "and the other Execution.cumQty",
+        adM.query_order_status("m-buy").cumulative_qty == sinkM.fills[-1][5] == 2,
+        f"status={adM.query_order_status('m-buy').cumulative_qty} "
+        f"fill_cum={sinkM.fills[-1][5]}",
+    )
+
+
+async def _section_arc020_session_boundary() -> None:
+    """ARC 020 A1 — per-order state is SESSION-SCOPED, and the boundary is BOTH ends.
+
+    §7.12 — what would have to be true for this to pass while measuring nothing? The maps
+    could have been EMPTY before the boundary, making "cleared" a vacuous empty -> empty.
+    That is THE vacuity risk for any clearing assertion, and it is guarded first: the maps
+    are asserted POPULATED, by name and by count, before the boundary is crossed.
+    """
+    adS, ibS, _sinkS = new_adapter()
+    await adS.connect()
+    adS.place_order(
+        NeutralOrder("s-done", "MESU6", Side.BUY, 1, OrderType.MARKET, TimeInForce.DAY)
+    )
+    tDone = ibS.placed[-1][2]
+    ibS.push_exec(tDone, "s-e1", 1, 7000.0, 1, side="BOT")
+    ibS.push_status(tDone, "Filled", filled=1)
+    adS.place_order(
+        NeutralOrder("s-live", "MESU6", Side.SELL, 1, OrderType.MARKET, TimeInForce.DAY)
+    )
+    tLive = ibS.placed[-1][2]
+    ibS.push_status(tLive, "Submitted")
+    live_ib_id = adS._to_ib["s-live"]
+
+    populated = {
+        "_neutral": len(adS._neutral),
+        "_orders": len(adS._orders),
+        "_trades": len(adS._trades),
+        "_to_ib": len(adS._to_ib),
+        "_from_ib": len(adS._from_ib),
+        "_seen_execs": len(adS._seen_execs),
+    }
+    record(
+        "A1 NON-VACUITY: every per-order map is genuinely POPULATED before the boundary — "
+        "'cleared' below is a non-empty -> empty transition, not empty -> empty",
+        all(v >= 1 for v in populated.values()) and populated["_neutral"] == 2,
+        str(populated),
+    )
+    record(
+        "A1 NON-VACUITY: one order is TERMINAL and one is IN FLIGHT at the boundary, so "
+        "the partition below has both of its cases to discriminate",
+        adS.query_order_status("s-done").terminal
+        and not adS.query_order_status("s-live").terminal,
+        f"s-done terminal={adS.query_order_status('s-done').terminal} "
+        f"s-live state={adS.query_order_status('s-live').state}",
+    )
+
+    adS.disconnect()
+    cleared = {
+        "_neutral": len(adS._neutral),
+        "_orders": len(adS._orders),
+        "_trades": len(adS._trades),
+        "_to_ib": len(adS._to_ib),
+        "_from_ib": len(adS._from_ib),
+        "_seen_execs": len(adS._seen_execs),
+    }
+    record(
+        "A1: ALL per-order state is released at TEARDOWN — the boundary this actually "
+        "arrives on is a Gateway restart, where nobody calls disconnect() first",
+        all(v == 0 for v in cleared.values()),
+        str(cleared),
+    )
+    record(
+        "A1: the TERMINAL order's neutral id is RELEASED (nothing is left to resolve), "
+        "narrowing T3-08: a Limiter minting deterministic ids is no longer blocked on an "
+        "id that means nothing at the venue",
+        "s-done" not in adS._tombstones,
+        f"tombstones={sorted(adS._tombstones)}",
+    )
+    record(
+        "A1: the IN-FLIGHT order is TOMBSTONED — clearing state for an order that was live "
+        "when the socket died is not the same act as clearing a closed one",
+        "s-live" in adS._tombstones,
+        f"tombstones={sorted(adS._tombstones)}",
+    )
+
+    await adS.connect()
+    record(
+        "A1: a PRE-BOUNDARY vendor id is not in the new session's registry, which is the "
+        "property A4's ownership gate is sound only in the presence of",
+        live_ib_id not in adS._from_ib,
+        f"_from_ib={adS._from_ib}",
+    )
+    status = adS.query_order_status("s-live")
+    record(
+        "A1: and the caller asking about it gets §4's THIRD outcome — 'indeterminate', "
+        "terminal=False — not 'working' from a dead session and not 'unknown', which is "
+        "this adapter's spelling of 'never heard of it'",
+        status.state == "indeterminate" and status.terminal is False,
+        str(status),
+    )
+    record(
+        "A1: a pre-restart id is REJECTED rather than transmitted — cancel_order raises "
+        "and puts NOTHING on the wire (D1.24(a): it used to send a live foreign order's "
+        "orderId)",
+        _cancel_refused(adS, "s-live", ibS),
+        "cancel_order on a tombstoned id did not raise, or reached the wire",
+    )
+    record(
+        "A1 NON-VACUITY: the terminal order's id is genuinely RE-USABLE across the same "
+        "boundary — the refusal above discriminates rather than refusing everything",
+        _place_succeeds(adS, "s-done"),
+        "a terminal order's id was still blocked after the boundary",
+    )
+
+
+def _cancel_refused(adapter, cid: str, ib) -> bool:
+    before = len(ib.cancelled)
+    try:
+        adapter.cancel_order(cid)
+    except BrokerSeamError:
+        return len(ib.cancelled) == before
+    return False
+
+
+def _place_succeeds(adapter, cid: str) -> bool:
+    try:
+        adapter.place_order(
+            NeutralOrder(cid, "MESU6", Side.BUY, 1, OrderType.MARKET, TimeInForce.DAY)
+        )
+    except BrokerSeamError:
+        return False
+    return True
+
+
 async def _report() -> None:
     """Print the result table; exit non-zero if anything failed."""
     # ---------------------------------------------------------------- report
@@ -2609,6 +3322,12 @@ async def main() -> None:
     await _section_avg_price_fidelity()
     await _section_partial_fills()
     await _section_mirror_stale_and_reconnect()
+    # ---- ARC 020 -----------------------------------------------------------------
+    await _section_arc020_session_emission()
+    await _section_arc020_config()
+    await _section_arc020_send_backlog()
+    await _section_arc020_multi_writer_fields()
+    await _section_arc020_session_boundary()
     await _report()
 
 
