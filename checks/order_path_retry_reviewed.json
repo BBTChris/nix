@@ -51,11 +51,11 @@
       "file": "broker_order_ibkr.py",
       "qualname": "IBKRBrokerOrder.flatten",
       "shape": "loop_contains_send",
-      "verb": "place_order",
-      "justification": "FAN-OUT, NOT RETRY. `flatten(all)` iterates the position mirror and issues ONE market close per SYMBOL; the client_order_id is `flat-{sym}-{seq}` so every iteration is a distinct order for a distinct instrument. The loop's cardinality is the number of open positions, not a retry budget, and no symbol is sent twice: the `except` handler collects the failure and continues (the ARC 015 defect fix — one symbol failing must not abandon the rest on the PROTECTIVE path) and never re-invokes place_order. Re-verified against risk spec §2A `flatten(symbol | all)`: fanning out over `all` is the specified behaviour of the verb.",
-      "reviewed_in": "ARC 018 sub-agent C (D2.14)",
-      "reviewed_on": "2026-08-10",
-      "re_review_if": "the handler ever calls place_order (that is shape except_reinvokes_send and this suppression does not cover it), or the loop bound stops being the position mirror"
+      "verb": "_emit_flatten_leg",
+      "justification": "FAN-OUT, NOT RETRY. `flatten(all)` iterates the position mirror and issues ONE market close per SYMBOL; the client_order_id is `flat-{sym}-{seq}` so every iteration is a distinct order for a distinct instrument. The loop's cardinality is the number of open positions, not a retry budget, and no symbol is sent twice. RE-REVIEWED ARC 020, AND THE RE-REVIEW WAS OWED RATHER THAN OPTIONAL: the ARC 018 row keyed this site to verb `place_order`, and ARC 020's D1.27(a)/D1.28 work extracted the send into `_emit_flatten_leg()`, so the old row went stale and the gate reported it as a VIOLATION. That is this file's self-expiring rule working exactly as written — the code moved, so the review was owed again — and the row is re-signed rather than re-pointed. WHAT WAS RE-VERIFIED, not carried over: (1) `_emit_flatten_leg` contains NO loop; it sends exactly once per call, so the retry shape lives only in the caller's per-symbol fan-out. (2) The `except Exception` handler inside `_emit_flatten_leg` RETURNS a `(symbol, reason)` failure tuple and never re-invokes `place_order`; the caller collects failures and continues, then raises once with the full picture (the ARC 015 protective-path defect fix). The `re_review_if` trigger below is therefore explicitly NOT met. (3) The loop bound is still the position mirror. ARC 020 added two `continue` arms ahead of the send — the idempotency-window suppression and the unheld-symbol no-op — and both can only REDUCE the number of sends per pass, never increase it, so the fan-out's upper bound is unchanged at one order per open position. Re-verified against risk spec §2A `flatten(symbol | all)`: fanning out over `all` is the specified behaviour of the verb.",
+      "reviewed_in": "ARC 018 sub-agent C (D2.14); re-reviewed and re-signed ARC 020 Phase 4 after the send moved behind _emit_flatten_leg",
+      "reviewed_on": "2026-08-11",
+      "re_review_if": "the handler ever calls place_order or _emit_flatten_leg (that is shape except_reinvokes_send and this suppression does not cover it), or the loop bound stops being the position mirror, or _emit_flatten_leg acquires a loop of its own"
     }
   ]
 }
