@@ -1335,3 +1335,203 @@ IBKR's current wording. RED withholds certification, not durability.
 
 **Nothing measured on IBKR at Stage 0 means anything about latency, fill realism, slippage, or
 strategy performance — the feed is delayed ~600 s.**
+
+---
+
+# ARC 019 — R1-A: send-path behaviour under stress · partial fills · reconnect · Tier-3
+**2026-08-11 · branch `arc-019-integration` · 3 parallel sub-agents in isolated worktrees**
+
+## Headline: the mechanism three briefs assumed was owed does not need to be built
+
+A1 measured all four sync send verbs under four socket conditions against a **real
+`ib_async.IB` over a real loopback TCP socket** with `SO_SNDBUF` shrunk to 2048 B — real
+vendor serialiser, real throttle queue, real transport, only the IBKR handshake bypassed.
+Worst of the sixteen cells: **0.003295359 s**. The condition that could have blocked — a
+send buffer verified saturated via `transport.get_write_buffer_size() > 0` — was the
+**fastest** column, not the slowest. **Nothing was built.**
+
+The spec tension was resolved rather than buried. §2A names a "non-blocking, low-priority
+sender thread" at lines 42, 43, 148, 170 and §5:323, and A flagged not building one. §5's
+threading model assigns it to the **Limiter** ("Limiter = single-threaded event loop … +
+one low-priority sender thread"), not to broker-order; line 43 means broker-order is driven
+*through* it. So it was never broker-order's to build, and the Limiter is R2. Further, §5's
+stated rationale for the thread is "blocking I/O, releases GIL" — `ib_async` is
+asyncio-native and does not block, so R2 must not build it from the diagram on autopilot.
+
+**The honest characterisation, which is the real finding:** the send path does not block, it
+**absorbs**. 200 `place_order` calls into a verified-full pipe returned in 0.032 s total,
+leaving 155 messages queued, 10204 B buffered and **zero bytes delivered to the peer**.
+Every call returned normally and none is known to have reached the venue. Not an adapter
+defect; the repair is never a resend (§2A:71, §4:241, §12A:830). Opened as **D1.22**, a
+consumer obligation naming R2.
+
+**ARC 014's 0.6 ms flatten figure is corrected to ~2.9 ms at N=5** — 0.6 ms was measured
+against `FakeIB`, which does no serialisation. The protective-path guarantee still holds:
+the four socket conditions are indistinguishable at every N, full-send-buffer fastest,
+~0.35 ms/symbol, so the whole fan-out completes inside 3.5 ms at the 1–5 instrument scope.
+
+## V9 — partial fills, and two defects only partials could expose
+
+`FakeIB` **could not represent a partial fill at all**: `push_exec` never advanced `filled`,
+so two behaviours were *unrepresentable*, not merely untested — no assertion could have been
+written that would fail. Extended, then driven. Two adapter defects fell out:
+
+1. **`avg_price` carried the last fill price, not a weighted average** — 2@7000, 2@7010,
+   1@7020 claimed 7020 against a true 7008.0. This is **ARC 014's two-meanings-one-field
+   defect, second instance in the same field**: `positionEvent` writes a genuine
+   venue-computed average into `avg_price`, so the field meant "true average" or "most
+   recent fill price" depending on which event landed last. Partials at a single price hide
+   it completely.
+2. **`disconnect()` against a vanished peer swallowed `on_session(DOWN)`** — `OSError`
+   [Errno 107] escaping `transport.write_eof()` mid-method, measured `sink.sessions
+   before=0 after=0`. Fail-OPEN on the session path, in the condition where the
+   notification matters most.
+
+**Spec conflict reported, not reconciled:** the brief's A2 says `on_cancel` carries the
+*unfilled* quantity; **§2A:78 declares `on_cancel(client_order_id, done_qty)`** — the
+filled portion. The spec was implemented and **both** numbers pinned.
+
+## D1.20 unlatched; two "UP over an unrebuilt mirror" paths closed
+
+`connect()` now derives `_mirror_stale` and the published session state from
+`_rebuild_mirror()`'s verdict. Non-vacuity: the flag is asserted genuinely `True`
+immediately before the clearing reconnect, so "cleared" is `True → False`, not `False →
+False`. Two laundering paths closed with it — a **failed** cold-start rebuild used to
+publish plain `UP`, and a 1102 arriving over an already-`True` flag used to wash it clean.
+All emission sites now hold one invariant: plain `UP` only while `_mirror_stale` is `False`.
+**Consumer half stays open** — row NARROWED, not discharged.
+
+## First Tier-3 traversal against real Nix application code
+
+`scripts/tests/test_broker_tier3.py` — 19 sequences, 1504 lines, all nine tabled sequences
+plus six added with reasoning. **No production code written**, by design.
+
+**The strongest evidence was not the control.** Two `nonvac` guards fired *unplanted* during
+construction: one caught the driver completing order A entirely before B began, which would
+have asserted a per-identity ordering guarantee over a sequence that never interleaved; the
+other caught a literal anchor (`reqpos_calls == 1`) wrong because the gating wrapper
+inherits the count from the fake it wraps. §7.3 working on real code rather than a plant.
+
+Five code defects held open as `strict=True` xfails, so a repair reddens the suite until the
+marker comes out in the same motion. Severest: **a cancelled `connect()` leaves an adapter
+that accepts orders and can never report on them** — `_connected = True` is set *before* the
+rebuild is awaited, `CancelledError` is a `BaseException` so `except Exception` misses it,
+and nothing unwinds. Any caller using `asyncio.wait_for` lands in that window. Measured:
+`place_order` **succeeds and reaches the venue** while acks, fills and mirror are all empty
+and no `on_session` was ever published. The order path is live and mute. → D1.23.
+
+**Two SPEC GAPS, and the answers were deliberately not invented** (→ D1.27): `flatten()` is
+not idempotent (two protective flattens over `+2` emit −4; §4 lists six *independent*
+protective triggers, so two in one cycle is a designed shape); and a protective `flatten()`
+during reconnect fires into a shut startup gate, so §14's "zero wire/delivery dependency"
+is honoured literally while the outcome is unobservable. Sections that would have to say
+are named — §2A's `flatten` bullet or §4 "Exits (dual authority)"; §4 "Boot / known-state
+discipline" — and **neither currently does**.
+
+## Apparatus riders — two, and they stopped
+
+**C1 `check_spec_citations`** — gate, not claim, argued from `derived_claims.json`'s own
+"numeric claims only" scope. Both sides derived: headings parsed from `docs/*.md` at run
+time, citations scanned from the tree. Three attribution rules measured, two rejected —
+whole-paragraph misattributed `debug.md` §7.12 to `CHECK-DEBT.md`; ±1 line scored the ARC
+017 series row's "banned by §2.1" as RESOLVED against `debug.md`, *which does have a §2.1*,
+resolving the arc's own subject to the wrong document. Adopted: nearest alias inside the
+enclosing structural block. **Line coordinates verified as falling inside the cited
+section's own span** — rejecting both "ignore the coordinate" (decorative, silently
+driftable) and "content anchor" (a hand-maintained list one level down, failure mode #14).
+
+**C2 `check_hook_suite`** — effective state in four arms, hook set derived from config, and
+it handles the worktree case (`git rev-parse --git-path hooks` returns the *common* dir when
+`.git` is a file). **A gap was deliberately demonstrated rather than papered over:** "no
+hook has been dropped" is *not* checkable against the config, because the config is the
+authority — delete an entry and both sides lose it together. Proven by an honest negative:
+deleting the mypy entry gave 7 hooks and exit 0, undetected. The checkable version is **zero
+selection**, pinned as a test.
+
+**Cached bandit answered both ways:** the store holds 1.8.6 *and* 1.9.4 and hooks resolve to
+1.9.4 — now printed every run. What it cannot prove is the *pinned* environment's own
+non-vacuity → **D3.7**.
+
+## Citation integrity — and a correction to ARC 018's correction
+
+All ten of the brief's citations resolve. Two findings the brief did not have:
+
+- **`V9`/`V11` do not exist as literal tokens.** §13 numbers objectives 1–23 plainly and
+  only switches to a `V` prefix at **V24**. The referents are correct (9 = partial fill +
+  remainder cancel; 11 = send path non-blocking under stalled socket). The `V` prefix for
+  1–23 is a **project convention layered on the spec**, present in briefs and in this
+  ledger, absent from the frozen document. Arrived at independently by all three agents.
+- **ARC 018's own correction was slightly wrong.** It recorded that the ARC 017 *gate text*
+  cited "§2.1" of the frozen spec. `git show 2d8a6ce` shows the gate said **"banned by ARC
+  017 §2.1"** — it named the brief honestly. The document was dropped in the **CHECK-DEBT
+  D2.14 row**. The defect was the **missing attribution**, not a wrong document — which is
+  why the gate is built around attribution, and why an *unattributed* citation being only an
+  advisory (**D2.17**) is the residual that matters.
+
+## Phase 4 — three things the integration caught that no agent could
+
+1. **The citation gate crashed in the real tree** (`UnicodeDecodeError`) on macOS
+   AppleDouble sidecars (`docs/._*.md`) that no fresh worktree contains. Worse than the
+   crash: indexing one would have made it a **zero-heading "unindexable" document**, which
+   in this gate's design *exempts* citations attributed to it — `._debug.md` as a silent
+   escape hatch. Skipped by name, so a genuinely undecodable document still fails loudly.
+2. **The harness caught an error in the ledger row being written for it.** D1.20's narrowing
+   was first written `**ADAPTER HALF DISCHARGED ARC 019**`, which matches the bold-span rule
+   and silently removed a row whose own text says the consumer half stays open. Re-worded to
+   `NARROWED, NOT DISCHARGED` and re-derived. The rule ARC 018 repaired paid for itself
+   within one arc.
+3. **T3-03 was repaired and its test inverted in the same motion.** B had encoded the wrong
+   log message as a *passing* assertion with an instruction in the failure text. Fixing the
+   defect reddened it, exactly as designed.
+
+**Triage discipline held.** B's T3-09 was recommended as trivial ("append the id to
+`sequence`, no existing index changes"); verified false — `test_broker_order.py` does
+`"on_ack" in sink.sequence` and `.index("on_ack")`, and B's own suite *asserts* the
+cid-blindness. Deferred as **D3.8** rather than rushed. Only T3-03, diagnostic-only, was
+fixed in the window.
+
+## D1.12 — capture mechanism built, not armed
+
+`scripts/d1_12_reboot_capture.py` + `scripts/nix-reboot-capture.service`. The load-bearing
+half is not the verdict but **evidence that nobody was there**: `who`, `loginctl
+list-sessions`, uptime-at-capture against a 300 s ceiling, written as `"trustworthy": false`
+with reasons when the precondition fails. Demonstrated able to say no **without a plant** —
+run interactively it returned `NOT TRUSTWORTHY`, naming three active sessions and a
+744803.6 s uptime. `is-enabled` is stored under a key literally named DECLARATION_ONLY.
+Arming needs root; the reboot is the operator's call. **Row stays open.**
+
+## Environment findings
+
+- **ARC 017 and ARC 018 were both stranded on branches**, third arc running. Cause was
+  mechanical, not inattention: `main` required **1 approving review**, all PRs are authored
+  by the sole maintainer, and GitHub forbids self-approval — so every arc PR was
+  structurally unmergeable from the moment it opened. PR #7 had sat since 2026-08-09.
+  `required_approving_review_count` set to 0 (force-push and deletion protection retained);
+  PR #12 merged, carrying #11 with it. Both now ancestors of `main`.
+- **All three sub-agent worktrees were provisioned from `main` (92f9f17), not session HEAD.**
+  All three caught it independently and reset. Future arcs dispatching from a non-main
+  branch must verify the base explicitly.
+- **`core.bare = true` was set on the shared repo config** by a sub-agent's `git init`
+  running with `GIT_DIR` inherited from the pre-commit hook environment — hooks export
+  `GIT_DIR`/`GIT_INDEX_FILE` and they outrank `cwd`. `/home/bbt/nix` stopped being a work
+  tree. Repaired; `git fsck` clean, no commits lost.
+
+## Final state — all derived, nothing typed
+
+```
+verify.py         10 passed | 0 failed | 0 cannot measure | 0 skipped   exit 0
+pytest            233 passed, 5 xfailed  (238 collected; baseline 180, +58)
+pre-commit        8/8 Passed                                            exit 0
+derived_claims    9/9 claims compared                                   exit 0
+CHECK-DEBT open   41  (derived:ledger_rows=41, stated:series_table_latest_row=41)
+registered checks 10  (derived:checks_glob=10, derived:registry_json=10)
+```
+
+pytest delta: 180 + 39 (C's two gate suites, 22 + 17) + 19 (B's traversal) = 238. A's
+coverage lands inside the existing `test_broker_order.py` item — 152 → 180 assertions
+inside that one item, so it adds no collected items.
+
+**Nothing measured on IBKR at Stage 0 means anything about latency, fill realism, slippage,
+or strategy performance — the feed is delayed ~600 s.** No tap session was taken this arc;
+the rejection-taxonomy confirmation and D1.12's reboot both remain RED, naming R1-A and
+D1.12 respectively. RED withholds certification, not durability.

@@ -42,6 +42,47 @@ the request to the loop's writer and return, NOT because anything here schedules
   is the failure mode this file is most exposed to — every gap decision below is a claim
   about behaviour that only a reader can check.
 
+NON-BLOCKING IS NOW MEASURED, NOT INFERRED (ARC 019 A1). The paragraph above asserted the
+send path is non-blocking "because ib.placeOrder and ib.cancelOrder are themselves
+non-blocking calls". That was a reading of the vendor's source, not an observation, and
+several prior arc briefs went on to ASSUME a sender thread was therefore owed. Nobody had
+measured either claim. ARC 019 did.
+
+  METHOD. All four sync send verbs driven against a real `ib_async.IB` whose
+  `Client.conn` held a real asyncio transport over a real loopback TCP socket, under four
+  socket conditions. 5 reps per cell, `time.perf_counter()` around the verb call only.
+  Wall-clock seconds to return, worst observed of 5:
+
+    verb           healthy      silent    full-buf   vanished
+    place_order   0.001177    0.001232    0.000834   0.000971
+    cancel_order  0.000360    0.000366    0.000275   0.000291
+    flatten (N=5) 0.002939    0.002747    0.002617   0.003295
+    disconnect    0.000383    0.000436    0.000140   0.000161
+
+  Worst cell in the whole matrix: 0.003295 s. NOTHING BLOCKS. The condition that could
+  have blocked — a full send buffer, verified saturated by asserting asyncio had begun
+  buffering in userspace — is the FASTEST column, not the slowest.
+
+  DECISION: BUILD NOTHING. No queue, no sender thread. §2A's architecture diagram names a
+  "non-blocking, low-priority sender thread" (spec lines 43, 148) and one is not built
+  here, because the property that thread exists to provide is already provided twice over
+  by machinery this adapter sits on top of: asyncio's transport buffers a write the kernel
+  cannot take, and `ib_async.Client.sendMsg` holds its own `_msgQ` in front of that for
+  request pacing. A Nix-side sender thread would be a third queue in the same pipe.
+
+  WHAT "NEVER BLOCKS" ACTUALLY COSTS, measured rather than glossed: 200 `place_order`
+  calls into an already-full pipe returned in 0.032 s TOTAL (max single call 0.002384 s)
+  and left 155 messages in ib_async's queue, 10204 B in asyncio's buffer, and ZERO bytes
+  delivered to the peer. So the send path does not block — it absorbs. An order accepted
+  by this process is not thereby an order that reached the venue, and no send verb can
+  tell the caller which it was. That is not a defect to fix here: §4 resolves it with the
+  pending-timeout state machine and `query_order_status`, both of which belong to the
+  Limiter, and the one thing this adapter must never do about it is resend.
+
+  NOT V11. §13 objective 11 asks whether the stop loop keeps protecting while the send
+  path is stalled. There is no stop loop until R2, so V11 stays KNOWN-RED. What is
+  measured above is send-verb behaviour under socket stress against a declared stand-in.
+
 RETRY POLICY — DO NOT ADD ONE TO THE ORDER PATH. No `tenacity`, no `backoff`, no
 hand-rolled loop, no decorator on `place_order`, `cancel_order` or `flatten`. §4 is
 explicit: a pending timeout is resolved by QUERYING order status, and the system NEVER
@@ -297,13 +338,23 @@ class IBKRBrokerOrder:
         # publishes the CONFIRMED state; (3) pair it with the `UP_DATA_LOSS` session event
         # rather than substituting for it — the session member is the edge, this flag is
         # the level, and only the level survives a missed event.
-        # KNOWN GAP, deliberately not fixed here (a behaviour change beyond ARC 018's
-        # scope): the flag LATCHES. `connect()` discards `_rebuild_mirror()`'s verdict and
-        # never touches `_mirror_stale`, so a re-read that failed once stays True across a
-        # full reconnect that did successfully rebuild. It fails toward "suspect", which is
-        # the safe direction, but a consumer that gates entries on it would never resume
-        # trading after one failed re-read. Whoever builds the consumer must fix the latch
-        # in the same motion or the gate is a one-way door.
+        # THE LATCH (D1.20) IS FIXED — ARC 019 A3. ARC 018 recorded it here as a known gap:
+        # `connect()` discarded `_rebuild_mirror()`'s verdict and never wrote this flag, so
+        # a re-read that failed once stayed True across a full reconnect that DID rebuild.
+        # Safe direction, but a one-way door. `connect()` now derives both this flag and
+        # the published session state from the verdict — see the comment there.
+        #
+        # WHAT REMAINS OPEN IS THE CONSUMER HALF, and it stays named rather than built: the
+        # Limiter does not exist until R2, and building a consumer for a flag nobody reads
+        # would be inventing the requirement rather than meeting it. The obligations, as
+        # written in ARC 018 while the reasoning was fresh and re-confirmed in ARC 019, are
+        # that a consumer must (1) treat True as a HALT-class condition for NEW entries —
+        # it is §4's uncertainty, and every uncertainty resolves toward flat; (2) NOT treat
+        # True as a reason to skip a protective flatten — firing against a suspect mirror
+        # still beats not firing, and §4's indeterminate path reconciles against broker
+        # truth afterward; (3) pair it with the `UP_DATA_LOSS` session event rather than
+        # substituting for it — the session member is the edge, this flag is the level, and
+        # only the level survives a missed event.
         self._mirror_stale = False
         # Monotonic count of rebuild ATTEMPTS. Exists so "the mirror was re-read" is
         # directly measurable rather than inferred from the mirror's contents — which can
@@ -445,9 +496,43 @@ class IBKRBrokerOrder:
         self._connected = True
 
         # ARC 017 A3. The gate stays CLOSED across the rebuild — see WHEN THE GATE OPENS.
-        await self._rebuild_mirror()
+        #
+        # ARC 019 A3/A4 — THE VERDICT IS HONOURED. Before this arc `connect()` discarded
+        # `_rebuild_mirror()`'s return value entirely, which produced two defects at once:
+        #
+        #   D1.20, the LATCH. `_mirror_stale` was never written here, so a re-read that
+        #     failed once stayed True across a full reconnect that DID rebuild
+        #     successfully. It failed toward "suspect" — the safe direction — but it was a
+        #     ONE-WAY DOOR: a consumer gating new entries on it would never resume trading.
+        #
+        #   The louder half: a rebuild that FAILED still published plain `SessionState.UP`.
+        #     That is the adapter reporting a healthy session over a mirror it did not
+        #     rebuild, on the cold-start path §4 designates as ground truth — the fail-OPEN
+        #     direction, and the exact question ARC 019 A4 asked of every UP emission.
+        #
+        # Both are the same missing assignment. The state published is now derived from the
+        # verdict rather than asserted independently of it, and `UP_DATA_LOSS` is reused
+        # rather than invented: ARC 017 built it for precisely this fact — "the session
+        # exists, our view of the account may have gaps." `state.is_up` stays True, so a
+        # consumer asking "is the session usable" is unaffected; `state.data_loss` becomes
+        # True, so a consumer asking "must I reconcile" is told the truth.
+        #
+        # THE RESULTING INVARIANT, asserted mechanically over every emission site in
+        # test_broker_order.py: plain `SessionState.UP` is published ONLY while
+        # `_mirror_stale` is False. There is no path to a clean UP over a suspect mirror.
+        rebuilt = await self._rebuild_mirror()
+        self._mirror_stale = not rebuilt
         self._startup_complete = True
-        self._sink.on_session(SessionState.UP)
+        if rebuilt:
+            self._sink.on_session(SessionState.UP)
+        else:
+            self._sink.on_session(
+                SessionState.UP_DATA_LOSS,
+                reason=(
+                    "session established but the cold-start position re-read FAILED — "
+                    "mirror suspect"
+                ),
+            )
 
     @staticmethod
     def _startup_fetch_fields():
@@ -491,13 +576,52 @@ class IBKRBrokerOrder:
         )
 
     def disconnect(self) -> None:
+        """Tear the session down and ALWAYS publish DOWN.
+
+        ARC 019 A1 — MEASURED, not reasoned. Driving this verb against a real ib_async
+        client over a real asyncio transport whose peer had vanished (RST, no FIN)
+        produced, at 0.000079630 s:
+
+            OSError: [Errno 107] Transport endpoint is not connected
+              broker_order_ibkr.disconnect -> ib.IB.disconnect -> client.Client.disconnect
+              -> connection.Connection.disconnect -> transport.write_eof()
+              -> selector_events._SelectorSocketTransport.write_eof()
+              -> self._sock.shutdown(socket.SHUT_WR)
+
+        The exception escaped from the middle of this method, so `on_session(DOWN)` was
+        never reached: `_connected` and `_startup_complete` were already False — the
+        adapter knew it was down — while the SINK had been told nothing at all. Measured
+        directly: sink.sessions before=0 after=0.
+
+        That is the fail-OPEN direction on the session path, and it fires in exactly the
+        condition where the notification matters most. The consumer is left believing a
+        session is live that this adapter has already dismantled, and §4's "every
+        uncertainty resolves toward flat" cannot run because no uncertainty was reported.
+
+        WHY THE VENDOR CALL IS WRAPPED AND NOT MADE CONDITIONAL. There is no pre-check
+        that would help: whether the socket is still writable is not knowable before
+        attempting it, and asking would be a TOCTOU race against the very peer that has
+        already gone. The teardown is best-effort by nature — the local state has already
+        been dropped by the time it runs — so a vendor failure to shut a socket that is
+        gone anyway must not suppress the one fact the consumer needs. Logged loudly, and
+        the reason carries it, so a failed teardown is visible rather than swallowed.
+
+        NOT A RETRY. The vendor call is attempted exactly once and never re-issued.
+        """
         self._connected = False
         # Close the gate too: between disconnect and the next connect, any order-path
         # event still in flight belongs to a session that no longer exists.
         self._startup_complete = False
+        reason = "requested"
         if self._ib is not None:
-            self._ib.disconnect()
-        self._sink.on_session(SessionState.DOWN, reason="requested")
+            try:
+                self._ib.disconnect()
+            except Exception as exc:  # noqa: BLE001 — see WHY THE VENDOR CALL IS WRAPPED
+                log.error(
+                    "vendor disconnect raised (session is down regardless): %s", exc
+                )
+                reason = f"requested; vendor teardown raised: {exc}"
+        self._sink.on_session(SessionState.DOWN, reason=reason)
 
     def _require_session(self, verb: str) -> None:
         if not self._connected:
@@ -570,6 +694,39 @@ class IBKRBrokerOrder:
         market orders, and the decision to hold in HALT rather than fire into a shut
         market belongs to the Limiter, which owns session state. This library is
         'dumb hands' (§2) — it does not decide when it is safe to act.
+
+        THE FAN-OUT, MEASURED (ARC 019 A1). This loop issues one send per SYMBOL, so any
+        per-call cost multiplies by the number of open positions — on the path §14:969
+        guarantees has "zero wire/delivery dependency". If a send could block, this verb
+        would block N times over, and the 0.6 ms mirror read in front of it would be
+        decoration. So it was measured rather than argued, against a real ib_async client
+        over a real socket, worst observed of 5 reps, seconds:
+
+            N=1      N=5      N=20
+            0.00097  0.00294  0.00708    healthy
+            0.00103  0.00289  0.00889    peer accepts, never responds
+            0.00120  0.00251  0.00695    send buffer FULL
+            0.00095  0.00345  0.00868    peer vanished (RST, no FIN)
+
+        TWO THINGS THE NUMBERS SAY, and the second matters more than the first.
+
+          Cost scales LINEARLY with N — roughly 0.35 ms per symbol. It is real and it is
+          worth knowing, but at this project's declared scope of 1-5 concurrent
+          instruments the whole fan-out completes inside 3.5 ms.
+
+          The socket's condition does not appear in the numbers AT ALL. Read the table by
+          column instead of by row: the four conditions are indistinguishable at every N,
+          and the full-buffer column is if anything the fastest. That is the protective-path
+          guarantee holding — the cost here is serialisation and dict work, and a dead peer
+          costs exactly what a healthy one costs because nothing in this loop waits on the
+          wire. The 0.6 ms figure ARC 014 quoted was measured against FakeIB, which does no
+          serialisation; against the real vendor serialiser at N=5 it is ~2.9 ms, and that
+          correction is the honest one to carry forward.
+
+        WHAT IS STILL NOT PROVEN HERE: that the orders this loop hands off ARRIVE. They are
+        accepted by asyncio's buffer and ib_async's queue whether or not the peer is
+        reachable — see the module docstring. `flatten` returning is proof that the
+        protective path was not blocked, never proof that the position was closed.
         """
         self._require_session("flatten")
         targets = [symbol] if symbol else list(self._mirror.keys())
@@ -801,20 +958,36 @@ class IBKRBrokerOrder:
         """A refusal by the startup gate is silent by design — startup replay is noise and
         `_from_ib` is empty across the whole window, so nothing is lost.
 
-        The ONE case that is not noise is an event whose id this adapter recognises. That
-        can only happen if a caller placed an order concurrently with connect(), which §4's
-        cold-start ordering forbids. Closing the gate across the mirror rebuild (ARC 017
-        A3) makes that drop possible where before it was a phantom fill instead, so it is
-        made LOUD: a real event refused must never be indistinguishable from replay noise.
+        The ONE case that is not noise is an event whose id this adapter recognises, and it
+        is made LOUD: a real event refused must never be indistinguishable from replay
+        noise. Closing the gate across the mirror rebuild (ARC 017 A3) makes that drop
+        possible where before it was a phantom fill instead.
+
+        `_startup_complete` is False in TWO windows, not one, and the cause differs
+        (ARC 019 sub-agent B, T3-03). `_connected` discriminates them: during connect() it
+        is already True (set before the rebuild is awaited), and after disconnect() it is
+        False. Naming the connect()-side cause on the teardown side told the operator to
+        hunt a §4 cold-start ordering violation that cannot have occurred.
         """
         if ib_id in self._from_ib:
-            log.error(
-                "startup gate refused a %s for %s, which is a LIVE order in this session "
-                "— an order was placed concurrently with connect(), violating §4 "
-                "cold-start ordering. The event was DROPPED.",
-                kind,
-                self._from_ib[ib_id],
-            )
+            if self._connected:
+                log.error(
+                    "startup gate refused a %s for %s, which is a LIVE order in this "
+                    "session — an order was placed concurrently with connect(), violating "
+                    "§4 cold-start ordering. The event was DROPPED.",
+                    kind,
+                    self._from_ib[ib_id],
+                )
+            else:
+                log.error(
+                    "startup gate refused a %s for %s, which is a LIVE order in this "
+                    "session — it arrived after disconnect() tore the session down, so "
+                    "the venue's view and ours have diverged and this order's outcome is "
+                    "UNKNOWN to us. The event was DROPPED; resolve via query_order_status "
+                    "on reconnect (§4:241 — never auto-resend).",
+                    kind,
+                    self._from_ib[ib_id],
+                )
 
     def _on_ib_order_status(self, trade) -> None:
         """IBKR re-emits orderStatus on every change, so ack and cancel are deduped."""
@@ -909,7 +1082,9 @@ class IBKRBrokerOrder:
         if new_qty == 0:
             self._mirror.pop(sym, None)
         else:
-            self._mirror[sym] = Position(sym, new_qty, price)
+            self._mirror[sym] = Position(
+                sym, new_qty, self._blend_avg_price(prior, signed, price, new_qty)
+            )
 
         self._sink.on_fill(cid, exec_id, sym, shares, price, cum)
 
@@ -927,9 +1102,30 @@ class IBKRBrokerOrder:
             return
         if errorCode == IB_ERR_CONN_RESTORED_DATA_OK:
             log.info("IBKR %d: %s", errorCode, errorString)
-            # No data loss: our mirror did not miss anything, so there is nothing to
-            # re-read. Deliberately NOT rebuilt — see _on_data_loss_restore for why the
-            # two restores must stay asymmetric.
+            # No data loss ACROSS THIS GAP: our mirror missed nothing while the venue was
+            # away, so there is nothing to re-read. Deliberately NOT rebuilt — see
+            # _on_data_loss_restore for why the two restores must stay asymmetric.
+            #
+            # ARC 019 A4. But a clean restore is a statement about THIS gap only. It says
+            # nothing about a re-read that failed EARLIER, and it does not repair one: the
+            # venue guaranteeing continuity across the last five seconds cannot un-fail a
+            # cold-start `reqPositions` that never answered. Publishing plain `UP` here
+            # while `_mirror_stale` is True would let a suspect mirror be laundered clean
+            # by an unrelated reconnect — the one remaining path to "UP over a mirror this
+            # adapter did not rebuild", and the last one A4 was asked to close.
+            #
+            # So the LEVEL wins over the EDGE. This is the same asymmetry the flag was
+            # built for (see _mirror_stale): the session member is the edge, the flag is
+            # the level, and only the level survives a missed event.
+            if self._mirror_stale:
+                self._sink.on_session(
+                    SessionState.UP_DATA_LOSS,
+                    reason=(
+                        "session restored with the event stream intact, but the position "
+                        "mirror was ALREADY suspect from an earlier failed re-read"
+                    ),
+                )
+                return
             self._sink.on_session(
                 SessionState.UP, reason="session restored, event stream intact"
             )
@@ -1108,6 +1304,46 @@ class IBKRBrokerOrder:
         except Exception as exc:  # noqa: BLE001 — mirror rebuild must not kill connect
             log.warning("mirror rebuild failed: %s", exc)
             return False
+
+    @staticmethod
+    def _blend_avg_price(
+        prior: Position | None, signed: int, price: float, new_qty: int
+    ) -> float:
+        """Weighted-average cost basis across successive (partial) fills.
+
+        FOUND BY ARC 019 A2, and it is ARC 014's defect a second time in the same field.
+        The fill path used to write `Position(sym, new_qty, price)` — the LAST execution's
+        price — into a field named `avg_price`. A 5-lot filling 2@7000, 2@7010, 1@7020
+        left the mirror claiming an average of 7020 when it is 7008.0. Partial fills at one
+        price hid it completely, which is why nothing caught it until partials were driven.
+
+        WHY IT MATTERS RATHER THAN BEING COSMETIC: `positionEvent` writes a GENUINE
+        venue-computed average into this same field (normalised per-unit by
+        `_avg_price_from_cost`). So before this fix `avg_price` meant "true average" or
+        "most recent fill price" depending purely on which event happened to land last —
+        exactly the two-meanings-one-field shape ARC 014 found with notional-vs-per-unit,
+        and the same repair: give the field ONE meaning at every write site.
+
+        THE THREE CASES, and why reducing is not a blend:
+          ADDING to a position — blend by absolute size. The new lot joins the old.
+          REDUCING without crossing zero — the cost basis of what REMAINS is unchanged.
+            Blending here would let a closing trade rewrite the entry price of the shares
+            it did not close, which is simply wrong: closing realises P&L, it does not
+            re-price inventory.
+          CROSSING through zero — the old position is gone and a new one in the opposite
+            direction was opened at this fill's price. Nothing of the old basis survives.
+
+        `new_qty == 0` never reaches here: the caller pops the symbol instead, because a
+        flat position has no cost basis to carry.
+        """
+        if prior is None or prior.net_qty == 0:
+            return price
+        if (prior.net_qty > 0) == (signed > 0):
+            total = abs(prior.net_qty) + abs(signed)
+            return (abs(prior.net_qty) * prior.avg_price + abs(signed) * price) / total
+        if (prior.net_qty > 0) == (new_qty > 0):
+            return prior.avg_price
+        return price
 
     def _contract_for(self, symbol: Symbol):
         if self._resolve_contract is None:
