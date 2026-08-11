@@ -29,6 +29,21 @@ INTERACTIVE = False
 # reports drift at boot — it just never repairs there.
 DISRUPTIVE = True
 
+# --- ARC 024 orchestration declarations (read statically, never imported) ---
+#: Nothing must run before this; the venv gate is a separate concern that this
+#: check does not depend on for its own measurement (it resolves the venv path
+#: itself and reports CANNOT_MEASURE if it is absent).
+DEPENDS_ON: tuple[str, ...] = ()
+#: The shared .venv, exclusively — pip mutates it, so no other check may run in
+#: parallel with this one while also claiming it. This is the D3.12 hazard
+#: written down as a claim instead of left in a docstring.
+RESOURCES: tuple[str, ...] = ("venv", "network:pypi")
+TIME_BOUND = False
+CORRECTABLE = True
+NON_CORRECTABLE_REASON = ""
+#: The pins file this gate reads and the venv it compares against.
+SUBJECTS: tuple[str, ...] = ("checks/pinned_deps.json",)
+
 NAME = "check_python_deps"
 
 _QUERY = (
@@ -187,11 +202,12 @@ if __name__ == "__main__":
             print(f"{_pkg}=={_ver}")
         sys.exit(0)
 
-    from nixverify.contract import exit_code_for, validate_result
+    from nixverify.actuation import standalone_main
 
-    HOME = Path(__file__).resolve().parent.parent
-    OUTCOME = validate_result(
-        run(Mode.VERIFY, Context(nix_home=HOME, mode=Mode.VERIFY))
+    sys.exit(
+        standalone_main(
+            Path(__file__).resolve(),
+            run,
+            "check_python_deps",
+        )
     )
-    print(f"{OUTCOME.status.value}: {OUTCOME.evidence or OUTCOME.detail}")
-    sys.exit(exit_code_for(OUTCOME.status))

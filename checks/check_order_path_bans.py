@@ -392,6 +392,26 @@ PRIVILEGE = "user"
 INTERACTIVE = False
 DISRUPTIVE = False
 
+# --- ARC 024 orchestration declarations (read statically, never imported) ---
+DEPENDS_ON: tuple[str, ...] = ()
+#: Reads source files only; opens no socket, restarts no service, writes nothing.
+RESOURCES: tuple[str, ...] = ()
+TIME_BOUND = False
+#: §2.3 — NON-CORRECTABLE, and this is the class's charter member. The subject is
+#: the order path. Risk spec §4 prohibits auto-resend there for exactly this
+#: reason: automatic remediation on the order path converts one intended action
+#: into two. A gate that could rewrite the order path to satisfy itself is a
+#: strictly worse object than a gate that reports and stops.
+CORRECTABLE = False
+NON_CORRECTABLE_REASON = (
+    "the subject is the order path; risk spec §4 forbids automatic remediation "
+    "there, because a repair that edits the order path to satisfy its own gate "
+    "is the same class of action as an auto-resend"
+)
+#: Derived at runtime from the tree; the reviewed-suppression registry is the
+#: one static artifact this gate reads and is answerable for.
+SUBJECTS: tuple[str, ...] = ("checks/order_path_retry_reviewed.json",)
+
 NAME = "check_order_path_bans"
 
 # --------------------------------------------------------------------------
@@ -1407,12 +1427,13 @@ if __name__ == "__main__":
     if "--print-scope-count" in sys.argv[1:]:
         sys.exit(_print_scope(HOME))
 
-    from nixverify.contract import exit_code_for, validate_result
+    from nixverify.actuation import standalone_main
 
-    OUTCOME = validate_result(
-        run(Mode.VERIFY, Context(nix_home=HOME, mode=Mode.VERIFY))
+    sys.exit(
+        standalone_main(
+            Path(__file__).resolve(),
+            run,
+            "check_order_path_bans",
+            argv=[a for a in sys.argv[1:] if a != str(HOME)],
+        )
     )
-    print(f"{OUTCOME.status.value}: {OUTCOME.evidence or OUTCOME.detail}")
-    if OUTCOME.detail and OUTCOME.evidence:
-        print(f"  detail: {OUTCOME.detail}")
-    sys.exit(exit_code_for(OUTCOME.status))

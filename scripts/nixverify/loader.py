@@ -55,8 +55,31 @@ def _import_module(path: Path, name: str) -> ModuleType:
     if spec is None or spec.loader is None:
         raise ImportError(f"no import spec for {path}")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # REGISTERED BEFORE exec_module, and the order is load-bearing (ARC 024).
+    #
+    # It used to be registered afterwards, which is the intuitive order and is
+    # wrong: several stdlib decorators resolve their defining module during
+    # class creation via `sys.modules.get(cls.__module__)`. With the module not
+    # yet registered that lookup returns None, and a check carrying a
+    # module-level `@dataclasses.dataclass` failed to import with
+    # `AttributeError: 'NoneType' object has no attribute '__dict__'` — a
+    # message that names neither the decorator nor this function.
+    #
+    # MEASURED, not anticipated: `checks/check_verify_logging.py` was the first
+    # check to use a module-level dataclass and hit it immediately. Every check
+    # written before ARC 024 happened to avoid the construct, so the defect sat
+    # latent in the loader rather than being absent from it.
+    #
+    # The registration is removed again if exec fails, so a half-executed module
+    # is never left visible to a later import — that would be strictly worse
+    # than the bug being fixed, since the next caller would get a module whose
+    # top half ran and whose bottom half did not, with no error at all.
     sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
     return module
 
 

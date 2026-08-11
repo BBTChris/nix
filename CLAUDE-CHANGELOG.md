@@ -84,3 +84,41 @@ than relying on memory.
 - Found by sub-agent A while applying §0a's "verified on-disk state outranks this
   document" to the brief. Reported rather than worked around; `CLAUDE.md` was outside
   that sub-agent's write scope, so the parent applied it in Phase 4.
+
+## 2026-08-11 — ARC 024 — check contract v2 (actuation) written into CLAUDE.md
+
+- Added a new section **`## Check contract (v2 — actuation)`** after "Architecture
+  invariants": nine numbered durable invariants covering the actuation verbs and
+  measure-only default, the independent post-mutation re-verify, the broadened
+  coverage trigger, the four-state status/exit mapping with Guarded, the block
+  execution plan and proven-disjoint parallelism, static (AST) declaration reading,
+  `--optimize`'s propose-then-commit and its loud-error set, Plane-2 emission to
+  journald, and §0c's "a retrofitted check is a new check".
+- The section is the brief's Stage 5.1 list **corrected to what shipped**, not
+  transcribed: the check's own CLI is named (the runner already had `--mode`, default
+  `verify`, since ARC 009 — the 13 checks hardcoded `Mode.VERIFY` in `__main__`);
+  light blue is recorded as covering cannot-measure **and skipped**; the aggregate
+  dominance order (Fail > Cannot-measure > Guarded > Pass) is stated; declarations are
+  named (`DEPENDS_ON`, `RESOURCES`) and pinned to AST reading; `--optimize` writes no
+  plan at all on error and proposes rather than overwrites; the retrofit rule states
+  the consequence (reverts to UNBOUND).
+- Invariant 5 records `checks/registry.json` as the on-disk name **and flags the name
+  as an open operator ruling** — the ruling says `manifest.json`, the file says
+  `registry.json`. Recorded rather than resolved, per Phase 0.2's "do not rename,
+  merge, or create either file."
+- Added 1 row to the "Specs — read on demand" table for
+  `docs/CHECK-CONTRACT-AMENDMENTS.md` (a RECORD, not an authority; read on any change
+  to check status, actuation, or the coverage trigger). New file this arc:
+  `VERIFY-AND-CHECKS.md` is external, inherited, **unversioned, and carries no
+  amendment mechanism**, so it is never edited in place; and `SPEC-AMENDMENTS.md` is
+  the wrong home because it amends the frozen **risk** spec and holds six amendments,
+  not five as the brief stated.
+- Corrected the `nix_check_contract.md` row's version citation **v1.1.0 → v1.2.0**,
+  matching the bump made to that file in the same arc. Not a discretionary edit: an
+  index that names a version the file does not carry is the exact ARC 018 defect
+  recorded two entries above.
+- **No other CLAUDE.md content changed.** In particular the `debug.md` row was NOT
+  touched — it already reads v1.2.0 on disk, which is correct; the ARC 024 brief's
+  Phase 0.6 claim that CLAUDE.md cites `debug.md` v1.1.0 in two places is **false
+  against the file**. The only occurrences of "v1.1.0" in that row are the historical
+  note ARC 018 added recording that it *used* to say v1.1.0.

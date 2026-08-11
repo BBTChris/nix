@@ -17,6 +17,13 @@
       ]
     },
     {
+      "name": "observability",
+      "comment": "ARC 024. check_verify_logging proves verify.py's own Plane-2 stream (risk spec §12.10) round-trips to journald and that no presentation byte reaches it. Placed here, third, for two reasons: it depends on nothing but the syslog socket, so it belongs early under the least-dependent-first ordering; and it is the only registered check whose subject is verify.py itself, so a run in which it fails should say so before twelve unrelated verdicts scroll past. It claims the resource `journal` and no other check claims it, which is what makes it eligible to share a parallel block later. TIME_BOUND with EXPECTED_S=6.0, derived from its own READBACK_TIMEOUT_S rather than from an observed duration. NON-CORRECTABLE by declaration: the subject is the journal transport, and 'correcting' it would mean writing to the thing under measurement.",
+      "checks": [
+        "check_verify_logging"
+      ]
+    },
+    {
       "name": "trading-stack",
       "checks": [
         "check_python_deps",
@@ -33,6 +40,7 @@
         "check_hook_suite",
         "check_datafeed_granted_mode",
         "check_datafeed_bar_seal",
+        "check_artifact_gate_coverage",
         "check_derived_claims"
       ]
     }
