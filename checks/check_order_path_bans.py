@@ -12,15 +12,19 @@ C.9: *extend an instrument that already owns a property; never build a second*).
 WHAT IS BANNED, AND WHY (risk spec v1.3):
 
   retry libraries — `tenacity`, `backoff`, `retrying`
-      §2A line 71: `query_order_status(client_order_id)` — pending-timeout
-      resolution (**never auto-resend**). §4 line 241: the Limiter "issues
-      order-status query, **never auto-resends**". §12A line 830:
-      `PENDING_ACK_TIMEOUT_MS` … "status query, **never resend**". A retry
-      decorator on `place_order` turns one intended order into two, at the
-      venue, with real money.
+      `nics_risk_subsystem_spec_v1.3.md` §2A:71 —
+      `query_order_status(client_order_id)`, pending-timeout resolution
+      (**never auto-resend**); §4:241 — the Limiter "issues order-status query,
+      **never auto-resends**"; §12A:830 — `PENDING_ACK_TIMEOUT_MS` … "status
+      query, **never resend**". A retry decorator on `place_order` turns one
+      intended order into two, at the venue, with real money.
+      (ARC 019: the document is now named beside these coordinates rather than
+      left to context, so `check_spec_citations` can resolve them and
+      range-check the line numbers. Verified there on the frozen file.)
 
   loop-blocking calls — `asyncio.run`, `run_until_complete`, `run_forever`
-      §2A invariant 5: the send path is non-blocking regardless of vendor.
+      `nics_risk_subsystem_spec_v1.3.md` §2A:103-107, invariant 5: the send path
+      is non-blocking regardless of vendor.
       `flatten()` is the protective path and MUST NOT BLOCK. Any of these on a
       sync verb parks the calling thread on the event loop.
 
