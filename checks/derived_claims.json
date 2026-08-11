@@ -66,13 +66,17 @@
         {
           "name": "registry_json",
           "role": "derived",
-          "files": ["checks/registry.json"],
+          "files": [
+            "checks/registry.json"
+          ],
           "probe": "registry_check_count"
         },
         {
           "name": "checks_glob",
           "role": "derived",
-          "files": ["checks"],
+          "files": [
+            "checks"
+          ],
           "probe": "checks_glob_count"
         }
       ],
@@ -92,7 +96,10 @@
         {
           "name": "pytest_collector",
           "role": "derived",
-          "files": ["scripts/tests", "pyproject.toml"],
+          "files": [
+            "scripts/tests",
+            "pyproject.toml"
+          ],
           "argv": [
             "{venv_python}",
             "-m",
@@ -108,7 +115,9 @@
         {
           "name": "source_ast",
           "role": "derived",
-          "files": ["scripts/tests"],
+          "files": [
+            "scripts/tests"
+          ],
           "probe": "pytest_ast_count"
         }
       ],
@@ -149,14 +158,23 @@
         {
           "name": "pins_json",
           "role": "derived",
-          "files": ["checks/pinned_deps.json"],
+          "files": [
+            "checks/pinned_deps.json"
+          ],
           "probe": "pinned_deps_count"
         },
         {
           "name": "print_pins_cli",
           "role": "derived",
-          "files": ["checks/check_python_deps.py", "checks/pinned_deps.json"],
-          "argv": ["{system_python}", "{checks_dir}/check_python_deps.py", "--print-pins"],
+          "files": [
+            "checks/check_python_deps.py",
+            "checks/pinned_deps.json"
+          ],
+          "argv": [
+            "{system_python}",
+            "{checks_dir}/check_python_deps.py",
+            "--print-pins"
+          ],
           "count_lines": true
         }
       ],
@@ -173,13 +191,17 @@
         {
           "name": "ledger_rows",
           "role": "derived",
-          "files": ["docs/CHECK-DEBT.md"],
+          "files": [
+            "docs/CHECK-DEBT.md"
+          ],
           "probe": "check_debt_open_count"
         },
         {
           "name": "series_table_latest_row",
           "role": "stated",
-          "files": ["docs/CHECK-DEBT.md"],
+          "files": [
+            "docs/CHECK-DEBT.md"
+          ],
           "probe": "check_debt_series_latest"
         }
       ],
@@ -197,13 +219,17 @@
         {
           "name": "frozen_spec_identifiers",
           "role": "derived",
-          "files": ["docs/nics_risk_subsystem_spec_v1.3.md"],
+          "files": [
+            "docs/nics_risk_subsystem_spec_v1.3.md"
+          ],
           "probe": "spec_order_identifier_count"
         },
         {
           "name": "seam_roster",
           "role": "stated",
-          "files": ["scripts/broker/broker_seam.py"],
+          "files": [
+            "scripts/broker/broker_seam.py"
+          ],
           "probe": "seam_order_roster_count"
         }
       ],
@@ -223,7 +249,9 @@
         {
           "name": "spec_roster_size",
           "role": "derived",
-          "files": ["docs/nics_risk_subsystem_spec_v1.3.md"],
+          "files": [
+            "docs/nics_risk_subsystem_spec_v1.3.md"
+          ],
           "probe": "spec_order_identifier_count"
         },
         {
@@ -262,7 +290,9 @@
         {
           "name": "seam_code_total",
           "role": "stated",
-          "files": ["scripts/broker/broker_seam.py"],
+          "files": [
+            "scripts/broker/broker_seam.py"
+          ],
           "probe": "seam_declared_total"
         },
         {
@@ -291,7 +321,10 @@
         {
           "name": "gate_derived_scope",
           "role": "derived",
-          "files": ["checks/check_order_path_bans.py", "scripts/broker"],
+          "files": [
+            "checks/check_order_path_bans.py",
+            "scripts/broker"
+          ],
           "argv": [
             "{system_python}",
             "{checks_dir}/check_order_path_bans.py",
@@ -302,7 +335,9 @@
         {
           "name": "stated_anchor_dirs",
           "role": "stated",
-          "files": ["checks/check_order_path_bans.py"],
+          "files": [
+            "checks/check_order_path_bans.py"
+          ],
           "probe": "order_path_anchor_files"
         }
       ],
@@ -521,6 +556,195 @@
         "document, and registering a pattern for a canonical prose form would invite one to be written",
         "— in percent form, by the next person who wants a progress figure. If it is ever banked, the",
         "form must be a bare count with the word 'rows' in it and a scan may be added then."
+      ]
+    },
+    {
+      "id": "spec_2a_broker_datafeed_elements",
+      "property": "how many broker-datafeed verbs+events section 2A defines, spec vs seam code",
+      "sources": [
+        {
+          "name": "frozen_spec_plus_flagged",
+          "role": "derived",
+          "files": [
+            "docs/nics_risk_subsystem_spec_v1.3.md",
+            "scripts/broker/broker_seam.py"
+          ],
+          "probe": "spec_datafeed_plus_flagged"
+        },
+        {
+          "name": "seam_datafeed_roster",
+          "role": "stated",
+          "files": [
+            "scripts/broker/broker_seam.py"
+          ],
+          "probe": "seam_datafeed_roster_count"
+        }
+      ],
+      "note": [
+        "ARC 021 / B3 — THE B.7 PAIR FOR THE SECOND §2A LIBRARY, and the datafeed counterpart of",
+        "spec_2a_broker_order_elements. The frozen spec is the authority and may never be edited;",
+        "broker_seam.py's DATAFEED_PORT_VERBS + DATAFEED_EVENTS is the code restating it. Adding a",
+        "datafeed verb to the seam without the spec is RED; the spec growing one the seam has not",
+        "implemented is RED.",
+        "WHY THE SPEC SIDE IS 'PLUS FLAGGED' AND THE ORDER-SIDE CLAIM IS NOT. §2A declares six",
+        "datafeed identifiers and the seam declares seven, and the extra one is feed_lag() — a Nix",
+        "addition the seam flags as such in its own docstring. A bare count comparison would be RED",
+        "on day one for a difference that is legitimate and already governed by seam_declared_elements.",
+        "This claim reuses that same mechanism narrowed to ONE library, so the datafeed's own drift is",
+        "visible instead of being averaged into a both-libraries total: an UNFLAGGED datafeed element",
+        "is counted by the seam side and not by the spec side, and the two disagree.",
+        "COUNTED BY IDENTIFIER, NOT BY BULLET. §2A's datafeed commands are two bullets and four verbs",
+        "('connect() / disconnect()', 'subscribe(symbol) / unsubscribe(symbol)'). Counting bullets",
+        "gives 4 where the identifier count is 6, which is evidence instance 7 in its datafeed form —",
+        "and it is a WORSE trap here than on the order side, because both datafeed command bullets are",
+        "doubled, so the bullet count is exactly two-thirds of the truth rather than one short."
+      ]
+    },
+    {
+      "id": "broker_datafeed_open_debt_rows",
+      "property": "how many OPEN ledger rows are scoped to broker-datafeed — A COUNT, NEVER A PERCENT",
+      "sources": [
+        {
+          "name": "spec_roster_vocabulary",
+          "role": "derived",
+          "files": [
+            "docs/CHECK-DEBT.md",
+            "docs/nics_risk_subsystem_spec_v1.3.md",
+            "scripts/broker",
+            "scripts/broker/broker_seam.py"
+          ],
+          "probe": "datafeed_debt_rows_spec"
+        },
+        {
+          "name": "seam_roster_vocabulary",
+          "role": "stated",
+          "files": [
+            "docs/CHECK-DEBT.md",
+            "scripts/broker/broker_seam.py",
+            "scripts/broker"
+          ],
+          "probe": "datafeed_debt_rows_seam"
+        }
+      ],
+      "note": [
+        "ARC 021 / B3 — THE DEPTH COMPANION FOR BROKER-DATAFEED, built to ARC 020's C2 framing.",
+        "",
+        "IT MUST NEVER BE EXPRESSED AS A PERCENT, and the reason is identical to the order-side claim's",
+        "so it is not re-argued here, only re-stated so nobody has to go and find it: a percent needs a",
+        "denominator, the only honest denominator is the total number of outstanding obligations this",
+        "module has, and that quantity is the same as 'how much do we trust this module' — unknowable.",
+        "A percent over an unknowable denominator is a confidence score wearing arithmetic. THE COUNT IS",
+        "A FLOOR ON OUTSTANDING BROKER-DATAFEED OBLIGATIONS. IT IS NEVER A FRACTION OF THEM.",
+        "",
+        "THE MODULE-SCOPING RULE, and it is NOT a copy of the order-side rule — one term is different:",
+        "  A row is BROKER-DATAFEED SCOPED iff it is OPEN — by the ledger's own bold-span rule, the same",
+        "  regex check_debt_open_items uses — AND its row text names at least one DISTINCTIVE datafeed",
+        "  artefact on a word boundary, being either (i) the basename of a module that implements the",
+        "  datafeed port and NOT the order port, or (ii) a datafeed roster identifier that is not also an",
+        "  order roster identifier.",
+        "WHY 'DISTINCTIVE'. The two §2A rosters SHARE connect and disconnect. A vocabulary built from the",
+        "raw datafeed roster would select every open order row that mentions connecting — D1.23 and D1.25",
+        "among them — and this claim would report the order path's depth under the datafeed's name. The",
+        "subtraction is derived from the same two sources as the roster itself, so it cannot go stale.",
+        "",
+        "THE MODULE-BASENAME HALF IS EMPTY TODAY, AND THAT IS THE HONEST ANSWER RATHER THAN A DEFECT.",
+        "The only class implementing the datafeed port outside the seam is IBKRDatafeedAdapter in",
+        "ibkr_mapping.py, and that module implements the order port too, so counting its basename would",
+        "select order rows as datafeed debt. A module that implements the datafeed port and not the order",
+        "port joins the vocabulary by being written, with no edit here — which is what makes this claim",
+        "self-healing when the dedicated adapter lands.",
+        "",
+        "HOW THE SOURCES ARE INDEPENDENT, AND WHERE THEY ARE NOT — stated because condition 3 of the",
+        "standing question requires it and because overstating it is the defect this file exists to catch.",
+        "INDEPENDENT: the roster half. One side parses the frozen spec's broker-datafeed bullets by",
+        "identifier and adds the seam's FLAGGED additions; the other AST-reads DATAFEED_PORT_VERBS +",
+        "DATAFEED_EVENTS. They diverge exactly when the seam drifts from the spec BY NAME.",
+        "NOT INDEPENDENT, AND SAID PLAINLY: the ledger walk, the open-row rule, the order-roster",
+        "subtraction and the module-basename half are SHARED by both sources. A defect in any of those",
+        "moves both sides together and this claim would not see it. The open-row rule is already asserted",
+        "by check_debt_open_items against the series table, so this is a third assertion layered on that,",
+        "not a replacement for it.",
+        "",
+        "WHAT IS AMBIGUOUS — the order-side claim's disclosures (a)-(e) all apply verbatim and are not",
+        "restated. ONE IS NEW AND IS SHARPER HERE: (f) THE RULE READS PROSE, AND THIS MODULE'S ROWS ARE",
+        "YOUNG. ARC 020 opened D1.30 and D1.31 and both were INVISIBLE to the order-side depth claim",
+        "because neither row named a module basename on a word boundary. A datafeed row that says",
+        "'the feed' and never says feed_lag, subscribe, on_tick or on_feed_status is invisible here for",
+        "exactly the same reason. The mitigation is the same and it is weak: every selected row id is",
+        "printed on every run, so the way to check a new row is to RUN THIS CLAIM, never to read the row.",
+        "",
+        "NO restatement_scans ARE REGISTERED, DELIBERATELY, for the same reason the order-side claim",
+        "registers none: this number has never been written into a document, and registering a pattern",
+        "for a canonical prose form would invite one to be written, in percent form, by the next person",
+        "who wants a progress figure."
+      ]
+    },
+    {
+      "id": "datafeed_scope_files",
+      "property": "how many modules each datafeed gate believes it covers, one gate against the other",
+      "sources": [
+        {
+          "name": "granted_mode_gate_scope",
+          "role": "derived",
+          "files": [
+            "checks/check_datafeed_granted_mode.py",
+            "scripts/broker"
+          ],
+          "argv": [
+            "{system_python}",
+            "{checks_dir}/check_datafeed_granted_mode.py",
+            "--print-scope-count",
+            "{nix_home}"
+          ]
+        },
+        {
+          "name": "bar_seal_gate_scope",
+          "role": "stated",
+          "files": [
+            "checks/check_datafeed_bar_seal.py",
+            "scripts/broker"
+          ],
+          "argv": [
+            "{system_python}",
+            "{checks_dir}/check_datafeed_bar_seal.py",
+            "--print-scope-count",
+            "{nix_home}"
+          ]
+        }
+      ],
+      "note": [
+        "ARC 021 / B3. THIS CLAIM EXISTS TO PAY A DOCTRINE C.9 DEBT MECHANICALLY RATHER THAN BY",
+        "DISCIPLINE, and it is the reason ARC 021 was able to build TWO datafeed gates instead of one.",
+        "",
+        "nix_check_contract.md §5.5 permits a second instrument when it owns a different property, and",
+        "requires the split be stated in both docstrings. check_datafeed_granted_mode owns the feed's",
+        "MODE OBSERVATION; check_datafeed_bar_seal owns the LIFECYCLE OF PUBLISHED SERIES DATA. Different",
+        "properties — but ONE SCOPE, and §4.2 forbids the shared helper that would keep the two",
+        "derivations identical, because every checks/check_*.py must be independently runnable. So the",
+        "two gates each carry their own walk of the tree, and two derivations of one scope is exactly the",
+        "drift C.9 warns about.",
+        "",
+        "WHAT A DISAGREEMENT MEANS. Not that either gate is wrong about ITS property — that the two no",
+        "longer agree about WHAT THE DATAFEED IS. One of them has stopped seeing a module the other sees,",
+        "so one of them is measuring a subject the other is not, and neither gate's own verdict can tell",
+        "you that. It is invisible from either side alone, which is the same shape as",
+        "registered_check_count's registry-versus-glob pair.",
+        "",
+        "BOTH SOURCES ARE THE GATES THEMSELVES, ASKED FOR THE SCOPE THEY WILL ACTUALLY READ — not a",
+        "re-derivation of what they ought to read. A probe that recomputed the scope here would be a third",
+        "implementation and would drift from both.",
+        "NOT INDEPENDENT, AND SAID PLAINLY: the two derivations are deliberately SIMILAR — both walk",
+        "scripts/, both apply a method quorum against DATAFEED_PORT_VERBS read out of the seam. A defect",
+        "in that shared idea moves both sides together and this claim will not see it. It is a DRIFT",
+        "detector, not an independent measurement, and calling it anything more would be the overstatement",
+        "this registry exists to catch.",
+        "THEY COUNT MODULES, NOT CLASSES, and that is load-bearing: the mode gate's subject is a CLASS and",
+        "the seal gate's is a MODULE, so the mode gate's CLI deliberately reports the number of distinct",
+        "modules its subjects live in. Two derivations that coincide on a number while counting different",
+        "things is evidence instance 7, and it was avoided here on purpose.",
+        "MEASURED ARC 021: 1 and 1 on the ARC 021 base tree — ibkr_mapping.py, whose IBKRDatafeedAdapter",
+        "is a refusing skeleton. In a scratch copy carrying a planted adapter and a planted bar builder",
+        "both sources moved to 2 and 3 respectively as each file was added, and agreed at every step."
       ]
     }
   ]
