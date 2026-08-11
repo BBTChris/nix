@@ -71,3 +71,16 @@ than relying on memory.
   landed — `install.sh` still contains the Fernet block).
 - `directory_structure.md` v1.3.0: `scripts/` names the engine package
   (`nixverify/`) and its test suite (`scripts/tests/`).
+
+## 2026-08-10 — ARC 018 — debug.md version corrected in the spec table
+
+- Spec table indexed `debug.md` as **v1.1.0**; the file on disk reads
+  **"Version 1.2.0. Supersedes v1.1.0, which lacked §7.12"**. Corrected to v1.2.0.
+- This mattered rather than being cosmetic: §7.12 (the standing question, required of
+  every gate at the point it is built) and failure mode #14 are exactly what v1.1.0
+  lacked, and both are load-bearing for ARC 017 and ARC 018. An agent reading the index
+  and trusting the stated version would have been reading for a doctrine that did not
+  contain the section the arc turns on.
+- Found by sub-agent A while applying §0a's "verified on-disk state outranks this
+  document" to the brief. Reported rather than worked around; `CLAUDE.md` was outside
+  that sub-agent's write scope, so the parent applied it in Phase 4.

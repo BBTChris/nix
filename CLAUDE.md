@@ -29,7 +29,7 @@ Not auto-loaded. Read the ones an arc touches; they cost nothing until opened. F
 |---|---|---|
 | `nics_risk_subsystem_spec_v1.3.md` | **frozen — never edit** | any work on order flow, gating, sizing, stops, HALT, reconciliation, two-plane logging, §12A tunables, §13 objectives (38) |
 | `nix_strategy_contract_v1.1.md` | **binding interface** (`contract_rev 1.1.0`) | any work on the strategy seam or the bus. §3–4 schemas + §9A guarantees are the **acceptance criteria** for the Nix-side implementation; `contract_rev` mismatch = registration rejection |
-| `debug.md` | **doctrine of record** (v1.1.0, three tiers) | changing gates or regenerating `debugging.md`. Supersedes any two-tier protocol found elsewhere |
+| `debug.md` | **doctrine of record** (v1.2.0, three tiers) | changing gates or regenerating `debugging.md`. Supersedes any two-tier protocol found elsewhere. v1.2.0 adds **§7.12 the standing question** (required of every gate at the point it is built) and failure mode #14 — both load-bearing; this table said v1.1.0 until ARC 018, and v1.1.0 is the version that *lacked* §7.12 |
 | `directory_structure.md` | canonical topology (v1.3.0) | adding artifacts or regenerating `directory-layout.md` |
 | `elements_v2.md` | **non-authoritative ops input** (v2.1) | provisioning, `install.sh`, credential encryption, `verify.py`, versioning, backup/DR. Risk spec wins wherever they meet |
 | `VERIFY-AND-CHECKS.md` | **doctrine — external, inherited; outranks `nix_check_contract.md`** | any work on a check or gate. Parts C and D are binding rules; Part A/B *inventory* describes the predecessor system's tree, not Nix's — inherit the lessons, never the inventory (see `nix_check_contract.md` §15.4) |

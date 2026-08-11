@@ -23,6 +23,14 @@
         "check_ibgateway_config",
         "check_ibgateway_service"
       ]
+    },
+    {
+      "name": "code-invariants",
+      "comment": "ARC 017. Static/offline gates over the repo's own code and its banked numbers. Deliberately last and deliberately not on_fail:halt \u2014 neither is a bootstrap floor component, and a code-invariant breach must not stop the environment checks that follow from being measured. check_derived_claims spawns `pytest --collect-only` (~2-4 s), which lengthens the boot unit; accepted because verify.py runs at boot and weekly Saturday 03:00, both outside any trading session. ARC 018: check_order_path_bans now AST-parses every .py under scripts/ to derive its own scope (D2.15) in addition to scanning the order path, and adds three AST retry-shape detections (D2.14). Measured at 0.16-0.18 s wall over three consecutive runs, so it does not materially lengthen the boot unit. No new check module was registered: the new checks/order_path_retry_reviewed.json is data (a per-site suppression registry), not a check, and registering it would break the registered_check_count claim.",
+      "checks": [
+        "check_order_path_bans",
+        "check_derived_claims"
+      ]
     }
   ]
 }

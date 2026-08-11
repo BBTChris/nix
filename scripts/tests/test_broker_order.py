@@ -71,13 +71,20 @@ from __future__ import annotations
 # pylint: disable=too-many-positional-arguments,too-many-instance-attributes
 # pylint: disable=too-many-lines,super-init-not-called,import-outside-toplevel
 # pylint: disable=duplicate-code
+import ast
 import asyncio
+import pathlib
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from types import MethodType, SimpleNamespace
 
 import pytest  # pylint: disable=import-error
-from broker_order_ibkr import IBKRBrokerOrder
+from broker_order_ibkr import (
+    IB_REJECT_EVIDENCE,
+    IB_REJECT_RULES,
+    IBKRBrokerOrder,
+)
 from broker_seam import (
     ORDER_PORT_VERBS,
     AckStatus,
@@ -88,9 +95,11 @@ from broker_seam import (
     NeutralOrder,
     OrderType,
     RecordingSink,
+    RejectCategory,
     SessionState,
     Side,
     TimeInForce,
+    ack_category_violation,
     check_await_conformance,
     check_structural_conformance,
 )
@@ -179,6 +188,14 @@ class FakeIB:
     historical_order_statuses: list = field(default_factory=list)
     last_fetch_fields: object = None
     connect_count: int = 0
+    # ARC 017 A1(b): "the mirror was re-read" must be measured at the VENUE CALL, not
+    # inferred from the mirror's contents — contents can be identical before and after
+    # and prove nothing. This counter is the direct observable.
+    reqpos_calls: int = 0
+    reqpos_observer: Callable[[], None] | None = None
+    """Called (no args) at the instant reqPositionsAsync is entered. Lets a test capture
+    what the sink had ALREADY been told at the moment the venue was queried, which is how
+    the 'rebuild precedes the session event' ORDERING is proven rather than assumed."""
 
     def __post_init__(self):
         self.orderStatusEvent = Event()
@@ -229,6 +246,10 @@ class FakeIB:
         self.cancelled.append(order)
 
     async def reqPositionsAsync(self):
+        self.reqpos_calls += 1
+        if self.reqpos_observer is not None:
+            self.reqpos_observer()
+        await asyncio.sleep(0)  # the venue does not answer synchronously
         return self.positions_to_return
 
     async def accountSummaryAsync(self):
@@ -640,23 +661,512 @@ async def _section_rejection_paths() -> None:
     record("reject: informational codes (2104/2119) are NOT rejections", not sink3.acks)
 
 
+# ---------------------------------------------------------------------------
+# ARC 018 / D1.18 — the neutral rejection taxonomy.
+# ---------------------------------------------------------------------------
+
+# (errorCode, errorString, expected RejectCategory). Every row is either a code this
+# system has MEASURED, or a deliberately-unmapped code whose only correct answer is
+# UNKNOWN. Nothing here is a guess at what IBKR "probably" returns: the unmapped rows do
+# not depend on their text being accurate, because the assertion on them is that the
+# adapter declines to interpret them.
+REJECT_CASES: tuple[tuple[int, str, RejectCategory], ...] = (
+    # MEASURED, ARC 010/012 (see IB_REJECT_EVIDENCE[201]). The one mapped rejection this
+    # system has ever observed, and the only row that proves the taxonomy is not
+    # uniformly UNKNOWN.
+    (
+        201,
+        (
+            "Order rejected - reason:YOUR ORDER IS NOT ACCEPTED. NET LIQ [20299.32] "
+            "MUST EXCEED THE MARGIN REQ [35035.87]"
+        ),
+        RejectCategory.INSUFFICIENT_MARGIN,
+    ),
+    # 201 is a WRAPPER code. A 201 whose text is not the measured money text must NOT
+    # inherit INSUFFICIENT_MARGIN — that is the "unknown wearing a known's clothes"
+    # failure, and it is the reason the rule carries substrings at all.
+    (
+        201,
+        "Order rejected - reason:some other refusal entirely",
+        RejectCategory.UNKNOWN,
+    ),
+    # Unmapped codes. No evidence exists for these on this system, so the taxonomy owes
+    # them UNKNOWN and nothing else.
+    (
+        200,
+        "No security definition has been found for the request",
+        RejectCategory.UNKNOWN,
+    ),
+    (10147, "OrderId that needs to be cancelled is not found", RejectCategory.UNKNOWN),
+    (999999, "a code that does not exist", RejectCategory.UNKNOWN),
+)
+
+
+def _reject_site() -> str:
+    """Name the mapper's real location, DERIVED from the object — never typed.
+
+    A can-fail demonstration is only useful if the failure names where to look, and a
+    hand-typed path is a §7.4 anchor that rots the first time the function moves.
+    """
+    import inspect
+
+    import broker_order_ibkr as adapter_mod
+
+    fn = adapter_mod.ib_reject_category
+    return (
+        f"{inspect.getsourcefile(fn)}:{inspect.getsourcelines(fn)[1]} "
+        f"{fn.__qualname__}() + IB_REJECT_RULES"
+    )
+
+
+def _call_emits_rejected(node: ast.AST) -> bool:
+    """True if `node` is an ack emission carrying the literal `AckStatus.REJECTED`."""
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+    if name not in ("on_ack", "_ack_once"):
+        return False
+    args = list(node.args) + [kw.value for kw in node.keywords]
+    return any(isinstance(a, ast.Attribute) and a.attr == "REJECTED" for a in args)
+
+
+def _rejection_sites_in(tree: ast.AST, filename: str) -> list[str]:
+    """Enclosing function names in one parsed module that emit a REJECTED ack."""
+    return [
+        f"{filename}::{fn.name}"
+        for fn in ast.walk(tree)
+        if isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef)
+        and any(_call_emits_rejected(n) for n in ast.walk(fn))
+    ]
+
+
+def _rejection_emission_sites() -> list[str]:
+    """AST-scan scripts/broker/ for every call that emits a REJECTED ack.
+
+    DERIVED, not restated. The taxonomy assertions below drive ONE rejection path, and a
+    second path added later would be structurally invisible to them — the vacuous-control
+    shape (debug.md §7.12) one level up: the test would keep passing while an untested
+    rejection emitted no category at all. So the set of emission sites is recomputed from
+    the source on every run and compared against what this suite claims to cover.
+
+    NAMED GAP: it matches only calls that pass the literal `AckStatus.REJECTED`. A site
+    that passes the status in a variable is invisible here. That is accepted rather than
+    papered over — the alternative is dataflow analysis, and this catches the shape a new
+    rejection path actually takes.
+    """
+    broker_dir = pathlib.Path(__file__).resolve().parent.parent / "broker"
+    sites: list[str] = []
+    for path in sorted(broker_dir.glob("*.py")):
+        sites += _rejection_sites_in(
+            ast.parse(path.read_text(encoding="utf-8")), path.name
+        )
+    return sorted(set(sites))
+
+
+# The emission sites this suite drives. Compared against the AST scan above, so a new
+# rejection path fails loudly here instead of shipping untested.
+COVERED_REJECTION_SITES = ["broker_order_ibkr.py::_on_ib_error"]
+
+
+def _structured_payload(status: AckStatus, category: RejectCategory | None) -> str:
+    """Every STRUCTURED field of an ack, flattened to one string.
+
+    Both the member NAME and the member VALUE, because a consumer can read either and
+    invariant 2 has to hold for both spellings.
+    """
+    parts = [status.name, str(status.value), repr(status)]
+    if category is not None:
+        parts += [category.name, str(category.value), repr(category)]
+    return "|".join(parts)
+
+
+async def _drive_rejection(code: int, text: str):
+    """Place one order, refuse it with (code, text), return the single ack tuple."""
+    ad, ib, sink = new_adapter()
+    await ad.connect()
+    ad.place_order(
+        NeutralOrder(
+            f"c-rc-{code}", "ESU6", Side.BUY, 1, OrderType.MARKET, TimeInForce.DAY
+        )
+    )
+    ib.push_error(ib.placed[-1][2].order.orderId, code, text)
+    return sink.acks
+
+
+async def _section_reject_taxonomy() -> None:
+    """ARC 018 / D1.18 — the refusal cause as structured, vendor-neutral state.
+
+    What is being proved, in order: the mapping table cannot grow without evidence; the
+    suite covers every rejection emission site in the tree; the taxonomy actually fires
+    (non-vacuity); no IBKR spelling reaches any structured field (invariant 2, asserted
+    mechanically); and the human channel still carries the venue code and its figures.
+    """
+    # ------------------------------------------------- the mapping table is evidence-gated
+    unevidenced = [
+        code
+        for code, _needles, _cat in IB_REJECT_RULES
+        if not IB_REJECT_EVIDENCE.get(code)
+    ]
+    record(
+        "taxonomy: every mapped IBKR code carries a written evidence citation",
+        not unevidenced,
+        f"unevidenced codes={unevidenced} — a declaration is not evidence",
+    )
+
+    # ------------------------------------------------- coverage of every emission site
+    found_sites = _rejection_emission_sites()
+    record(
+        "taxonomy: the suite covers EVERY REJECTED-ack emission site in scripts/broker/",
+        found_sites == COVERED_REJECTION_SITES,
+        f"found={found_sites} covered={COVERED_REJECTION_SITES} — a new rejection path "
+        "must be driven here before it ships",
+    )
+    record(
+        "taxonomy: NON-VACUITY — at least one emission site exists to cover",
+        len(found_sites) >= 1,
+        f"found={found_sites} (an empty scan would make the assertion above vacuous)",
+    )
+
+    # ------------------------------------------------- no digit in ANY member, ever
+    digit_members = [
+        m.name
+        for m in RejectCategory
+        if any(c.isdigit() for c in m.name) or any(c.isdigit() for c in str(m.value))
+    ]
+    record(
+        "INVARIANT 2: no RejectCategory member name or value contains a digit",
+        not digit_members,
+        f"members carrying digits={digit_members} — a venue code in the taxonomy itself",
+    )
+
+    # ------------------------------------------------- drive every case
+    observed: list[RejectCategory] = []
+    for code, text, expected in REJECT_CASES:
+        acks = await _drive_rejection(code, text)
+        # The expectation is part of the label because code 201 appears TWICE with two
+        # different correct answers — that pair is the whole point of the wrapper-code
+        # argument, and two identically-named rows would hide which one moved.
+        label = f"code {code} -> {expected.name}"
+
+        # Reachability BEFORE any assertion about content — a taxonomy asserted on a path
+        # that never fires is the vacuous control (§7.12).
+        if len(acks) != 1:
+            record(
+                f"taxonomy ({label}): the rejection path is REACHABLE (exactly one ack)",
+                False,
+                f"acks={acks}",
+            )
+            continue
+        record(
+            f"taxonomy ({label}): the rejection path is REACHABLE (exactly one ack)",
+            True,
+        )
+
+        _cid, status, reason, category = acks[0]
+        observed.append(category)
+
+        record(
+            f"taxonomy ({label}): status is REJECTED",
+            status is AckStatus.REJECTED,
+            str(acks[0]),
+        )
+        record(
+            f"taxonomy ({label}): category is {expected.name}, never a nearest match",
+            category is expected,
+            f"got={category} expected={expected} — see {_reject_site()}",
+        )
+        record(
+            f"taxonomy ({label}): the (status, category) pairing is legal",
+            ack_category_violation(status, category) == "",
+            ack_category_violation(status, category),
+        )
+
+        # THE MECHANICAL INVARIANT-2 ASSERTION. Two independent forms: this venue's code
+        # must not appear anywhere in the structured payload, AND the payload must contain
+        # no digit at all — the second catches a code this case does not happen to drive.
+        payload = _structured_payload(status, category)
+        record(
+            f"INVARIANT 2 ({label}): the venue code appears in NO structured field",
+            str(code) not in payload,
+            f"payload={payload!r}",
+        )
+        record(
+            f"INVARIANT 2 ({label}): no structured field contains any digit",
+            not any(c.isdigit() for c in payload),
+            f"payload={payload!r}",
+        )
+
+        # ...and the human channel is UNCHANGED. `reason` deliberately still carries the
+        # venue's code and text; the fix is that it is no longer the only carrier.
+        record(
+            f"taxonomy ({label}): `reason` still carries the venue code (human channel)",
+            str(code) in (reason or ""),
+            f"reason={reason!r}",
+        )
+
+    # Non-vacuity of the taxonomy ITSELF, and the can-fail target. A mapper collapsed to a
+    # single category satisfies every per-case assertion that expects UNKNOWN; only this
+    # one notices, so it is the one that has to name the site.
+    distinct = set(observed)
+    record(
+        "NON-VACUITY: the taxonomy is not collapsed — >1 category observed, and at least "
+        "one is a MAPPED category rather than UNKNOWN",
+        len(distinct) > 1 and distinct - {RejectCategory.UNKNOWN} != set(),
+        f"observed={sorted(c.name for c in distinct)} over {len(REJECT_CASES)} driven "
+        f"rejections — SITE: {_reject_site()}",
+    )
+    record(
+        "taxonomy: the evidenced 201 margin rejection maps to INSUFFICIENT_MARGIN — "
+        f"SITE: {_reject_site()}",
+        RejectCategory.INSUFFICIENT_MARGIN in distinct,
+        f"observed={sorted(c.name for c in distinct)}",
+    )
+
+    # ------------------------------------------------- the ACCEPTED half of the pairing
+    adA, ibA, sinkA = new_adapter()
+    await adA.connect()
+    adA.place_order(
+        NeutralOrder("c-acc", "ESU6", Side.BUY, 1, OrderType.MARKET, TimeInForce.DAY)
+    )
+    ibA.push_status(ibA.placed[-1][2], "PreSubmitted")
+    record(
+        "taxonomy: an ACCEPTED ack carries reject_category=None (the pairing, both ways)",
+        len(sinkA.acks) == 1
+        and sinkA.acks[0][1] is AckStatus.ACCEPTED
+        and sinkA.acks[0][3] is None,
+        str(sinkA.acks),
+    )
+
+    # ------------------------------------------------- UNKNOWN is the floor, never None
+    adU, _ibU, sinkU = new_adapter()
+    await adU.connect()
+    adU._ack_once("c-floor", AckStatus.REJECTED)  # no category supplied at all
+    record(
+        "taxonomy: a REJECTED ack emitted with NO category is coerced to UNKNOWN, not None",
+        len(sinkU.acks) == 1 and sinkU.acks[0][3] is RejectCategory.UNKNOWN,
+        str(sinkU.acks),
+    )
+    record(
+        "taxonomy: ack_category_violation CAN fail (REJECTED + None is named a violation)",
+        ack_category_violation(AckStatus.REJECTED, None) != ""
+        and ack_category_violation(AckStatus.ACCEPTED, RejectCategory.UNKNOWN) != ""
+        and ack_category_violation(AckStatus.ACCEPTED, None) == "",
+        "the pairing validator must reject both bad pairings and accept the good one",
+    )
+
+
 async def _section_connectivity() -> None:
-    """1100/1101/1102, with 1101's data loss kept distinguishable."""
-    # ---------------------------------------------------------------- connectivity 1100/1101/1102
+    """ARC 017 A1 — 1100/1101/1102 as STRUCTURED state, and the 1101 self-reconciliation.
+
+    The defect this section now measures: before ARC 017 both restores emitted plain
+    `SessionState.UP` and differed only in the wording of `reason`, and the adapter did
+    NOT re-read its mirror on a lossy restore — it emitted and returned. `flatten()` reads
+    that mirror as ground truth with zero venue queries, so one reconnect with data loss
+    made the protective path confidently wrong. Two properties are asserted:
+
+      (a) the two restores are distinguishable WITHOUT READING `reason` at all
+      (b) the lossy one re-reads the mirror, and does so BEFORE publishing the state
+    """
+    # ------------------------------------------------------------- 1100 / 1102 (no loss)
     ad4, ib4, sink4 = new_adapter()
     await ad4.connect()
     n0 = len(sink4.sessions)
+    rebuilds_after_connect = ad4._mirror_rebuilds
+    reqpos_after_connect = ib4.reqpos_calls
+
     ib4.push_error(-1, 1100, "Connectivity between IB and TWS has been lost")
     ib4.push_error(-1, 1102, "Connectivity restored - data maintained")
-    ib4.push_error(-1, 1101, "Connectivity restored - data lost")
+    await asyncio.sleep(0)  # give any scheduled work a chance to run — see 1101 below
+    await asyncio.sleep(0)
     states = [s[0] for s in sink4.sessions[n0:]]
     reasons = [s[1] for s in sink4.sessions[n0:]]
-    record("session: 1100 -> DOWN", states[0] is SessionState.DOWN)
-    record("session: 1102 -> UP", states[1] is SessionState.UP)
+    record("session: connection lost -> DOWN", states[0] is SessionState.DOWN)
+    record("session: clean restore -> UP", states[1] is SessionState.UP)
     record(
-        "session: 1101 -> UP but flags DATA LOSS (must trigger reconcile)",
-        states[2] is SessionState.UP and "DATA LOSS" in reasons[2],
-        f"reason={reasons[2]}",
+        "A1(b): a CLEAN restore does NOT rebuild the mirror (the two stay asymmetric)",
+        ad4._mirror_rebuilds == rebuilds_after_connect
+        and ib4.reqpos_calls == reqpos_after_connect,
+        f"rebuilds {rebuilds_after_connect}->{ad4._mirror_rebuilds} "
+        f"reqpos {reqpos_after_connect}->{ib4.reqpos_calls}",
+    )
+
+    # ------------------------------------------------- 1101 (data loss) — NON-VACUITY
+    # The mirror is populated with a position the venue will CONTRADICT before the data
+    # loss is injected. Without this the rebuild would be empty -> empty and "the mirror
+    # was re-read" would be unfalsifiable: every assertion below would hold for an adapter
+    # that did nothing at all.
+    adL, ibL, sinkL = new_adapter()
+    await adL.connect()
+    ibL.push_position("MESU6", 2, 7773.50)  # mirror now believes: long 2 MES
+    record(
+        "NON-VACUITY A1(b): mirror is POPULATED before the data loss is injected",
+        adL._mirror.get("MESU6") is not None and adL._mirror["MESU6"].net_qty == 2,
+        f"mirror={ {k: v.net_qty for k, v in adL._mirror.items()} }",
+    )
+
+    # The venue's truth is DIFFERENT from what the mirror holds — that difference is what
+    # a real 1101 means (we were blind while it changed), and it is what makes a re-read
+    # observable in the mirror's CONTENTS as well as in the call count.
+    ibL.positions_to_return = [ibL.position_row("MNQU6", -1, 20000.00)]
+    rebuilds_before = adL._mirror_rebuilds
+    reqpos_before = ibL.reqpos_calls
+    sessions_before = len(sinkL.sessions)
+
+    # ORDERING INSTRUMENT: capture how many session events the sink had been given at the
+    # instant the venue was queried. Proving "rebuild happened" is not the guarantee;
+    # the guarantee is that no consumer ever sees the restore over a stale mirror.
+    seen_at_venue_call: list[int] = []
+    ibL.reqpos_observer = lambda: seen_at_venue_call.append(len(sinkL.sessions))
+
+    ibL.push_error(-1, 1101, "Connectivity restored - data lost")
+
+    record(
+        "A1(b): the session event is NOT published synchronously with the data loss",
+        len(sinkL.sessions) == sessions_before,
+        f"sessions {sessions_before} -> {len(sinkL.sessions)}",
+    )
+    for _ in range(4):  # let the scheduled re-read run to completion
+        await asyncio.sleep(0)
+
+    record(
+        "A1(b): data loss triggers a mirror rebuild — the venue was re-queried",
+        adL._mirror_rebuilds == rebuilds_before + 1
+        and ibL.reqpos_calls == reqpos_before + 1,
+        f"rebuilds {rebuilds_before}->{adL._mirror_rebuilds} "
+        f"reqpos {reqpos_before}->{ibL.reqpos_calls}",
+    )
+    record(
+        "A1(b): the mirror was actually RE-READ — stale contents replaced by venue truth",
+        "MESU6" not in adL._mirror
+        and adL._mirror.get("MNQU6") is not None
+        and adL._mirror["MNQU6"].net_qty == -1,
+        f"mirror={ {k: v.net_qty for k, v in adL._mirror.items()} }",
+    )
+    record(
+        "A1(b): the rebuild PRECEDES the session event — no consumer sees UP over a "
+        "stale mirror",
+        seen_at_venue_call == [sessions_before],
+        f"session count at venue-call time={seen_at_venue_call}, "
+        f"before={sessions_before}",
+    )
+    record(
+        "A1(b): the mirror is no longer flagged stale once the re-read lands",
+        adL._mirror_stale is False,
+    )
+
+    # ------------------------------------------------- (a) structured, not prose
+    lossy = sinkL.sessions[-1]
+    lossy_state, lossy_reason = lossy[0], lossy[1]
+    clean_state = states[1]
+    record(
+        "A1(a): a lossy restore is DISTINGUISHABLE from a clean one without reading "
+        "`reason` — the states are not equal",
+        lossy_state is not clean_state,
+        f"lossy={lossy_state} clean={clean_state}",
+    )
+    record(
+        "A1(a): the fact is a readable FIELD — state.data_loss, no string parsing",
+        lossy_state.data_loss is True and clean_state.data_loss is False,
+        f"lossy.data_loss={lossy_state.data_loss} clean.data_loss={clean_state.data_loss}",
+    )
+    record(
+        "A1(a): both restores still report a live session (state.is_up), so a lossy "
+        "restore is not mistaken for a disconnect",
+        lossy_state.is_up is True
+        and clean_state.is_up is True
+        and SessionState.DOWN.is_up is False,
+    )
+    record(
+        "A1(a): an UNAWARE consumer's `is SessionState.UP` does NOT resume on a lossy "
+        "restore (fails toward halted)",
+        (lossy_state is SessionState.UP) is False,
+        str(lossy_state),
+    )
+    # Invariant 2: the seam carries the MEANING, never the venue's spelling of it.
+    all_session_reasons = [r for _, r in sinkL.sessions + sink4.sessions if r]
+    record(
+        "A1(a)/invariant 2: no IBKR error code crosses the seam in any session reason",
+        not any(
+            code in reason
+            for reason in all_session_reasons
+            for code in ("1100", "1101", "1102")
+        ),
+        str(all_session_reasons),
+    )
+    record(
+        "A1(a): `reason` survives as human-readable colour, it is just no longer the "
+        "carrier",
+        bool(lossy_reason) and "1101" not in lossy_reason,
+        f"reason={lossy_reason!r}",
+    )
+    record(
+        "A1(a): the reasons of the two restores are still distinct prose (colour kept)",
+        lossy_reason != reasons[1],
+        f"lossy={lossy_reason!r} clean={reasons[1]!r}",
+    )
+
+    # ---- DEGRADED PATH 1: the venue refuses the re-read -----------------------------
+    # A rebuild that fails must still publish, and must publish that it failed. Silence
+    # here would leave the Limiter believing the session is simply down, and a plain
+    # UP_DATA_LOSS would claim a re-read that did not happen.
+    adF, ibF, sinkF = new_adapter()
+    await adF.connect()
+    ibF.push_position("MESU6", 2, 7773.50)
+
+    async def _venue_refuses():
+        raise BrokerSeamError("reqPositions refused")
+
+    ibF.reqPositionsAsync = _venue_refuses
+    sessions_before_f = len(sinkF.sessions)
+    ibF.push_error(-1, 1101, "Connectivity restored - data lost")
+    for _ in range(4):
+        await asyncio.sleep(0)
+    record(
+        "A1(b) degraded: a FAILED re-read still publishes the data-loss state — the "
+        "Limiter is never left uninformed",
+        len(sinkF.sessions) == sessions_before_f + 1
+        and sinkF.sessions[-1][0] is SessionState.UP_DATA_LOSS,
+        str(sinkF.sessions[sessions_before_f:]),
+    )
+    record(
+        "A1(b) degraded: the mirror stays FLAGGED stale when the re-read failed, and "
+        "the reason says so — no false claim of reconciliation",
+        adF._mirror_stale is True and "FAILED" in (sinkF.sessions[-1][1] or ""),
+        f"stale={adF._mirror_stale} reason={sinkF.sessions[-1][1]!r}",
+    )
+
+    # ---- DEGRADED PATH 2: no event loop to schedule the re-read on -------------------
+    # The bridge from a SYNC vendor callback to an async re-read is a scheduled task, so
+    # the one thing that can remove it is having no loop. Forbidden alternatives
+    # (asyncio.run / run_until_complete) are not available as a fallback — invariant 5 —
+    # so the adapter must degrade LOUDLY rather than swallow the event.
+    adN, ibN, sinkN = new_adapter()
+    await adN.connect()
+    sessions_before_n = len(sinkN.sessions)
+    real_get_running_loop = asyncio.get_running_loop
+
+    def _no_loop():
+        raise RuntimeError("no running event loop")
+
+    asyncio.get_running_loop = _no_loop
+    try:
+        ibN.push_error(-1, 1101, "Connectivity restored - data lost")
+    finally:
+        asyncio.get_running_loop = real_get_running_loop
+    record(
+        "A1(b) degraded: with NO event loop the data-loss state is still published "
+        "SYNCHRONOUSLY — the event is never swallowed",
+        len(sinkN.sessions) == sessions_before_n + 1
+        and sinkN.sessions[-1][0] is SessionState.UP_DATA_LOSS,
+        str(sinkN.sessions[sessions_before_n:]),
+    )
+    record(
+        "A1(b) degraded: and it says the mirror could NOT be re-read, rather than "
+        "claiming a reconciliation that never ran",
+        "could NOT be re-read" in (sinkN.sessions[-1][1] or "")
+        and adN._mirror_stale is True,
+        f"stale={adN._mirror_stale} reason={sinkN.sessions[-1][1]!r}",
     )
 
 
@@ -1033,10 +1543,14 @@ async def _section_startup_replay() -> None:
         historical_id == 1 and ibH.connect_count == 2,
         f"historical_id={historical_id} connects={ibH.connect_count}",
     )
+    fetch_ok, fetch_detail = _fetch_narrowed_to_positions_and_account(
+        ibH.last_fetch_fields
+    )
     record(
-        "§2b: connectAsync asked for StartupFetch WITHOUT EXECUTIONS",
-        _fetch_excludes_executions(ibH.last_fetch_fields),
-        str(ibH.last_fetch_fields),
+        "A2: connectAsync asked for POSITIONS+ACCOUNT_UPDATES+SUB_ACCOUNT_UPDATES only — "
+        "EXECUTIONS, ORDERS_OPEN and ORDERS_COMPLETE all ABSENT (enum evaluated, not read)",
+        fetch_ok,
+        fetch_detail,
     )
     record(
         "§2b: the gate is OPEN again after connect (a real fill still lands)",
@@ -1054,6 +1568,153 @@ async def _section_startup_replay() -> None:
         "§2b: still ignored on the SECOND reconnect (survives the 03:00 restart, twice)",
         len(sinkH.fills) == fills_before,
         f"before={fills_before} after={len(sinkH.fills)}",
+    )
+
+
+async def _section_startup_window() -> None:
+    """ARC 017 A3 — the startup gate must be closed for the WHOLE rebuild interval.
+
+    THE WINDOW, as the ARC 017 probe traced it on main @ 92f9f17:
+
+        self._connected = True
+        self._startup_complete = True      <- gate opened HERE
+        await self._rebuild_mirror()       <- reqPositionsAsync: a real loop yield
+        self._sink.on_session(UP)
+
+    All three conditions a phantom fill needs held simultaneously across that await —
+    session live, gate open, mirror not yet trustworthy — and there is no Lock, Semaphore
+    or re-entrancy guard anywhere in the adapter. `_require_session` gates only on
+    `_connected`, which is already True. So a `place_order` scheduled concurrently with
+    connect() populates `_from_ib`, and because IBKR order ids RESET across sessions a
+    replayed historical execution can carry an id that now MATCHES a live order — reaching
+    `_ensure_acked` and `on_fill`.
+
+    This section reproduces exactly that, by injecting at the instant the venue is
+    queried, which is inside the rebuild await. The `reqpos_observer` hook is what makes
+    the timing real rather than approximated: injecting before or after connect() would
+    test nothing, because the gate's whole behaviour is defined by that interval.
+    """
+    adW, ibW, sinkW = new_adapter()
+    probe: dict = {"ran": False}
+
+    def inject_during_rebuild() -> None:
+        """Runs synchronously at the top of reqPositionsAsync — i.e. INSIDE connect()'s
+        _rebuild_mirror await."""
+        if probe["ran"]:
+            return  # only the connect-time rebuild, not later reconciliations
+        probe["ran"] = True
+        # A concurrently-scheduled place_order. This is what makes the replayed id match.
+        adW.place_order(
+            NeutralOrder(
+                "c-window", "MESU6", Side.BUY, 1, OrderType.MARKET, TimeInForce.DAY
+            )
+        )
+        t = ibW.placed[-1][2]
+        probe["trade"] = t
+        # The three conditions, recorded AT the moment of injection rather than inferred.
+        probe["connected"] = adW._connected
+        probe["gate_open"] = adW._startup_complete
+        probe["id_matches"] = t.order.orderId in adW._from_ib
+        ibW.push_exec(t, "e-window-1", 1, 7785.0, 1, side="BOT")
+        ibW.push_status(t, "Filled", filled=1)
+
+    ibW.reqpos_observer = inject_during_rebuild
+    fills_before, acks_before = len(sinkW.fills), len(sinkW.acks)
+    await adW.connect()
+    ibW.reqpos_observer = None
+
+    # ---- NON-VACUITY, before any claim that something was caught -------------------
+    record(
+        "NON-VACUITY A3: the injection actually RAN, inside the rebuild await",
+        probe["ran"],
+        "reqpos_observer never fired — nothing was ever injected",
+    )
+    record(
+        "NON-VACUITY A3: the session was LIVE at injection time (place_order succeeded, "
+        "so _require_session let it through)",
+        probe.get("connected") is True,
+    )
+    record(
+        "NON-VACUITY A3: the injected event MATCHED a live order id — it is not being "
+        "dropped by the id map, which would prove nothing about the gate",
+        probe.get("id_matches") is True,
+        f"_from_ib={adW._from_ib}",
+    )
+    record(
+        "A3: the gate was CLOSED during the rebuild (this is the fix)",
+        probe.get("gate_open") is False,
+        f"_startup_complete at injection time={probe.get('gate_open')}",
+    )
+
+    # ---- the property itself ------------------------------------------------------
+    record(
+        "A3: an execDetails injected DURING the mirror rebuild produces NO on_fill",
+        len(sinkW.fills) == fills_before,
+        f"fills {fills_before} -> {len(sinkW.fills)}: {sinkW.fills}",
+    )
+    record(
+        "A3: it produces NO on_ack either — _ensure_acked is not reached",
+        len(sinkW.acks) == acks_before,
+        f"acks {acks_before} -> {len(sinkW.acks)}: {sinkW.acks}",
+    )
+    record(
+        "A3: nothing at all escaped to the order path during connect()",
+        [e for e in sinkW.sequence if e in ("on_ack", "on_fill", "on_cancel")] == [],
+        str(sinkW.sequence),
+    )
+
+    # ---- the handler IS reachable in this harness ---------------------------------
+    # §7.12's standing question: a test that passes because nothing was ever dispatched
+    # measures nothing. The SAME handler, driven the SAME way on the SAME order, must
+    # produce a fill once the gate has opened.
+    t = probe["trade"]
+    fills_before = len(sinkW.fills)
+    ibW.push_exec(t, "e-window-2", 1, 7785.0, 1, side="BOT")
+    record(
+        "NON-VACUITY A3: the exec handler is REACHABLE — the same push after connect() "
+        "DOES produce a fill",
+        len(sinkW.fills) == fills_before + 1,
+        f"fills {fills_before} -> {len(sinkW.fills)}",
+    )
+    record(
+        "A3: the gate OPENS — connect() finished with it open, so real fills land",
+        adW._startup_complete is True,
+    )
+
+    # ---- re-arming across a reconnect ---------------------------------------------
+    adW.disconnect()
+    record(
+        "A3: the gate re-arms on disconnect (closed again before the next session)",
+        adW._startup_complete is False,
+    )
+    probe2: dict = {"ran": False}
+
+    def inject_on_reconnect() -> None:
+        if probe2["ran"]:
+            return
+        probe2["ran"] = True
+        adW.place_order(
+            NeutralOrder(
+                "c-window-2", "MESU6", Side.BUY, 1, OrderType.MARKET, TimeInForce.DAY
+            )
+        )
+        t2 = ibW.placed[-1][2]
+        probe2["gate_open"] = adW._startup_complete
+        probe2["id_matches"] = t2.order.orderId in adW._from_ib
+        ibW.push_exec(t2, "e-window-3", 1, 7785.0, 1, side="BOT")
+
+    ibW.reqpos_observer = inject_on_reconnect
+    fills_before, acks_before = len(sinkW.fills), len(sinkW.acks)
+    await adW.connect()
+    ibW.reqpos_observer = None
+    record(
+        "NON-VACUITY A3: the reconnect injection ran and matched a live id",
+        probe2["ran"] and probe2.get("id_matches") is True,
+    )
+    record(
+        "A3: the gate is closed across the rebuild ON RECONNECT too — no fill, no ack",
+        len(sinkW.fills) == fills_before and len(sinkW.acks) == acks_before,
+        f"fills {fills_before}->{len(sinkW.fills)} acks {acks_before}->{len(sinkW.acks)}",
     )
 
 
@@ -1204,6 +1865,7 @@ async def main() -> None:
     await _section_session_discipline()
     await _section_order_lifecycle()
     await _section_rejection_paths()
+    await _section_reject_taxonomy()
     await _section_connectivity()
     await _section_margin()
     await _section_balance()
@@ -1212,6 +1874,7 @@ async def main() -> None:
     await _section_defect_regressions()
     await _section_zero_qty_positions()
     await _section_startup_replay()
+    await _section_startup_window()
     await _section_ack_race()
     await _section_avg_price_fidelity()
     await _report()
@@ -1223,10 +1886,27 @@ async def _flat_account_rows(adapter, ib) -> list:
     return await adapter.query_positions()
 
 
-def _fetch_excludes_executions(fetch_fields) -> bool:
+def _fetch_narrowed_to_positions_and_account(fetch_fields) -> tuple[bool, str]:
+    """ARC 017 A2. Asserts the RESOLVED flag value, evaluated from ib_async's own enum —
+    never by reading the adapter's source line, which would only prove the source says
+    what it says.
+
+    Returns (ok, detail). Three flags must be ABSENT (EXECUTIONS, ORDERS_OPEN,
+    ORDERS_COMPLETE) and three PRESENT — asserting only absence would be satisfied by a
+    fetch of nothing at all, which is the vacuous pass.
+    """
     from ib_async.ib import StartupFetch  # pylint: disable=import-error
 
-    return fetch_fields is not None and not fetch_fields & StartupFetch.EXECUTIONS
+    if fetch_fields is None:
+        return False, "connectAsync was called with fetchFields=None (vendor default)"
+    banned = ("EXECUTIONS", "ORDERS_OPEN", "ORDERS_COMPLETE")
+    wanted = ("POSITIONS", "ACCOUNT_UPDATES", "SUB_ACCOUNT_UPDATES")
+    present = {m.name for m in StartupFetch if fetch_fields & m}
+    ok = not (present & set(banned)) and set(wanted) <= present
+    return (
+        ok,
+        f"resolved={sorted(present)} banned_present={sorted(present & set(banned))}",
+    )
 
 
 async def _live_fill_still_works(adapter, ib, sink) -> bool:
