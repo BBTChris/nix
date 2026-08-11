@@ -1692,3 +1692,119 @@ the capture watched one), `Id`/`LoadState` recorded first so a rename fails loud
 check renamed `check_ibgateway_service_NOT_THE_D1_12_VERDICT` because the Gateway serves no API
 until an IB Key login completes and the D1.12 evidence is `ActiveState`, not reachability.
 
+
+---
+
+## ARC 021 — R1-B broker-datafeed; FeedLag as an interface property; D1.13 and D1.14 gated (2026-08-11)
+
+**Complete.** Two sub-agents (not three — a Tier-3 agent has nothing to traverse until the module
+exists; that is ARC 022 and it is honest sequencing). Base `94ac5b5`, confirmed on `origin/main`
+after `git fetch`. No tap session existed, so §4 and §5 ran with declared reds.
+
+### The result that matters is not the green
+
+Both gates were built, bound to the real adapter, and passed. **Then two real D1.13 defects were
+planted in the real adapter and both gates passed — and so did all 49 of the adapter's own tests.**
+Deleting the sentinel write from `subscribe()` (invisible on a first subscribe because per-symbol
+state already defaults to the sentinel, wrong on a re-subscribe, which inherits the prior grant), and
+substituting the requested mode for the granted one in the adapter-wide accessor, which is D1.13's
+defect verbatim.
+
+Both gates' can-fail had been proven — six plants, each failing and naming its site — but **every
+plant was against a purpose-built fake**, because the adapter did not exist while the gates were
+written. The gates' structural arms key on the fake's shape; the real adapter has a different one.
+**Discrimination against a fake did not transfer to the real subject.** That is D3.10, opened with
+the plants as evidence, and the immediate hole is closed by two pytest cases each proven to fail its
+own plant and nothing else. This result exists only because Phase 4 re-ran the plants against the
+merged tree instead of trusting two green sub-agent reports.
+
+### Both gates reddened correct code first, and the repair was to the instrument
+
+On first binding both gates FAILED, and both were wrong. `check_datafeed_granted_mode` arm B3
+approximates dataflow by intersecting two NAME sets, and every method call contributes the receiver
+to both — so a correct adapter intersected to `{self}` and was reported as deriving the grant from
+the request. `check_datafeed_bar_seal` arm 2 knew only the membership spelling of a seal guard; the
+adapter used lookup-then-sentinel, which proves the same property and hashes the key once. Doctrine
+B.4: a gate reddening the correct implementation of its own subject is broken, not strict. Both
+repaired at the instrument; **no ban and no behaviour weakened**; both residuals named (D2.20, D2.21).
+
+### Invariant 3
+
+**Zero import edges between the two libraries, verified at AST level in both directions**, not
+accepted on report. Three extractions considered and refused, none performed: the 1100/1101/1102
+tables (same integers, different meanings — the `avg_price` defect at module scale), `ibkr_mapping.py`,
+and `BrokerCapabilities`. **clientId 2**, argued: 905 was rejected because IBKR refuses a duplicate
+clientId, so a diagnostic probe would displace a live capture — a diagnostics action reaching a
+production data path, which is the coupling V24 exists to disprove. A distinct clientId is a distinct
+TCP session, so invariant 3 holds at the transport layer and not only in the type system.
+
+### Prohibition 3 did not fire, structurally
+
+`check_order_path_bans` exit 0, scope 5 → 6. The datafeed joined via the unconditional
+`scripts/broker` anchor floor exactly as predicted, and did not redden because send-path verbs derive
+to `cancel_order`/`flatten`/`place_order` — none of which exists in a datafeed library *because
+invariant 3 keeps them apart*. Invariant 3 is what kept the ban and the spec-mandated poll retry from
+colliding. No boundary repair needed.
+
+### FeedLag
+
+`excess_staleness_s = (now - venue_ts) - effective_lag_s` — on a 0-lag vendor it reduces to raw
+data-age, on IBKR a healthy 600 s tick yields ~0.3, so the same consumer with the same threshold is
+right on both. Proven as a 2x3 matrix; the third condition (data-clock stalled, transport alive) is
+the non-vacuity, and a transport-only implementation was planted and failed exactly those two cells.
+Declared/observed split so an unobserved lag is a state, never a fabricated 0.0. **Provenance
+corrected: the 600.3 s figure is ARC 013's, not ARC 010's, and the banked record is a range
+(600.0-601.9 s, spread 1.9, n=8), not a scalar.** ARC 010's real figure is 624 s for
+`reqHistoricalTicks` staleness; the brief merged the two.
+
+### Counts, all derived
+
+242 -> **293** tests (+51). 10 -> **12** registered checks. 10/10 -> **13/13** claims. 40 -> **53**
+debt rows (+13, none discharged). pre-commit 8/8 throughout. `seam_declared_elements` 23 -> 25,
+`order_path_scope_files` 5 -> 6. Datafeed roster derived three ways: **4 bullets, 6 identifiers, 9
+with flagged Nix additions**.
+
+**Element coverage: broker-order 56 -> 56, delta 0 — expected not to move, and did not.**
+Broker-order DEPTH moved 11 -> 16 and **that is contamination, not work**: rows naming
+`ibkr_mapping.py`, which hosts both §2A adapters, are claimed by the order-side rule's basename half
+(D2.19). **broker-datafeed has no element-coverage figure, deliberately** — it needs a grade tally
+this module has never had, and inventing a denominator was refused. Its depth figure (10) is **a
+floor on outstanding obligations, never a fraction of them.**
+
+`verify.py` exit 1 is the accepted baseline with **no third failure**: `check_ibgateway_service`
+failing and `check_ibgateway_config` cannot-measure, both from the Gateway's daily session expiry.
+Both new gates report [ok].
+
+### Brief contradictions found (§0a)
+
+Four. The sharpest: **A6 cites `debug.md` §5 for "Tier 1 and Tier 2", but §5 IS Tier 3** — the exact
+section prohibition 6 forbids. Also the ARC 010/013 lag attribution; the brief writing "§13 objective
+24" against its own §0a rule that the `V` prefix starts at V24; and 10189-vs-354, which is **not** a
+contradiction and was resolved (different API calls, both banked).
+
+Three found in the tree: a pylint suppression whose stated rationale described a lazy import the
+module does not contain (§7.4, removed not reworded); a sibling gate's line-count rationale that
+would have been **false** if copied (measured 1039 total against 820 without the docstring, so a new
+honest one was written); and — measured live by sub-agent B — **`pre-commit run --all-files` does not
+scan untracked files**, so all 8 hooks reported green over two new gates for an entire build and ~30
+findings appeared the moment they were staged. Every figure reported here was taken with everything
+tracked.
+
+### Apparatus
+
+The ARC 020 worktree tax was paid once at dispatch rather than rediscovered twice:
+`scripts/provision_worktree.sh` symlinks the gitignored `state/` and `.venv` back to the primary tree
+(symlink, not copy — copying `state/` would duplicate credential material into a second directory
+with a different lifetime, which is D1.16's whole subject), refuses to guess a base, and asserts both
+the resulting HEAD and `check_node_identity` before returning. Both worktrees provisioned from
+session HEAD and verified, closing ARC 019's silent-base finding too.
+
+AMENDMENT 3 (the absence principle) recorded verbatim, attributed as an ARC 021 operator ruling,
+pending a v1.4. It **fixed a live instance of the defect it forbids**: `StubBrokerDatafeed.feed_lag()`
+was fabricating three values in the one object built to prevent fabrication. Its cost is stated and
+**unpaid** — every price field becomes `float|None` and the branch lands on consumers that do not
+exist yet.
+
+**Not done, explicitly:** no Tier 3 (ARC 022) · no live IBKR measurement (D1.33, next tap) · V24
+still known-red (R1-D) · `on_bar`/`on_bar_revision` widen a locked signature and await an architect
+ruling (D1.36) · no config JSON (D1.35) · no Limiter, Allocator, `capture.py` wiring or consumer.

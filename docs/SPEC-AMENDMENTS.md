@@ -130,6 +130,68 @@ location are recorded by the implementing arc alongside the code, not here.
 
 ---
 
+## AMENDMENT 3 — the seam declares absence; it never substitutes a value for one
+
+| field | value |
+|---|---|
+| origin | **Operator ruling, issued in ARC 021.** Not spec text. |
+| implemented by | ARC 021, sub-agent A (items A2–A5) |
+| closes | nothing outright. It **generalises** three decisions already landed (`ARC 014` `ts_is_venue_sourced`, `ARC 017` `UP_DATA_LOSS`, `ARC 020` `D1.29`) and it is the standing rule `CHECK-DEBT D1.29` was waiting on — that row's discharge is "a decision about whether the seam distinguishes 'not reported' from 'zero'", and this is that decision |
+| section that would have to say it | **"Invariants of the seam"** in `nics_risk_subsystem_spec_v1.3.md` §2A — a sixth invariant alongside the five at §2A:103-107 |
+| status | **PENDING** a v1.4 of `nics_risk_subsystem_spec_v1.3.md`, which the architect owns |
+
+### Ruling, verbatim as issued
+
+> **The seam declares absence; it never substitutes a value for one.** Where a venue does not report
+> a quantity, the seam expresses *not reported* as a state distinct from any value the quantity could
+> take. Fabricating a plausible value — zero for an unreported balance, a local clock for a missing
+> venue timestamp, a requested mode for an ungranted one — converts an uncertainty the risk system is
+> required to act on into a fact it will act on wrongly.
+>
+> This generalises three existing decisions: `ts_is_venue_sourced=False` (ARC 014, refusing to
+> fabricate a venue timestamp on `AccountValue`), `UP_DATA_LOSS` (ARC 017, refusing to let a lossy
+> restore read as clean), and D1.29 (ARC 020, "not reported" distinct from zero on `Balance`).
+>
+> Origin: operator ruling issued in ARC 021. Not spec text. Pending a v1.4 the architect owns.
+
+### What the frozen spec says today
+
+`nics_risk_subsystem_spec_v1.3.md` §2A:103-107 lists five invariants of the seam. Invariant 4 — *"all
+timestamps are **venue-sourced** where a monotonic guard depends on them"* — is the closest the frozen
+document comes, and it is narrower in both directions: it governs **timestamps only**, and it says
+where a value must come **from** without saying what to emit when it comes from **nowhere**. ARC 014
+hit that gap on `AccountValue`, which carries no timestamp at all, and had to invent
+`ts_is_venue_sourced=False` because §2A gave the absence no home. Every subsequent instance has
+re-invented the same answer independently. That is the shape of a missing invariant, not of three
+unrelated decisions.
+
+### What it cost in ARC 021, recorded because the ruling is ratified and its cost is not measured
+
+- **Every price-shaped field becomes `float | None`.** `Bar.open/high/low/close/volume`, and
+  `on_tick`'s `price` and `size`. Each adds a `None` branch at every consumer arithmetic site.
+- **The cost lands on a consumer that does not exist yet** — capture.py's bar builder and the
+  Limiter's freshness gate. So the implementing arc paid none of it and the bill is real. This is
+  the honest statement of the trade, not an argument against it.
+- **`FeedLag.excess_staleness_s()` returns `None` for CANNOT-COMPUTE** rather than a number. That is
+  the correct answer and it is one more branch at every call site.
+- **`poll_history()` raises on exhaustion instead of returning zero rows.** Zero rows is a real
+  answer meaning the venue had nothing; a caller now has to handle an exception on the only
+  market-data path Stage 0 has.
+- **The cheap half:** three of the four instances that motivated the ruling (`UP_DATA_LOSS`,
+  `RejectCategory.UNKNOWN`, `OrderStatus.state='indeterminate'`) were already paid for, and the
+  ruling costs nothing to state where an enum already exists. It is expensive exactly where a
+  **numeric** field is involved, because a number has no spare member to spend.
+
+### What this amendment deliberately does NOT decide
+
+- **It does not say what a consumer must DO about an absence.** Refuse, halt, degrade, or wait is a
+  §4 question and belongs to the Limiter. This ruling governs the seam's expression only.
+- **It does not retrofit `Balance`.** `CHECK-DEBT D1.29` remains open: its repair is a seam change
+  whose consumer half is R2's, and this ruling tells that repair which direction to go rather than
+  performing it.
+
+---
+
 ## Standing note for the architect
 
 Both amendments were issued as operator rulings **because ARC 019 refused to invent them.** That
