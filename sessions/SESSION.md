@@ -1535,3 +1535,136 @@ inside that one item, so it adds no collected items.
 or strategy performance — the feed is delayed ~600 s.** No tap session was taken this arc;
 the rejection-taxonomy confirmation and D1.12's reboot both remain RED, naming R1-A and
 D1.12 respectively. RED withholds certification, not durability.
+
+
+---
+
+## ARC 020 — Closing the Five: session lifecycle · mirror ordering · protective-path observability (2026-08-11)
+
+**2 sub-agents, deliberately not 3.** All five defects lived in one ~1,400-line file
+(`scripts/broker/broker_order_ibkr.py`), and merging two branches over the order path is the
+wrong place to save an hour. Sub-agent A worked the adapter serially; sub-agent C ran in
+parallel on `checks/`, which is genuinely disjoint. A further split was considered and argued
+down rather than assumed: A7's queue observability wants the same structure as A6's attempt
+record, so splitting them puts two branches in the same NEW code; and A8's multi-writer audit
+is only correct against the tree A1–A6 leave behind. The two branches merged with **zero
+conflicts**, which is the split working rather than luck.
+
+**Both worktrees were provisioned from session HEAD and verified explicitly before the first
+edit** — ARC 019 provisioned all three from `main` and none was told to look.
+
+### The five, closed
+
+- **D1.24 (first, because D1.27(b) is only sound on top of it).** Per-order state cleared at
+  BOTH session ends, and neither clear is redundant: teardown is the boundary a 03:00 Gateway
+  restart actually arrives on, and a process that connects without ever disconnecting has no
+  teardown to have cleared it. Retention rule stated — terminal orders released after
+  `terminal_order_retention_ms` = 10 × `PENDING_ACK_TIMEOUT_MS`, boot-validated, and it cannot
+  be zero for two independent §4 reasons. **The in-flight-at-drop case was answered rather than
+  glossed**: a `_Tombstone` is retained and `query_order_status` returns `indeterminate` —
+  §4:241's own third outcome, which D1.24 recorded this adapter could not reach at all. The id
+  is neither re-mintable nor cancellable while the answer is outstanding.
+- **D1.23.** `BaseException` caught deliberately and **re-raised** — swallowing `CancelledError`
+  would let `wait_for` return normally from a call that did not complete, a different and worse
+  defect than the one being fixed.
+- **D1.25.** Two independent mechanisms, a single emission choke point and a session epoch.
+  **The first can-fail plant did not perturb** — two mechanisms guarded one observable and the
+  weaker sufficed for everything being driven. Reported by the sub-agent against its own new
+  instrument (failure mode #1, §7.12 asked at the point the gate was built) and a traversal
+  added for the one sequence the choke point structurally cannot see.
+- **D1.27(b).** Ownership discrimination; the A1 dependency asserted in the test before the
+  admission it makes safe.
+- **D1.26.** Monotonic sequence per read; a lock was rejected because `_rebuild_mirror`'s
+  completion clears `_mirror_stale`, which is what `flatten` sizes against — a lock would put an
+  unrelated caller's round trip in front of the protective path's input. **No await was added to
+  the protective path, and none could have been**: `flatten` reads `_mirror` from memory.
+- **D1.27(a) + D1.28.** Bounded idempotency window, `= PENDING_ACK_TIMEOUT_MS` = 2000 ms, in
+  `risks/broker_order.config.json` with four cross-knob boot-validation rules — not a bare
+  literal on the protective path. Observable `FlattenAttempt` record following `place_order`'s
+  receipt pattern; the §2A `-> None` signature untouched.
+- **D1.22.** `send_backlog()` exposes queue depth and write-buffer state with a CANNOT-MEASURE
+  floor, so a blind pipe reads `None` and never `0`. No bounding policy. Deliberately NOT added
+  to `ORDER_PORT_VERBS` — declaring a cross-vendor obligation from a sample of one is how a seam
+  acquires a requirement nobody checked.
+- **A8.** Multi-writer fields enumerated and asserted per writer. **Two disagreements found and
+  reported rather than silently resolved** — now D1.29 and D1.30.
+
+### Apparatus
+
+Scheme renamed `broker_order_element_coverage_v1`, cross-derivation intact, no confidence
+dimension invented. Depth claim `broker_order_open_debt_rows` registered — derived, never a
+percent, with five named ambiguities and its non-independence disclosed rather than sold.
+
+**D3.7 refused, with the cost measured rather than estimated.** The runtime-cost argument was
+tested and FAILED (1.55 s vs ~1.5 s), and that was reported instead of used. The refusal rests
+on four measured costs, and its main product is a dependency nobody had recorded: **D3.7 is
+downstream of D2.4** — the missing piece is the bump-time trigger, not the canary.
+
+### Phase 4 — three things the sub-agents could not have caught
+
+1. **`check_order_path_bans` reddened on the merged tree.** A6's extraction of the send into
+   `_emit_flatten_leg()` raised a fresh hit at indirection depth 1 and stranded the ARC 018
+   reviewed suppression, which is keyed `(file, qualname, shape, verb)`. A stale suppression is
+   a VIOLATION by that file's own self-expiring rule. **Re-signed, not re-pointed** — the review
+   was genuinely owed again — and re-verified rather than carried over: `_emit_flatten_leg` holds
+   no loop, its `except` returns a failure tuple and never re-invokes the send, and the two new
+   `continue` arms can only reduce sends per pass. A four-output can-fail with a genuine 3× retry
+   planted inside `_emit_flatten_leg` proved the suppression did not widen the gate.
+2. **D1.27 adjudicated against sub-agent A**, which reported both halves discharged. C, which
+   owns the ledger, kept it open, and C is right: the row's subject is a gap in a FROZEN
+   document, and behaviour landing in Nix code does not make that document say anything.
+3. **Two gates caught the parent's own ledger edits.** D1.30 and D1.31 as first written were
+   invisible to the depth claim registered one file over — the scoping rule reads prose and
+   neither row named an artefact on a word boundary. That is C's own named ambiguity (c) biting
+   the first rows written after the rule landed. Then `check_spec_citations` reddened on a `§12A`
+   written too near a `debug.md` mention. Both repaired the D2.17 way.
+
+### Counts — derived, none typed
+
+```
+pass: 10/10 claim(s) compared — registered_check_count=10 [derived:checks_glob=10, derived:registry_json=10; 0 restatement(s) found] | pytest_collected_tests=242 [derived:pytest_collector=242, derived:source_ast=242; 0 restatement(s) found] | pinned_dependency_count=2 [derived:pins_json=2, derived:print_pins_cli=2; 0 restatement(s) found] | check_debt_open_items=40 [derived:ledger_rows=40, stated:series_table_latest_row=40; 0 restatement(s) found] | spec_2a_broker_order_elements=16 [derived:frozen_spec_identifiers=16, stated:seam_roster=16; 0 restatement(s) found] | arc014_broker_order_classification=16 [derived:findings_covering_roster=16, derived:grade_tally_sum=16, derived:spec_roster_size=16; 0 restatement(s) found] | seam_declared_elements=23 [derived:spec_plus_flagged_additions=23, stated:seam_code_total=23; 0 restatement(s) found] | order_path_scope_files=5 [derived:gate_derived_scope=5, stated:stated_anchor_dirs=5; 0 restatement(s) found] | broker_order_element_coverage_v1=56 [derived:spec_denominator=56, stated:seam_denominator=56; 0 restatement(s) found] | broker_order_open_debt_rows=11 [derived:spec_roster_vocabulary=11, stated:seam_roster_vocabulary=11; 0 restatement(s) found]
+exit=0
+
+pytest: 242 passed in 17.55s
+remaining strict xfails, derived:
+  $ grep -rn '@pytest.mark.xfail' scripts/
+  scripts/tests/test_broker_tier3.py:22:  1. `@pytest.mark.xfail(strict=True)` — the spec DOES determine the outcome and the
+  (prose in a module docstring, not a marker; no xfailed and no xpassed)
+
+depth claim selection:
+  D1.17, D1.19, D1.20, D1.22, D1.27, D1.28, D1.29, D1.30, D1.31, D2.14, D3.8
+
+merged: d377ed6 Merge pull request #14 from BBTChris/arc-020-integration
+```
+
+**Element coverage did not move, and that is the point.** 56 → 56. This arc added no §2A
+elements; it repaired existing ones. That is exactly the scheme limitation ARC 019's §10 raised,
+and the rename is the correction rather than a new number.
+
+### Rulings and the frozen spec
+
+The frozen spec is **not edited**. Both operator rulings land as declared Nix additions on the
+`feed_lag()` / `UP_DATA_LOSS` precedent, plus `docs/SPEC-AMENDMENTS.md` carrying each verbatim,
+naming the section that would have to say it, and marked **pending a v1.4 the architect owns**.
+Each entry names its origin as an operator ruling issued in ARC 020, never as spec text — D2.17
+applied at the point the record was created. Amendment 1 records its soundness condition AS a
+condition: it holds only while D1.24's clearing holds, and regresses with it.
+
+### Environment findings
+
+`core.bare` reads **`false`**, not unset — the ARC 019 hazard value was `true` and it is not
+`true`, but "unset" is not what is on disk. ARC 019 was **not** an ancestor of `main` until
+`git fetch`; local `main` was stale at the ARC 018 merge and the reported value held against
+`origin/main`. Branch protection still at 0 required reviews, confirmed.
+
+**IB Gateway expired mid-arc** at 03:00:04 UTC after a 16h run — `status=0/SUCCESS`, IBKR's
+daily session expiry, not a crash. The §0b baseline was `10 passed | exit 0` before it; the arc
+closes at `8 passed | 1 failed | 1 cannot measure`. Sub-agent C observed the degraded state and
+called it the baseline; that attribution is corrected here.
+
+**Nothing measured on IBKR at Stage 0 means anything about latency, fill realism, slippage,
+or strategy performance — the feed is delayed ~600 s.** No tap session was taken this arc.
+`nix-reboot-capture.service` is built and **still not armed**; D1.12 and the rejection-taxonomy
+confirmation both remain RED, naming D1.12 and R1-A. RED withholds certification, not
+durability. One thing changed in the tap's favour: the Gateway has already expired on its own,
+so a reboot no longer costs a live session.
