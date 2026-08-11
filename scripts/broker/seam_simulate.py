@@ -32,20 +32,32 @@ from __future__ import annotations
 #       seam sections above still run if the mapping skeleton is broken.
 #   duplicate-code
 #       The section banner comments are intentionally identical.
+#   use-implicit-booleaness-not-comparison
+#       `== []` / `!= []` is deliberate on every conformance-checker result, and
+#       it is the same rule both suites apply. `not x` and `bool(x)` are also
+#       satisfied by `None`, so a checker that started returning None instead of
+#       a list would pass a truthiness assertion while having measured nothing.
+#       The comparison asserts the TYPE and the emptiness together.
 # pylint: disable=missing-function-docstring,broad-exception-caught
 # pylint: disable=import-outside-toplevel,duplicate-code
+# pylint: disable=use-implicit-booleaness-not-comparison
 import asyncio
 import sys
 
 from broker_seam import (
+    DATAFEED_ASYNC_VERBS,
     DATAFEED_EVENTS,
     DATAFEED_PORT_VERBS,
     ORDER_EVENTS,
     ORDER_PORT_VERBS,
     AckStatus,
+    AwaitDivergentBrokerDatafeed,
     AwaitDivergentBrokerOrder,
+    BrokerDatafeedPort,
     BrokerNotConnected,
     BrokerOrderPort,
+    CoroutineDivergentBrokerDatafeed,
+    HollowBrokerDatafeed,
     HollowBrokerOrder,
     NeutralOrder,
     OrderType,
@@ -262,6 +274,95 @@ async def _section_await_conformance() -> None:
     )
 
 
+async def _section_datafeed_await_conformance() -> None:
+    """The ARC 022 D1.38 split on the DATAFEED port, and BOTH planted divergences.
+
+    A SEPARATE SECTION from the order one because the two ports are disjoint
+    (`nics_risk_subsystem_spec_v1.3.md` §2A:105-106 invariant 3) and a section that built
+    subjects for both would make one port's result depend on the other's objects.
+
+    TWO PLANTS, NOT ONE. The order port has demonstrated only the async-declared-implemented-sync
+    direction since ARC 015. A gate shown able to fail in one direction has been shown able to
+    fail in one direction — and the OTHER direction is the one `debug.md` §7.12 instance 4
+    records. Both are driven here.
+    """
+    stub = StubBrokerDatafeed(RecordingFeedSink())
+    hollow = HollowBrokerDatafeed(RecordingFeedSink())
+
+    record(
+        "await-feed: StubDatafeed matches the port's sync/async split",
+        not check_await_conformance(stub, BrokerDatafeedPort, DATAFEED_PORT_VERBS),
+        str(check_await_conformance(stub, BrokerDatafeedPort, DATAFEED_PORT_VERBS)),
+    )
+    record(
+        "await-feed: HollowDatafeed matches the split too (control stays shape-conformant)",
+        not check_await_conformance(hollow, BrokerDatafeedPort, DATAFEED_PORT_VERBS),
+        str(check_await_conformance(hollow, BrokerDatafeedPort, DATAFEED_PORT_VERBS)),
+    )
+    record(
+        # NON-VACUITY OF THE PARTITION ITSELF (`debug.md` §7.3). Every assertion below compares
+        # two things that would agree trivially if the port declared nothing async or nothing
+        # sync — the pre-ARC-022 world, in which this whole section would have been green over
+        # a uniformly-sync port. Both halves must be non-empty or the split is not a split.
+        "await-feed: NON-VACUITY — the declared split has BOTH a sync and an async half",
+        bool(DATAFEED_ASYNC_VERBS)
+        and bool(set(DATAFEED_PORT_VERBS) - DATAFEED_ASYNC_VERBS),
+        f"async={sorted(DATAFEED_ASYNC_VERBS)} "
+        f"sync={sorted(set(DATAFEED_PORT_VERBS) - DATAFEED_ASYNC_VERBS)}",
+    )
+
+    # PLANT 1 — an ASYNC-declared verb implemented SYNC.
+    sync_plant = AwaitDivergentBrokerDatafeed(RecordingFeedSink())
+    record(
+        "await-feed: plant 1 is STRUCTURALLY invisible (so struct alone is not enough)",
+        not check_structural_conformance(sync_plant, DATAFEED_PORT_VERBS),
+    )
+    d1 = check_await_conformance(sync_plant, BrokerDatafeedPort, DATAFEED_PORT_VERBS)
+    record(
+        "NON-VACUITY: await checker FAILS on an async verb implemented sync, and NAMES it",
+        len(d1) == 1
+        and d1[0].startswith("subscribe:")
+        and "port declares async" in d1[0]
+        and "adapter is sync" in d1[0],
+        str(d1),
+    )
+
+    # PLANT 2 — a SYNC-declared verb implemented ASYNC. The direction ARC 015 never
+    # instrumented, and the one that hands a caller an un-awaited coroutine object.
+    async_plant = CoroutineDivergentBrokerDatafeed(RecordingFeedSink())
+    record(
+        "await-feed: plant 2 is STRUCTURALLY invisible too",
+        not check_structural_conformance(async_plant, DATAFEED_PORT_VERBS),
+    )
+    d2 = check_await_conformance(async_plant, BrokerDatafeedPort, DATAFEED_PORT_VERBS)
+    record(
+        "NON-VACUITY: await checker FAILS on a sync verb implemented async, and NAMES it",
+        len(d2) == 1
+        and d2[0].startswith("feed_lag:")
+        and "port declares sync" in d2[0]
+        and "adapter is async" in d2[0],
+        str(d2),
+    )
+    record(
+        # The two plants must be caught for DIFFERENT reasons, or one instrument is standing
+        # in for two and the second direction is unmeasured (`debug.md` §7.7 — verdict by
+        # verdict, never in aggregate: "two failures" is the aggregate that hides a duplicate).
+        "await-feed: the two plants are caught on DIFFERENT verbs and in OPPOSITE directions",
+        len(d1) == 1 and len(d2) == 1 and d1[0].split(":")[0] != d2[0].split(":")[0],
+        f"{d1} vs {d2}",
+    )
+    record(
+        # CONDITION A of the standing question, driven rather than asserted in prose.
+        "NON-VACUITY: an EMPTY roster is reported as vacuous, not passed",
+        # `!= []` and not `bool(...)` on purpose (the same rule both suites apply): `bool` is
+        # also False for `None`, so a checker that started returning None would satisfy a
+        # truthiness assertion while having measured nothing. This compares the TYPE and the
+        # emptiness together.
+        check_await_conformance(stub, BrokerDatafeedPort, ()) != [],
+        str(check_await_conformance(stub, BrokerDatafeedPort, ())),
+    )
+
+
 async def _section_type_validation() -> None:
     """Malformed neutral orders must never reach a venue."""
     # -----------------------------------------------------------------------
@@ -429,9 +530,16 @@ async def _section_disjointness() -> None:
             for v in ("place_order", "cancel_order", "flatten", "get_margin")
         ),
     )
+    # DERIVED FROM THE ROSTERS, not typed (`debug.md` §7.4). This was the literal
+    # `("subscribe", "unsubscribe", "feed_lag")` until ARC 022 — a hardcoded list that a later
+    # change adds a verb to without the check ever noticing, which is the first row of that
+    # table. D1.38 added `poll_history` and `granted_mode` to the datafeed roster and the
+    # literal would have gone on asserting the same three.
+    feed_only = sorted(set(DATAFEED_PORT_VERBS) - set(ORDER_PORT_VERBS))
     record(
         "disjoint: order adapter has NO feed verbs",
-        all(not hasattr(stub, v) for v in ("subscribe", "unsubscribe", "feed_lag")),
+        bool(feed_only) and all(not hasattr(stub, v) for v in feed_only),
+        f"feed-only verbs checked: {feed_only}",
     )
     record(
         "disjoint: datafeed event set is disjoint from the order event set",
@@ -448,7 +556,12 @@ async def _section_ibkr_skeleton() -> None:
     from ibkr_mapping import IBKRDatafeedAdapter, IBKROrderAdapter
 
     ib_order = IBKROrderAdapter(RecordingSink())
-    ib_feed = IBKRDatafeedAdapter(RecordingSink())
+    # A FEED sink, not an ORDER sink. It was `RecordingSink()` until ARC 022, which is
+    # `debug.md` §7.12's vacuity instance 7 verbatim — *an order sink passed into the datafeed
+    # port* — surviving here for exactly the reason that instance survived: the only assertion
+    # made against this object expects a refusal, so no feed event was ever driven through the
+    # sink and its wrong type could not surface.
+    ib_feed = IBKRDatafeedAdapter(RecordingFeedSink())
 
     record(
         "ibkr: struct conformance (all verbs present)",
@@ -464,8 +577,22 @@ async def _section_ibkr_skeleton() -> None:
         expect_raises(BrokerUnsupported, ib_order.flatten, "MES"),
     )
     record(
+        "ibkr: mapping skeleton matches the DATAFEED port's sync/async split",
+        not check_await_conformance(ib_feed, BrokerDatafeedPort, DATAFEED_PORT_VERBS),
+        str(check_await_conformance(ib_feed, BrokerDatafeedPort, DATAFEED_PORT_VERBS)),
+    )
+    record(
+        # AWAITED (ARC 022). `subscribe` is a coroutine function under D1.38, and calling one
+        # without awaiting raises NOTHING — it returns a coroutine object — so the sync
+        # `expect_raises` would have reported FAIL here and, on a `not expect_raises`
+        # assertion, a false PASS. This is the mirror image of the ARC 015 defect and the
+        # reason `expect_raises_async` exists.
         "ibkr: datafeed subscribe REFUSES loudly (GAP)",
-        expect_raises(BrokerUnsupported, ib_feed.subscribe, "MES"),
+        await expect_raises_async(BrokerUnsupported, ib_feed.subscribe, "MES"),
+    )
+    record(
+        "ibkr: datafeed poll_history raises NotImplementedError carrying the mapping",
+        await expect_raises_async(NotImplementedError, ib_feed.poll_history, "MES"),
     )
     record(
         "ibkr: clientId=0 rejected at construction",
@@ -512,6 +639,7 @@ async def main() -> int:
     """
     await _section_structural()
     await _section_await_conformance()
+    await _section_datafeed_await_conformance()
     await _section_type_validation()
     await _section_session_discipline()
     await _section_behavioural()

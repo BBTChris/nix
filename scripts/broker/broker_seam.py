@@ -51,7 +51,12 @@ from __future__ import annotations
 #       without leaving the file. Deleting that reasoning to satisfy a line count
 #       would remove the only thing standing between an addition and a silent
 #       redefinition of a locked contract.
-# pylint: disable=missing-class-docstring,missing-function-docstring
+#   disallowed-name
+#       `bar` is the domain word for the thing the datafeed port publishes.
+#       pylint's default blacklist is foo/bar/baz as METASYNTACTIC placeholders;
+#       here it names a §2A-adjacent concept, and renaming it to satisfy a lint
+#       would make the code read further from the contract it implements.
+# pylint: disable=missing-class-docstring,missing-function-docstring,disallowed-name
 # pylint: disable=unused-argument,too-many-arguments,too-many-positional-arguments
 # pylint: disable=too-many-instance-attributes,invalid-overridden-method
 # pylint: disable=import-outside-toplevel,too-many-lines
@@ -901,14 +906,61 @@ class FeedLag:
 
 
 class BarSource(enum.Enum):
-    """How a bar reached this seam. Declared Nix addition (ARC 021).
+    """How a bar reached this seam — i.e. WHOSE STORY the five payload numbers are.
+
+    Declared Nix addition (ARC 021, extended ARC 022 for AMENDMENT 4).
 
     Load-bearing for D1.14: `POLLED_HISTORY` is re-requestable and therefore revisable, and
-    `STREAM_BUILT` is not. A consumer that must know whether its history can change under it
-    reads this rather than knowing which vendor it is talking to."""
+    `VENUE_STREAM` is not. A consumer that must know whether its history can change under it
+    reads this rather than knowing which vendor it is talking to.
+
+    ARC 022 RENAME, recorded so the old spelling is not restored by reflex. The member now
+    called `VENUE_STREAM` was `STREAM_BUILT`. Under `docs/SPEC-AMENDMENTS.md` AMENDMENT 4 the
+    one distinction this enum has to carry is *did the VENUE produce these five numbers, or did
+    Nix compute them from ticks?* — and "stream built" reads as the second while meaning the
+    first. A member name that reads as the forbidden case, in the enum whose job is to forbid
+    it, is `debug.md` §7.4's stale-anchor class one level up: nothing goes stale, but the next
+    reader is told the wrong thing by the identifier itself. No consumer outside this tree holds
+    the old spelling (verified: `grep -rn STREAM_BUILT` matched only this file before the
+    rename)."""
 
     POLLED_HISTORY = "polled_history"
-    STREAM_BUILT = "stream_built"
+    """The venue returned this bar from a history request. VENUE-SOURCED, and REVISABLE — a
+    later poll can contradict it, which is what `BarRevision` exists for."""
+
+    VENUE_STREAM = "venue_stream"
+    """The venue PUSHED this bar on a bar stream (IBKR `reqRealTimeBars`, Tradovate's chart
+    subscription). VENUE-SOURCED, and not revisable: it is not re-requestable, so there is no
+    second answer to contradict the first. No venue on this system serves one yet — the member
+    is declared because the seal/revision rule differs between the two and a consumer must be
+    able to ask which it holds."""
+
+    TICK_AGGREGATED = "tick_aggregated"
+    """NIX COMPUTED THESE NUMBERS FROM TICKS. **EXISTS ONLY TO BE REFUSED** — see
+    `VENUE_SOURCED_BAR_SOURCES` and `Bar.__post_init__`.
+
+    Same construction as `IBKRBrokerDatafeed.request_realtime_ticks()`, which exists solely to
+    refuse loudly: a prohibition that has no name cannot be tested, and the next author reaching
+    for a tick-aggregated bar finds *nothing* rather than a refusal — at which point they add
+    the member themselves, having never met the argument. Naming it puts the argument in their
+    path and makes the prohibition drivable by a test (`debug.md` §7.1 — an instrument must be
+    demonstrated able to fail).
+
+    `docs/SPEC-AMENDMENTS.md` AMENDMENT 4: *a bar derived by aggregating ticks is capture.py's,
+    and the adapter never derives one.* capture.py's aggregate is a real and necessary artefact
+    — it is simply built ABOVE this seam, from `on_tick`, and has no business crossing it."""
+
+
+VENUE_SOURCED_BAR_SOURCES: frozenset[BarSource] = frozenset(
+    {BarSource.POLLED_HISTORY, BarSource.VENUE_STREAM}
+)
+"""The sources a `Bar` may carry. **A FLOOR, NOT A BLACKLIST** — `Bar.__post_init__` refuses
+anything ABSENT from this set rather than refusing `TICK_AGGREGATED` by name.
+
+The direction is the whole point (`CLAUDE.md` directive 4, fail closed). A blacklist admits every
+member nobody thought to blacklist, so a future `BarSource.DERIVED_FROM_QUOTES` added by an author
+who has not read AMENDMENT 4 would be admitted silently. An allowlist refuses it loudly and forces
+the author to come here and state that the venue is its source."""
 
 
 @dataclass(frozen=True)
@@ -935,8 +987,25 @@ class Bar:
     builder. What crosses this seam is what the venue said, sealed; the transform library's
     Renko/M1 construction (§2A:98) is unaffected and still capture.py's.
 
-    EVERY PRICE FIELD IS `float | None`. AMENDMENT 3 again: a venue that reports no volume for
-    a bar reports no volume. Zero is a real volume and means something else."""
+    WHOSE BAR THIS IS (`docs/SPEC-AMENDMENTS.md` AMENDMENT 4, ARC 022). The adapter publishes a
+    bar ONLY where the VENUE is its source. A bar obtained by polling venue history is the
+    adapter's to publish and to seal, because the revision fact — the venue returning a different
+    value for a bar already published — is observable only at the poll and cannot be
+    reconstructed downstream. **A bar derived by aggregating ticks is capture.py's, and the
+    adapter never derives one.** That is ENFORCED HERE and not documented here: see
+    `__post_init__` and `VENUE_SOURCED_BAR_SOURCES`. Two components owning one artefact with
+    different provenance is the `avg_price` defect (`docs/CHECK-DEBT.md` D1.29 records its third
+    instance) at module scale, and this type refuses to be the place it happens a fourth time.
+
+    WHICH FIELDS ARE OPTIONAL, AND WHY THREE OF THEM STOPPED BEING (AMENDMENT 3 REFINEMENT,
+    ARC 022). ARC 021 made all five payload fields `float | None` on a blanket reading of the
+    absence principle. The refinement says the principle applies to facts *the venue can fail to
+    report*, not to every field as a matter of course — and a bar that exists has an open, a
+    high, a low and a close, because those four ARE the bar. There is no IBKR response that
+    returns a bar row and omits its open. So the optionality bought nothing and cost something
+    real: its predictable consequence is a consumer writing `high or 0.0`, which reintroduces the
+    substitution the amendment forbids while wearing a null check. `volume` is different and
+    keeps its `| None` — see its own docstring for the observable absence that justifies it."""
 
     symbol: Symbol
     bar_start_venue_ts: float
@@ -948,11 +1017,34 @@ class Bar:
     """The other half of the seal key. Without it a 1-minute and a 5-minute bar opening at the
     same instant are the same bar."""
 
-    open: float | None
-    high: float | None
-    low: float | None
-    close: float | None
+    open: float
+    high: float
+    low: float
+    close: float
+    """NOT OPTIONAL (AMENDMENT 3 REFINEMENT, ARC 022). These four are the bar. Their presence is
+    structurally guaranteed by the existence of the container: a venue that has no open has no
+    bar to return, and there is no IBKR response — historical bars or otherwise — that hands back
+    a bar row with the field missing. An optional type here is noise, and noise on a price field
+    is not free: it is what makes `close or 0.0` look like a null check instead of a fabrication.
+    An absent one is a MALFORMED ROW and is refused where the row is read
+    (`broker_datafeed_ibkr._ingest_history`), never defaulted."""
+
     volume: float | None
+    """OPTIONAL, and the one payload field that earns it. THE OBSERVABLE ABSENCE: IBKR returns
+    `BarData.volume = -1` — its own not-reported sentinel — for bar types where volume is not a
+    fact about the bar (`whatToShow` = MIDPOINT / BID / ASK). The container comes back and the
+    field does not, which is exactly the case AMENDMENT 3's refinement requires an optional to
+    name. Collapsing that to 0.0 would make "the venue reports no volume for this KIND of bar"
+    read as "no contracts traded in this minute", and a volume-gated strategy would act on the
+    second having been told the first.
+
+    EVIDENCE GRADE, stated rather than implied: the 10189/354 permission facts this module rests
+    on are MEASURED on this system (ARC 012/013); **the `-1` sentinel is IBKR-DOCUMENTED AND NOT
+    MEASURED HERE** — no bar poll has been run against the live venue in any arc to date. It is
+    `LagProvenance.VENDOR_DECLARED`-grade evidence keeping a field optional, and the measurement
+    is owed. It is recorded at this grade rather than laundered into a measurement, and the
+    optionality is kept rather than removed because the two errors are not symmetric: keeping an
+    unneeded `| None` costs a branch, and removing a needed one costs a fabricated volume."""
 
     recv_ts: float
     """LOCAL receipt time. Not venue-sourced and never claimed to be — it is the transport
@@ -963,6 +1055,28 @@ class Bar:
     seal_seq: int
     """Monotonic per-adapter publication number. Lets a consumer order two seals whose
     contents are identical, and lets a revision name the seal it contradicts."""
+
+    def __post_init__(self) -> None:
+        """AMENDMENT 4 ENFORCED IN THE TYPE, on `BarRevision.__post_init__`'s construction.
+
+        A tick-derived bar is UNCONSTRUCTIBLE, not merely discouraged. The alternative was a
+        comment saying the adapter must not build one — and `docs/CHECK-DEBT.md` D1.29 is the
+        third instance of a rule that lived in a comment being broken by an author who did not
+        read it. `BarRevision` already refuses to exist hollow for the same reason; this is that
+        technique applied to the boundary AMENDMENT 4 draws.
+
+        THE REFUSAL IS BY ALLOWLIST (`VENUE_SOURCED_BAR_SOURCES`), so a future member added
+        without an argument is refused rather than admitted — see that constant."""
+        if self.source not in VENUE_SOURCED_BAR_SOURCES:
+            raise ValueError(
+                f"Bar(source={self.source.value}) — the venue is not this bar's source, so it "
+                "does not cross this seam. docs/SPEC-AMENDMENTS.md AMENDMENT 4: the datafeed "
+                "adapter emits bars ONLY where the venue is the bar's source; a bar derived by "
+                "aggregating ticks is capture.py's, and the adapter never derives one. Build it "
+                "above the seam from on_tick, where it is capture.py's artefact and not a seam "
+                f"event. Venue-sourced members: "
+                f"{sorted(s.value for s in VENUE_SOURCED_BAR_SOURCES)}"
+            )
 
     @property
     def seal_key(self) -> tuple[Symbol, float, float]:
@@ -1025,6 +1139,20 @@ class BarRevision:
 BAR_PAYLOAD_FIELDS: tuple[str, ...] = ("open", "high", "low", "close", "volume")
 """The field names `Bar.payload()` returns, in order. Derived from once, never retyped:
 `BarRevision.differing_fields` and every consumer diff index into this."""
+
+BAR_REQUIRED_PAYLOAD_FIELDS: tuple[str, ...] = tuple(
+    name for name in BAR_PAYLOAD_FIELDS if "None" not in str(Bar.__annotations__[name])
+)
+"""The payload fields a venue CANNOT omit — read off `Bar`'s own annotations, never typed.
+
+AMENDMENT 3's ARC 022 refinement split the payload in two, and this is the machine-readable half
+of that split: a field is required exactly when its declared type admits no `None`. A reader of
+venue rows (`broker_datafeed_ibkr._require_ohlc`) uses this to decide what to refuse.
+
+DERIVED, NOT LISTED, and that is `debug.md` §7.4 applied before the fact: a hand-written
+`("open", "high", "low", "close")` is a literal describing the current state of the world, and the
+day somebody gives `volume` a justified `float` or takes `close`'s away, the list and the type
+disagree in silence. Here they cannot: flipping an annotation moves this tuple in the same edit."""
 
 
 # ---------------------------------------------------------------------------
@@ -1124,15 +1252,34 @@ class DatafeedEventSink(Protocol):
         confused with a venue clock; §2A:106-107 invariant 4 governs `venue_ts`, and this field
         is deliberately outside it.
 
-        `price`, `size` and `venue_ts` are `| None` per `docs/SPEC-AMENDMENTS.md` AMENDMENT 3:
-        a venue that reports no size reports no size, and 0.0 is a real size."""
+        ALL THREE OF `price`, `size` AND `venue_ts` KEEP THEIR `| None`, and AMENDMENT 3's
+        ARC 022 REFINEMENT is what they are re-checked against: an optional survives only where a
+        case exists in which the venue returns the container and omits the field. All three name
+        one, and all three are MEASURED on this system rather than argued:
+
+          `price`   ib_async delivers a `Ticker` update — the container — on ANY field change,
+                    including a quote-only change, and `Ticker.last` is `nan` until a trade
+                    print arrives. ARC 013 measured 18 delayed ticks in 40 s on MESU6 against a
+                    contract that does not print 18 trades in 40 s: most of those updates
+                    carried no last price.
+          `size`    the same update, `lastSize` unset for the same reason. And 0.0 is a REAL
+                    size that means something else.
+          `venue_ts` the delayed stream's venue clock is `delayedLastTimestamp`, which is the
+                    LAST TRADE's timestamp — so an update carrying no trade carries no venue
+                    timestamp. §2A:106-107 invariant 4 governs this field, and the local receipt
+                    clock is what `recv_ts` is for; substituting it here is the fabrication
+                    AMENDMENT 3 exists to forbid."""
 
     def on_bar(self, sealed: Bar) -> None:
         """A SEALED bar. NIX ADDITION (ARC 021) — see `Bar` for why one is owed at Stage 0.
 
         Published exactly once per `Bar.seal_key`. A later poll that contradicts it arrives on
         `on_bar_revision`, never here, so a consumer cannot mistake a correction for new data
-        (CHECK-DEBT D1.14)."""
+        (CHECK-DEBT D1.14).
+
+        ONLY WHERE THE VENUE IS THE BAR'S SOURCE (`docs/SPEC-AMENDMENTS.md` AMENDMENT 4, ARC
+        022). A tick-aggregated bar is capture.py's and never arrives here — enforced by
+        `Bar.__post_init__`, not by this sentence."""
 
     def on_bar_revision(self, revision: BarRevision) -> None:
         """The venue contradicted an already-sealed bar. NIX ADDITION (ARC 021, D1.14).
@@ -1221,15 +1368,91 @@ class BrokerOrderPort(Protocol):
 @runtime_checkable
 class BrokerDatafeedPort(Protocol):
     """§2A broker-datafeed — commands called by capture.py ONLY.
-    Library inside the capture.py process, Core 1."""
+    Library inside the capture.py process, Core 1.
 
-    def connect(self) -> None: ...
-    def disconnect(self) -> None: ...
-    def subscribe(self, symbol: Symbol) -> None: ...
-    def unsubscribe(self, symbol: Symbol) -> None: ...
+    THE SPLIT (ARC 022, D1.38, operator ruling — recorded verbatim in
+    `docs/SPEC-AMENDMENTS.md`). **This port is ASYNC BY DEFAULT, and that inverts the order
+    port's default one file up.** The two are not inconsistent; they are the same rule applied
+    to two libraries with different obligations.
+
+      ASYNC — connect, disconnect, subscribe, unsubscribe, poll_history
+        Every verb that touches the wire. Each genuinely round-trips to the venue
+        (`ib.connectAsync`, `cancelMktData`, `reqHistoricalData`), so the await is honest and
+        the signature says so.
+
+      SYNC  — feed_lag, granted_mode
+        Retained observables. Both read state this adapter already holds — a lag computed from
+        samples it collected, a grant callback it recorded — and neither makes a venue call.
+
+    WHY THE DEFAULT INVERTS, which is the ruling's whole argument and is checkable rather than
+    stylistic. `BrokerOrderPort`'s synchronous send path exists for ONE reason: §2A:107
+    invariant 5 and §2A's `flatten` bullet require a protective action not to block, so
+    `place_order` / `cancel_order` / `flatten` must not be awaitable at all. **The datafeed has
+    no protective path** — nothing on this port can be the thing that closes a position — so the
+    exception that justified sync does not apply here, and what is left is the ordinary rule:
+    a verb that round-trips is a coroutine.
+
+    IT PREVENTS ARC 015'S DEFECT IN MIRROR IMAGE. There, an `async def` passed a sync-declared
+    port because `callable()` cannot tell the two apart, and the caller was handed an un-awaited
+    coroutine object instead of a value (`debug.md` §7.12, vacuity instance 4). The risk on THIS
+    port runs the other way: a SYNC signature concealing a round-trip, i.e. a blocking venue call
+    inside capture.py's loop wearing a signature that promises it cannot happen. Declaring the
+    wire verbs async is what makes that a compile-time-visible change rather than a silent one.
+
+    WHAT THIS PORT LOOKED LIKE BEFORE, so the change is legible: five verbs, ALL DECLARED SYNC,
+    with `poll_history` and `granted_mode` implemented on the IBKR adapter and absent from both
+    the Protocol and the roster. `broker_datafeed_ibkr.py`'s ARC 021 module docstring recorded
+    the friction and explicitly declined to resolve it — *"a port change binds every vendor"* —
+    and left the obligation open. This is that obligation discharged by operator ruling.
+
+    Enforcement is mechanical, not conventional, and it is the SAME function the order port
+    uses: `check_await_conformance()`. See `DATAFEED_ASYNC_VERBS` for the one place this
+    partition is declared, and that function's docstring for what it now asserts."""
+
+    async def connect(self) -> None: ...
+    async def disconnect(self) -> None: ...
+    async def subscribe(self, symbol: Symbol) -> None: ...
+    async def unsubscribe(self, symbol: Symbol) -> None: ...
+
+    async def poll_history(self, symbol: Symbol) -> int:
+        """NIX ADDITION (ARC 021, promoted to the port ARC 022). Poll venue history; returns the
+        number of rows the venue returned, and publishes each as a sealed `on_bar`.
+
+        `nics_risk_subsystem_spec_v1.3.md` §2A:86-92 gives broker-datafeed four commands and no
+        poll, because it assumes the real-time tick firehose of §2A:91. At Stage 0 that firehose
+        does not exist (Err 10189 on the CME FUT product class, ARC 012), so polled history is
+        not a fallback here — it is the only path to a bar, and a path the whole contract depends
+        on cannot be adapter-private.
+
+        WHY IT IS ON THE PORT AND `send_backlog()` IS NOT — the distinction is not arbitrary and
+        `broker_seam.SendBacklog` records the other side of it. A port verb binds EVERY vendor,
+        so it must be a thing every vendor can be asked for. Whether a second venue can report
+        its own client queue depth is unmeasured, so `send_backlog` stays off the roster. Every
+        market-data vendor serves history — DataBento is history-first — so this one binds
+        honestly.
+
+        EXHAUSTION RAISES `FeedPollExhausted`. Zero rows is a real answer meaning the venue had
+        nothing, and it must never read the same as "we could not reach the venue"."""
 
     def feed_lag(self) -> FeedLag:
-        """Nix addition. See FeedLag."""
+        """NIX ADDITION (ARC 013). See `FeedLag`.
+
+        SYNC: a retained observable. It reads samples this adapter already collected and makes no
+        venue call, so an `await` here would be an invitation to put a round trip behind it."""
+
+    def granted_mode(self) -> MarketDataMode:
+        """NIX ADDITION (ARC 013/ARC 021, promoted to the port ARC 022). The mode the venue
+        GRANTED, never the mode requested. `MarketDataMode.UNKNOWN` is the floor.
+
+        WHY IT IS OWED AT THE PORT and not left adapter-private, which is where ARC 021 left it:
+        `docs/CHECK-DEBT.md` D1.13's obligation is *assert the granted marketDataType and FAIL on
+        a silent downgrade — never infer the mode from the request*, and ARC 013 measured IBKR
+        granting mode 3 against a request for mode 4 with no error raised. A consumer that must
+        not trade on a silently-downgraded feed has to be able to ask ANY vendor's adapter what
+        it was granted; a verb only IBKR happens to expose makes that consumer vendor-aware,
+        which is §2A:103-104 invariant 1 lost.
+
+        SYNC: it reads a recorded callback. No venue call, so no await."""
 
 
 # The roster is the authority, not the docstrings. A predecessor system had a
@@ -1262,8 +1485,74 @@ DATAFEED_PORT_VERBS: tuple[str, ...] = (
     "disconnect",
     "subscribe",
     "unsubscribe",
+    # Declared Nix additions (ARC 021 as adapter methods, promoted to the port ARC 022 under
+    # D1.38). Each is flagged as an addition in its own Protocol docstring above, which is what
+    # `checks/check_derived_claims.py` reads to keep `spec_2a_broker_datafeed_elements`
+    # balanced: an element the seam declares that §2A does not define and whose docstring does
+    # not name it an addition is counted by the code side and not by the spec side, and the
+    # claim reddens. The flag is load-bearing.
+    "poll_history",
     "feed_lag",
+    "granted_mode",
 )
+
+
+# ---------------------------------------------------------------------------
+# THE SYNC/ASYNC PARTITION — ONE DECLARED CONSTANT PER PORT
+#
+# WHY A CONSTANT AT ALL, when the Protocols above already carry the truth in their own
+# `async def`s. `check_await_conformance()` derives "what the port declares" from the Protocol
+# by `getattr(port, verb)`, and that comparison is genuinely both-directional. What it CANNOT
+# see is a Protocol edit that nobody meant: flip one `async def` to `def` and every adapter is
+# simply re-measured against the new declaration, in silence, because the Protocol is the only
+# statement of intent in the file and it has just been changed. The port's split is a
+# CONTRACT DECISION — ARC 015 for the order port, ARC 022's D1.38 ruling for this one — and a
+# decision needs a second, independent spelling for the checker to hold the Protocol against.
+# These constants are that spelling, and the assertion that they agree is in
+# `check_await_conformance()`, which reddens if EITHER side moves alone.
+#
+# WHY ONE SET PER PORT AND NOT TWO. The parent design sketch for this arc proposed
+# `*_ASYNC_VERBS` + `*_SYNC_VERBS` with the roster derived as their concatenation. It was
+# REJECTED, and the reason is measured rather than aesthetic: `checks/check_datafeed_bar_seal.py`
+# (`_str_tuple`), `checks/check_datafeed_granted_mode.py` and `checks/check_order_path_bans.py`
+# all read the roster OUT OF THIS FILE'S AST and accept only an `ast.Tuple`/`ast.List` of string
+# literals. A roster spelled `A + B` is an `ast.BinOp`, those readers return `()`, and all three
+# gates report "no module declares the roster" — CANNOT_MEASURE, in three gates, to buy a
+# tidier constant. That is doctrine B.4's forbidden direction (a gate must never be blinded to
+# make a change fit), and it is `debug.md` §7.12's family exactly. So the ROSTER stays a literal
+# tuple and is the single authority for MEMBERSHIP; each set below is the single authority for
+# the PARTITION; and the sync half is derived by subtraction so no verb name is typed twice.
+#
+# THE SYNC HALF IS DERIVED, DELIBERATELY. `sync = roster - async`. A verb added to the roster
+# and forgotten here therefore lands on the SYNC side, where `check_await_conformance` compares
+# it against the Protocol — so the omission surfaces the moment the Protocol declares it async,
+# rather than being admitted as "unclassified".
+# ---------------------------------------------------------------------------
+
+ORDER_ASYNC_VERBS: frozenset[str] = frozenset(
+    {"connect", "query_positions", "query_balance", "get_margin"}
+)
+"""ARC 015's split, in its second spelling. The complement — place_order, cancel_order,
+flatten, disconnect, query_order_status — is the SEND PATH plus the reads that never leave the
+process, and §2A:107 invariant 5 is why it is sync: a protective action must not await."""
+
+DATAFEED_ASYNC_VERBS: frozenset[str] = frozenset(
+    {"connect", "disconnect", "subscribe", "unsubscribe", "poll_history"}
+)
+"""ARC 022's D1.38 ruling, in its second spelling. **The complement is the SMALL half here** —
+`feed_lag` and `granted_mode` — because this port is async by default: it has no protective path,
+so the exception that made the order port sync does not apply. Note `disconnect` sits on OPPOSITE
+sides of the two ports, which is not an oversight: on the order path a disconnect can be part of
+a protective sequence and must not await; on the datafeed it is an ordinary wire teardown."""
+
+PORT_ASYNC_VERBS: dict[type, frozenset[str]] = {
+    BrokerOrderPort: ORDER_ASYNC_VERBS,
+    BrokerDatafeedPort: DATAFEED_ASYNC_VERBS,
+}
+"""Port Protocol -> its declared async partition. A BINDING, not a third declaration of the
+names — it is what lets `check_await_conformance(adapter, port, verbs)` find the right constant
+without any caller passing it, so no call site can forget to and thereby skip the check. A port
+absent from this map gets the ARC 014 behaviour and nothing more, and says so in its report."""
 
 DATAFEED_EVENTS: tuple[str, ...] = (
     "on_tick",
@@ -1410,26 +1699,51 @@ class StubBrokerOrder:
 
 
 class StubBrokerDatafeed:
+    """Vendorless in-memory datafeed adapter. Deterministic, no network.
+
+    Converted to the ARC 022 D1.38 split along with every other datafeed adapter. The
+    conversion is real and not cosmetic: a stub left sync while the port went async would fail
+    `check_await_conformance()` for a SHAPE reason, and a vendorless conformance subject that
+    fails for the wrong reason has stopped proving the contract is satisfiable without a venue —
+    which is the only thing it is for."""
+
     def __init__(self, sink: DatafeedEventSink):
         self._sink = sink
         self._connected = False
         self._subs: set[Symbol] = set()
 
-    def connect(self) -> None:
+    async def connect(self) -> None:
         self._connected = True
         self._sink.on_feed_status(FeedState.UP)
 
-    def disconnect(self) -> None:
+    async def disconnect(self) -> None:
         self._connected = False
         self._sink.on_feed_status(FeedState.DOWN, reason="requested")
 
-    def subscribe(self, symbol: Symbol) -> None:
+    async def subscribe(self, symbol: Symbol) -> None:
         if not self._connected:
             raise BrokerNotConnected("subscribe called with no session")
         self._subs.add(symbol)
 
-    def unsubscribe(self, symbol: Symbol) -> None:
+    async def unsubscribe(self, symbol: Symbol) -> None:
         self._subs.discard(symbol)
+
+    async def poll_history(self, symbol: Symbol) -> int:
+        """A VENDORLESS stub has no venue to poll, and says so rather than returning 0.
+
+        Returning 0 rows would make "there is no venue behind this object" read as "the venue
+        had nothing" — the AMENDMENT 3 failure `FeedPollExhausted` exists to prevent, reached
+        by the one route that has no exception in it. `simulate_bar` below is how a test drives
+        the bar path against this stub."""
+        raise BrokerUnsupported(
+            "StubBrokerDatafeed.poll_history: vendorless stub, no venue to poll. Zero rows "
+            "would read as 'the venue had nothing'; use simulate_bar() to drive on_bar."
+        )
+
+    def granted_mode(self) -> MarketDataMode:
+        """A stub was granted nothing, and `UNKNOWN` is the floor — not `REALTIME` because
+        nothing is in the way. See `feed_lag` below for the same argument at length."""
+        return MarketDataMode.UNKNOWN
 
     def feed_lag(self) -> FeedLag:
         """A VENDORLESS stub declares no lag. It does not declare zero.
@@ -1468,6 +1782,16 @@ class StubBrokerDatafeed:
                 venue_ts,
                 recv_ts=time.time() if recv_ts is None else recv_ts,
             )
+
+    def simulate_bar(self, bar: Bar) -> None:
+        """Test hook — not part of the port. Publishes a bar the CALLER built.
+
+        It takes a whole `Bar` rather than five numbers on purpose: `Bar.__post_init__` is where
+        AMENDMENT 4 is enforced, so a caller trying to drive a tick-aggregated bar through this
+        stub is refused at construction, exactly as it would be against the real adapter. A
+        convenience signature that built the `Bar` here would let this stub become the one
+        datafeed object in the tree with a laxer rule than the port it stands for."""
+        self._sink.on_bar(bar)
 
 
 # ---------------------------------------------------------------------------
@@ -1529,10 +1853,22 @@ class HollowBrokerDatafeed:
     def __init__(self, sink: DatafeedEventSink, **_: object):
         self._sink = sink
 
-    def connect(self) -> None: ...
-    def disconnect(self) -> None: ...
-    def subscribe(self, symbol: Symbol) -> None: ...
-    def unsubscribe(self, symbol: Symbol) -> None: ...
+    async def connect(self) -> None: ...
+    async def disconnect(self) -> None: ...
+    async def subscribe(self, symbol: Symbol) -> None: ...
+    async def unsubscribe(self, symbol: Symbol) -> None: ...
+
+    async def poll_history(self, symbol: Symbol) -> int:
+        """Zero rows, silently — which is the whole hollow answer. A suite that reads a 0 as
+        "the venue had nothing" passes this control; one that requires the bar path to have
+        published something does not."""
+        return 0
+
+    def granted_mode(self) -> MarketDataMode:
+        """`REALTIME`, matching its `feed_lag()` — a plausible grant nobody granted. This is the
+        pre-ARC-021 defect preserved on purpose: `MarketDataMode.UNKNOWN` is the floor, and a
+        suite that checks only the RETURN TYPE passes this."""
+        return MarketDataMode.REALTIME
 
     def feed_lag(self) -> FeedLag:
         return FeedLag(
@@ -1568,6 +1904,17 @@ class BrokerUnsupported(BrokerSeamError):
 class SymbolNotResolved(BrokerSeamError): ...
 
 
+class MalformedBarRow(BrokerSeamError):
+    """A venue row is missing a field whose presence a bar's existence guarantees. ARC 022.
+
+    A DISTINCT class rather than a bare `KeyError` or a `ValueError`, because the two facts a
+    consumer must not confuse are "the venue reported no volume for this bar" — legal, and
+    carried as `Bar.volume=None` — and "this row is not a bar". `docs/SPEC-AMENDMENTS.md`
+    AMENDMENT 3's ARC 022 refinement is the ruling that makes the second one an error: a field no
+    observable absence justifies is not optional, so its absence is malformation, and a reader
+    that manufactured `None` for it would be inventing an absence the venue never declared."""
+
+
 class FeedPollExhausted(BrokerSeamError):
     """A bounded poll spent its whole attempt budget without a response. Nix addition (ARC 021).
 
@@ -1597,6 +1944,54 @@ def check_structural_conformance(adapter: object, verbs: Iterable[str]) -> list[
     return missing
 
 
+def _partition_divergences(port: type, verbs: list[str]) -> list[str]:
+    """Comparisons (2) and (3) of `check_await_conformance`. NOT A SECOND GATE.
+
+    `nix_check_contract.md` check-rule 8 is one gate per property, and the property here is
+    still "the seam's sync/async declaration is honoured" — one owner,
+    `check_await_conformance`, which is this function's only caller. What is split out is a
+    step, not a verdict: nothing calls this and reports a result, and it has no exit code, no
+    registration and no independent meaning. The split exists because the gate crossed the
+    tree's cognitive-complexity ceiling when comparison (2) was added, and the two available
+    answers were to decompose it or to raise the ceiling. Raising a ceiling to admit code is
+    doctrine B.4's forbidden direction; decomposition changes no verdict on any input."""
+    import inspect
+
+    declared_async = PORT_ASYNC_VERBS.get(port)
+    port_name = getattr(port, "__name__", port)
+    if declared_async is None:
+        # CONDITION C of the standing question: legitimate, and never silent.
+        return [
+            (
+                f"NOT PARTITION-CHECKED: {port_name} has no entry in PORT_ASYNC_VERBS, so the "
+                "Protocol's declaration was compared against nothing (debug.md §7.12 "
+                "condition C)"
+            )
+        ]
+    out = [
+        f"{verb}: named by the declared async partition but absent from the port roster — "
+        "one of the two has been edited without the other"
+        for verb in sorted(declared_async - set(verbs))
+    ]
+    for verb in verbs:
+        want = getattr(port, verb, None)
+        if want is None:
+            out.append(
+                f"{verb}: on the port roster but NOT DECLARED by {port_name} — the roster and "
+                "the Protocol disagree about what the contract contains"
+            )
+            continue
+        want_async = inspect.iscoroutinefunction(want)
+        declared = verb in declared_async
+        if want_async != declared:
+            out.append(
+                f"{verb}: Protocol declares {'async' if want_async else 'sync'} but the "
+                f"declared partition says {'async' if declared else 'sync'} — the port's "
+                "split and its one declared constant have drifted"
+            )
+    return out
+
+
 def check_await_conformance(
     adapter: object, port: type, verbs: Iterable[str]
 ) -> list[str]:
@@ -1612,13 +2007,107 @@ def check_await_conformance(
     which verbs are hot-path sync and which are awaited. This function only makes the
     disagreement visible so it cannot be settled by accident.
 
-    ARC 015 settled the question — see BrokerOrderPort's docstring for the split and the
-    rejected alternative — so from here on this function is the enforcement of a decision
-    rather than the reporting of an open one. Its own non-vacuity instrument is
-    AwaitDivergentBrokerOrder below: a gate that cannot fail proves nothing."""
+    ARC 015 settled the question for the ORDER port and ARC 022's D1.38 ruling settled it for
+    the DATAFEED port — see each Protocol's docstring — so from here on this function is the
+    enforcement of two decisions rather than the reporting of an open one. Its non-vacuity
+    instruments are AwaitDivergentBrokerOrder, AwaitDivergentBrokerDatafeed and
+    CoroutineDivergentBrokerDatafeed below: a gate that cannot fail proves nothing, and a gate
+    demonstrated able to fail in only ONE direction proves only that direction.
+
+    =======================================================================================
+    ARC 022: WHAT THIS NOW ASSERTS, AND WHY IT IS THIS FUNCTION AND NOT A SECOND ONE
+    =======================================================================================
+    `nix_check_contract.md` check-rule 8 (one gate per property): this function already owns
+    "the seam's sync/async declaration is honoured". The datafeed's split is the same property
+    on a second port, so it lands here. A `check_datafeed_await_conformance()` beside it would
+    be two gates for one property, and the predictable outcome is one of them being extended
+    and the other not.
+
+    THREE COMPARISONS, all of them both-directional:
+
+      (1) ADAPTER vs PROTOCOL. Every roster verb's coroutine-ness on the adapter must equal its
+          coroutine-ness on the Protocol. Both directions since ARC 014 — `want_async !=
+          got_async` is symmetric — so a sync-declared verb implemented `async` and an
+          async-declared verb implemented sync are each caught. The ASYMMETRIC form, asserting
+          only "the async ones are async", reproduces ARC 015's hole in mirror image, and that
+          hole has already been closed once.
+
+      (2) PROTOCOL vs THE DECLARED PARTITION (`PORT_ASYNC_VERBS`) — NEW IN ARC 022, and the
+          reason a constant exists at all. Comparison (1) treats the Protocol as ground truth,
+          so an unintended edit to the Protocol is not a divergence — it is a NEW GROUND TRUTH,
+          and every adapter is silently re-measured against it. This comparison holds the
+          Protocol against the second, independent statement of the same decision. Either side
+          moving alone reddens; moving both is what a deliberate contract change looks like,
+          and it is meant to require two edits and a ruling.
+
+      (3) THE ROSTER COVERS THE PROTOCOL. A roster verb the Protocol does not declare used to
+          be skipped by `if want is None: continue` — silently, which is how `poll_history` and
+          `granted_mode` sat outside the datafeed contract through the whole of ARC 021 while
+          this checker reported clean. A verb the roster names and the Protocol does not is now
+          a defect, not a gap in the scan.
+
+    =======================================================================================
+    THE STANDING QUESTION (`debug.md` §7.12): WHAT WOULD HAVE TO BE TRUE FOR THIS GATE TO PASS
+    WHILE MEASURING NOTHING?
+    =======================================================================================
+    Five conditions, each stated in a form you could plant:
+
+      A. `verbs` ARRIVES EMPTY. The loop never runs and the function returns `[]` — a clean
+         PASS over zero verbs. This is failure mode #2 (vacuous scope) and it is the likeliest
+         of the five, because every caller passes a roster constant read from elsewhere and a
+         renamed or emptied constant produces `()` rather than an error. GUARDED: an empty
+         `verbs` is now itself reported as a defect. There is no legitimate port with no verbs,
+         so the "measured nothing" case and the "nothing to measure" case are the same case and
+         it is loud.
+
+      B. THE PORT DECLARES NOTHING ASYNC AND THE ADAPTER IMPLEMENTS NOTHING ASYNC. Every
+         comparison is `False != False` and the gate is green having distinguished nothing —
+         the pre-ARC-015 world, in which it passed for arcs. NOT GUARDED HERE, and deliberately:
+         a port that is legitimately all-sync exists (`BrokerDatafeedPort` was one until this
+         arc). It is guarded by comparison (2) instead — an all-sync port whose declared
+         partition is non-empty reddens immediately — and by the permanent divergent controls,
+         which fail loudly the moment a port stops diverging from them.
+
+      C. `PORT_ASYNC_VERBS` HAS NO ENTRY FOR THIS PORT. Comparison (2) is skipped entirely and
+         only ARC 014's behaviour runs. NOT SILENT: the skip appends an explicit
+         "NOT PARTITION-CHECKED" line to the report, so a caller reading the result sees that
+         two of the three comparisons did not happen. A future third port added without an
+         entry is therefore visibly half-checked rather than invisibly so.
+
+      D. `inspect.iscoroutinefunction` STOPS RECOGNISING THE ADAPTER'S CALLABLES. It answers
+         False for a `functools.partial`, for a sync function returning a coroutine, and for a
+         callable class instance — so an adapter that wrapped its verbs would read as uniformly
+         sync and this gate would agree with a sync-declared port having examined nothing real.
+         NOT GUARDED — it is not repairable from inside this function, because "returns an
+         awaitable" is not decidable without calling the verb. It is the honest boundary of
+         what this instrument measures: it measures the DECLARATION, and the declaration is
+         what the port is a statement about. Recorded so nobody reads the green as more than
+         that.
+
+      E. THE CALLER PASSES A PORT THAT IS NOT THE ADAPTER'S PORT. Then `getattr(port, verb)` is
+         `None` for most verbs, comparison (3) fires — so this one converted itself from a
+         silent pass into a loud failure in ARC 022. Before that change it was condition A's
+         quiet cousin, and it is `debug.md` §7.12's instance 7 (an order sink passed into the
+         datafeed port) one type over.
+    """
     import inspect
 
     bad = []
+    verbs = list(verbs)
+
+    # CONDITION A. An empty roster is a vacuous pass, not a clean one.
+    if not verbs:
+        return [
+            (
+                "VACUOUS: no verbs to check — an empty roster passes this gate having "
+                "compared nothing (debug.md §7.12 condition A, failure mode #2)"
+            )
+        ]
+
+    # COMPARISON (2) + (3): the Protocol against the ONE declared partition for this port.
+    bad += _partition_divergences(port, verbs)
+
+    # COMPARISON (1): the adapter against the Protocol. ARC 014's original assertion, unchanged.
     for verb in verbs:
         want = getattr(port, verb, None)
         got = getattr(adapter, verb, None)
@@ -1654,6 +2143,54 @@ class AwaitDivergentBrokerOrder(HollowBrokerOrder):
 
     def query_positions(self) -> list[Position]:  # type: ignore[override]  # deliberate divergence
         return []
+
+
+class AwaitDivergentBrokerDatafeed(HollowBrokerDatafeed):
+    """NON-VACUITY INSTRUMENT for check_await_conformance() on the DATAFEED port,
+    ASYNC-DECLARED-VERB-IMPLEMENTED-SYNC direction. Added ARC 022 (D1.38).
+
+    The datafeed counterpart of `AwaitDivergentBrokerOrder`, and it exists for the same reason
+    that one does: `debug.md` §7.2 says a plant never touches a production artifact where a
+    control class can carry it, and §7.1 says removing a plant removes the evidence with it. So
+    the plant lives here permanently, as a class whose entire purpose is to be caught.
+
+    The divergence is exactly one verb: `subscribe` is re-declared SYNC while
+    `BrokerDatafeedPort` declares it async. Everything else is inherited from the Hollow control
+    and conforms, so the expected report is precisely one entry NAMING `subscribe` — a generic
+    failure would be weak evidence (§7.1 step 2). If a future edit made the datafeed port fully
+    sync again, this class would stop diverging and its test fails loudly rather than silently
+    passing."""
+
+    def subscribe(self, symbol: Symbol) -> None:  # type: ignore[override]  # deliberate divergence
+        return None
+
+
+class CoroutineDivergentBrokerDatafeed(HollowBrokerDatafeed):
+    """NON-VACUITY INSTRUMENT for check_await_conformance() on the DATAFEED port,
+    SYNC-DECLARED-VERB-IMPLEMENTED-ASYNC direction. Added ARC 022 (D1.38).
+
+    THE SECOND DIRECTION, AND THE REASON IT IS A SECOND CLASS. `AwaitDivergentBrokerOrder` has
+    demonstrated only ONE direction since ARC 015 — an async verb implemented sync. A gate shown
+    able to fail in one direction has been shown able to fail in one direction, and the OTHER
+    direction is the one `debug.md` §7.12 instance 4 actually records: an `async def` passing a
+    sync-declared port, handing the caller an un-awaited coroutine object instead of a value.
+    Asserting only the direction you have an instrument for is how a half-blind gate reads as a
+    whole one.
+
+    The divergence is exactly one verb: `feed_lag` is re-declared ASYNC while
+    `BrokerDatafeedPort` declares it sync — which is also the concrete Stage 0 hazard the D1.38
+    ruling names, a retained observable quietly acquiring a round trip. Expected report:
+    precisely one entry naming `feed_lag`."""
+
+    async def feed_lag(self) -> FeedLag:  # type: ignore[override]  # deliberate divergence
+        return FeedLag(
+            declared_lag_s=None,
+            observed_lag_s=None,
+            observed_n=0,
+            provenance=LagProvenance.UNOBSERVED,
+            granted_mode=MarketDataMode.UNKNOWN,
+            detail="COROUTINE-DIVERGENT CONTROL — this object is never awaited by the suite",
+        )
 
 
 @dataclass
