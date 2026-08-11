@@ -374,6 +374,108 @@ datafeed disconnect is an ordinary wire teardown.
 
 ---
 
+## AMENDMENT 6 — freshness is per-channel
+
+| field | value |
+|---|---|
+| origin | **Operator ruling, issued in ARC 023.** Not spec text. |
+| implemented by | ARC 023, sub-agent A (item A1) |
+| closes | Tier 3 finding **F21** (`scripts/tests/test_datafeed_tier3.py` T20) — the §5.2 fit-for-purpose failure ARC 022 refused to invent an answer for, recording *"NO ANSWER IS INVENTED: whether `bar_start_venue_ts` is a freshness stamp, whether a poll-fed symbol is exempt, and whether the two clocks combine are three different rulings."* This is those three rulings |
+| section that would have to say it | **§2A's absent freshness-stamp declaration** and **§6.4:371-374** in `nics_risk_subsystem_spec_v1.3.md` |
+| status | **PENDING** a v1.4 of `nics_risk_subsystem_spec_v1.3.md`, which the architect owns |
+
+> ⚠ **NUMBERING.** The ruling below was issued titled *"AMENDMENT 5"*. That number was already
+> taken, on disk, by ARC 022's `AMENDMENT 5 (D1.38)` — the broker-datafeed async port. It is
+> recorded here as **AMENDMENT 6** and the ruling's own text is otherwise verbatim, including
+> its self-reference. Two entries sharing a number would let the two be cited against each
+> other, which is the failure this file's own AMENDMENT 3 REFINEMENT header names as its reason
+> for not being a fourth amendment. Reported to the architect as a deviation.
+
+### Ruling, verbatim as issued
+
+> **AMENDMENT 5 — freshness is per-channel.** Each channel by which the seam observes a symbol
+> carries its own venue timestamp and its own `effective_lag_s`. The seam declares **which
+> channels are fresh and which are stale**, and does not collapse them into a single boolean.
+> Excess staleness is computed per channel by the existing formula,
+> `excess_staleness_s = (now − venue_ts) − effective_lag_s`, with the channel's own lag.
+>
+> The consumer decides which channels it requires. A consumer that requires ticks is entitled to
+> halt when the tick channel is stale; the **seam** is not entitled to decide that on its behalf.
+>
+> Rationale: `evaluate_freshness` reads `last_tick_venue_ts` alone. At Stage 0 no tick stream
+> exists — `reqTickByTickData` returns 10189 naming the product class — so a symbol fed entirely
+> by successful, current polls is permanently STALE and drives §6.4's halt-and-flatten. **The
+> module fail-closes on the only margin-class path it has.** A bar's venue timestamp is a venue
+> observation exactly as a tick's is; the defect is that only one channel updates the stamp.
+>
+> This is Amendment 3's absence principle applied to freshness: the seam reports what it observed
+> per channel and substitutes nothing — including not substituting a collapsed verdict for the
+> observations that produced it.
+>
+> Sections that would have to say it: §2A's absent freshness-stamp declaration, and §6.4:371-374.
+> Origin: operator ruling issued in ARC 023. Not spec text. Pending a v1.4 the architect owns.
+
+### What the frozen spec says today
+
+`nics_risk_subsystem_spec_v1.3.md` §6.4:373-374 reads *"Allocator/Limiter **read caches only**.
+**Stale (freshness stamp past threshold, after retry/backoff) ⇒ halt new entries AND flatten
+open.** Detection = system; execution = Limiter."* — **"the freshness stamp"**, singular, on the
+assumption that a symbol is observed one way. §2A:86-92 declares four datafeed commands and two
+events and no freshness stamp at all, so it declares neither one stamp nor several. AMENDMENT 4
+gave the polled bar an owner in ARC 022 and deliberately gave it no freshness role.
+
+### How it is ENFORCED, which is the part that is not documentation
+
+- `broker_seam.FeedChannel` (`TICK` / `POLL`) and `broker_seam.ChannelState`
+  (`FRESH` / `STALE` / **`CANNOT_MEASURE`**) are new declared Nix additions.
+  `CANNOT_MEASURE` is `debug.md` §7.9's third column made into a value: F21 existed because a
+  question that could not be asked read as a feed that had failed.
+- `FeedState` is **not** extended. §2A:92 declares `on_feed_status(up|down|stale, …)` and that
+  vocabulary is frozen; a fourth member would be a silent redefinition of a locked event.
+- `broker_seam.FreshnessReport` carries `fresh_channels` / `stale_channels` /
+  `cannot_measure_channels` and **deliberately no `is_fresh`, `is_stale` or `state`**. The
+  absence is the enforcement — a boolean there is the collapse the ruling forbids and is the
+  property every consumer would reach for first. A test asserts the absence by name.
+- `ChannelFreshness.__post_init__` refuses a `state` that contradicts the numbers beside it, so a
+  verdict cannot disagree with the `venue_ts` and `effective_lag_s` that produced it.
+- `IBKRBrokerDatafeed.freshness()` is the authority and the only publisher; `evaluate_freshness()`
+  is retained as §2A:92's single-state summary, derived from the report, documented as not the
+  authority.
+- **The poll channel's `effective_lag_s` is NOT MEASURED on this system**, and the substitution is
+  refused *structurally*: `Stage0LagRecord` carries a `channel`, and the adapter's constructor
+  refuses a record installed on a channel it did not measure. Installing the tick channel's
+  measured 600.0–601.9 s figure on the poll slot raises. See the deviation note below.
+
+### What this amendment deliberately does NOT decide
+
+- **It does not say which channels a consumer must require.** That is the ruling's own point and
+  it is a Limiter question.
+- **It does not give the poll channel a lag figure.** None exists; see below.
+
+### DEVIATION REPORTED (ARC 023, sub-agent A) — the poll channel's grade
+
+The brief directed: *"Grade it **VENDOR_DECLARED** with a known-red marker naming the tap, exactly
+as `Bar.volume` was graded in ARC 022."* The grade and the marker are implemented exactly as
+directed. **A default figure is not**, and the refusal is the amendment applied to itself:
+
+`LagProvenance.VENDOR_DECLARED` requires a real number (`FeedLag.__post_init__` refuses a
+provenance for a figure that does not exist), and **no number for this channel exists** —
+`IB_STAGE0_DELAYED_LAG` measures the tick stream, ARC 010's 624 s measures `reqHistoricalTicks`
+staleness on a different call, and this tree holds no citable IBKR declaration for the history
+path. Typing one from memory would be the same substitution sourced from the author instead of
+from the tick channel. So `IB_POLL_LAG_RECORD` is `None`, the channel reads `CANNOT_MEASURE`
+under its own name, the constructor accepts an operator-supplied figure and grades it
+`VENDOR_DECLARED` on arrival without ever promoting it, and the known-red marker names
+`~/nix/downloads/tap_session_runbook.md` as the discharge.
+
+**Consequence, stated rather than hidden:** on this system today the §2A:92 summary for a
+poll-only symbol is still `STALE`, because no channel can be shown fresh. What changed is that
+the report now says *why* — `cannot_measure=['tick','poll']`, not `stale=[…]` — so a consumer can
+distinguish an unanswerable question from a failed feed, which is the whole of F21. The
+measurement is owed and the amendment names who owes it.
+
+---
+
 ## Standing note for the architect
 
 Every ruling in this file was issued **because the arc that met the gap refused to invent the

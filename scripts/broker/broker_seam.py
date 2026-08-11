@@ -733,6 +733,164 @@ class LagAgreement(enum.Enum):
     input to every freshness computation downstream of it."""
 
 
+class FeedChannel(enum.Enum):
+    """WHICH observation path a venue timestamp reached this seam by. Declared Nix addition.
+
+    NIX ADDITION (ARC 023, `docs/SPEC-AMENDMENTS.md` AMENDMENT 6), flagged exactly as
+    `feed_lag()` is. `nics_risk_subsystem_spec_v1.3.md` §2A:86-92 declares no lag concept and
+    therefore no channel concept either; §6.4:373 says *"freshness stamp past threshold"* in
+    the singular, on the assumption that a symbol is observed one way.
+
+    WHY IT IS OWED, and it is a measured argument rather than a design preference: at Stage 0
+    IBKR serves this account TWO paths with DIFFERENT delays and DIFFERENT evidence grades —
+    a delayed tick stream (ARC 013, 600.0-601.9 s, MEASURED) and polled history (delay NEVER
+    MEASURED on this system). One `effective_lag_s` cannot be right for both, and one boolean
+    verdict computed from one of them silently decides for the other. AMENDMENT 6: the seam
+    declares which channels are fresh and which are stale and does not collapse them.
+    """
+
+    TICK = "tick"
+    """The venue pushed a packet on a market-data stream. `_on_ib_tick`'s path."""
+
+    POLL = "poll"
+    """The venue answered a history request. `poll_history`'s path — the only margin-class
+    path at Stage 0 (`broker_datafeed_ibkr.py` GAP-D4), and the one whose lag is UNMEASURED."""
+
+
+class ChannelState(enum.Enum):
+    """One CHANNEL's freshness verdict. Declared Nix addition (ARC 023, AMENDMENT 6).
+
+    THREE MEMBERS, NOT TWO, AND THAT IS `debug.md` §7.9's requirement applied to a value
+    rather than to an exit code: PASS / FAIL / CANNOT MEASURE. `FeedState` has three members
+    too and they are not these — `UP`/`DOWN`/`STALE` is a §2A:92 vocabulary about a
+    SUBSCRIPTION, and it has no member for *"this channel's lag is unknown, so the question
+    cannot be answered"*. Collapsing that into `STALE` is F21: a healthy, current poll feed
+    reads as a halt-and-flatten trigger because the seam had no way to say it did not know.
+
+    DELIBERATELY NOT A `FeedState`. §2A:92 declares `on_feed_status(up|down|stale, ...)` and
+    that vocabulary is frozen; adding a fourth member to it would be a silent redefinition of
+    a locked event. This enum is a NEW type on a NEW object, which is the declared-addition
+    route the frozen spec leaves open."""
+
+    FRESH = "fresh"
+    """Measured, and inside the threshold. `excess_staleness_s` is not None and is <=
+    `threshold_s`."""
+
+    STALE = "stale"
+    """MEASURED, and outside the threshold. A real reading of a real degradation — never the
+    answer to a question that could not be asked."""
+
+    CANNOT_MEASURE = "cannot_measure"
+    """The channel carries no venue timestamp, or no `effective_lag_s`, so
+    `excess_staleness_s` is `None`. NOT a verdict about the feed. A consumer that treats this
+    as STALE is making a decision the seam declined to make for it, which is its right —
+    AMENDMENT 6 puts that decision on the consumer and takes it off the seam."""
+
+
+class LagWindowBound(enum.Enum):
+    """WHICH bound decided the retained lag sample set. Declared Nix addition (ARC 023, F17).
+
+    The invariant the window has to satisfy is *bounded memory regardless of rate*, and a pure
+    TIME window does not satisfy it — MEASURED this arc: at this box's ingest ceiling of
+    3,561,839 samples/s a 60 s window would retain 213,710,318 samples = 20.5 GB. So there are
+    two bounds, and WHICH ONE APPLIED IS AN OBSERVABLE rather than an implementation detail:
+    under `COUNT` the window is narrower than `window_s` and the mean is a statement about a
+    shorter interval than the consumer asked for."""
+
+    WITHIN_BOTH = "within_both"
+    """Neither bound has trimmed anything: the retained set is every sample of the session."""
+
+    TIME = "time"
+    """The time window trimmed. The retained set spans at most `window_s` — the designed
+    case."""
+
+    COUNT = "count"
+    """The memory backstop trimmed. The retained set is `max_samples` long and spans LESS than
+    `window_s`. Reported so a consumer can see that the figure describes a shorter interval
+    than it asked about."""
+
+
+LAG_WINDOW_S: float = 60.0
+"""Default width of the lag window, in seconds. DERIVED, and the derivation is checkable.
+
+The halt decision's own timescale (`nics_risk_subsystem_spec_v1.3.md` §6.4:373-374, stale =>
+halt new entries AND flatten open) against the ~5 s tolerance `FeedLag.divergence_tolerance_s`
+carries. MEASURED IN ARC 023 against this system's only real tick-rate measurements
+(`sessions/SESSION.md` ARC 013 table):
+
+  rate                       n in 60 s   time to floor   F17's 600->900 s degradation
+  -------------------------  ---------   -------------   ----------------------------
+  18 ticks / 40 s (mode 3)      27.0        11.1 s       DIVERGED after 1 packet (2.2 s)
+  19 ticks / 40 s (mode 4)      28.5        10.5 s       DIVERGED after 1 packet (2.1 s)
+   0 ticks / 40 s (mode 1)       0.0        never        absence declared, correctly
+
+BY TIME AND NOT BY COUNT, which is the invariant and not the number: MEASURED, a 100-sample
+count window spans 222.2 s at ARC 013's rate and 0.000028 s at this box's ingest ceiling. One
+window setting cannot mean the same thing at both, and `debug.md` §7.4 is the reason — a count
+is a literal about the current rate, and the rate moves."""
+
+LAG_SAMPLE_FLOOR: int = 5
+"""Fewest samples in the window under which `FeedLag` declares ABSENCE rather than a mean.
+
+`docs/SPEC-AMENDMENTS.md` AMENDMENT 3: a mean over too few samples is a fabricated confidence,
+and falling back to the session-wide figure is the substitution F17 is about. Below this the
+object reports `observed_lag_s=None, observed_n=0` and `LagWindow.n_in_window` says how many
+were actually held — so *"too few"* is readable and is not the same reading as *"none"*."""
+
+LAG_SAMPLE_BYTES: int = 96
+"""MEASURED ARC 023 on this box: 96.3 B per retained `(recv_ts, lag)` sample in a `deque`
+(100,000 samples = 9.63 MB, `tracemalloc`). Rounded DOWN, so the derived cap below is
+conservative. Re-measure if the sample tuple's shape changes; it is the only input to the cap
+that is a fact about CPython rather than a policy."""
+
+LAG_WINDOW_MEMORY_BUDGET_BYTES: int = 1024 * 1024
+"""The per-symbol memory budget the count backstop enforces. A POLICY number, stated where it
+can be argued with: 1 MiB per symbol, against `CLAUDE.md`'s 1-5 concurrent instruments, is at
+most ~5 MiB of retained lag samples for the whole process."""
+
+LAG_WINDOW_MAX_SAMPLES: int = LAG_WINDOW_MEMORY_BUDGET_BYTES // LAG_SAMPLE_BYTES
+"""The memory backstop, DERIVED from the budget and the measured per-sample cost rather than
+typed (`VERIFY-AND-CHECKS.md` B.7 — when a document states a number the code also states, make
+one read the other). Changing either input moves this; nothing restates it."""
+
+
+@dataclass(frozen=True)
+class LagWindow:
+    """WHAT the reported lag figure was computed over. Declared Nix addition (ARC 023, F17).
+
+    Carried on `FeedLag` because a mean with no stated window is the defect F17 measured: the
+    session-wide mean read `AGREES` at 602.97 s while the last 100 packets sat at 900 s, 60
+    tolerances outside, and nothing on the object said which interval the number described."""
+
+    window_s: float
+    """The time bound asked for."""
+
+    sample_floor: int
+    """The floor below which absence is declared instead of a mean."""
+
+    max_samples: int
+    """The memory backstop. `LagWindowBound.COUNT` means this is what bound the set."""
+
+    n_in_window: int
+    """How many samples the window actually holds. READABLE EVEN WHEN IT IS BELOW THE FLOOR,
+    which is the whole point: `observed_n=0` with `n_in_window=3` says *too few*, and
+    `observed_n=0` with `n_in_window=0` says *none*. One field cannot say both."""
+
+    span_s: float | None
+    """`newest_recv_ts - oldest_recv_ts` over the retained set, or `None` for fewer than two
+    samples. Under `COUNT` this is less than `window_s`, which is how a consumer sees that the
+    memory bound narrowed the question."""
+
+    bound: LagWindowBound
+
+    def __post_init__(self) -> None:
+        if self.n_in_window > self.max_samples:
+            raise ValueError(
+                f"n_in_window={self.n_in_window} exceeds max_samples={self.max_samples} — "
+                "the memory backstop did not hold, so the window is not bounded"
+            )
+
+
 @dataclass(frozen=True)
 class FeedLag:
     """How far behind the venue's own clock this feed runs, WITH the provenance of the answer.
@@ -802,7 +960,33 @@ class FeedLag:
     """Why a reading is absent, or the citation behind a `PRIOR_ARC` figure. Human channel
     only — never parsed. Nothing a consumer acts on may live here (`debug.md` §7.4)."""
 
+    channel: FeedChannel = FeedChannel.TICK
+    """WHICH channel this figure is about (AMENDMENT 6). Defaults to `TICK` because that is
+    the channel every pre-ARC-023 caller meant, and because `BrokerDatafeedPort.feed_lag()`
+    takes no argument — a default that changed the meaning of the existing zero-argument call
+    would be a silent redefinition."""
+
+    window: LagWindow | None = None
+    """The bounded sample window `observed_lag_s` was computed over, or `None` where the figure
+    is not an observation at all. F17: a mean with no stated window cannot be checked."""
+
+    session_mean_lag_s: float | None = None
+    """INFORMATIONAL ONLY, AND SEPARATELY NAMED (F17). The mean over EVERY sample of the
+    session, retained as a running sum so it costs O(1) memory.
+
+    NOTHING DECIDES ON IT, and that is enforced by absence rather than asserted: it is read by
+    no property on this object. `effective_lag_s`, `agreement`, `divergence_s` and
+    `excess_staleness_s` all read `observed_lag_s`, which is the WINDOWED figure. F17's defect
+    was precisely that the session-wide number was the one every decision ran on; keeping it
+    with a different name and no consumer is what makes the separation checkable
+    (`debug.md` §7.6, prove by absence)."""
+
+    session_n: int = 0
+    """How many samples `session_mean_lag_s` rests on. Zero iff that figure is `None`."""
+
     def __post_init__(self) -> None:
+        self._check_session_pair()
+        self._check_window_floor()
         if (self.observed_lag_s is None) != (self.observed_n == 0):
             raise ValueError(
                 f"observed_lag_s={self.observed_lag_s!r} and observed_n={self.observed_n} "
@@ -823,6 +1007,35 @@ class FeedLag:
             raise ValueError(
                 f"declared_lag_s is None but provenance is {self.provenance.value} — a "
                 "provenance for a figure that does not exist"
+            )
+
+    def _check_session_pair(self) -> None:
+        """The informational session figure obeys the same coherence rule as the windowed one:
+        a value with no samples, or samples with no value, is not a state this object holds."""
+        if (self.session_mean_lag_s is None) != (self.session_n == 0):
+            raise ValueError(
+                f"session_mean_lag_s={self.session_mean_lag_s!r} and "
+                f"session_n={self.session_n} disagree: a sample count without a value, or a "
+                "value without samples"
+            )
+
+    def _check_window_floor(self) -> None:
+        """THE FLOOR IS STRUCTURAL, NOT A CONVENTION (F17, AMENDMENT 3).
+
+        A reported `observed_lag_s` computed over fewer than `sample_floor` samples is a
+        fabricated confidence, and this object refuses to hold one. Enforcing it here rather
+        than only in the adapter means a SECOND adapter cannot reintroduce the defect by
+        forgetting the rule — the same construction `Bar.__post_init__` uses for AMENDMENT 4."""
+        win = self.window
+        if win is None or self.observed_lag_s is None:
+            return
+        if win.n_in_window < win.sample_floor:
+            raise ValueError(
+                f"observed_lag_s={self.observed_lag_s!r} reported over "
+                f"{win.n_in_window} sample(s), below the floor of {win.sample_floor}. A mean "
+                "over too few samples is a fabricated confidence: declare absence "
+                "(observed_lag_s=None, observed_n=0) and let LagWindow.n_in_window say how "
+                "many were held (docs/SPEC-AMENDMENTS.md AMENDMENT 3)"
             )
 
     @property
@@ -903,6 +1116,145 @@ class FeedLag:
         A consumer that wants to name WHICH fault it is has to be able to read both, which is
         why every emission below carries `recv_ts` alongside `venue_ts`."""
         return None if recv_ts is None else now - recv_ts
+
+
+@dataclass(frozen=True)
+class ChannelFreshness:
+    """ONE channel's freshness observation. Declared Nix addition (ARC 023, AMENDMENT 6).
+
+    *"Each channel by which the seam observes a symbol carries its own venue timestamp and its
+    own `effective_lag_s`. Excess staleness is computed per channel by the existing formula,
+    `excess_staleness_s = (now - venue_ts) - effective_lag_s`, with the CHANNEL'S OWN lag."*
+
+    This object is that sentence made checkable: it carries the two inputs beside the answer,
+    so a consumer can see WHY a channel reads as it does rather than being handed a verdict.
+    `__post_init__` refuses a `state` that contradicts the numbers next to it — a verdict that
+    can disagree with its own inputs is the `avg_price` shape (`docs/CHECK-DEBT.md` D1.29)
+    inside a single object."""
+
+    channel: FeedChannel
+    venue_ts: float | None
+    """The venue's own clock on this channel's most recent observation. `None` == this channel
+    has observed nothing, or observed something the venue stamped with nothing. Never a local
+    clock (`nics_risk_subsystem_spec_v1.3.md` §2A:106-107 invariant 4)."""
+
+    lag: FeedLag
+    """THIS CHANNEL'S lag, with its own provenance and grade. Not the adapter's, and never
+    another channel's — substituting a measured figure from one channel for an unmeasured one
+    on another is AMENDMENT 3's substitution wearing a plausible number."""
+
+    excess_staleness_s: float | None
+    """`(now - venue_ts) - lag.effective_lag_s`, or `None` for CANNOT COMPUTE."""
+
+    threshold_s: float
+    """The budget this channel was judged against, carried so the verdict is reproducible."""
+
+    state: ChannelState
+    recv_ts: float | None = None
+    """LOCAL receipt clock for this channel's most recent observation, so a consumer can tell
+    a dead transport from a wedged feed (`FeedLag.transport_age_s`)."""
+
+    detail: str = ""
+    """Human channel only, never parsed."""
+
+    def __post_init__(self) -> None:
+        if (self.excess_staleness_s is None) != (
+            self.state is ChannelState.CANNOT_MEASURE
+        ):
+            raise ValueError(
+                f"channel {self.channel.value}: state={self.state.value} with "
+                f"excess_staleness_s={self.excess_staleness_s!r} — CANNOT_MEASURE and a "
+                "computed number are exactly the two things that must not be confusable "
+                "(debug.md §7.9)"
+            )
+        if self.excess_staleness_s is None:
+            return
+        should = (
+            ChannelState.FRESH
+            if self.excess_staleness_s <= self.threshold_s
+            else ChannelState.STALE
+        )
+        if self.state is not should:
+            raise ValueError(
+                f"channel {self.channel.value}: state={self.state.value} but "
+                f"excess_staleness_s={self.excess_staleness_s} against "
+                f"threshold_s={self.threshold_s} says {should.value} — a verdict that "
+                "disagrees with the numbers beside it"
+            )
+
+
+@dataclass(frozen=True)
+class FreshnessReport:
+    """WHICH CHANNELS ARE FRESH AND WHICH ARE STALE, uncollapsed. Nix addition (ARC 023).
+
+    `docs/SPEC-AMENDMENTS.md` AMENDMENT 6, verbatim: *"The seam declares which channels are
+    fresh and which are stale, and does not collapse them into a single boolean. ... The
+    consumer decides which channels it requires. A consumer that requires ticks is entitled to
+    halt when the tick channel is stale; the SEAM is not entitled to decide that on its
+    behalf."*
+
+    THERE IS DELIBERATELY NO `is_fresh` / `is_stale` / `state` PROPERTY ON THIS OBJECT, and the
+    absence is the design rather than an omission (`debug.md` §7.6 — prove by absence). Any such
+    property would be the collapse the amendment forbids, and it would be the property every
+    consumer reached for first. `fresh_channels` / `stale_channels` /
+    `cannot_measure_channels` are three tuples precisely so a consumer has to name which
+    channels it requires in order to get an answer at all.
+
+    §2A:92's `on_feed_status` STILL CARRIES ONE `FeedState`, because that event is frozen. The
+    adapter derives its floor from this report and says so at the emission site; this object is
+    the authority and the event is a summary of it."""
+
+    symbol: Symbol
+    now: float
+    channels: tuple[ChannelFreshness, ...]
+
+    def __post_init__(self) -> None:
+        seen = [c.channel for c in self.channels]
+        if len(seen) != len(set(seen)):
+            raise ValueError(
+                f"{self.symbol}: duplicate channel(s) in a freshness report "
+                f"{[c.value for c in seen]} — two readings of one channel with no rule for "
+                "which wins is the split-brain this object exists to prevent"
+            )
+
+    def _with_state(self, state: ChannelState) -> tuple[FeedChannel, ...]:
+        return tuple(c.channel for c in self.channels if c.state is state)
+
+    @property
+    def fresh_channels(self) -> tuple[FeedChannel, ...]:
+        return self._with_state(ChannelState.FRESH)
+
+    @property
+    def stale_channels(self) -> tuple[FeedChannel, ...]:
+        return self._with_state(ChannelState.STALE)
+
+    @property
+    def cannot_measure_channels(self) -> tuple[FeedChannel, ...]:
+        """Channels whose question could not be answered. NOT stale — see `ChannelState`."""
+        return self._with_state(ChannelState.CANNOT_MEASURE)
+
+    @property
+    def observed_channels(self) -> tuple[FeedChannel, ...]:
+        """Every channel the report covers. Empty means the seam has no relationship with this
+        symbol at all, which is a different fact from every channel being stale."""
+        return tuple(c.channel for c in self.channels)
+
+    def channel(self, channel: FeedChannel) -> ChannelFreshness | None:
+        """One channel's reading, or `None` if this report does not cover it."""
+        for entry in self.channels:
+            if entry.channel is channel:
+                return entry
+        return None
+
+    def summary(self) -> str:
+        """`fresh=[...] stale=[...] cannot_measure=[...]` — the reason string for §2A:92's
+        event. Derived from the tuples above, so the event text cannot disagree with the
+        report it summarises (`CLAUDE.md` directive 3)."""
+        return (
+            f"fresh={[c.value for c in self.fresh_channels]} "
+            f"stale={[c.value for c in self.stale_channels]} "
+            f"cannot_measure={[c.value for c in self.cannot_measure_channels]}"
+        )
 
 
 class BarSource(enum.Enum):
