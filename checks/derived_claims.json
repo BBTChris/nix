@@ -773,5 +773,73 @@
         "both sources moved to 2 and 3 respectively as each file was added, and agreed at every step."
       ]
     }
+  ],
+  "demonstrations": [
+    {
+      "id": "bar_seal_arm4_drives_FeedLag",
+      "property": "a claim that a property was DEMONSTRATED is re-executed, never read",
+      "assertion": "docs/CHECK-DEBT.md D1.14 banks FeedLag as constructed twice from synthesised values differing in one field and proven to refuse a field write — check_datafeed_bar_seal arm 4 is the thing that would be doing it.",
+      "currently": "does-not-perform",
+      "owed_row": "D3.15",
+      "banked": {
+        "file": "docs/CHECK-DEBT.md",
+        "pattern": "is constructed twice from synthesised values differing in one field"
+      },
+      "reexecute": {
+        "argv": ["{system_python}", "{checks_dir}/check_datafeed_bar_seal.py", "{nix_home}"],
+        "accept_exit": [0, 1, 2]
+      },
+      "observe": {
+        "performs": "arm4 [^;]*:FeedLag: revision representable",
+        "does-not-perform": "arm4 [^;]*:FeedLag: not (?:synthesisable|importable|constructible)"
+      },
+      "note": [
+        "THE EXEMPLAR, AND IT IS REGISTERED IN THE STATE IT IS ACTUALLY IN. D1.14's sentence was true",
+        "on the branch that wrote it and stopped being true at the ARC 021 merge; D3.15 measured the",
+        "root cause (a `float | None` annotation `_synth_value` cannot resolve, so the whole type is",
+        "skipped). Two arcs of 13/13 passed over it because nothing here re-executed the demonstration.",
+        "IT IS REGISTERED AS `does-not-perform` RATHER THAN LEFT UNREGISTERED, AND THAT IS THE POINT.",
+        "Registering it as `performs` would redden this gate over a defect ARC 023 sub-agent B is",
+        "forbidden to repair — arm 4's module is moving under a sibling agent, which is the D3.10 trap.",
+        "Leaving it unregistered restores the silence. Registered as owed, the arm goes RED IN BOTH",
+        "DIRECTIONS: red if the demonstration degrades further and stops being observable at all, and",
+        "red the moment arm 4 is repaired and FeedLag starts being driven, because then D3.15 is paid",
+        "and this entry must be flipped to `performs` in the same motion. `owed_row` is checked against",
+        "the ledger's own bold-span rule, so discharging D3.15 without touching this entry is also RED.",
+        "THE OBSERVATION IS TYPE-SPECIFIC ON PURPOSE. `arm4 ...: not synthesisable` is emitted for all",
+        "five published types today; keying the pattern on FeedLag alone means a repair that fixes",
+        "`Bar` and not `FeedLag` cannot half-satisfy this entry, and it matches D1.14's own wording,",
+        "which names FeedLag and nothing else."
+      ]
+    },
+    {
+      "id": "bar_seal_arm2_has_a_series_store_subject",
+      "property": "the seal gate's structural arm still has a subject to examine",
+      "assertion": "docs/CHECK-DEBT.md D1.14 banks that the gate proves the SOURCE cannot overwrite a sealed entry without a membership guard. That arm has already once returned PASS over an EMPTY store set — it examined its subject and saw nothing — and the row records it.",
+      "currently": "performs",
+      "banked": {
+        "file": "docs/CHECK-DEBT.md",
+        "pattern": "the gate returned PASS with an empty store set"
+      },
+      "reexecute": {
+        "argv": ["{system_python}", "{checks_dir}/check_datafeed_bar_seal.py", "{nix_home}"],
+        "accept_exit": [0, 1, 2]
+      },
+      "observe": {
+        "performs": "series stores: \\['",
+        "does-not-perform": "series stores: \\[\\]"
+      },
+      "note": [
+        "THE COMPANION THAT IS CURRENTLY TRUE, so this arm is not only guarding a broken thing. D1.14",
+        "records the vacuity hole this gate fell into once already: the store detector required a",
+        "literal construction, the correct builder written to prove the gate could say no assigned",
+        "through a local first, and the gate returned PASS having examined its subject and seen",
+        "nothing. Nothing asserts that it still has one. This does — the store list is printed on",
+        "every run and was, until now, produced and discarded, which is §7.12 evidence instance 3.",
+        "SCOPE, STATED SO IT IS NOT OVER-READ: this proves arm 2 has a SUBJECT, not that arm 2 is",
+        "RIGHT about it. The polarity property is D2.21's and the binding question is D3.9/D3.10's.",
+        "Neither is claimed here."
+      ]
+    }
   ]
 }
