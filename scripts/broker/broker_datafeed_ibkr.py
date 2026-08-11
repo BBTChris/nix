@@ -154,17 +154,57 @@ bar builder, the Limiter's freshness gate), so this file pays none of it and the
 `FeedLag.excess_staleness_s` returning `None` for CANNOT-COMPUTE is the same trade: it is the
 correct answer and it is one more branch at every call site.
 
+AMENDMENT 3'S REFINEMENT (ARC 022) NARROWED THAT, and the paragraph above is what it was
+narrowed against. *The absence principle applies to facts the venue CAN FAIL TO REPORT, not to
+every field as a matter of course.* Where presence is structurally guaranteed by the existence of
+the container — a bar that exists has an open — an optional type is noise, and its predictable
+consequence is a consumer writing `or 0.0`, which reintroduces the substitution the amendment
+forbids while wearing a null check. So `Bar.open/high/low/close` LOST their `| None` in ARC 022
+and `_ingest_history` REFUSES a row missing one instead of defaulting it. `Bar.volume`,
+`on_tick`'s `price`/`size`/`venue_ts`, and every `FeedLag` figure keep theirs, each with the
+observable absence that justifies it written at the field. Removing an optional no observable
+absence justifies is this amendment applied CORRECTLY; it is not a weakening of it.
+
 ==============================================================================
-ASYNC SURFACE
+WHOSE BAR IS IT (`docs/SPEC-AMENDMENTS.md` AMENDMENT 4, operator ruling, ARC 022)
 ==============================================================================
-`BrokerDatafeedPort` declares EVERY verb sync, and this adapter matches it, verified by
-`broker_seam.check_await_conformance()`. That is a real friction and it is named rather than
-papered over: a genuine IBKR `connect` round-trips, and the order port faced the same question
-in ARC 015 and answered it by declaring `connect` async. The datafeed port has never been argued.
-This file does NOT change the port unilaterally — a port change binds every vendor — so
-`connect()` drives `ib.connect(...)`, `ib_async`'s own synchronous facade, and the obligation to
-argue the port's split is reported rather than pre-empted. `connect` is session lifecycle, not
-the hot path, and nothing on the streaming path blocks.
+*The datafeed adapter emits bars only where the VENUE is the bar's source.* A bar obtained by
+polling venue history is this adapter's to publish and to seal, because the revision fact — the
+venue returning a different value for a bar already published — is observable ONLY at the poll
+and cannot be reconstructed downstream. **A bar derived by aggregating ticks is capture.py's, and
+this adapter never derives one.**
+
+ENFORCED, NOT DOCUMENTED. `broker_seam.Bar.__post_init__` refuses any source outside
+`VENUE_SOURCED_BAR_SOURCES`, so `BarSource.TICK_AGGREGATED` is unconstructible — the same
+technique `BarRevision.__post_init__` uses against a hollow revision. Proof by absence (`debug.md`
+§7.6) is the other half and is checkable here: this module contains no tick-to-bar aggregation at
+all. `_on_ib_tick` writes two clocks and a lag sample and forwards the packet; it never
+accumulates one, and the only `Bar(...)` construction in the file is inside `_ingest_history`,
+on the poll path, with `source=BarSource.POLLED_HISTORY`.
+
+==============================================================================
+ASYNC SURFACE — SETTLED BY OPERATOR RULING (ARC 022, D1.38)
+==============================================================================
+THIS SECTION USED TO SAY the opposite, and the change is the point. ARC 021 recorded: *"`
+BrokerDatafeedPort` declares EVERY verb sync, and this adapter matches it ... This file does NOT
+change the port unilaterally — a port change binds every vendor — so `connect()` drives
+`ib.connect(...)`, `ib_async`'s own synchronous facade, and the obligation to argue the port's
+split is reported rather than pre-empted."* That refusal was correct and the obligation it left
+open is now discharged, by an operator ruling rather than by this file deciding for every vendor.
+
+THE RULING: the broker-datafeed port is ASYNC BY DEFAULT. `connect`, `disconnect`, `subscribe`,
+`unsubscribe` and `poll_history` touch the wire and are coroutine functions; `feed_lag` and
+`granted_mode` read retained observables with no round trip and stay synchronous. The full text,
+its rationale and its attribution are in `docs/SPEC-AMENDMENTS.md`; the split is declared once in
+`broker_seam.DATAFEED_ASYNC_VERBS` and enforced by `broker_seam.check_await_conformance()`.
+
+WHAT IS STILL OWED HERE, named rather than papered over: `connect()` is now `async def` and still
+calls `self._ib.connect(...)`, the injected client's synchronous facade. Binding it to
+`ib_async`'s `connectAsync` is the honest completion of the change and is NOT done in this arc,
+because no live session was driven in it and swapping a vendor call this file has never executed
+against the venue would be an unmeasured claim about `ib_async`'s behaviour — the class of thing
+`IB_MARKETDATA_EVIDENCE` exists to refuse. The async SIGNATURE is what makes that swap a local
+edit instead of a port change, which is the whole reason to take the signature first.
 """
 
 from __future__ import annotations
@@ -215,16 +255,32 @@ from __future__ import annotations
 # untrue about the module it sat in, which is `debug.md` §7.4's stale-anchor class banked
 # on day one. Both are removed rather than reworded; the injection design is documented
 # at `connect()`, which is where a reader meets it.
+#   too-many-lines
+#       Crossed 1000 in ARC 022 (1000 -> 1083) and the overage is ENTIRELY PROSE:
+#       AMENDMENT 4's ownership boundary, AMENDMENT 3's refinement and the reversal
+#       of this file's own ARC 021 ASYNC SURFACE section — which asserted the
+#       opposite of what is now true and is quoted verbatim so the change is
+#       legible rather than silent. `broker_seam.py` carries the same suppression
+#       for the same reason, and the reason is the same one: every declared
+#       departure from a FROZEN spec has its declaration as its whole defence, and
+#       a reader has to be able to check what §2A does and does not say without
+#       leaving the file. Deleting that reasoning to satisfy a line count would
+#       remove the only thing standing between an addition and a silent
+#       redefinition of a locked contract. Splitting the module is the OTHER
+#       available answer and it is refused for a stronger reason: the second file
+#       would be a shared datafeed helper, which is precisely the invariant-3
+#       extraction the header block above refuses.
 # pylint: disable=invalid-name,broad-exception-caught,unused-argument
 # pylint: disable=too-many-instance-attributes,too-many-arguments
 # pylint: disable=too-many-positional-arguments
-# pylint: disable=missing-function-docstring,disallowed-name
+# pylint: disable=missing-function-docstring,disallowed-name,too-many-lines
 import logging
 import time
 from dataclasses import dataclass, field
 
 from broker_seam import (
     BAR_PAYLOAD_FIELDS,
+    BAR_REQUIRED_PAYLOAD_FIELDS,
     Bar,
     BarRevision,
     BarSource,
@@ -236,6 +292,7 @@ from broker_seam import (
     FeedPollExhausted,
     FeedState,
     LagProvenance,
+    MalformedBarRow,
     MarketDataMode,
     Symbol,
 )
@@ -457,9 +514,10 @@ class _SymbolFeedState:
 class IBKRBrokerDatafeed:
     """§2A broker-datafeed, IBKR Stage 0 implementation.
 
-    Satisfies `broker_seam.BrokerDatafeedPort` — five verbs, all sync as the port declares
-    them — plus the declared additions this venue's shape requires. Nothing in this class is
-    imported by, or imports, `broker_order_ibkr.py`.
+    Satisfies `broker_seam.BrokerDatafeedPort` — seven verbs on the ARC 022 D1.38 split, five
+    async (the wire) and two sync (retained observables) — plus the adapter-local additions this
+    venue's shape requires. Nothing in this class is imported by, or imports,
+    `broker_order_ibkr.py`.
     """
 
     CAPABILITIES = DatafeedCapabilities(
@@ -533,12 +591,12 @@ class IBKRBrokerDatafeed:
     # ------------------------------------------------------------------
     # §2A:88 connect / disconnect
     # ------------------------------------------------------------------
-    def connect(self) -> None:
-        """Establish the venue session. Sync, as `BrokerDatafeedPort` declares it.
+    async def connect(self) -> None:
+        """Establish the venue session. ASYNC, as `BrokerDatafeedPort` now declares it (D1.38).
 
-        The port's sync/async split has never been argued for the datafeed the way ARC 015
-        argued it for the order port; the friction is recorded in the module docstring rather
-        than resolved by changing a port that binds every vendor."""
+        It still drives `self._ib.connect(...)` rather than `connectAsync` — see the module
+        docstring's ASYNC SURFACE section for why that swap is owed and deliberately not made in
+        the arc that changed the signature."""
         if self._ib is None:
             raise BrokerNotConnected(
                 "connect() called with no ib_async.IB supplied. This adapter takes an "
@@ -552,8 +610,12 @@ class IBKRBrokerDatafeed:
         # `evaluate_freshness` is the only writer allowed to say STALE.
         self._publish_feed_state(FeedState.UP, reason="session established")
 
-    def disconnect(self) -> None:
-        """Tear the session down. Clears every per-symbol grant — see `_forget_symbol`."""
+    async def disconnect(self) -> None:
+        """Tear the session down. Clears every per-symbol grant — see `_forget_symbol`.
+
+        ASYNC on this port and SYNC on the order port, which is not an inconsistency: an order
+        disconnect can be part of a protective sequence and §2A:107 invariant 5 forbids it
+        awaiting, and nothing on this port is ever protective (D1.38)."""
         if self._ib is not None and self._connected:
             self._ib.disconnect()
         self._connected = False
@@ -573,7 +635,7 @@ class IBKRBrokerDatafeed:
     # ------------------------------------------------------------------
     # §2A:89 subscribe / unsubscribe
     # ------------------------------------------------------------------
-    def subscribe(self, symbol: Symbol) -> None:
+    async def subscribe(self, symbol: Symbol) -> None:
         """Subscribe to the DELAYED stream. Refuses to request a mode this venue cannot grant.
 
         THE SENTINEL IS THE POINT (GAP-D3, `docs/CHECK-DEBT.md` D1.13). `granted_mode` is set
@@ -593,7 +655,7 @@ class IBKRBrokerDatafeed:
             self._ib.reqMarketDataType(self._requested_mode.value)
             self._ib.reqMktData(symbol)
 
-    def unsubscribe(self, symbol: Symbol) -> None:
+    async def unsubscribe(self, symbol: Symbol) -> None:
         """Cancel the subscription. Idempotent: unsubscribing an unheld symbol is not an error,
         because `nics_risk_subsystem_spec_v1.3.md` §2A:89 declares no precondition on it."""
         if self._ib is not None and self._connected and symbol in self._symbols:
@@ -864,8 +926,13 @@ class IBKRBrokerDatafeed:
     # ------------------------------------------------------------------
     # POLL PATH — GAP-D4, and D1.14's seal
     # ------------------------------------------------------------------
-    def poll_history(self, symbol: Symbol, *, attempts: int | None = None) -> int:
+    async def poll_history(self, symbol: Symbol, *, attempts: int | None = None) -> int:
         """Poll historical bars. Returns the number of rows the venue returned.
+
+        ASYNC (D1.38): it round-trips to the venue, repeatedly and by design. `attempts` is an
+        adapter-local knob and is keyword-only, so `BrokerDatafeedPort`'s declared shape
+        `poll_history(symbol) -> int` is satisfied unchanged — the same additive construction
+        `on_ack`'s `reject_category` uses.
 
         THE BOUNDED LOOP IS SPEC-MANDATED, NOT A LAPSE. `nics_risk_subsystem_spec_v1.3.md`
         §6.4:373-374 requires retry/backoff BEFORE a feed is declared stale, §12A:827 names the
@@ -926,7 +993,11 @@ class IBKRBrokerDatafeed:
         WHY THE ADAPTER OWNS THIS AND NOT THE CONSUMER: the re-poll happens HERE. A consumer
         holding only what crossed the seam sees a second bar with the same start time and no
         way to know whether the venue corrected itself or it double-subscribed. Both stories
-        exist only at this layer, which is the argument for the rule living here."""
+        exist only at this layer, which is the argument for the rule living here.
+
+        AND THIS IS THE ONLY `Bar(...)` IN THE MODULE — AMENDMENT 4's proof-by-absence half. The
+        source is `POLLED_HISTORY` because the venue is the source; nothing here aggregates a
+        tick, and `Bar.__post_init__` refuses one that did."""
         for row in rows:
             key = (symbol, row["bar_start_venue_ts"], row["period_s"])
             sealed = self._sealed.get(key)
@@ -936,10 +1007,14 @@ class IBKRBrokerDatafeed:
                     symbol=symbol,
                     bar_start_venue_ts=row["bar_start_venue_ts"],
                     period_s=row["period_s"],
-                    open=row.get("open"),
-                    high=row.get("high"),
-                    low=row.get("low"),
-                    close=row.get("close"),
+                    # SUBSCRIPTED, NOT `.get()` — AMENDMENT 3's ARC 022 refinement. These four
+                    # are the bar; a row that omits one is MALFORMED, and `_require_ohlc` says
+                    # so by name rather than letting a bare KeyError name a dict access. ARC 021
+                    # wrote `.get()` here, which turned a malformed row into a bar with a null
+                    # open — an absence the venue never declared, manufactured by the reader.
+                    **self._require_ohlc(symbol, row),
+                    # `.get()` SURVIVES on volume, and only on volume: IBKR genuinely returns
+                    # bars for which volume is not a fact (see `Bar.volume`).
                     volume=row.get("volume"),
                     recv_ts=recv_ts,
                     source=BarSource.POLLED_HISTORY,
@@ -949,6 +1024,29 @@ class IBKRBrokerDatafeed:
                 self._sink.on_bar(bar)
                 continue
             self._maybe_revise(sealed, row, recv_ts)
+
+    @staticmethod
+    def _require_ohlc(symbol: Symbol, row) -> dict[str, float]:
+        """The four structurally-guaranteed payload fields, or a loud refusal.
+
+        `docs/SPEC-AMENDMENTS.md` AMENDMENT 3 REFINEMENT (ARC 022): an optional type is
+        justified by an OBSERVABLE ABSENCE, and there is none here — a venue that has no open
+        has no bar to return. So a row without one is not a bar with an absent open; it is a
+        MALFORMED ROW, and the two must not read the same. Refusing is `CLAUDE.md` directive 4
+        (fail closed and loud) applied to the reader rather than to the type: `Bar` already
+        refuses to hold `None` in these fields, and this is where the refusal acquires the
+        symbol, the field name and the bar's start time that make it diagnosable."""
+        missing = [f for f in BAR_REQUIRED_PAYLOAD_FIELDS if row.get(f) is None]
+        if missing:
+            raise MalformedBarRow(
+                f"{symbol} bar at {row.get('bar_start_venue_ts')!r}: missing "
+                f"{', '.join(missing)}. These four are the bar and their presence is "
+                "structurally guaranteed by a bar existing, so an absence here is a malformed "
+                "row and NOT a venue absence (docs/SPEC-AMENDMENTS.md AMENDMENT 3, ARC 022 "
+                "refinement). Nothing is defaulted: a null open manufactured by this reader "
+                "would be exactly the substitution the amendment forbids."
+            )
+        return {f: row[f] for f in BAR_REQUIRED_PAYLOAD_FIELDS}
 
     def _maybe_revise(self, sealed: Bar, row, recv_ts: float) -> None:
         """Publish a revision iff the venue's new story DIFFERS from the sealed one."""

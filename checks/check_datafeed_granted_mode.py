@@ -796,7 +796,7 @@ def _behavioural(
     subjects: list[Subject],
     members: dict[str, int],
     events: tuple[str, ...],
-) -> tuple[list[tuple[str, str]], list[str], int]:
+) -> tuple[list[tuple[str, str]], list[str], int, list[str]]:
     """Arms B1 and C, one probe for the whole subject set."""
     payload = {
         "op": "drive",
@@ -812,9 +812,19 @@ def _behavioural(
     }
     res = _drive(home, payload)
     if "error" in res:
-        return [], [f"B1/C: probe unavailable — {res['error']}"], 0
+        return (
+            [],
+            [f"B1/C: probe unavailable — {res['error']}"],
+            0,
+            ["probe unavailable"],
+        )
     defects = [(d["site"], d["why"]) for d in res.get("defects", [])]
-    return defects, list(res.get("notes", [])), int(res.get("legs", 0))
+    return (
+        defects,
+        list(res.get("notes", [])),
+        int(res.get("legs", 0)),
+        list(res.get("broken", [])),
+    )
 
 
 def _representational(
@@ -842,7 +852,9 @@ def _static_arms(
     return defects, notes
 
 
-def _verdict(defects: list[tuple[str, str]], evidence: str, legs: int) -> CheckResult:
+def _verdict(
+    defects: list[tuple[str, str]], evidence: str, legs: int, broken: list[str]
+) -> CheckResult:
     """FAIL dominates; then the three-way must have actually run; only then PASS."""
     if defects:
         return CheckResult(
@@ -857,6 +869,20 @@ def _verdict(defects: list[tuple[str, str]], evidence: str, legs: int) -> CheckR
             f"arm B1 executed {legs} of {len(THREE_WAY)} legs — the three-way "
             "distinction is unproven, so a PASS would measure nothing "
             "(§7.12 cond. 2/3)",
+            evidence=evidence,
+        )
+    # D3.16, ARC 022. `legs` is a MAX across observers, so one observer executing
+    # all three masks another executing none. Before this arc that mask produced a
+    # PASS over a subject the gate never drove. An undrivable subject is a
+    # cannot-measure about the instrument — `nix_check_contract.md` §5.3 — and never
+    # a pass about the code.
+    if broken:
+        return _cannot(
+            "arm B1 could not DRIVE its subject — "
+            + "; ".join(broken)
+            + ". Another observer satisfied the three-way, which is what made this "
+            "a PASS until ARC 022; a leg that raised is not a leg that passed "
+            "(D3.16)",
             evidence=evidence,
         )
     return CheckResult(name=NAME, status=Status.PASS, evidence=evidence)
@@ -889,12 +915,12 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
     static_defects, static_notes = _static_arms(
         home, subjects, members[SENTINEL_MEMBER]
     )
-    beh_defects, beh_notes, legs = _behavioural(
+    beh_defects, beh_notes, legs, broken = _behavioural(
         home, subjects, members, _datafeed_events(home, roster)
     )
     defects += static_defects + beh_defects
     notes += static_notes + beh_notes
-    return _verdict(defects, "; ".join(notes), legs)
+    return _verdict(defects, "; ".join(notes), legs, broken)
 
 
 # --------------------------------------------------------------------------
@@ -941,19 +967,50 @@ def _probe_vendor_default(packages: list[str]) -> dict[str, Any]:
 
 def _drive_legs(
     fn: Any, site_prefix: str, three_way: list
-) -> tuple[list, list, int, dict[int, str]]:
-    """Run one observer over all three legs. (defects, notes, legs, seen)."""
+) -> tuple[list, list, int, dict[int, str], list[str]]:
+    """Run one observer over all three legs. (defects, notes, legs, seen, broken).
+
+    D3.16, ARC 022. A LEG THAT RAISED IS NOT A LEG THAT PASSED, and until this arc
+    the two were indistinguishable in the verdict: every exception became a `note`
+    and `continue`d, so an observer the gate could not execute AT ALL contributed
+    nothing and the run still reported PASS on another observer's legs. ARC 022
+    measured that live — all three legs against `IBKRBrokerDatafeed.granted_mode`
+    raised `AttributeError: 'int' object has no attribute '_symbols'` (the port
+    split put a symbol parameter in front, so the mode integer landed in `self`),
+    and this gate printed `pass`. A gate that reports green about a subject it
+    never drove is the vacuity `debug.md` §7.12 exists to catch.
+
+    THE DISTINCTION IS DELIBERATE AND IS NOT A LOOPHOLE:
+      - `NotImplementedError` is a DECLARED REFUSAL. `ibkr_mapping.IBKRDatafeedAdapter`
+        is a refusing skeleton whose whole contract is to raise it, and reddening a
+        subject for honouring its own declared contract is `VERIFY-AND-CHECKS.md`
+        doctrine B.4's forbidden direction. Recorded as a note, as before.
+      - ANY OTHER exception means THE GATE FAILED TO DRIVE ITS SUBJECT. That is a
+        cannot-measure about the instrument, not a pass about the code, and it is
+        returned as `broken` so the verdict can say so.
+
+    This is strictly-stricter by construction: no input that failed before can pass
+    now, and the only verdicts that change are ones that were PASS while measuring
+    nothing."""
     defects: list[dict[str, str]] = []
     notes: list[str] = []
     legs = 0
     seen: dict[int, str] = {}
+    broken: list[str] = []
     for value, want, forbid in three_way:
         try:
             got = fn(value)
+        except NotImplementedError as exc:
+            notes.append(
+                f"B1 {site_prefix}({value}): declared refusal — "
+                f"{type(exc).__name__}: {exc}"
+            )
+            continue
         except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
             notes.append(
                 f"B1 {site_prefix}({value}): raised {type(exc).__name__}: {exc}"
             )
+            broken.append(f"{site_prefix}({value}): {type(exc).__name__}: {exc}")
             continue
         legs += 1
         name = getattr(got, "name", repr(got))
@@ -964,7 +1021,7 @@ def _drive_legs(
         if name == forbid:
             defects.append({"site": site, "why": f"reported {forbid} — the defect"})
         notes.append(f"B1 {site} -> {name}")
-    return defects, notes, legs, seen
+    return defects, notes, legs, seen, broken
 
 
 def _discrimination(site_prefix: str, seen: dict[int, str]) -> list:
@@ -993,19 +1050,19 @@ def _resolve_observer(mod: Any, spec: dict[str, Any], obs: str) -> Any:
 
 def _drive_one_observer(
     mod: Any, spec: dict[str, Any], obs: str, payload: dict[str, Any]
-) -> tuple[list, list, int]:
+) -> tuple[list, list, int, list[str]]:
     """One observer, three legs, plus the discrimination assertion."""
     prefix = f"{spec['rel']}:{obs}"
     fn = _resolve_observer(mod, spec, obs)
     if fn is None:
-        return [], [f"B1 {prefix}: not resolvable"], 0
-    defects, notes, legs, seen = _drive_legs(fn, prefix, payload["three_way"])
-    return defects + _discrimination(prefix, seen), notes, legs
+        return [], [f"B1 {prefix}: not resolvable"], 0, []
+    defects, notes, legs, seen, broken = _drive_legs(fn, prefix, payload["three_way"])
+    return defects + _discrimination(prefix, seen), notes, legs, broken
 
 
 def _probe_observers(
     spec: dict[str, Any], payload: dict[str, Any]
-) -> tuple[list, list, int]:
+) -> tuple[list, list, int, list[str]]:
     import importlib  # pylint: disable=import-outside-toplevel
 
     notes: list[str] = []
@@ -1014,15 +1071,23 @@ def _probe_observers(
         mod = importlib.import_module(modname)
     except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
         notes.append(f"B1 {spec['rel']}: not importable — {type(exc).__name__}: {exc}")
-        return [], notes, 0
+        return [], notes, 0, [f"{spec['rel']}: not importable"]
     defects: list[dict[str, str]] = []
     legs = 0
+    broken: list[str] = []
     for obs in spec["observers"]:
-        got_defects, got_notes, got_legs = _drive_one_observer(mod, spec, obs, payload)
+        got_defects, got_notes, got_legs, got_broken = _drive_one_observer(
+            mod, spec, obs, payload
+        )
         defects += got_defects
         notes += got_notes
+        broken += got_broken
+        # `max` is why D3.16 was invisible: one observer executing all three legs
+        # masked another executing none. The count still reports the best observer,
+        # but `broken` now travels beside it so the verdict cannot read that best
+        # as though it covered every subject.
         legs = max(legs, got_legs)
-    return defects, notes, legs
+    return defects, notes, legs, broken
 
 
 def _probe_offline(spec: dict[str, Any], events: tuple[str, ...]) -> tuple[list, list]:
@@ -1068,13 +1133,17 @@ def _probe_main(raw: str) -> int:
     defects: list[dict[str, str]] = []
     notes: list[str] = []
     legs = 0
+    broken: list[str] = []
     for spec in payload["subjects"]:
-        obs_d, obs_n, obs_legs = _probe_observers(spec, payload)
+        obs_d, obs_n, obs_legs, obs_broken = _probe_observers(spec, payload)
         off_d, off_n = _probe_offline(spec, events)
         defects += obs_d + off_d
         notes += obs_n + off_n
+        broken += obs_broken
         legs = max(legs, obs_legs)
-    print(json.dumps({"defects": defects, "notes": notes, "legs": legs}))
+    print(
+        json.dumps({"defects": defects, "notes": notes, "legs": legs, "broken": broken})
+    )
     return 0
 
 

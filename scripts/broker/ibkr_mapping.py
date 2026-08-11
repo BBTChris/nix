@@ -292,21 +292,30 @@ class IBKROrderAdapter:
 
 
 class IBKRDatafeedAdapter:
+    """Mapping skeleton for the datafeed port. Every method documents its mapping; GAPs raise.
+
+    Carries the ARC 022 D1.38 sync/async split (see `BrokerDatafeedPort`) even though every verb
+    raises, for the reason `IBKROrderAdapter` above records for the ARC 015 split: the skeleton
+    is a conformance subject and `check_await_conformance()` is run against it. A skeleton left
+    sync while the port went async would report a divergence for every wire verb and drown the
+    one that matters.
+    """
+
     def __init__(
         self, sink, *, host: str = "127.0.0.1", port: int = 4002, client_id: int = 2
     ):
         self._sink = sink
         self._granted_mode = MarketDataMode.UNKNOWN
 
-    def connect(self) -> None:
+    async def connect(self) -> None:
         raise NotImplementedError(
             "MAPPING: IB.connectAsync() — SEPARATE session from order path"
         )
 
-    def disconnect(self) -> None:
+    async def disconnect(self) -> None:
         raise NotImplementedError("MAPPING: IB.disconnect()")
 
-    def subscribe(self, symbol: Symbol) -> None:
+    async def subscribe(self, symbol: Symbol) -> None:
         raise BrokerUnsupported(
             "reqTickByTickData returns Err 10189 on this account (no CME FUT real-time "
             "permission). The available paths are reqMarketDataType(3)+reqMktData (delayed) "
@@ -314,13 +323,28 @@ class IBKRDatafeedAdapter:
             "firehose. See GAP subscribe/on_tick."
         )
 
-    def unsubscribe(self, symbol: Symbol) -> None:
+    async def unsubscribe(self, symbol: Symbol) -> None:
         raise NotImplementedError("MAPPING: IB.cancelMktData(contract)")
+
+    async def poll_history(self, symbol: Symbol) -> int:
+        raise NotImplementedError(
+            "MAPPING: IB.reqHistoricalData(...) — and it is DELAYED by the same ~10 minutes as "
+            "the stream (ARC 010 measured 624 s on reqHistoricalTicks, ARC 013 re-measured "
+            "604 s). Not a real-time back door. Rows seal via broker_seam.Bar; a re-poll that "
+            "contradicts a sealed bar publishes on_bar_revision, never on_bar (D1.14)."
+        )
 
     def feed_lag(self) -> FeedLag:
         raise NotImplementedError(
             "MAPPING: read GRANTED Ticker.marketDataType (sentinel to 0 first — it defaults "
             "to 1) and measure delayedLastTimestamp vs receipt. Measured 600.3s at Stage 0."
+        )
+
+    def granted_mode(self) -> MarketDataMode:
+        raise NotImplementedError(
+            "MAPPING: read Ticker.marketDataType AFTER sentinelling it to 0 — ARC 013 measured "
+            "ib_async defaulting it to 1, so an unset field reports a real-time grant that "
+            "never happened. Never infer the mode from the request (D1.13)."
         )
 
 

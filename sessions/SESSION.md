@@ -1808,3 +1808,134 @@ exist yet.
 **Not done, explicitly:** no Tier 3 (ARC 022) · no live IBKR measurement (D1.33, next tap) · V24
 still known-red (R1-D) · `on_bar`/`on_bar_revision` widen a locked signature and await an architect
 ruling (D1.36) · no config JSON (D1.35) · no Limiter, Allocator, `capture.py` wiring or consumer.
+
+---
+
+## ARC 022 — datafeed port sync/async split; gate binding and the UNBOUND census; Tier 3 on broker-datafeed (2026-08-11)
+
+**Staged, not three-way parallel.** Stage 1 was sub-agent A alone, because A's port change moves the
+surface B traverses and the shape C's gates read; running all three at once would have manufactured
+the D3.10 defect deliberately. Stage 2 was B and C in parallel once the port had settled.
+
+**THE HEADLINE IS A NEGATIVE RESULT.** ARC 021's two real plants were re-run against the settled
+adapter — deleting the sentinel write in `subscribe()`, and substituting requested for granted in the
+adapter-wide accessor. **Neither datafeed gate caught either plant.** Control pristine (321 passed, 0
+failed), both restores byte-identical by sha256, `__pycache__` purged between every step, and the two
+channels reported separately on purpose: `check_datafeed_bar_seal` returned exit 0 PASS on the control
+and on both plants; `check_datafeed_granted_mode` returned exit 2 on the control and on both plants —
+identical verdicts either side, which is what not discriminating looks like. **pytest caught both** (3
+tests on plant 1, 1 on plant 2), and two of the three catches on plant 1 were sub-agent B's brand-new
+Tier 3 traversals. Reading a pytest catch as a gate catch is the exact conflation D3.10 exists to
+prevent, so the arc does not.
+
+**D1.38 — the port split.** The broker-datafeed port is now async by default: `connect`, `disconnect`,
+`subscribe`, `unsubscribe`, `poll_history` are coroutine functions; `feed_lag` and `granted_mode` stay
+sync because they read retained observables with no round-trip. `check_await_conformance()` was
+EXTENDED, not duplicated (check-rule 8), with three both-directional comparisons — adapter vs Protocol,
+Protocol vs the one declared partition constant per port, and roster-subset-of-Protocol. **The third
+closed a hole open since ARC 014**: `if want is None: continue` silently skipped any roster verb the
+Protocol did not declare, which is how `poll_history` and `granted_mode` sat outside the datafeed
+contract for the whole of ARC 021 while the checker reported clean.
+
+**The architect's design sketch was refused with measurement, and the refusal was right.** The brief
+asked for the roster to be derived by concatenating the async and sync constants. Planted in a scratch
+tree, that spelling blinds BOTH datafeed gates to CANNOT_MEASURE and reddens four claims, because
+`check_datafeed_bar_seal` and `check_datafeed_granted_mode` AST-read the roster and accept only a
+literal `Tuple`/`List`; a `BinOp` yields nothing. Verified at `check_datafeed_granted_mode.py:391` and
+`check_datafeed_bar_seal.py:370`. The roster stays literal; the partition is the one declared constant.
+
+**D1.38 CURRENTLY BUYS NOTHING BEHAVIOURALLY, and this is stated rather than glossed.** All five async
+verbs contain zero `await` expressions, verified by AST at integration. So `asyncio.gather` cannot
+interleave them and a `Task` cannot be cancelled mid-flight. The atomicity B's traversals observe is a
+property of the current bodies, not of the contract. Two agents reached this from opposite directions:
+A left `connect()` still driving the injected client's sync `connect(...)` as explicitly owed, and B
+could not satisfy the concurrency half of its brief. B proved the absence three ways with a working
+interleave-detector control rather than manufacturing an overlap, and left an AST guard that reddens
+when `connectAsync` lands so six traversals are re-read, not re-run. The split's value is that the
+future swap is local and a sync signature can no longer conceal a round-trip — the ruling's own stated
+rationale — and it is not yet a concurrency change.
+
+**Amendment 4 enforced, not documented.** `BarSource.TICK_AGGREGATED` exists only to be refused;
+`Bar.__post_init__` refuses via an ALLOWLIST, so a future member added without an argument fails
+closed. Proof-by-absence half: an AST test asserts `broker_datafeed_ibkr.py` contains exactly one
+`Bar(...)` construction and that it sits inside `_ingest_history`.
+
+**Amendment 3's refinement applied, including where it meant removing optionality.**
+`Bar.open/high/low/close` lost `| None` — a venue with no open has no bar; absence is a malformed row
+and is now refused by `MalformedBarRow`. Survivors each carry a stated case: the `on_tick` trio rests
+on ARC 013's measurement of 18 delayed ticks in 40 s on MESU6, a contract that does not print 18
+trades in 40 s. One survivor is honestly downgraded — `Bar.volume` is kept on IBKR's *documented*
+`-1` sentinel at VENDOR_DECLARED grade, never measured, and the `-1` is not translated at the vendor
+boundary. Opened as D1.39 and D1.40; sub-agent B reached the same finding independently from the
+traversal side.
+
+**Tier 3 on broker-datafeed was RUN, with findings — NOT PASSED**, and the verdict is `debug.md`
+§5.8's own criterion rather than an opinion: PASS requires bounds defined and enforced at every edge,
+and `Bar` validates provenance and nothing else — `period_s=0` collides seal keys, `high<low` and
+infinities are admitted. 27 tests over 22 sequences. The sharpest finding is F21: `evaluate_freshness`
+reads `last_tick_venue_ts` only, so a symbol fed entirely by successful, current polls is permanently
+STALE and drives §6.4 halt + flatten — on the only margin-class path Stage 0 has, since the tick
+stream does not exist. Also: a sink that raises leaves a bar sealed-but-unpublished and every later
+poll drops it as an identical re-poll, permanently lost, while the attempt record says `ok=True`; and
+`lag_samples` is unbounded with a session-wide mean reading AGREES at 602.97 s while the last 100
+packets sit at 900 s. Two of B's own traversals were caught vacuous during construction, one of which
+would have inverted its finding.
+
+**The UNBOUND census: 7 BOUND, 5 UNBOUND**, gate list derived from `registry.json` union `checks/*.py`
+(they agree at 12). Five of the seven BOUND verdicts were RE-TAKEN as live four-output plants rather
+than read off the record — **which corrected the record twice.** The `import tenacity` plant is ARC
+017's, not ARC 020's, and its target file is recorded nowhere; and `check_derived_claims` never edited
+a banked number, it LEFT ONE STALE, which proves detection while skipping the unplant leg entirely.
+"I believe so" was not accepted for either.
+
+**D2.19 fixed; the root cause was worse than the row said.** The order-side basename vocabulary held
+THREE shared-host modules, including `broker_datafeed_ibkr.py` itself. Clause (i) now subtracts modules
+implementing the datafeed port, read from the seam's own roster. **The ARC 021 rise of 11 → 16 was +3
+contamination and +2 work; the corrected series is 11 → 13.** ARC 020's anchor re-derives identical at
+11 with the identical eleven-row selection, so the repair does not rewrite banked history. Residual
+named: the roster half is still not distinctive, and D1.38 — a row whose entire subject is the datafeed
+port — is still counted as broker-order depth on the single word `connect`.
+
+**D2.20 REFUSED, D2.21 DISCHARGED.** The D2.20 refusal is stronger than the row: on its real subject
+arm B3's granted-side name set is EMPTY, so the arm is not approximate there, it is vacuous. D2.21 was
+discharged with proof in both directions over eight guard spellings — three correct spellings still
+pass, both pre-existing detections still fail and still name their sites, three inverted-or-disjunctive
+spellings that used to pass now fail — and the change is strictness-only by construction because every
+branch receives a strict subset of its former guards. The real adapter's output is byte-identical
+across it. Neither gate was weakened; neither datafeed gate was re-bound in Stage 2.
+
+**D3.16's attribution was corrected by measurement, and the correction makes it worse.** C2 attributed
+the broken B1 drive to A's port split. `_observers()` discovers subjects by RETURN ANNOTATION, not from
+the roster — running the repaired gate against the ARC 021 tree, where `granted_mode` is absent from
+`DATAFEED_PORT_VERBS`, reproduces the identical three `AttributeError` legs. **This gate has never once
+driven `IBKRBrokerDatafeed.granted_mode` since the adapter landed in ARC 021, and reported PASS across
+two arcs over a subject it never executed** — which is precisely why it passed ARC 021's plant 2, whose
+target is that method. Half-repaired at integration: a leg raising anything other than
+`NotImplementedError` now yields CANNOT_MEASURE, never PASS. `NotImplementedError` stays a note
+deliberately, because `ibkr_mapping.IBKRDatafeedAdapter` is a refusing skeleton and reddening it for
+honouring its own contract is doctrine B.4's forbidden direction — verified absent from `broken`. The
+gate is now HONEST but still NOT BOUND.
+
+**A fourth instance of git's tracking state silently setting gate scope, found and fixed.**
+`.gitignore` spelled `state/` and `.venv/` with trailing slashes, which match directories only, so the
+symlinks `provision_worktree.sh` creates in every worktree were untracked-but-NOT-ignored: `git
+check-ignore` exited 1, and the `git add -A` this project mandates before every gate measurement staged
+a symlink pointing at the 0600 credential directory. The script's own docstring asserted these "cannot
+be committed and cannot reach a diff". The claim was false and survived because the guarantee lived in
+prose. Both slashless spellings added; the script now PROVES the ignore per target and fails loudly.
+Same class as the `.testmondata` sidecars ten lines away in the same file (ARC 016). Opened as D2.24.
+
+**Measured at close, all five raw, `git add -A` first:** `verify.py` exit 1 — 9 passed, 1 failed, 2
+cannot measure. The failure is `check_ibgateway_service` and one cannot-measure is
+`check_ibgateway_config`, both the Gateway's daily session expiry, both unchanged from baseline. **The
+SECOND cannot-measure is new and deliberate**: `check_datafeed_granted_mode`, which was reporting PASS
+over a subject it could not drive and now says so. That is a repair, not a regression, and it is named
+rather than absorbed. pytest 338 passed + 2 xfailed (340 collected, from 293 at baseline). pre-commit
+8/8. `check_derived_claims` 13/13 exit 0. `check_spec_citations` exit 0 over 2286 citations. CHECK-DEBT
+62 rows, reconciled by the harness after it caught a stated-59 against a derived-62.
+
+**Not done, explicitly:** the two datafeed gates are NOT bound — that is the arc's reported outcome,
+not an omission · `Bar.volume`'s absence is unmeasured (D1.39/D1.40, next tap) · no live IBKR
+measurement (D1.33) · `connectAsync` not bound, so the async split is declarative only · Tier 3 §5.6
+and §5.7 land across the arc's own gate runs and C's census rather than inside B's file, and Tier 3 is
+RUN not PASSED.

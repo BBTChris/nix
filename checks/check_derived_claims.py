@@ -560,7 +560,8 @@ def _p_broker_order_coverage_seam(home: Path) -> tuple[int, str]:
 #   A row is BROKER-ORDER SCOPED iff it is OPEN — by the ledger's own bold-span
 #   rule, `_DISCHARGED` above — AND its row text names at least one order-path
 #   artefact, being either
-#     (i)  the basename of a Python module that exists under the order path, or
+#     (i)  the basename of a Python module that exists under the order path AND
+#          does NOT implement the broker-datafeed port, or
 #     (ii) a broker-order roster identifier, matched on word boundaries.
 #
 # NOTHING IN THAT RULE IS TYPED. The order path is read by AST out of
@@ -569,6 +570,52 @@ def _p_broker_order_coverage_seam(home: Path) -> tuple[int, str]:
 # come off the disk. The roster comes from the frozen spec on one side of the
 # claim and from the seam's declared tuples on the other, which is where the two
 # sources get their independence.
+#
+# THE "AND DOES NOT IMPLEMENT THE DATAFEED PORT" CLAUSE IS ARC 022 (C3), AND IT
+# IS THE REPAIR OF A MEASURED CONTAMINATION — debt row D2.19. Until ARC 022 the
+# basename half was the raw directory glob, so EVERY `.py` under `scripts/broker`
+# was an order-path vocabulary term regardless of which §2A library it belongs
+# to. Two distinct contaminations followed, both measured on this tree rather
+# than reasoned about:
+#
+#   * A SHARED HOST. `ibkr_mapping.py` carries BOTH §2A adapters, so a row about
+#     its datafeed half was counted as broker-order depth. That is D2.19's
+#     original subject and it moved `broker_order_open_debt_rows` 11 -> 13 in
+#     ARC 021 while nothing touched broker-order.
+#   * A DATAFEED-ONLY MODULE ON THE ORDER PATH. `broker_datafeed_ibkr.py` landed
+#     in ARC 021 and lives under `scripts/broker/` because that is where §2A code
+#     lives — so the glob made the DATAFEED ADAPTER'S OWN BASENAME an order-path
+#     vocabulary term, and D1.13, D3.9 and D3.10 (three rows with no order roster
+#     identifier anywhere in them) were counted as broker-order depth. D2.19
+#     predicted the arrival of a datafeed-only module would SELF-HEAL this; it
+#     healed the datafeed side's basename half and made the ORDER side worse.
+#
+# The clause says the thing the glob could not: a basename attributes to a
+# library only when it is DISTINCTIVE to that library. It is the exact mirror of
+# `_datafeed_only_modules` below, which has always subtracted the order port, and
+# the subtraction is derived from the seam's own `DATAFEED_PORT_VERBS` — nothing
+# is listed by hand, so a third §2A module joins or leaves the vocabulary by
+# being written.
+#
+# WHAT THE CLAUSE DELIBERATELY DOES NOT DO — the residual, named because ARC 021
+# named this ambiguity before it bit and it bit anyway:
+#   f. THE ROSTER HALF IS NOT MADE DISTINCTIVE, AND IT CARRIES THE SAME DEFECT.
+#      `connect` and `disconnect` are in BOTH §2A rosters. The datafeed claim
+#      subtracts them; this one cannot, because they are genuinely broker-order
+#      verbs too and an order row about `connect()` is real order debt. MEASURED
+#      CONSEQUENCE ON THIS TREE: D1.38 — a row whose entire subject is
+#      `BrokerDatafeedPort`'s sync/async split — is selected here, on the single
+#      word `connect`. It is left selected rather than papered over, because the
+#      only mechanical repairs are worse than the disease: dropping the shared
+#      verbs blinds the order claim to every real connect/disconnect row, and
+#      requiring two roster hits blinds it to single-verb rows. This residual is
+#      recorded in D2.19 and stays open with it.
+#   g. A SHARED HOST NOW NEEDS CORROBORATION FROM THE ROSTER HALF, WHICH IS PROSE.
+#      A row genuinely about `ibkr_mapping.py`'s ORDER half that names no order
+#      roster identifier is now invisible here. That is disclosure (c) — the rule
+#      reads prose — pointed at the shared host specifically, and it is the price
+#      of not counting the datafeed half. The mitigation is unchanged and weak:
+#      every selected row id is printed on every run.
 #
 # WHAT IS AMBIGUOUS, named rather than papered over — the rule attributes rows
 # to a module MECHANICALLY, and mechanical attribution is not the same as
@@ -600,18 +647,45 @@ def _p_broker_order_coverage_seam(home: Path) -> tuple[int, str]:
 #     and a disagreement is the instrument working rather than a defect in it.
 
 
-def _order_path_basenames(home: Path) -> list[str]:
-    """`.py` basenames under the order path, anchor read by AST (never typed)."""
+def _order_path_basenames(home: Path) -> tuple[list[str], list[str]]:
+    """Order-DISTINCTIVE `.py` basenames under the order path, and what was cut.
+
+    Returns `(distinctive, excluded)`. Both anchors are read by AST and never
+    typed: the directory list comes out of `check_order_path_bans.py`'s own
+    `ORDER_PATH_DIRS`, and the datafeed subtraction comes out of the seam's
+    `DATAFEED_PORT_VERBS`. See the D2.19 block above for why the subtraction
+    exists — a module that implements the datafeed port cannot say, by basename
+    alone, which §2A library a row about it is about.
+    """
     rel = "checks/check_order_path_bans.py"
     dirs = _module_tuples(home, rel, ("ORDER_PATH_DIRS",))["ORDER_PATH_DIRS"]
     if not dirs:
         raise ProbeError(f"{rel}: ORDER_PATH_DIRS is empty")
-    names = sorted(
+    on_path = sorted(
         {p.name for d in dirs for p in (home / d).rglob("*.py") if p.is_file()}
     )
-    if not names:
+    if not on_path:
         raise ProbeError(f"order path {list(dirs)} holds no .py module to name")
-    return names
+
+    seam = "scripts/broker/broker_seam.py"
+    tuples = _module_tuples(home, seam, ("ORDER_PORT_VERBS", "DATAFEED_PORT_VERBS"))
+    feed = _port_implementors(home, list(tuples["DATAFEED_PORT_VERBS"]), 3)
+    order = _port_implementors(home, list(tuples["ORDER_PORT_VERBS"]), 4)
+
+    names = [n for n in on_path if n not in feed]
+    excluded = [n for n in on_path if n in feed]
+    # NON-VACUITY, and it is the whole point of the subtraction being safe: the
+    # surviving vocabulary must still hold a module that actually implements the
+    # ORDER port. A seam edit that made every order module look like a datafeed
+    # module would otherwise empty this list silently and the claim would report
+    # a smaller number having measured less.
+    if not set(names) & order:
+        raise ProbeError(
+            f"order-path vocabulary {names} holds no module implementing the "
+            f"order port (order implementors: {sorted(order)}); the datafeed "
+            f"subtraction removed {excluded} and left nothing distinctive"
+        )
+    return names, excluded
 
 
 def _open_debt_rows(home: Path) -> list[tuple[str, str]]:
@@ -633,7 +707,7 @@ def _broker_order_scoped(home: Path, roster: list[str]) -> tuple[int, str]:
     """Apply the module-scoping rule with one supplied roster vocabulary."""
     if not roster:
         raise ProbeError("empty roster — the scope vocabulary would select nothing")
-    files = _order_path_basenames(home)
+    files, excluded = _order_path_basenames(home)
     verbs = [re.compile(r"\b" + re.escape(name) + r"\b") for name in roster]
     picked = [
         rid
@@ -642,7 +716,9 @@ def _broker_order_scoped(home: Path, roster: list[str]) -> tuple[int, str]:
     ]
     return len(picked), (
         f"NOT A PERCENT — open ledger rows naming an order-path artefact; "
-        f"vocabulary {len(files)} module(s) {files} + {len(roster)} roster "
+        f"vocabulary {len(files)} order-distinctive module(s) {files} "
+        f"(D2.19: {len(excluded)} datafeed-implementing module(s) {excluded or '[]'} "
+        f"on the order path are NOT vocabulary) + {len(roster)} roster "
         f"identifier(s); selected: {', '.join(picked) or 'NONE'}"
     )
 
