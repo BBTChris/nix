@@ -779,8 +779,7 @@
       "id": "bar_seal_arm4_drives_FeedLag",
       "property": "a claim that a property was DEMONSTRATED is re-executed, never read",
       "assertion": "docs/CHECK-DEBT.md D1.14 banks FeedLag as constructed twice from synthesised values differing in one field and proven to refuse a field write — check_datafeed_bar_seal arm 4 is the thing that would be doing it.",
-      "currently": "does-not-perform",
-      "owed_row": "D3.15",
+      "currently": "performs",
       "banked": {
         "file": "docs/CHECK-DEBT.md",
         "pattern": "is constructed twice from synthesised values differing in one field"
@@ -809,7 +808,20 @@
         "THE OBSERVATION IS TYPE-SPECIFIC ON PURPOSE. `arm4 ...: not synthesisable` is emitted for all",
         "five published types today; keying the pattern on FeedLag alone means a repair that fixes",
         "`Bar` and not `FeedLag` cannot half-satisfy this entry, and it matches D1.14's own wording,",
-        "which names FeedLag and nothing else."
+        "which names FeedLag and nothing else.",
+        "",
+        "FLIPPED TO `performs` IN ARC 023 STAGE 2, AND THE COUPLING FIRED FIRST — MEASURED, NOT",
+        "PREDICTED. With arm 4 repaired and this entry still reading `does-not-perform`, this gate",
+        "returned exit 1 naming `derived_claims.json:demonstrations/bar_seal_arm4_drives_FeedLag:",
+        "registered as 'does-not-perform'; the re-execution observed 'performs'`. That is the entry",
+        "doing exactly what sub-agent B built it to do: it announced its own repair. `owed_row` is",
+        "REMOVED in the same edit because D3.15 is discharged in the same edit, and an `owed_row`",
+        "pointing at a discharged row is the ORPHANED DEMOTION defect this arm checks for — which",
+        "is why the two edits cannot be taken separately in either order.",
+        "THE TYPE-SPECIFIC KEYING EARNED ITS KEEP: the union repair alone made `Bar` drive and left",
+        "`FeedLag` reporting `not constructible - ValueError`, because FeedLag's __post_init__ refuses",
+        "the one assignment the old synthesiser drew. Had the pattern been keyed on any type, the",
+        "half-repair would have read as a full one."
       ]
     },
     {
