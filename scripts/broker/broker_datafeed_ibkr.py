@@ -247,6 +247,17 @@ from __future__ import annotations
 #   too-many-arguments / too-many-positional-arguments
 #       §2A fixes on_tick's shape; the constructor's knobs are the §12A tunables
 #       this module owns. The metric is measuring the contract.
+#   too-many-public-methods
+#       Crossed 20 in ARC 023 (20 -> 22). The two that crossed it are
+#       `freshness()` — AMENDMENT 6's per-channel authority — and the retained
+#       observables `unpublished_seals()` / `polled_symbols()` /
+#       `last_bar_venue_ts()`, each of which exists because a property that is
+#       not readable is a property nothing can gate on (CLAUDE.md directive 1).
+#       The available alternative is to make them private and have the tests
+#       reach into `_unpublished` and `_polled`, which is the indirection
+#       directive 2 forbids and would leave a future gate with nothing to bind
+#       to. Merging them into one accessor returning a dict would satisfy the
+#       count and reintroduce the two-facts-one-name shape D1.29 records.
 # ARC 021 PHASE 4: `import-outside-toplevel` was suppressed here with a rationale
 # describing a lazy `ib_async` import "inside the one method that needs it". THERE IS NO
 # SUCH IMPORT — this module imports only `broker_seam` and stdlib, and the vendor client
@@ -272,26 +283,36 @@ from __future__ import annotations
 #       extraction the header block above refuses.
 # pylint: disable=invalid-name,broad-exception-caught,unused-argument
 # pylint: disable=too-many-instance-attributes,too-many-arguments
-# pylint: disable=too-many-positional-arguments
+# pylint: disable=too-many-positional-arguments,too-many-public-methods
 # pylint: disable=missing-function-docstring,disallowed-name,too-many-lines
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass, field
 
 from broker_seam import (
     BAR_PAYLOAD_FIELDS,
     BAR_REQUIRED_PAYLOAD_FIELDS,
+    LAG_SAMPLE_FLOOR,
+    LAG_WINDOW_MAX_SAMPLES,
+    LAG_WINDOW_S,
     Bar,
     BarRevision,
     BarSource,
     BrokerNotConnected,
     BrokerUnsupported,
+    ChannelFreshness,
+    ChannelState,
     DatafeedCapabilities,
     DatafeedEventSink,
+    FeedChannel,
     FeedLag,
     FeedPollExhausted,
     FeedState,
+    FreshnessReport,
     LagProvenance,
+    LagWindow,
+    LagWindowBound,
     MalformedBarRow,
     MarketDataMode,
     Symbol,
@@ -398,6 +419,32 @@ IB_ERR_NOT_SUBSCRIBED_DELAYED_AVAILABLE = 354
 IB_ERR_DISPLAYING_DELAYED = 10167
 
 
+IB_VOLUME_NOT_REPORTED = -1.0
+"""IBKR's own not-reported sentinel on `BarData.volume`. TRANSLATED AT THIS BOUNDARY, not
+passed through — `docs/CHECK-DEBT.md` D1.39/D1.40.
+
+WHY IT LIVES HERE AND NOT IN `broker_seam.py`: it is a VENDOR value, and
+`nics_risk_subsystem_spec_v1.3.md` §2A:104-105 invariant 2 is *"no vendor type crosses the
+line"*. A sentinel is a vendor type wearing a float's clothes: the seam's `Bar.volume` says
+`None` means not reported, and `-1.0` means the venue said minus one contract traded. Both
+readings cannot be true of one field, so the translation happens on the vendor side of the
+boundary — which is this module — and the seam never learns the number.
+
+EVIDENCE GRADE, UNCHANGED BY THE TRANSLATION AND STATED SO IT IS NOT LAUNDERED: the `-1`
+sentinel is **IBKR-DOCUMENTED AND HAS NEVER BEEN MEASURED ON THIS SYSTEM** — no bar poll has
+run against the live venue in any arc to date. It is `LagProvenance.VENDOR_DECLARED`-grade
+evidence, exactly as `broker_seam.Bar.volume`'s docstring records, and **translating it is not
+measuring it**. KNOWN-RED, and the marker names the discharge: the tap session in
+`downloads/tap_session_runbook.md` is the procedure that would poll real history and observe
+whether `-1` arrives. Until it runs, D1.39/D1.40 stay open.
+
+WHAT IS DELIBERATELY NOT TRANSLATED: any other negative volume. IBKR documents ONE sentinel
+and this module maps only codes and values this system has evidence for
+(`IB_MARKETDATA_EVIDENCE`'s rule, applied to a value rather than an error code). A blanket
+`volume < 0 -> None` would give a meaning to values no document assigns one to, which is the
+fabrication the boundary exists to stop, in the other direction."""
+
+
 @dataclass(frozen=True)
 class Stage0LagRecord:
     """The banked Stage 0 lag measurement, carried as a RANGE with its sample count.
@@ -420,16 +467,44 @@ class Stage0LagRecord:
     n: int
     arc: str
     citation: str
+    channel: FeedChannel = FeedChannel.TICK
+    """WHICH channel this record measures (AMENDMENT 6). NOT DECORATION — it is what makes the
+    tick figure structurally unusable as the poll figure: the constructor refuses a record whose
+    `channel` is not the one it is being installed for. ARC 023's brief states the rule in
+    prose (*"DO NOT substitute the tick channel's 600.0-601.9 s figure for it"*) and a rule in
+    prose is enforced by whoever remembers it (`VERIFY-AND-CHECKS.md` A.5)."""
+
+    provenance: LagProvenance = LagProvenance.PRIOR_ARC
+    """THE GRADE OF THIS FIGURE, carried on the record rather than assumed by the reader.
+    `PRIOR_ARC` for a measurement an earlier arc banked; `VENDOR_DECLARED` for a number a vendor
+    or an operator asserts and nothing in this tree has checked. There is no path by which this
+    field becomes `OBSERVED` — that provenance belongs to samples this session collected, and a
+    configured record is not one."""
 
     def as_declared(self) -> tuple[float, str]:
-        """(scalar to declare, the detail string that says what the scalar is)."""
-        return self.mean_s, (
-            f"{self.arc} measurement, replayed — NOT measured this session. Banked record is a "
-            f"RANGE {self.low_s}-{self.high_s} s (spread {self.spread_s} s, n={self.n}); "
-            f"{self.mean_s} s is its MEAN. Source: {self.citation}. "
-            f"RE-MEASUREMENT IS OWED: no tap session ran in ARC 021 "
-            f"(~/nix/downloads/TAP_SESSION.md does not exist)."
-        )
+        """(scalar to declare, the detail string that says what the scalar is).
+
+        THE WORDING IS DERIVED FROM `provenance`, never typed per record: a VENDOR_DECLARED
+        figure that described itself as a replayed measurement would be the laundering this
+        whole grade exists to prevent."""
+        if self.provenance is LagProvenance.VENDOR_DECLARED:
+            detail = (
+                f"VENDOR_DECLARED for the {self.channel.value} channel — a vendor/operator "
+                f"claim that NOTHING IN THIS TREE HAS CHECKED. Range {self.low_s}-"
+                f"{self.high_s} s, {self.mean_s} s declared. Source: {self.citation}. "
+                f"KNOWN-RED: measurement is OWED and the tap that would take it is "
+                f"~/nix/downloads/tap_session_runbook.md. It is NOT a measurement, and the "
+                f"tick channel's measured figure is NOT a substitute for it."
+            )
+        else:
+            detail = (
+                f"{self.arc} measurement of the {self.channel.value} channel, replayed — NOT "
+                f"measured this session. Banked record is a RANGE {self.low_s}-{self.high_s} s "
+                f"(spread {self.spread_s} s, n={self.n}); {self.mean_s} s is its MEAN. "
+                f"Source: {self.citation}. RE-MEASUREMENT IS OWED: no tap session ran in "
+                f"ARC 021 (~/nix/downloads/TAP_SESSION.md does not exist)."
+            )
+        return self.mean_s, detail
 
 
 IB_STAGE0_DELAYED_LAG = Stage0LagRecord(
@@ -455,6 +530,39 @@ IB_STAGE0_DELAYED_FROZEN_LAG = Stage0LagRecord(
 default of 5.0 s is derived from, and because the row itself IS the silent-downgrade evidence:
 mode 4 was requested and mode 3 was granted."""
 
+IB_POLL_LAG_RECORD: Stage0LagRecord | None = None
+"""THE POLL CHANNEL'S LAG. **ABSENT**, and the absence is the honest answer, not an omission.
+
+`docs/SPEC-AMENDMENTS.md` AMENDMENT 6 computes excess staleness per channel *"with the
+CHANNEL'S OWN lag"*. This module therefore needs a poll-channel figure — and **there is none.**
+
+WHAT IS AND IS NOT AVAILABLE, because the tempting substitutions are all one line away:
+
+  * `IB_STAGE0_DELAYED_LAG` (600.0-601.9 s, ARC 013) measures the **delayed tick STREAM**
+    (`reqMarketDataType(3)` + `reqMktData`). It is not this channel's figure and installing it
+    here is the substitution AMENDMENT 3 forbids **wearing a plausible number** — which is
+    still a substitution. REFUSED STRUCTURALLY, not by comment: `Stage0LagRecord.channel` is
+    `TICK` on that record and the constructor refuses a non-`POLL` record for this slot.
+  * ARC 010's **624 s** measures `reqHistoricalTicks` staleness — a different API call and a
+    different quantity, on the path GAP-D2 exists to say is not a back door. The module
+    docstring already records that merging it produces a lag attributed to an arc that never
+    computed one.
+  * IBKR publishes no figure this tree holds a citation for. A number recalled rather than
+    read is not a vendor declaration; it is a fabrication with a vendor's name on it.
+
+SO THE DEFAULT IS `None`, and the consequence is stated rather than hidden: the poll channel
+reports `ChannelState.CANNOT_MEASURE`, which is **not** `STALE` and does not drive
+`nics_risk_subsystem_spec_v1.3.md` §6.4:373-374's halt-and-flatten. That is the F21 repair —
+the defect was a channel that could not be measured reading as a channel that had failed.
+
+**KNOWN-RED. GRADE: `LagProvenance.VENDOR_DECLARED` the moment a figure exists**, never
+`OBSERVED` and never `PRIOR_ARC`, because no arc has measured this channel. THE TAP THAT
+DISCHARGES IT: `~/nix/downloads/tap_session_runbook.md` — an operator session against the live
+Gateway that polls real history and measures `(recv_ts - bar_start_venue_ts)` on the poll path,
+exactly as ARC 013 did for the stream. Until it runs, the number is owed and this stays `None`.
+An operator may inject one today via `IBKRBrokerDatafeed(poll_lag_record=...)`; it is graded
+`VENDOR_DECLARED` on arrival and the adapter never promotes it."""
+
 
 @dataclass(frozen=True)
 class PollAttempt:
@@ -469,8 +577,206 @@ class PollAttempt:
     symbol: Symbol
     started_ts: float
     ok: bool
+    """THE ATTEMPT SUCCEEDED END TO END: the venue answered AND every row it returned reached
+    the sink. **ARC 023 (F13) NARROWED THIS**, and the narrowing is the point.
+
+    It used to mean only *the venue answered*, and it was written BEFORE the rows were
+    ingested — so a poll whose consumer raised half way through recorded `ok=True, rows=4` over
+    a bar that was sealed, never published and never recoverable. A green attempt record over a
+    lost bar is `debug.md` §7.12's own family (the instrument was green and the subject was
+    never in scope), arriving inside the product rather than inside an instrument.
+
+    The transport fact did not disappear; it moved to `venue_answered`, because two facts under
+    one name is exactly the `avg_price` shape (`docs/CHECK-DEBT.md` D1.29)."""
+
     error: str = ""
+    venue_answered: bool = False
+    """THE TRANSPORT FACT, alone: the history source returned without raising. `ok` is this AND
+    delivery; this one is what the bounded retry loop is actually about."""
+
     rows: int = 0
+    """Rows the venue returned on this attempt."""
+
+    sealed: int = 0
+    """Rows this attempt sealed for the first time."""
+
+    published: int = 0
+    """Bars this attempt handed to the sink and that the sink accepted. Includes re-publications
+    of seals an EARLIER attempt failed to deliver — see `_publish_sealed`."""
+
+    revised: int = 0
+    """`BarRevision`s this attempt published."""
+
+    undelivered: int = 0
+    """Seals from THIS attempt's rows that the sink has still not accepted when the attempt
+    ended. Non-zero is the F13 loss, named and countable; `ok` is False whenever it is."""
+
+    def __post_init__(self) -> None:
+        """`ok` MAY NOT BE ASSERTED OVER A LOSS. Structural, so a future edit to the poll loop
+        cannot reintroduce the green-over-a-lost-bar record by forgetting the rule."""
+        if self.ok and (self.undelivered or not self.venue_answered):
+            raise ValueError(
+                f"PollAttempt(seq={self.seq}, {self.symbol}) claims ok=True with "
+                f"venue_answered={self.venue_answered} and undelivered={self.undelivered}. "
+                "An attempt is ok only where the venue answered AND everything it returned "
+                "reached the sink; anything else is a success reported over a lost bar"
+            )
+
+
+@dataclass
+class _IngestTally:
+    """What ONE ingest actually did, accumulated as it goes. ARC 023, F13.
+
+    MUTABLE AND PASSED IN, deliberately: `_record_response` reads it from a `finally`, so it
+    has to hold the PARTIAL result of an ingest that raised. A return value cannot — an
+    exception discards it, which is precisely how `ok=True, rows=4` came to stand over a bar
+    that never reached the consumer."""
+
+    sealed: int = 0
+    published: int = 0
+    revised: int = 0
+    keys: set[tuple[Symbol, float, float]] = field(default_factory=set)
+    """Seal keys this ingest touched. The attempt record intersects it with the outstanding
+    publication debt, so `undelivered` counts only bars THIS response was responsible for."""
+
+    newest_bar_venue_ts: float | None = None
+    """The newest `bar_start_venue_ts` this ingest saw — the poll channel's freshness stamp
+    (AMENDMENT 6). `None` == the response carried no rows."""
+
+
+@dataclass
+class _LagWindowStore:
+    """The BOUNDED lag-sample window for one symbol's tick channel. ARC 023, F17.
+
+    WHAT F17 MEASURED, and it is the reason this type exists rather than a list: `lag_samples`
+    was an unbounded list and `feed_lag()` recomputed a SESSION-WIDE mean over it on every
+    call. The load-bearing observable was wrong IN THE DIRECTION THAT MATTERS — the session
+    mean read `AGREES` at 602.97 s while the last 100 packets sat at 900 s, sixty tolerances
+    outside, measured at 10,100 ticks. It said the feed agreed while the feed had degraded by
+    300 s, and the dilution is arithmetic, so the longer the session had been healthy the
+    harder a real degradation was to see.
+
+    THE WINDOW IS BOUNDED BY TIME, NOT BY COUNT, and that is an invariant rather than a
+    preference. MEASURED ARC 023: a 100-sample count window spans 222.2 s at ARC 013's measured
+    rate (18 ticks / 40 s on MESU6) and 0.000028 s at this box's measured ingest ceiling
+    (3,561,839 samples/s). One count cannot mean one thing at both ends of that range, and
+    `debug.md` §7.4 names the class — a count is a literal about the current rate.
+
+    MEMORY IS BOUNDED REGARDLESS OF RATE, WHICH A TIME WINDOW ALONE DOES NOT ACHIEVE. MEASURED:
+    at the ingest ceiling a pure 60 s window would retain 213,710,318 samples = 20.5 GB. So
+    there is a second, COUNT bound — the memory backstop — and **which bound applied is
+    reported** on `LagWindow.bound`, because under `COUNT` the retained set spans less than
+    `window_s` and the mean answers a narrower question than the consumer asked.
+
+    THE SESSION FIGURE IS RETAINED AND IS INFORMATIONAL. It is a running sum and count, so it
+    costs O(1) memory, and it is published on `FeedLag.session_mean_lag_s` under a name of its
+    own. **Nothing decides on it** — see that field's docstring for how the separation is
+    enforced by absence rather than asserted."""
+
+    window_s: float = LAG_WINDOW_S
+    sample_floor: int = LAG_SAMPLE_FLOOR
+    max_samples: int = LAG_WINDOW_MAX_SAMPLES
+
+    samples: deque[tuple[float, float]] = field(default_factory=deque)
+    """`(recv_ts, lag_s)` newest-last. `recv_ts` is retained because the trim is by TIME and a
+    lag value alone cannot say when it was taken."""
+
+    session_sum_s: float = 0.0
+    session_n: int = 0
+    _time_trimmed: bool = False
+    _count_trimmed: bool = False
+
+    def record(self, recv_ts: float, lag_s: float) -> None:
+        """Add one sample and re-apply both bounds. O(k) in what falls out, not in what stays.
+
+        THE TIME BOUND IS APPLIED AGAINST THE NEWEST SAMPLE, not against `time.time()`: the
+        adapter is driven with injected clocks in every test and by a vendor callback in
+        production, and reaching for the wall clock here would make the window's width depend
+        on how long the process has been idle rather than on the data (`debug.md` §7.4, and the
+        same reasoning `EventLog` records against timestamp logs)."""
+        self.samples.append((recv_ts, lag_s))
+        self.session_sum_s += lag_s
+        self.session_n += 1
+        cutoff = recv_ts - self.window_s
+        while self.samples and self.samples[0][0] < cutoff:
+            self.samples.popleft()
+            self._time_trimmed = True
+        while len(self.samples) > self.max_samples:
+            self.samples.popleft()
+            self._count_trimmed = True
+
+    def bound(self) -> LagWindowBound:
+        """WHICH bound decided the retained set. COUNT wins where both applied, because it is
+        the one that narrowed the answer below what was asked for."""
+        if self._count_trimmed:
+            return LagWindowBound.COUNT
+        if self._time_trimmed:
+            return LagWindowBound.TIME
+        return LagWindowBound.WITHIN_BOTH
+
+    def describe(self) -> LagWindow:
+        span = (
+            self.samples[-1][0] - self.samples[0][0] if len(self.samples) > 1 else None
+        )
+        return LagWindow(
+            window_s=self.window_s,
+            sample_floor=self.sample_floor,
+            max_samples=self.max_samples,
+            n_in_window=len(self.samples),
+            span_s=span,
+            bound=self.bound(),
+        )
+
+    def windowed_mean_s(self) -> float | None:
+        """The mean over the window, or `None` BELOW THE FLOOR — never a mean over too few
+        samples and never a fall-back to the session figure (AMENDMENT 3). `describe()` still
+        reports `n_in_window`, so *too few* stays distinguishable from *none*."""
+        if len(self.samples) < self.sample_floor:
+            return None
+        return sum(lag for _, lag in self.samples) / len(self.samples)
+
+    def session_mean_s(self) -> float | None:
+        """INFORMATIONAL. No caller in this module makes a decision on it; it is carried onto
+        `FeedLag.session_mean_lag_s` and read by nothing else."""
+        return self.session_sum_s / self.session_n if self.session_n else None
+
+
+@dataclass
+class _SymbolPollState:
+    """Everything this adapter knows about ONE POLLED SYMBOL. **NOT A SUBSCRIPTION.**
+
+    ARC 023, F12. `poll_history` used to call
+    `self._symbols.setdefault(symbol, _SymbolFeedState())`, which MANUFACTURED a subscription
+    record for a symbol nobody subscribed. Three consequences, and the third is the harm:
+    `_SymbolFeedState` is documented as *"Everything this adapter knows about ONE
+    subscription"* and stopped being true; the adapter-wide `granted_mode()` collapsed from a
+    real grant to `UNKNOWN` because an unrelated poll widened the set it is pessimistic over;
+    and a later `unsubscribe()` put a REAL `cancelMktData` on the wire for a subscription this
+    library never made — venue-side activity that is not attributable to any intent of this
+    library, on a clientId whose entire argument (`DATAFEED_CLIENT_ID`, and the 0/1 refusals)
+    is that it must be.
+
+    **POLLING MUST NOT CREATE SUBSCRIPTION STATE.** What the poll legitimately needs to record
+    is a POLL observation, so it is a different type in a different map with a different name,
+    and there is no path by which a member of `_polled` reaches `cancelMktData`,
+    `granted_mode`, or `reqMktData`. That is the ARC 020 A8 per-writer rule applied to a
+    container instead of a field, and it is the same argument `last_poll_recv_ts` already
+    carried against being merged with `last_tick_recv_ts` — one map holding two kinds of thing
+    carries two meanings depending on which writer created the entry."""
+
+    last_poll_recv_ts: float | None = None
+    """LOCAL clock at the last POLL response. MOVED HERE FROM `_SymbolFeedState` in ARC 023:
+    it was never a fact about a subscription, and its presence there is what made the poll path
+    reach for a subscription record in the first place."""
+
+    last_bar_venue_ts: float | None = None
+    """The VENUE's own clock on the newest bar this symbol has been polled for — the poll
+    channel's freshness stamp under AMENDMENT 6.
+
+    IT IS `bar_start_venue_ts` AND NOT THE BAR'S CLOSE. The close is `start + period_s`, which
+    is computed rather than reported, and a computed timestamp in a venue-timestamp field is
+    what §2A:106-107 invariant 4 exists to prevent. Using the open is also the conservative
+    direction: it is the older of the two, so the channel reads no fresher than it is."""
 
 
 @dataclass
@@ -495,20 +801,18 @@ class _SymbolFeedState:
     """The venue's own clock on the last stream packet. `None` == the venue supplied none, or
     none has arrived. Never this machine's clock (AMENDMENT 3, and §2A:106-107 invariant 4)."""
 
-    last_poll_recv_ts: float | None = None
-    """LOCAL clock at the last POLL response.
+    lag_window: _LagWindowStore = field(default_factory=_LagWindowStore)
+    """(recv_ts - venue_ts) per stream packet that carried BOTH, in a BOUNDED window. Written
+    by the tick path only.
 
-    DELIBERATELY NOT MERGED WITH `last_tick_recv_ts`, and this is the ARC 020 A8 per-writer
-    rule applied BEFORE the defect rather than after it. "A stream packet arrived" and "a poll
-    response arrived" are different facts with different consequences — a live stream with a
-    dead poller and a dead stream with a live poller are opposite conditions — and one field
-    written by both handlers would carry two meanings depending on which wrote last. That is
-    exactly the `avg_price` shape, whose third instance `docs/CHECK-DEBT.md` D1.29 records. The
-    cheap moment to prevent a fourth is before either writer exists."""
+    IT WAS `lag_samples: list[float]`, UNBOUNDED, until ARC 023 — see `_LagWindowStore` for
+    what F17 measured and why the bound is by time with a count backstop rather than by count.
 
-    lag_samples: list[float] = field(default_factory=list)
-    """(recv_ts - venue_ts) per stream packet that carried BOTH. Written by the tick path
-    only."""
+    THE POLL CLOCK IS NO LONGER IN THIS CLASS. `last_poll_recv_ts` moved to
+    `_SymbolPollState` in the same arc (F12): "a poll response arrived" was never a fact about
+    a subscription, and holding it here is what made `poll_history` reach for a subscription
+    record. The ARC 020 A8 per-writer argument that kept it separate from `last_tick_recv_ts`
+    is unchanged and is now enforced by the two clocks living in two different maps."""
 
 
 class IBKRBrokerDatafeed:
@@ -539,9 +843,13 @@ class IBKRBrokerDatafeed:
         client_id: int = DATAFEED_CLIENT_ID,
         requested_mode: MarketDataMode = MarketDataMode.DELAYED,
         lag_record: Stage0LagRecord | None = IB_STAGE0_DELAYED_LAG,
+        poll_lag_record: Stage0LagRecord | None = IB_POLL_LAG_RECORD,
         stale_threshold_s: float = 30.0,
         poll_attempts: int = 3,
         history_source=None,
+        lag_window_s: float = LAG_WINDOW_S,
+        lag_sample_floor: int = LAG_SAMPLE_FLOOR,
+        lag_max_samples: int = LAG_WINDOW_MAX_SAMPLES,
     ):
         if client_id in RESERVED_CLIENT_IDS:
             raise ValueError(
@@ -554,13 +862,19 @@ class IBKRBrokerDatafeed:
                 "market-data path at Stage 0 — do nothing. §6.4:373-374 requires "
                 "retry/backoff BEFORE declaring stale, so the floor is 1 attempt"
             )
+        self._require_channel(lag_record, FeedChannel.TICK, "lag_record")
+        self._require_channel(poll_lag_record, FeedChannel.POLL, "poll_lag_record")
         self._sink = sink
         self._ib = ib
         self._host, self._port, self._client_id = host, port, client_id
         self._requested_mode = requested_mode
         self._lag_record = lag_record
+        self._poll_lag_record = poll_lag_record
         self._stale_threshold_s = stale_threshold_s
         self._poll_attempts = poll_attempts
+        self._lag_window_s = lag_window_s
+        self._lag_sample_floor = lag_sample_floor
+        self._lag_max_samples = lag_max_samples
         # Injected so the whole poll path is drivable with no venue. `None` means the caller
         # must supply one before polling — never a silent no-op that reads as "no data".
         self._history_source = history_source
@@ -568,6 +882,9 @@ class IBKRBrokerDatafeed:
         self._connected = False
         self._feed_state = FeedState.DOWN
         self._symbols: dict[Symbol, _SymbolFeedState] = {}
+        # F12: the poll path's OWN map. A member of this one is not a subscription and can
+        # reach neither `cancelMktData` nor `granted_mode`. See `_SymbolPollState`.
+        self._polled: dict[Symbol, _SymbolPollState] = {}
 
         # --- D1.14: the seal store and the revision log -------------------------------
         # A bar is published ONCE per seal key and never rewritten. Both structures are
@@ -579,8 +896,36 @@ class IBKRBrokerDatafeed:
         self._seal_seq = 0
         self._revision_seq = 0
 
+        # F13: seal keys whose bar has been sealed and NOT yet accepted by the sink. A SET OF
+        # KEYS and never a second store of `Bar`s — two containers holding the same object is
+        # how they drift, and `self._sealed` stays the one home a bar lives in.
+        self._unpublished: set[tuple[Symbol, float, float]] = set()
+
         self._poll_attempt_log: list[PollAttempt] = []
         self._poll_seq = 0
+
+    @staticmethod
+    def _require_channel(
+        record: Stage0LagRecord | None, channel: FeedChannel, slot: str
+    ) -> None:
+        """A lag record may only be installed on the channel it measured. **F21's structural
+        half**, and the reason it is a refusal rather than a comment:
+
+        the tick channel's 600.0-601.9 s figure is measured, real, and one keyword away from
+        the poll slot. Installing it there would make the poll channel read as measured while
+        nothing had measured it — `docs/SPEC-AMENDMENTS.md` AMENDMENT 3's substitution wearing
+        a plausible number, and a plausible number is still a substitution. `VERIFY-AND-CHECKS`
+        A.5: if a rule can be stated as a desired state it should be a check, because a rule in
+        prose is enforced by whoever remembers it."""
+        if record is not None and record.channel is not channel:
+            raise ValueError(
+                f"{slot}= carries channel={record.channel.value} and this slot is the "
+                f"{channel.value} channel. A figure measured on one channel is not a figure "
+                f"about another: {record.arc}'s record measures "
+                f"{record.channel.value} at {record.mean_s} s, and installing it here would "
+                "report the poll channel as measured when nothing has measured it "
+                "(docs/SPEC-AMENDMENTS.md AMENDMENT 3 and AMENDMENT 6)"
+            )
 
     # ------------------------------------------------------------------
     # DECLARATIONS
@@ -646,7 +991,7 @@ class IBKRBrokerDatafeed:
         self._require_session("subscribe")
         if self._requested_mode is MarketDataMode.REALTIME:
             raise BrokerUnsupported(self._realtime_refusal(symbol))
-        state = self._symbols.setdefault(symbol, _SymbolFeedState())
+        state = self._symbols.setdefault(symbol, self._new_feed_state())
         # WRITER 1 of granted_mode. MEANING: "no grant callback has been received for this
         # subscription". NOT "the venue granted UNKNOWN" and NOT the requested mode.
         state.granted_mode = MarketDataMode.UNKNOWN
@@ -662,8 +1007,28 @@ class IBKRBrokerDatafeed:
             self._ib.cancelMktData(symbol)
         self._forget_symbol(symbol)
 
+    def _new_feed_state(self) -> _SymbolFeedState:
+        """A subscription record carrying THIS adapter's window configuration.
+
+        The knobs are constructor arguments, so a dataclass default cannot supply them — and a
+        `_SymbolFeedState()` built anywhere else would silently get the module defaults instead
+        of what the operator configured. One construction site is the fix (`debug.md` §7.4: a
+        default copied into a second place is a literal that goes stale silently)."""
+        return _SymbolFeedState(
+            lag_window=_LagWindowStore(
+                window_s=self._lag_window_s,
+                sample_floor=self._lag_sample_floor,
+                max_samples=self._lag_max_samples,
+            )
+        )
+
     def _forget_symbol(self, symbol: Symbol) -> None:
-        """Drop a symbol's subscription state. The grant does not survive the subscription."""
+        """Drop a symbol's subscription state. The grant does not survive the subscription.
+
+        POLL STATE IS NOT TOUCHED, and that is F12's boundary in the other direction: what the
+        venue answered on a history request is not a fact about a subscription, so cancelling
+        a subscription does not un-observe it. `_polled` is dropped by nothing today; a poll
+        observation's lifetime is its own question and is not this arc's to answer."""
         self._symbols.pop(symbol, None)
 
     def request_realtime_ticks(self, symbol: Symbol) -> None:
@@ -697,52 +1062,145 @@ class IBKRBrokerDatafeed:
     # ------------------------------------------------------------------
     # §2A Nix addition: feed_lag
     # ------------------------------------------------------------------
-    def feed_lag(self, symbol: Symbol | None = None) -> FeedLag:
-        """How far behind the venue this feed runs, WITH the provenance of the answer.
+    def feed_lag(
+        self, symbol: Symbol | None = None, *, channel: FeedChannel = FeedChannel.TICK
+    ) -> FeedLag:
+        """How far behind the venue this feed runs ON ONE CHANNEL, with the answer's grade.
 
-        `symbol=None` answers for the adapter as a whole, using every symbol's samples. The
-        parameter is optional so the port's zero-argument signature is satisfied unchanged.
+        `symbol=None` answers for the adapter as a whole, using every symbol's samples. Both
+        parameters are optional and `channel` is keyword-only, so `BrokerDatafeedPort`'s
+        zero-argument `feed_lag()` is satisfied unchanged — the same additive construction
+        `poll_history`'s `attempts` uses.
 
-        THE FOUR STATES THIS RETURNS, and none of them is a fabricated zero:
-          * no lag record configured and nothing observed -> UNOBSERVED, `declared_lag_s=None`
+        THE CHANNEL PARAMETER IS AMENDMENT 6 (ARC 023). Each channel carries its OWN
+        `effective_lag_s`, and one figure cannot be right for two paths whose delays and
+        evidence grades differ: the tick channel's is MEASURED (ARC 013) and the poll
+        channel's is NOT MEASURED ON THIS SYSTEM AT ALL. `channel` defaults to `TICK` because
+        that is what every pre-ARC-023 caller of the zero-argument verb meant, and a default
+        that silently changed the meaning of an existing call would be worse than the defect.
+
+        THE FIVE STATES THIS RETURNS, and none of them is a fabricated zero:
+          * no lag record for this channel and nothing observed -> UNOBSERVED,
+            `declared_lag_s=None` (**the poll channel's state on this system today**)
           * a banked prior-arc figure, nothing observed here -> PRIOR_ARC, agreement
             NOT_OBSERVED, and `detail` carries the citation and the re-measurement obligation
-          * samples collected -> OBSERVED, and the declared figure is CHECKED against them, so
-            a divergence becomes `LagAgreement.DIVERGED`, readable off the object
-          * a venue that declares a figure this adapter has not checked -> VENDOR_DECLARED"""
-        samples = self._lag_samples(symbol)
-        declared, detail = (
-            self._lag_record.as_declared() if self._lag_record else (None, "")
+          * a configured figure nothing in this tree has checked -> VENDOR_DECLARED, and it is
+            never promoted past that by this adapter
+          * enough samples in the WINDOW -> OBSERVED, and the declared figure is CHECKED
+            against them, so a divergence becomes `LagAgreement.DIVERGED` off the object
+          * samples present but BELOW THE FLOOR -> absence is declared
+            (`observed_lag_s=None`), and `window.n_in_window` says how many were held. A mean
+            over too few samples is a fabricated confidence and falling back to the
+            session-wide figure is F17's defect (AMENDMENT 3).
+
+        THE POLL CHANNEL COLLECTS NO SAMPLES, and that is a statement about this system rather
+        than about the design: measuring it means comparing `bar_start_venue_ts` against a
+        receipt clock across a real venue poll, which no arc has run. See `IB_POLL_LAG_RECORD`
+        for the known-red and the tap that discharges it."""
+        record = (
+            self._lag_record if channel is FeedChannel.TICK else self._poll_lag_record
         )
-        if not samples:
-            provenance = (
-                LagProvenance.PRIOR_ARC
-                if declared is not None
-                else LagProvenance.UNOBSERVED
-            )
+        declared, detail = record.as_declared() if record else (None, "")
+        declared_provenance = (
+            record.provenance if record is not None else LagProvenance.UNOBSERVED
+        )
+        window = self._lag_window(symbol) if channel is FeedChannel.TICK else None
+        observed = window.windowed_mean_s() if window is not None else None
+        described = window.describe() if window is not None else None
+        session_mean = window.session_mean_s() if window is not None else None
+        session_n = window.session_n if window is not None else 0
+        if observed is None:
             return FeedLag(
                 declared_lag_s=declared,
                 observed_lag_s=None,
                 observed_n=0,
-                provenance=provenance,
+                provenance=(
+                    declared_provenance
+                    if declared is not None
+                    else LagProvenance.UNOBSERVED
+                ),
                 granted_mode=self.granted_mode(symbol),
-                detail=detail
-                or "no lag record configured and no packet carrying a venue timestamp",
+                # BOTH halves, never one OR the other. The declared figure's citation and the
+                # reason there is no OBSERVATION are different facts, and `detail or ...` hid
+                # the second whenever a record existed — which is every configured adapter, so
+                # "no reading because too few samples" was unreadable exactly where it matters.
+                detail=" | ".join(
+                    part
+                    for part in (detail, self._no_reading_detail(channel, described))
+                    if part
+                ),
+                channel=channel,
+                window=described,
+                session_mean_lag_s=session_mean,
+                session_n=session_n,
             )
         return FeedLag(
             declared_lag_s=declared,
-            observed_lag_s=sum(samples) / len(samples),
-            observed_n=len(samples),
+            observed_lag_s=observed,
+            observed_n=described.n_in_window if described else 0,
             provenance=LagProvenance.OBSERVED,
             granted_mode=self.granted_mode(symbol),
             detail=detail,
+            channel=channel,
+            window=described,
+            session_mean_lag_s=session_mean,
+            session_n=session_n,
         )
 
-    def _lag_samples(self, symbol: Symbol | None) -> list[float]:
+    @staticmethod
+    def _no_reading_detail(channel: FeedChannel, window: LagWindow | None) -> str:
+        """Why there is no observed figure — the THREE reasons, kept distinct.
+
+        `debug.md` §7.9: a reading that is absent because nothing arrived and a reading that is
+        absent because too little arrived are different facts, and a consumer deciding whether
+        to wait or to escalate needs to tell them apart."""
+        if window is None:
+            return (
+                f"no lag record configured for the {channel.value} channel and this adapter "
+                f"collects no samples on it"
+            )
+        if window.n_in_window == 0:
+            return "no packet carrying a venue timestamp has arrived in the window"
+        return (
+            f"{window.n_in_window} sample(s) in the {window.window_s} s window, below the "
+            f"floor of {window.sample_floor} — absence declared rather than a mean over too "
+            f"few, and NOT a fall-back to the session figure"
+        )
+
+    def _lag_window(self, symbol: Symbol | None) -> _LagWindowStore | None:
+        """The tick-channel window for one symbol, or a MERGED view for the adapter as a whole.
+
+        THE ADAPTER-WIDE MERGE IS BUILT, NOT AVERAGED-OVER-AVERAGES: samples from every
+        subscription are re-windowed together against the newest `recv_ts` of the set, so the
+        adapter-wide figure obeys the same time bound and the same floor as a per-symbol one.
+        Averaging per-symbol means would weight a symbol with three packets equally with one
+        that had three hundred."""
         if symbol is not None:
             state = self._symbols.get(symbol)
-            return list(state.lag_samples) if state else []
-        return [s for st in self._symbols.values() for s in st.lag_samples]
+            return state.lag_window if state else None
+        if not self._symbols:
+            return None
+        merged = _LagWindowStore(
+            window_s=self._lag_window_s,
+            sample_floor=self._lag_sample_floor,
+            max_samples=self._lag_max_samples,
+        )
+        # SORTED BY RECEIPT CLOCK BEFORE RECORDING. `record()`'s trim assumes non-decreasing
+        # `recv_ts` — true of one symbol's packet stream and false of two streams concatenated,
+        # and an out-of-order feed into the trim would drop the wrong end of the window.
+        for recv_ts, lag_s in sorted(
+            (s for st in self._symbols.values() for s in st.lag_window.samples),
+            key=lambda pair: pair[0],
+        ):
+            merged.record(recv_ts, lag_s)
+        # The SESSION figures are the true per-symbol totals, not what survived the merge's
+        # window. They are informational and nothing decides on them; restating them from the
+        # merged deque would make them a second, quietly different number.
+        merged.session_sum_s = sum(
+            st.lag_window.session_sum_s for st in self._symbols.values()
+        )
+        merged.session_n = sum(st.lag_window.session_n for st in self._symbols.values())
+        return merged
 
     def granted_mode(self, symbol: Symbol | None = None) -> MarketDataMode:
         """The mode the venue GRANTED. `UNKNOWN` is the floor, never the requested mode.
@@ -785,46 +1243,174 @@ class IBKRBrokerDatafeed:
     # ------------------------------------------------------------------
     # FRESHNESS — derived here, because the venue pushes none (GAP-D4)
     # ------------------------------------------------------------------
+    def freshness(
+        self, now: float, symbol: Symbol | None = None
+    ) -> tuple[FreshnessReport, ...]:
+        """PER-CHANNEL freshness, uncollapsed. **THE AUTHORITY** — `docs/SPEC-AMENDMENTS.md`
+        AMENDMENT 6 (operator ruling, ARC 023), and the repair for F21.
+
+        *"Each channel by which the seam observes a symbol carries its own venue timestamp and
+        its own `effective_lag_s`. The seam declares WHICH CHANNELS ARE FRESH AND WHICH ARE
+        STALE, and does not collapse them into a single boolean. ... The consumer decides which
+        channels it requires."*
+
+        WHAT F21 MEASURED, because it is the whole reason this method exists.
+        `evaluate_freshness` read `last_tick_venue_ts` **alone**. At Stage 0 there is no tick
+        stream — `reqTickByTickData` returns 10189 naming the PRODUCT CLASS (GAP-D1) — so a
+        symbol fed entirely by successful, current polls had `excess_staleness_s = None`, which
+        the adapter correctly treated as STALE, which
+        `nics_risk_subsystem_spec_v1.3.md` §6.4:373-374 turns into *halt new entries AND
+        flatten open*. **The module fail-closed on the only margin-class path it has**
+        (GAP-D4). A bar's venue timestamp is a venue observation exactly as a tick's is; the
+        defect was that only one channel updated the stamp.
+
+        `symbol=None` reports on every symbol this adapter observes on ANY channel — the union
+        of subscriptions and polled symbols. A symbol it has never heard of yields a report
+        with NO channels, which is a different fact from every channel being stale and reads as
+        one (`FreshnessReport.observed_channels` is empty).
+
+        THIS IS THE ONLY PUBLISHER of §2A:92's `on_feed_status` on the freshness path, and the
+        state it publishes is derived from the report by `_channel_floor` — see there for the
+        one decision the frozen event forces the seam to make and how narrow it is kept."""
+        self._require_session("freshness")
+        targets = (
+            [symbol]
+            if symbol is not None
+            else sorted(set(self._symbols) | set(self._polled))
+        )
+        reports = tuple(self._report_for(sym, now) for sym in targets)
+        for report in reports:
+            # WRITER 4 of _feed_state. MEANING: a session exists AND the data behind it is (not)
+            # advancing. This is the ONLY writer entitled to say STALE; connect/disconnect speak
+            # only about the session, and conflating the two is how a live socket with a dead
+            # feed reads as healthy.
+            self._publish_feed_state(
+                self._channel_floor(report),
+                reason=(
+                    f"derived per channel (docs/SPEC-AMENDMENTS.md AMENDMENT 6): "
+                    f"{report.summary()}"
+                ),
+                symbol=report.symbol,
+            )
+        return reports
+
+    def _report_for(self, symbol: Symbol, now: float) -> FreshnessReport:
+        """One symbol's channels. A channel appears IFF this adapter observes the symbol on it,
+        so an absent channel means *no relationship*, never *stale*."""
+        channels: list[ChannelFreshness] = []
+        state = self._symbols.get(symbol)
+        if state is not None:
+            channels.append(
+                self._channel_freshness(
+                    symbol,
+                    FeedChannel.TICK,
+                    state.last_tick_venue_ts,
+                    state.last_tick_recv_ts,
+                    now,
+                )
+            )
+        polled = self._polled.get(symbol)
+        if polled is not None:
+            channels.append(
+                self._channel_freshness(
+                    symbol,
+                    FeedChannel.POLL,
+                    polled.last_bar_venue_ts,
+                    polled.last_poll_recv_ts,
+                    now,
+                )
+            )
+        return FreshnessReport(symbol=symbol, now=now, channels=tuple(channels))
+
+    def _channel_freshness(
+        self,
+        symbol: Symbol,
+        channel: FeedChannel,
+        venue_ts: float | None,
+        recv_ts: float | None,
+        now: float,
+    ) -> ChannelFreshness:
+        """One channel, computed by the EXISTING formula with the CHANNEL'S OWN lag.
+
+        `FeedLag.excess_staleness_s` is unchanged and is still the vendor-blind primitive; all
+        that changed is that it is now asked once per channel with that channel's figure
+        instead of once per symbol with the tick channel's."""
+        lag = self.feed_lag(symbol, channel=channel)
+        excess = lag.excess_staleness_s(venue_ts, now)
+        if excess is None:
+            state = ChannelState.CANNOT_MEASURE
+            detail = (
+                f"venue_ts is absent on the {channel.value} channel"
+                if venue_ts is None
+                else f"no effective_lag_s for the {channel.value} channel: {lag.detail}"
+            )
+        else:
+            state = (
+                ChannelState.FRESH
+                if excess <= self._stale_threshold_s
+                else ChannelState.STALE
+            )
+            detail = ""
+        return ChannelFreshness(
+            channel=channel,
+            venue_ts=venue_ts,
+            lag=lag,
+            excess_staleness_s=excess,
+            threshold_s=self._stale_threshold_s,
+            state=state,
+            recv_ts=recv_ts,
+            detail=detail,
+        )
+
+    @staticmethod
+    def _channel_floor(report: FreshnessReport) -> FeedState:
+        """§2A:92's single `FeedState`, derived from the report. **THE ONE COLLAPSE THE FROZEN
+        EVENT FORCES, kept as narrow as it can be made.**
+
+        `nics_risk_subsystem_spec_v1.3.md` §2A:92 declares
+        `on_feed_status(up|down|stale, symbol?, reason?)` — one state, and that vocabulary is
+        frozen, so the seam cannot emit a per-channel verdict on it. AMENDMENT 6 does not
+        license refusing to emit; it licenses refusing to let the emission be the only thing
+        available, and `freshness()` returns the report beside every emission.
+
+        THE RULE: **UP where ANY channel is fresh; STALE otherwise.** The seam has no standing
+        to prefer one channel over another, so it cannot answer *"is the channel you need
+        fresh?"* — it can only answer *"is anything fresh?"*, and a consumer that needs more
+        reads the report. Note the direction: the OLD code said STALE while a channel was
+        fresh, and §6.4:373-374 makes STALE mean liquidate. Saying UP while a channel a
+        particular consumer needs is stale is recoverable by that consumer reading the report;
+        saying STALE over a healthy feed is not recoverable by anyone, which is F21.
+
+        A REPORT WITH NO CHANNELS IS STALE, unchanged and deliberately: an adapter with no
+        relationship to a symbol has observed nothing, `CLAUDE.md` directive 4 says fail
+        closed, and `observed_channels` being empty is what tells a consumer the STALE is an
+        absence of evidence rather than evidence of staleness."""
+        return FeedState.UP if report.fresh_channels else FeedState.STALE
+
     def evaluate_freshness(self, now: float, symbol: Symbol | None = None) -> FeedState:
-        """Derive and publish feed health from excess staleness. The ONLY writer of STALE.
+        """§2A:92's single-state summary, DERIVED FROM `freshness()`. **NOT the authority.**
+
+        RETAINED rather than deleted because `nics_risk_subsystem_spec_v1.3.md` §2A:92 declares
+        exactly one feed-health state and a consumer wired to that event needs a way to ask for
+        it. It is the WORST `_channel_floor` over the symbols in scope, and it collapses — so
+        under AMENDMENT 6 it is the summary and `freshness()` is the thing that answers the
+        question. Anything that decides on freshness reads the report.
 
         `capabilities.pushes_feed_status` is False: IBKR reports no feed-health signal, so
-        `nics_risk_subsystem_spec_v1.3.md` §2A:92's `on_feed_status` has to be DERIVED, and
-        saying so is the difference between a declared derivation and a fabricated venue
-        signal.
+        §2A:92's event has to be DERIVED, and saying so is the difference between a declared
+        derivation and a fabricated venue signal.
 
-        THE COMPUTATION IS `FeedLag.excess_staleness_s`, i.e. `(now - venue_ts) - lag`, and it
-        is vendor-blind by construction: the same threshold is correct on a 0-lag venue and on
-        the Stage 0 IBKR feed. `None` (cannot compute) is treated as STALE — fail closed and
-        loud (`CLAUDE.md` directive 4): a freshness question this adapter cannot answer is not
-        an answer of 'fresh'."""
-        self._require_session("evaluate_freshness")
-        targets = [symbol] if symbol is not None else list(self._symbols)
-        if not targets:
+        IT DOES NOT PUBLISH. `freshness()` does, once per symbol; a second emission site here
+        would put two `on_feed_status` events on the wire for one question, which is what
+        `_publish_feed_state`'s choke-point argument exists to prevent."""
+        reports = self.freshness(now, symbol)
+        if not reports:
             return self._feed_state
-        worst = FeedState.UP
-        for sym in targets:
-            state = self._symbols.get(sym)
-            # Per-symbol lag, not an adapter-wide one: two subscriptions can be granted
-            # different modes (see `granted_mode`), and averaging their samples would produce
-            # a lag figure true of neither.
-            excess = (
-                self.feed_lag(sym).excess_staleness_s(state.last_tick_venue_ts, now)
-                if state
-                else None
-            )
-            if excess is None or excess > self._stale_threshold_s:
-                worst = FeedState.STALE
-        # WRITER 4 of _feed_state. MEANING: a session exists AND the data behind it is (not)
-        # advancing. This is the ONLY writer entitled to say STALE; connect/disconnect speak
-        # only about the session, and conflating the two is how a live socket with a dead feed
-        # reads as healthy.
-        self._publish_feed_state(
-            worst,
-            reason=f"derived from excess staleness over {len(targets)} symbol(s)",
-            symbol=symbol,
+        return (
+            FeedState.STALE
+            if any(self._channel_floor(r) is FeedState.STALE for r in reports)
+            else FeedState.UP
         )
-        return worst
 
     def _publish_feed_state(
         self, state: FeedState, *, reason: str, symbol: Symbol | None = None
@@ -871,7 +1457,9 @@ class IBKRBrokerDatafeed:
         state.last_tick_recv_ts = stamp
         if venue_ts is not None:
             state.last_tick_venue_ts = venue_ts
-            state.lag_samples.append(stamp - venue_ts)
+            # BOUNDED WINDOW, not an unbounded list (ARC 023, F17). The sample carries its own
+            # receipt clock because the window trims by TIME; see `_LagWindowStore`.
+            state.lag_window.record(stamp, stamp - venue_ts)
         self._sink.on_tick(symbol, price, size, venue_ts, recv_ts=stamp)
 
     def _on_ib_market_data_type(self, symbol: Symbol, mode_value: int) -> None:
@@ -963,25 +1551,85 @@ class IBKRBrokerDatafeed:
             except Exception as exc:  # noqa: BLE001  # see the module pragma block
                 self._poll_attempt_log.append(
                     PollAttempt(
-                        self._poll_seq, symbol, started, ok=False, error=repr(exc)
+                        self._poll_seq,
+                        symbol,
+                        started,
+                        ok=False,
+                        error=repr(exc),
+                        venue_answered=False,
                     )
                 )
                 continue
-            self._poll_attempt_log.append(
-                PollAttempt(self._poll_seq, symbol, started, ok=True, rows=len(rows))
-            )
-            # WRITER of last_poll_recv_ts, and the ONLY one. See _SymbolFeedState for why this
-            # is not the same field as last_tick_recv_ts.
-            state = self._symbols.setdefault(symbol, _SymbolFeedState())
-            state.last_poll_recv_ts = time.time()
-            self._ingest_history(symbol, rows, state.last_poll_recv_ts)
+            self._record_response(symbol, rows, started)
             return len(rows)
         raise FeedPollExhausted(
             f"poll_history({symbol}) exhausted {budget} attempt(s) without a response. "
             f"Attempts: {[a.error for a in self._poll_attempt_log[-budget:]]}"
         )
 
-    def _ingest_history(self, symbol: Symbol, rows, recv_ts: float) -> None:
+    def _record_response(self, symbol: Symbol, rows, started: float) -> None:
+        """The venue answered. Write the poll clock, ingest, and record the attempt.
+
+        THE ATTEMPT RECORD IS WRITTEN AFTER THE INGEST, IN A `finally`, and that ordering is
+        F13's second defect. It used to be appended BEFORE `_ingest_history` ran, so a sink
+        that raised half way through left `ok=True, rows=4` standing over a bar that was
+        sealed, never published and never recoverable. Writing it afterwards is what lets it
+        carry what actually happened; `finally` is what makes it get written even when the
+        consumer's exception is on its way out, because an attempt that tore is the one a
+        reader most needs to see.
+
+        ONE `finally`, NO SECOND BROAD `except`. The module's pylint pragma block records that
+        `broad-exception-caught` is permitted at exactly ONE site — the bounded poll loop's
+        venue call — and a second one here would swallow the consumer's exception, which must
+        propagate (`CLAUDE.md` directive 4, fail closed and LOUD)."""
+        polled = self._polled.setdefault(symbol, _SymbolPollState())
+        # WRITER of last_poll_recv_ts, and the ONLY one. It lives in `_polled` and not in
+        # `_symbols` (F12): a poll must not manufacture a subscription.
+        polled.last_poll_recv_ts = time.time()
+        acc = _IngestTally()
+        try:
+            self._ingest_history(symbol, rows, polled.last_poll_recv_ts, acc)
+        finally:
+            # DERIVED FROM WHAT THE INGEST ACTUALLY TOUCHED, never re-read off `rows`: a row
+            # the loop never reached was not sealed and is not owed, and re-deriving keys from
+            # the row list inside a `finally` would raise on a malformed row and MASK the
+            # consumer's exception on its way out.
+            undelivered = len(acc.keys & self._unpublished)
+            # MONOTONIC BY SOURCE (`nics_risk_subsystem_spec_v1.3.md` §6.4b, applied to the
+            # poll channel's stamp): a later poll that answers with older history does not
+            # make the channel younger. Written here rather than in the ingest loop so a torn
+            # ingest still advances the stamp for the rows it did read — the venue reported
+            # them, and the consumer's exception is not a fact about the venue's clock.
+            if acc.newest_bar_venue_ts is not None:
+                polled.last_bar_venue_ts = (
+                    acc.newest_bar_venue_ts
+                    if polled.last_bar_venue_ts is None
+                    else max(polled.last_bar_venue_ts, acc.newest_bar_venue_ts)
+                )
+            self._poll_attempt_log.append(
+                PollAttempt(
+                    self._poll_seq,
+                    symbol,
+                    started,
+                    ok=not undelivered,
+                    venue_answered=True,
+                    rows=len(rows),
+                    sealed=acc.sealed,
+                    published=acc.published,
+                    revised=acc.revised,
+                    undelivered=undelivered,
+                )
+            )
+
+    @staticmethod
+    def _seal_key(symbol: Symbol, row) -> tuple[Symbol, float, float]:
+        """The identity a seal is held under, spelled ONCE so `_ingest_history` and the attempt
+        record cannot disagree about which bar a row is."""
+        return (symbol, row["bar_start_venue_ts"], row["period_s"])
+
+    def _ingest_history(
+        self, symbol: Symbol, rows, recv_ts: float, tally: _IngestTally | None = None
+    ) -> None:
         """SEAL AND NEVER REWRITE (`docs/CHECK-DEBT.md` D1.14).
 
         A row whose seal key is unseen is sealed and published on `on_bar`, exactly once. A row
@@ -989,6 +1637,22 @@ class IBKRBrokerDatafeed:
         `BarRevision` is published on `on_bar_revision` and retained; if it is identical, it is
         dropped, because an identical re-poll is not a revision and a stream of no-op
         revisions is how a real one becomes invisible.
+
+        SEAL AND **PUBLICATION** ARE NOT SEPARABLE INTO A DEAD END (ARC 023, F13). D1.14's rule
+        made the poll path idempotent, which is right, and it also made the PUBLICATION
+        unrepeatable, which nobody wrote down: a bar whose `on_bar` raised was sealed, and every
+        later poll then recognised it as an identical re-poll and dropped it. Lost from the
+        consumer's stream forever, with no revision, no error and no observable naming it.
+
+        THE REPAIR IS A PUBLICATION DEBT, NOT A RE-DERIVATION. `self._unpublished` holds the
+        seal keys whose bar the sink has not accepted, and the next poll that reaches the key
+        **re-publishes the SEALED OBJECT** — the same `Bar`, with its original `seal_seq`,
+        `recv_ts` and payload. Nothing is rebuilt from the row, so D1.14 is intact and a bar
+        cannot acquire a second identity. Rebuilding it would have been the tempting fix and it
+        is worse than the defect: the retry's row may carry the venue's REVISED values, so a
+        re-derived bar would seal a revision as if it were the original and the revision fact —
+        the one thing observable only here (AMENDMENT 4) — would vanish. Under this repair the
+        revision is still evaluated against the ORIGINAL seal, below, on the same poll.
 
         WHY THE ADAPTER OWNS THIS AND NOT THE CONSUMER: the re-poll happens HERE. A consumer
         holding only what crossed the seam sees a second bar with the same start time and no
@@ -998,8 +1662,16 @@ class IBKRBrokerDatafeed:
         AND THIS IS THE ONLY `Bar(...)` IN THE MODULE — AMENDMENT 4's proof-by-absence half. The
         source is `POLLED_HISTORY` because the venue is the source; nothing here aggregates a
         tick, and `Bar.__post_init__` refuses one that did."""
+        acc = _IngestTally() if tally is None else tally
         for row in rows:
-            key = (symbol, row["bar_start_venue_ts"], row["period_s"])
+            key = self._seal_key(symbol, row)
+            acc.keys.add(key)
+            acc.newest_bar_venue_ts = max(
+                row["bar_start_venue_ts"],
+                acc.newest_bar_venue_ts
+                if acc.newest_bar_venue_ts is not None
+                else row["bar_start_venue_ts"],
+            )
             sealed = self._sealed.get(key)
             if sealed is None:
                 self._seal_seq += 1
@@ -1013,17 +1685,76 @@ class IBKRBrokerDatafeed:
                     # wrote `.get()` here, which turned a malformed row into a bar with a null
                     # open — an absence the venue never declared, manufactured by the reader.
                     **self._require_ohlc(symbol, row),
-                    # `.get()` SURVIVES on volume, and only on volume: IBKR genuinely returns
-                    # bars for which volume is not a fact (see `Bar.volume`).
-                    volume=row.get("volume"),
+                    # TRANSLATED AT THE VENDOR BOUNDARY (ARC 023, D1.39/D1.40), not passed
+                    # through: IBKR's `-1` is its not-reported sentinel and `Bar.volume`'s
+                    # `| None` is justified by exactly that absence. Letting the raw sentinel
+                    # cross meant a consumer could read it as "one contract traded, short" —
+                    # the substitution AMENDMENT 3 forbids, arriving through the field the
+                    # amendment kept optional in order to prevent it. See
+                    # `IB_VOLUME_NOT_REPORTED`: translating it is NOT measuring it and the
+                    # VENDOR_DECLARED grade is unchanged.
+                    volume=self._volume(row),
                     recv_ts=recv_ts,
                     source=BarSource.POLLED_HISTORY,
                     seal_seq=self._seal_seq,
                 )
+                # THE SEAL AND THE PUBLICATION DEBT ARE WRITTEN TOGETHER. The debt is recorded
+                # BEFORE the sink is called, so an `on_bar` that raises leaves the key owed
+                # rather than leaving nothing at all — the whole point of F13's repair.
                 self._sealed[key] = bar
+                self._unpublished.add(key)
+                acc.sealed += 1
+            else:
+                bar = sealed
+            # ONE EMISSION SITE FOR BOTH CASES — a bar just sealed and a bar sealed by an
+            # earlier poll whose consumer refused it are the same obligation, and giving them
+            # two publish sites is two chances for the ordering below to be got wrong in one.
+            #
+            # THE ORDER IS THE PROPERTY: the sink is called FIRST and the debt is discharged
+            # only on the line after it returns. A `finally` around this would discharge the
+            # debt on the exception path, which is the defect wearing a repair's clothes.
+            #
+            # `debug.md` §7.12 — WHAT WOULD HAVE TO BE TRUE FOR THIS GUARD TO PASS WHILE
+            # MEASURING NOTHING? Four conditions, all plantable:
+            #   1. `self._unpublished` is never ADDED to, so `discard` has nothing to do and
+            #      every attempt records `undelivered=0`. Plant: delete the `add` above.
+            #      Caught by the F13 traversal, which asserts a bar sealed under a raising sink
+            #      is owed and is re-published on the retry.
+            #   2. The `discard` happens BEFORE `on_bar`, so a raising sink still clears the
+            #      debt. Plant: swap the two lines. The same traversal catches it, because the
+            #      retry then drops the bar as an identical re-poll exactly as before.
+            #   3. `on_bar` is called on a sink nobody reads — §7.12's own eighth instance
+            #      (ARC 016). The traversals construct the adapter through one path that
+            #      returns the very sink it injected, and assert `ad._sink is sink`.
+            #   4. The re-publish reads the ROW rather than the seal, so the recovered bar is a
+            #      re-derivation wearing the seal's name. Plant: `bar = Bar(...)` here. Caught
+            #      by the traversal's IDENTITY assertion (`recovered is owed[0]`), which is why
+            #      it asserts identity and not equality.
+            if key in self._unpublished:
                 self._sink.on_bar(bar)
-                continue
-            self._maybe_revise(sealed, row, recv_ts)
+                self._unpublished.discard(key)
+                acc.published += 1
+            if sealed is not None and self._maybe_revise(sealed, row, recv_ts):
+                acc.revised += 1
+
+    @staticmethod
+    def _volume(row) -> float | None:
+        """THE VENDOR BOUNDARY for `Bar.volume` (`docs/CHECK-DEBT.md` D1.39/D1.40).
+
+        `.get()` survives here, and only here, among the five payload fields: IBKR genuinely
+        returns bars for which volume is not a fact (`whatToShow` = MIDPOINT / BID / ASK), so
+        an absent key IS an observable absence and `Bar.volume` keeps its `| None` on that
+        strength (AMENDMENT 3's ARC 022 refinement).
+
+        THE TRANSLATION IS THE ARC 023 ADDITION: IBKR reports that same absence on the history
+        path as the VALUE `-1`, not as a missing key. Until now nothing translated it, so the
+        sentinel crossed the seam as a number — the field kept optional in order to prevent a
+        fabricated volume was delivering one. `IB_VOLUME_NOT_REPORTED` carries the evidence
+        grade: IBKR-DOCUMENTED, **never measured on this system**, KNOWN-RED against the tap in
+        `~/nix/downloads/tap_session_runbook.md`. Translating a declaration does not promote
+        it to a measurement."""
+        volume = row.get("volume")
+        return None if volume == IB_VOLUME_NOT_REPORTED else volume
 
     @staticmethod
     def _require_ohlc(symbol: Symbol, row) -> dict[str, float]:
@@ -1048,11 +1779,22 @@ class IBKRBrokerDatafeed:
             )
         return {f: row[f] for f in BAR_REQUIRED_PAYLOAD_FIELDS}
 
-    def _maybe_revise(self, sealed: Bar, row, recv_ts: float) -> None:
-        """Publish a revision iff the venue's new story DIFFERS from the sealed one."""
-        revised = tuple(row.get(name) for name in BAR_PAYLOAD_FIELDS)
+    def _maybe_revise(self, sealed: Bar, row, recv_ts: float) -> bool:
+        """Publish a revision iff the venue's new story DIFFERS from the sealed one. Returns
+        whether one was published, so the attempt record can count it without re-deriving it.
+
+        THE VOLUME COMPARISON GOES THROUGH THE SAME VENDOR BOUNDARY as the seal
+        (`_volume`): a first poll reporting `-1` seals `volume=None`, and a second poll
+        reporting `-1` must compare equal to it. Reading the raw row here while the seal held
+        the translated value would make every re-poll of a volume-less bar look like a
+        revision — the no-op-revision flood `BarRevision.__post_init__` exists to prevent,
+        reintroduced by comparing two different representations of one fact."""
+        revised = tuple(
+            self._volume(row) if name == "volume" else row.get(name)
+            for name in BAR_PAYLOAD_FIELDS
+        )
         if revised == sealed.payload():
-            return
+            return False
         differing = tuple(
             name
             for name, was, now in zip(
@@ -1070,6 +1812,7 @@ class IBKRBrokerDatafeed:
         )
         self._revisions.append(revision)
         self._sink.on_bar_revision(revision)
+        return True
 
     # ------------------------------------------------------------------
     # RETAINED OBSERVABLES — the FlattenAttempt construction
@@ -1089,10 +1832,41 @@ class IBKRBrokerDatafeed:
     def poll_attempts(self) -> tuple[PollAttempt, ...]:
         return tuple(self._poll_attempt_log)
 
+    def unpublished_seals(self) -> tuple[Bar, ...]:
+        """Bars SEALED whose `on_bar` the sink has not accepted, oldest seal first. ARC 023,
+        F13's observable half.
+
+        The loss used to be undetectable from outside and detectable from inside only by
+        comparing `len(sealed_bars())` against a count the adapter did not keep. It is now a
+        value, so a consumer, a gate and a test can all read the same fact — and it is EMPTY on
+        a healthy adapter, which is what makes a non-empty reading mean something."""
+        return tuple(
+            sorted(
+                (self._sealed[key] for key in self._unpublished),
+                key=lambda b: b.seal_seq,
+            )
+        )
+
+    def polled_symbols(self) -> tuple[Symbol, ...]:
+        """Symbols this adapter has POLLED. **Not subscriptions** — see `_SymbolPollState`.
+
+        Readable so the F12 boundary is provable from outside the adapter rather than by
+        reaching into `_symbols` and `_polled`: after a poll of an unsubscribed symbol this
+        tuple grows and `granted_mode()` does not move."""
+        return tuple(sorted(self._polled))
+
     def last_tick_recv_ts(self, symbol: Symbol) -> float | None:
         state = self._symbols.get(symbol)
         return state.last_tick_recv_ts if state else None
 
     def last_poll_recv_ts(self, symbol: Symbol) -> float | None:
-        state = self._symbols.get(symbol)
-        return state.last_poll_recv_ts if state else None
+        """Reads `_polled`, not `_symbols` (ARC 023, F12): a poll clock is not a fact about a
+        subscription, and it is available for a symbol that was never subscribed."""
+        polled = self._polled.get(symbol)
+        return polled.last_poll_recv_ts if polled else None
+
+    def last_bar_venue_ts(self, symbol: Symbol) -> float | None:
+        """The POLL channel's freshness stamp — the newest polled bar's venue-sourced open.
+        `None` == this symbol has never been polled, or every poll returned nothing."""
+        polled = self._polled.get(symbol)
+        return polled.last_bar_venue_ts if polled else None

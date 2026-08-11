@@ -118,8 +118,12 @@ import pytest  # pylint: disable=import-error
 from broker_datafeed_ibkr import (
     DATAFEED_CLIENT_ID,
     IB_MARKETDATA_EVIDENCE,
+    IB_POLL_LAG_RECORD,
     IB_STAGE0_DELAYED_LAG,
+    IB_VOLUME_NOT_REPORTED,
     IBKRBrokerDatafeed,
+    PollAttempt,
+    Stage0LagRecord,
 )
 
 # `ORDER_ASYNC_VERBS` and `BrokerOrderPort` are imported here and that is NOT an invariant 3
@@ -134,6 +138,9 @@ from broker_seam import (
     DATAFEED_ASYNC_VERBS,
     DATAFEED_EVENTS,
     DATAFEED_PORT_VERBS,
+    LAG_SAMPLE_FLOOR,
+    LAG_WINDOW_MAX_SAMPLES,
+    LAG_WINDOW_S,
     ORDER_ASYNC_VERBS,
     PORT_ASYNC_VERBS,
     VENUE_SOURCED_BAR_SOURCES,
@@ -145,13 +152,17 @@ from broker_seam import (
     BrokerNotConnected,
     BrokerOrderPort,
     BrokerUnsupported,
+    ChannelState,
     CoroutineDivergentBrokerDatafeed,
+    FeedChannel,
     FeedLag,
     FeedPollExhausted,
     FeedState,
     HollowBrokerDatafeed,
     LagAgreement,
     LagProvenance,
+    LagWindow,
+    LagWindowBound,
     MalformedBarRow,
     MarketDataMode,
     RecordingFeedSink,
@@ -649,28 +660,160 @@ async def test_a_prior_arc_figure_declares_itself_as_one():
 @pytest.mark.asyncio
 async def test_observation_promotes_provenance_and_a_divergence_is_readable():
     """Where the lag CAN be observed, the declared figure is CHECKED — and a divergence is a
-    value on the object, not a log line."""
+    value on the object, not a log line.
+
+    THE PACKET COUNT IS DERIVED FROM THE FLOOR, NOT TYPED (ARC 023, F17, `debug.md` §7.4). The
+    window declares `LAG_SAMPLE_FLOOR` and below it this object declares ABSENCE rather than a
+    mean; a literal 4 here would have gone stale silently the day the floor moved, which is
+    exactly what it did."""
     ad, _, _ = await make_adapter(grant_map={3: 3})
     await ad.subscribe(SYM)
     now = 10_000.0
-    for i in range(4):
+    n = LAG_SAMPLE_FLOOR
+    for i in range(n):
         ad._on_ib_tick(SYM, 1.0, 1.0, now - 600.0 - i, recv_ts=now - i)
     lag = ad.feed_lag(SYM)
     assert lag.provenance is LagProvenance.OBSERVED
-    assert lag.observed_n == 4
+    assert lag.observed_n == n
     assert lag.observed_lag_s == pytest.approx(600.0)
     assert lag.agreement is LagAgreement.AGREES
     assert lag.divergence_s == pytest.approx(600.0 - IB_STAGE0_DELAYED_LAG.mean_s)
+    assert lag.channel is FeedChannel.TICK
 
     # Now a feed that has fallen far behind its declaration.
     ad2, _, _ = await make_adapter(grant_map={3: 3})
     await ad2.subscribe(SYM)
-    ad2._on_ib_tick(SYM, 1.0, 1.0, now - 900.0, recv_ts=now)
+    for i in range(n):
+        ad2._on_ib_tick(SYM, 1.0, 1.0, now - 900.0 - i, recv_ts=now - i)
     diverged = ad2.feed_lag(SYM)
     assert diverged.agreement is LagAgreement.DIVERGED
     assert diverged.divergence_s == pytest.approx(900.0 - IB_STAGE0_DELAYED_LAG.mean_s)
     # OBSERVATION OUTRANKS DECLARATION: the consumer computes against what was measured.
     assert diverged.effective_lag_s == pytest.approx(900.0)
+
+
+# ===========================================================================
+# §3b — ARC 023: THE BOUNDED LAG WINDOW (F17)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_below_the_floor_the_lag_declares_absence_and_says_how_many_it_held():
+    """F17's floor half. Fewer than `LAG_SAMPLE_FLOOR` samples is not a small measurement; it
+    is no measurement — and it is DISTINGUISHABLE from having none at all.
+
+    `observed_n=0` with `window.n_in_window=0` says *none*; `observed_n=0` with
+    `n_in_window=4` says *too few*. One field cannot say both, which is why the window is
+    carried beside the figure (`docs/SPEC-AMENDMENTS.md` AMENDMENT 3)."""
+    ad, _, _ = await make_adapter(grant_map={3: 3})
+    await ad.subscribe(SYM)
+    lag = ad.feed_lag(SYM)
+    assert lag.window is not None and lag.window.n_in_window == 0
+    assert lag.observed_lag_s is None and lag.observed_n == 0
+
+    for i in range(LAG_SAMPLE_FLOOR - 1):
+        ad._on_ib_tick(SYM, 1.0, 1.0, NOW - 600.0 + i, recv_ts=NOW + i)
+    lag = ad.feed_lag(SYM)
+    assert lag.window is not None
+    assert lag.window.n_in_window == LAG_SAMPLE_FLOOR - 1
+    assert lag.observed_lag_s is None and lag.observed_n == 0
+    assert lag.provenance is not LagProvenance.OBSERVED
+    assert "below the floor" in lag.detail
+
+    # NO FALL-BACK TO THE SESSION FIGURE, which is the substitution F17 is about. The session
+    # mean EXISTS and is a different, separately-named field that nothing decides on.
+    assert lag.session_mean_lag_s == pytest.approx(600.0)
+    assert (
+        lag.effective_lag_s == IB_STAGE0_DELAYED_LAG.mean_s
+    )  # the DECLARED one, not it
+
+    ad._on_ib_tick(SYM, 1.0, 1.0, NOW - 600.0, recv_ts=NOW + LAG_SAMPLE_FLOOR)
+    assert ad.feed_lag(SYM).observed_n == LAG_SAMPLE_FLOOR
+
+
+def test_a_lag_reporting_a_mean_over_fewer_than_its_floor_is_unconstructible():
+    """THE FLOOR IS STRUCTURAL, so a second adapter cannot reintroduce F17 by forgetting it —
+    the construction `Bar.__post_init__` uses for AMENDMENT 4."""
+    window = LagWindow(
+        window_s=LAG_WINDOW_S,
+        sample_floor=LAG_SAMPLE_FLOOR,
+        max_samples=LAG_WINDOW_MAX_SAMPLES,
+        n_in_window=LAG_SAMPLE_FLOOR - 1,
+        span_s=1.0,
+        bound=LagWindowBound.WITHIN_BOTH,
+    )
+    with pytest.raises(ValueError, match="below the floor"):
+        FeedLag(
+            declared_lag_s=600.3,
+            observed_lag_s=600.0,
+            observed_n=LAG_SAMPLE_FLOOR - 1,
+            provenance=LagProvenance.OBSERVED,
+            granted_mode=MarketDataMode.DELAYED,
+            window=window,
+        )
+
+
+@pytest.mark.asyncio
+async def test_the_window_is_bounded_by_time_and_the_bound_that_applied_is_readable():
+    """F17's window half, and BOTH bounds, because a time window alone is not memory-bounded.
+
+    MEASURED ARC 023: at this box's ingest ceiling (3,561,839 samples/s) a pure 60 s window
+    would retain 213,710,318 samples = 20.5 GB, so a count backstop is required — and WHICH
+    bound applied has to be readable, because under `COUNT` the retained set spans less than
+    `window_s` and the mean answers a narrower question than was asked."""
+    ad, _, _ = await make_adapter(grant_map={3: 3})
+    await ad.subscribe(SYM)
+    # Two full window-widths of samples, one per second, at the ARC 013 lag.
+    span = int(LAG_WINDOW_S * 2)
+    for i in range(span):
+        ad._on_ib_tick(SYM, 1.0, 1.0, float(i), recv_ts=float(i) + 600.0)
+    win = ad.feed_lag(SYM).window
+    assert win is not None
+    assert win.bound is LagWindowBound.TIME
+    # THE RELATION, not a literal: nothing older than the window survives, and the retained
+    # span cannot exceed the width that was asked for.
+    assert win.n_in_window < span
+    assert win.span_s is not None and win.span_s <= LAG_WINDOW_S
+
+    # THE COUNT BACKSTOP, driven by configuring it small rather than by ingesting 20 GB.
+    tight, _, _ = await make_adapter(grant_map={3: 3}, lag_max_samples=LAG_SAMPLE_FLOOR)
+    await tight.subscribe(SYM)
+    for i in range(LAG_SAMPLE_FLOOR * 4):
+        tight._on_ib_tick(SYM, 1.0, 1.0, float(i), recv_ts=float(i) * 0.001 + 600.0)
+    tight_win = tight.feed_lag(SYM).window
+    assert tight_win is not None
+    assert tight_win.bound is LagWindowBound.COUNT
+    assert tight_win.n_in_window == LAG_SAMPLE_FLOOR
+    # And the span it now covers is SHORTER than the window it was asked for — the fact the
+    # `COUNT` member exists to make readable.
+    assert tight_win.span_s is not None and tight_win.span_s < LAG_WINDOW_S
+
+
+@pytest.mark.asyncio
+async def test_a_recent_degradation_is_visible_where_the_session_mean_hides_it():
+    """F17's LOAD-BEARING half: the observable was wrong in the direction that matters.
+
+    It said the feed AGREED while the feed had fallen 300 s further behind. The relation
+    asserted here is the repair — the windowed figure follows the recent packets and the
+    session figure, which nothing decides on, still shows the dilution."""
+    ad, _, _ = await make_adapter(grant_map={3: 3})
+    await ad.subscribe(SYM)
+    healthy = 400
+    for i in range(healthy):  # one packet per second, healthy, well past the window
+        ad._on_ib_tick(SYM, 1.0, 1.0, float(i), recv_ts=float(i) + 600.0)
+    assert ad.feed_lag(SYM).agreement is LagAgreement.AGREES
+
+    # The feed degrades by 300 s. One window's worth of degraded packets, same rate.
+    degraded = int(LAG_WINDOW_S)
+    for i in range(healthy, healthy + degraded):
+        ad._on_ib_tick(SYM, 1.0, 1.0, float(i), recv_ts=float(i) + 900.0)
+    lag = ad.feed_lag(SYM)
+    assert lag.agreement is LagAgreement.DIVERGED
+    assert lag.observed_lag_s == pytest.approx(900.0)
+    # THE SESSION FIGURE STILL DILUTES — kept, informational, and read by no decision.
+    assert lag.session_mean_lag_s is not None
+    assert lag.session_mean_lag_s < lag.observed_lag_s
+    assert lag.effective_lag_s == pytest.approx(lag.observed_lag_s)
 
 
 def test_feedlag_refuses_to_be_constructed_incoherently():
@@ -1097,7 +1240,9 @@ async def test_feed_state_writer_3_evaluate_freshness_is_the_only_writer_of_stal
     assert ad.evaluate_freshness(10_000.0) is FeedState.STALE
     state, _symbol, reason = sink.feed_statuses[-1]
     assert state is FeedState.STALE
-    assert "excess staleness" in reason
+    # ARC 023 (AMENDMENT 6): the reason is the PER-CHANNEL summary, derived from the report
+    # rather than restated, so the event text cannot disagree with the object it summarises.
+    assert "AMENDMENT 6" in reason and "cannot_measure=['tick']" in reason
     # And the session writers never emit STALE, on any path.
     session_states = [
         s
@@ -1646,3 +1791,305 @@ def test_zero_volume_and_absent_volume_remain_different_facts():
         revision_seq=1,
     )
     assert revision.differing_fields == ("volume",)
+
+
+# ===========================================================================
+# §12 — ARC 023: AMENDMENT 6 (freshness is per-channel), F13, F12, D1.39/D1.40
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_a_symbol_fed_only_by_polling_is_not_reported_stale():
+    """F21, THE REPAIR. `evaluate_freshness` read `last_tick_venue_ts` alone, so a symbol fed
+    entirely by successful, current polls was permanently STALE — and
+    `nics_risk_subsystem_spec_v1.3.md` §6.4:373-374 makes STALE mean *halt new entries AND
+    flatten open*. The module fail-closed on the only margin-class path Stage 0 has (GAP-D4).
+
+    THE REPAIR IS NOT "call it fresh". It is that the two channels are reported SEPARATELY, so
+    a poll channel that cannot be measured reads as CANNOT_MEASURE and not as a failure, and a
+    poll channel that CAN be measured reads on its own evidence."""
+    now = 1000.0
+    ad, _, _ = await make_adapter(
+        grant_map={3: 3}, history=lambda s: [bar_row(now - 1.0)]
+    )
+    await ad.subscribe(SYM)
+    await ad.poll_history(SYM)
+    report = ad.freshness(now, SYM)[0]
+
+    # BOTH channels are reported, and neither is collapsed into the other.
+    assert report.observed_channels == (FeedChannel.TICK, FeedChannel.POLL)
+    tick = report.channel(FeedChannel.TICK)
+    poll = report.channel(FeedChannel.POLL)
+    assert tick is not None and poll is not None
+
+    # THE TICK CHANNEL: no packet has ever arrived, so it cannot be measured — NOT stale.
+    assert tick.venue_ts is None
+    assert tick.state is ChannelState.CANNOT_MEASURE
+
+    # THE POLL CHANNEL: a real, current venue timestamp, and NO lag figure on this system —
+    # so the honest answer is CANNOT_MEASURE and it is distinguishable from a degraded feed.
+    assert poll.venue_ts == now - 1.0
+    assert poll.lag.channel is FeedChannel.POLL
+    assert poll.lag.provenance is LagProvenance.UNOBSERVED
+    assert poll.state is ChannelState.CANNOT_MEASURE
+    assert report.stale_channels == ()
+
+    # AND THE POINT: the two channels' lags are DIFFERENT objects with different grades. The
+    # tick channel's measured figure is not reported as the poll channel's.
+    assert tick.lag.declared_lag_s == IB_STAGE0_DELAYED_LAG.mean_s
+    assert poll.lag.declared_lag_s is None
+
+
+@pytest.mark.asyncio
+async def test_a_poll_channel_with_a_declared_lag_reads_fresh_on_its_own_evidence():
+    """The other half of F21: given a figure FOR THAT CHANNEL, the poll channel is measurable
+    and reads fresh on current data. Without this arm, "the poll channel is CANNOT_MEASURE" is
+    indistinguishable from "the poll channel can never read anything else"."""
+    now = 1000.0
+    declared = Stage0LagRecord(
+        low_s=600.0,
+        high_s=600.0,
+        mean_s=600.0,
+        spread_s=0.0,
+        n=0,
+        arc="none",
+        citation="operator-supplied for this test; NOT a measurement of this system",
+        channel=FeedChannel.POLL,
+        provenance=LagProvenance.VENDOR_DECLARED,
+    )
+    ad, _, _ = await make_adapter(
+        grant_map={3: 3},
+        history=lambda s: [bar_row(now - 600.0)],
+        poll_lag_record=declared,
+    )
+    await ad.subscribe(SYM)
+    await ad.poll_history(SYM)
+    report = ad.freshness(now, SYM)[0]
+    poll = report.channel(FeedChannel.POLL)
+    assert poll is not None
+    assert poll.state is ChannelState.FRESH
+    assert report.fresh_channels == (FeedChannel.POLL,)
+    # THE GRADE IS NEVER PROMOTED. A configured figure stays VENDOR_DECLARED however it is
+    # used, and its detail says the measurement is owed and names the tap that would take it.
+    assert poll.lag.provenance is LagProvenance.VENDOR_DECLARED
+    assert "KNOWN-RED" in poll.lag.detail
+    assert "tap_session_runbook.md" in poll.lag.detail
+
+
+def test_the_poll_channel_has_no_lag_figure_on_this_system():
+    """THE KNOWN-RED, asserted rather than only written down. `IB_POLL_LAG_RECORD` is `None`
+    because no arc has measured the poll channel; a figure appearing here without the tap
+    having run is what this assertion exists to catch."""
+    assert IB_POLL_LAG_RECORD is None
+
+
+@pytest.mark.asyncio
+async def test_the_tick_channels_measured_figure_cannot_be_installed_on_the_poll_channel():
+    """AMENDMENT 3, ENFORCED RATHER THAN REQUESTED. The tick channel's 600.0-601.9 s figure is
+    measured, real, and one keyword away from the poll slot; installing it there would report
+    the poll channel as measured when nothing has measured it. A plausible number is still a
+    substitution."""
+    with pytest.raises(
+        ValueError, match="channel=tick and this slot is the poll channel"
+    ):
+        IBKRBrokerDatafeed(RecordingFeedSink(), poll_lag_record=IB_STAGE0_DELAYED_LAG)
+    # And the mirror, so the guard is not one-directional.
+    poll_record = Stage0LagRecord(
+        low_s=1.0,
+        high_s=1.0,
+        mean_s=1.0,
+        spread_s=0.0,
+        n=0,
+        arc="none",
+        citation="test",
+        channel=FeedChannel.POLL,
+        provenance=LagProvenance.VENDOR_DECLARED,
+    )
+    with pytest.raises(
+        ValueError, match="channel=poll and this slot is the tick channel"
+    ):
+        IBKRBrokerDatafeed(RecordingFeedSink(), lag_record=poll_record)
+
+
+@pytest.mark.asyncio
+async def test_the_report_carries_no_collapsed_verdict():
+    """AMENDMENT 6's prohibition, proved BY ABSENCE (`debug.md` §7.6) rather than by a call
+    site. The seam *"does not collapse them into a single boolean"*, so the report type must
+    not carry one — a boolean here is the property every consumer would reach for first."""
+    now = 1000.0
+    ad, _, _ = await make_adapter(
+        grant_map={3: 3}, history=lambda s: [bar_row(now - 1.0)]
+    )
+    await ad.subscribe(SYM)
+    await ad.poll_history(SYM)
+    report = ad.freshness(now, SYM)[0]
+    banned = {
+        "is_fresh",
+        "is_stale",
+        "fresh",
+        "stale",
+        "state",
+        "verdict",
+        "feed_state",
+    }
+    present = {name for name in banned if hasattr(report, name)}
+    assert not present, (
+        f"FreshnessReport carries a collapsed verdict {sorted(present)} — AMENDMENT 6 puts "
+        "that decision on the consumer, and a property here is the collapse the ruling forbids"
+    )
+    # The three tuples that replace it are all present and they partition the channels.
+    partition = (
+        report.fresh_channels + report.stale_channels + report.cannot_measure_channels
+    )
+    assert sorted(partition, key=lambda c: c.value) == sorted(
+        report.observed_channels, key=lambda c: c.value
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_sealed_bar_the_sink_refused_is_owed_and_is_republished_not_rederived():
+    """F13. A sink that raised left a bar SEALED and UNPUBLISHED, and every later poll dropped
+    it as an identical re-poll: lost forever, with no revision, no error, and an attempt record
+    saying `ok=True, rows=4`.
+
+    THE REPAIR IS A PUBLICATION DEBT AND NOT A RE-DERIVATION. D1.14's seal-and-never-rewrite is
+    intact: the retry re-publishes the SEALED OBJECT, with its original `seal_seq` and payload,
+    so a bar cannot acquire a second identity and a revision arriving on the retry is still
+    evaluated against the ORIGINAL seal."""
+
+    class Refuses(RecordingFeedSink):
+        limit: int = 2
+
+        def on_bar(self, sealed):
+            if len(self.bars) >= self.limit:
+                raise RuntimeError("consumer refused the bar")
+            super().on_bar(sealed)
+
+    rows = [bar_row(100.0), bar_row(160.0), bar_row(220.0), bar_row(280.0)]
+    sink = Refuses()
+    fake = FakeIBFeed(grant_map={3: 3})
+    ad = IBKRBrokerDatafeed(sink, ib=fake, history_source=lambda s: list(rows))
+    fake.bind(ad)
+    await ad.connect()
+    await ad.subscribe(SYM)
+
+    with pytest.raises(RuntimeError):
+        await ad.poll_history(SYM)
+
+    # NON-VACUITY: a side effect really landed before the failure.
+    assert len(ad.sealed_bars()) == 3 and len(sink.bars) == 2
+
+    # DEFECT 1 CLOSED: the loss is a VALUE, not an absence of evidence.
+    owed = ad.unpublished_seals()
+    assert [b.seal_key for b in owed] == [(SYM, 220.0, 60.0)]
+
+    # DEFECT 2 CLOSED: the attempt cannot claim success over it.
+    attempt = ad.poll_attempts()[-1]
+    assert attempt.ok is False
+    assert (
+        attempt.venue_answered is True
+    )  # the venue DID answer — two facts, two fields
+    assert (attempt.rows, attempt.sealed, attempt.published, attempt.undelivered) == (
+        4,
+        3,
+        2,
+        1,
+    )
+
+    sink.limit = 99  # the consumer recovers
+    assert await ad.poll_history(SYM) == 4
+
+    # THE BAR IS RECOVERED, AND IT IS THE SAME OBJECT — re-published, never rebuilt.
+    assert ad.unpublished_seals() == ()
+    published = {b.seal_key for b in sink.bars}
+    assert {b.seal_key for b in ad.sealed_bars()} == published
+    recovered = next(b for b in sink.bars if b.seal_key == (SYM, 220.0, 60.0))
+    assert recovered is owed[0]
+    assert recovered.seal_seq == owed[0].seal_seq
+    # And no duplicate crossed: four keys, four bars, one seal each.
+    assert len(sink.bars) == len({b.seal_key for b in sink.bars}) == 4
+    assert sink.bar_revisions == []
+    assert ad.poll_attempts()[-1].ok is True
+
+
+def test_a_poll_attempt_cannot_be_constructed_green_over_a_loss():
+    """F13's second defect, STRUCTURAL. `ok=True` over an undelivered bar is unconstructible,
+    so a later edit to the poll loop cannot reintroduce the green-over-a-lost-bar record by
+    forgetting the rule (the construction `Bar.__post_init__` uses for AMENDMENT 4)."""
+    with pytest.raises(ValueError, match="success reported over a lost bar"):
+        PollAttempt(1, SYM, 0.0, ok=True, venue_answered=True, rows=4, undelivered=1)
+    with pytest.raises(ValueError, match="success reported over a lost bar"):
+        PollAttempt(1, SYM, 0.0, ok=True, venue_answered=False)
+
+
+@pytest.mark.asyncio
+async def test_polling_creates_no_subscription_state_and_no_wire_message():
+    """F12. `poll_history` called `self._symbols.setdefault(...)`, manufacturing a subscription
+    record for a symbol nobody subscribed — so the adapter-wide grant collapsed, and a later
+    `unsubscribe` put a REAL `cancelMktData` on the wire for a subscription this library never
+    made. Venue-side activity that is attributable to no intent of this library, on a clientId
+    whose entire argument is that it must be."""
+    other = "NQZ6"
+    ad, _, fake = await make_adapter(
+        grant_map={3: 3}, history=lambda s: [bar_row(100.0)]
+    )
+    await ad.subscribe(SYM)
+    assert (
+        ad.granted_mode() is MarketDataMode.DELAYED
+    )  # non-vacuity: a real grant is held
+
+    await ad.poll_history(other)
+
+    # NO SUBSCRIPTION STATE. The poll is recorded, and it is recorded as a POLL.
+    assert other not in ad._symbols
+    assert ad.polled_symbols() == (other,)
+    assert ad.last_poll_recv_ts(other) is not None
+    # The adapter-wide grant is untouched: the poll did not widen the set it is pessimistic over.
+    assert ad.granted_mode() is MarketDataMode.DELAYED
+    assert ad.granted_mode(other) is MarketDataMode.UNKNOWN
+
+    # NO WIRE MESSAGE. `unsubscribe` of a symbol that was only ever polled sends nothing.
+    await ad.unsubscribe(other)
+    assert fake.cancelled == []
+    assert other not in fake.subscribed
+
+    # AND THE CONTROL: a symbol that WAS subscribed still gets its cancel, so this is not
+    # "unsubscribe no longer works".
+    await ad.unsubscribe(SYM)
+    assert fake.cancelled == [SYM]
+
+
+@pytest.mark.asyncio
+async def test_the_ibkr_not_reported_volume_sentinel_is_translated_at_the_boundary():
+    """D1.39/D1.40. IBKR's `-1` is its not-reported sentinel and it is what justifies
+    `Bar.volume`'s `| None` under AMENDMENT 3's ARC 022 refinement — but nothing translated it,
+    so the raw sentinel crossed the seam as a number and a consumer doing arithmetic could read
+    it as *one contract traded, short*. The field kept optional to prevent a fabricated volume
+    was delivering one.
+
+    THE GRADE IS UNCHANGED BY THE TRANSLATION and that is stated, not implied: the sentinel is
+    IBKR-DOCUMENTED and has never been measured on this system. Translating it is not measuring
+    it."""
+    ad, sink, _ = await make_adapter(
+        grant_map={3: 3},
+        history=lambda s: [bar_row(100.0, v=IB_VOLUME_NOT_REPORTED)],
+    )
+    await ad.subscribe(SYM)
+    await ad.poll_history(SYM)
+    assert sink.bars[0].volume is None
+
+    # NOT A BLANKET RULE: only the ONE documented sentinel is translated. A value no document
+    # assigns a meaning to does not acquire one here.
+    ad2, sink2, _ = await make_adapter(
+        grant_map={3: 3}, history=lambda s: [bar_row(200.0, v=-2.0)]
+    )
+    await ad2.subscribe(SYM)
+    await ad2.poll_history(SYM)
+    assert sink2.bars[0].volume == -2.0
+
+    # AND A RE-POLL OF THE SENTINEL IS NOT A REVISION. The comparison goes through the same
+    # boundary as the seal, so `-1` twice is one bar and no revision — not the no-op revision
+    # flood `BarRevision.__post_init__` exists to prevent.
+    await ad.poll_history(SYM)
+    assert sink.bar_revisions == []
+    assert len(sink.bars) == 1

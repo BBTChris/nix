@@ -119,20 +119,61 @@ ARM A — REPRESENTATIONAL CAPACITY. `debug.md` §7.12 instances 4 and 5 are bot
           document.
 
 ARM B — THE THREE-WAY DRIVE, and the reason this gate exists.
-      B1. BEHAVIOURAL. Every mode-resolution callable in a subject module —
-          discovered by its RETURN ANNOTATION being the seam's mode enum, which
-          is content-derived and survives any rename of the function — is
-          executed three times and all three legs are asserted:
+      B0. THE MAPPING. Every MODULE-LEVEL pure mapping from a vendor integer to
+          the seam's enum, in a subject module, executed over the three legs:
 
               sentinel value (0) -> UNKNOWN     and NOT REALTIME
               vendor default (1) -> REALTIME    and NOT UNKNOWN
               downgrade  (3)     -> DELAYED     and NOT DELAYED_FROZEN
 
           plus the discrimination assertion the other three do not imply:
-          **leg 1 and leg 2 must produce DIFFERENT values.** An observer that
-          collapses them is the defect, and it is the one leg that catches an
-          implementation which "handles" the sentinel by mapping it to
-          real-time.
+          **leg 1 and leg 2 must produce DIFFERENT values.** A mapping that
+          collapses them is the defect. THIS ARM CANNOT CARRY A PASS AND
+          CONTRIBUTES NO LEG — see B1 for why that sentence is the whole repair.
+
+      B1. THE LIFECYCLE, AND IT IS WHAT THIS GATE NOW MEANS BY "MEASURED".
+          REBUILT IN ARC 023 (D3.16). What stood here discovered its observers
+          BY RETURN ANNOTATION and called them with a raw integer. That works
+          for a pure function and cannot work for an accessor: the port's mode
+          verb takes a SYMBOL, so `granted_mode(0)` put the mode integer in
+          `self` and raised `AttributeError` on all three legs — while
+          `resolve_granted_mode`, a module-level helper carrying the same
+          annotation, drove three green legs beside it and the verdict took the
+          MAXIMUM. **The gate reported PASS across two arcs over a method it had
+          never once executed**, and ARC 021's real plant 2 lives in exactly
+          that method.
+
+          The observer is now the roster verb the PORT PROTOCOL declares as
+          returning the mode enum (`_port_mode_verb`), and it is driven as a
+          LIFECYCLE on a CONSTRUCTED subject rather than called with a number:
+
+            1. constructed, never connected     -> the sentinel. A grant cannot
+                                                   precede a session.
+            2. subscribed, no grant callback    -> the sentinel, PER SYMBOL and
+                                                   ADAPTER-WIDE. This is leg 0,
+                                                   driven from a real absence
+                                                   instead of a synthetic value.
+            3. venue grants 1                   -> REALTIME, not the sentinel
+            4. RE-SUBSCRIBED                    -> the sentinel again. A grant
+                                                   belongs to a subscription and
+                                                   is never inherited.
+            5. venue grants 3                   -> DELAYED, not DELAYED_FROZEN
+            6. two symbols, two different grants -> the adapter-wide answer is
+                                                   the sentinel, never one of
+                                                   them. A single mode reported
+                                                   for a set that does not share
+                                                   one is a fabricated value.
+            7. discrimination: steps 2 and 3 must differ.
+
+          The grant is delivered through the subject's OWN callback, found by
+          `_grant_writers` — a method that assigns the mode state and takes a
+          vendor `int`. Nothing in this file names a vendor keyword, a callback,
+          or a symbol type; every one of them is read off the tree.
+
+          NON-VACUITY IS ASSERTED ON EVERY RUN, NOT ONCE. The lifecycle is run
+          under `sys.settrace` and the gate asserts the port's mode verb appears
+          in the execution trace OF THE SUBJECT'S OWN FILE. A subject the gate
+          could not drive is CANNOT_MEASURE naming the subject — never PASS.
       B2. STRUCTURAL — THE SENTINEL WRITE. A subject module that reads the
           vendor mode field must also WRITE the sentinel to it. Without that
           write the field holds the vendor default forever and B1's leg 1 never
@@ -183,19 +224,33 @@ Seven conditions, each stated so it could be planted.
     `IBKRDatafeedAdapter` in `scripts/broker/ibkr_mapping.py` does today, so
     arms B and C both find nothing to execute and the gate "passes" on arm A
     alone.
-    GUARDED: PASS requires arm B1 to have executed at least one observer on all
-    three legs. Arm A can never carry a PASS by itself — it proves the
-    vocabulary exists, not that anyone used it.
+    GUARDED: PASS requires at least one subject to have completed the WHOLE
+    lifecycle, and requires the port's mode verb to appear in that subject's own
+    execution trace. Arm A can never carry a PASS by itself — it proves the
+    vocabulary exists, not that anyone used it — and neither can arm B0, which
+    is why B0 returns no leg count at all.
+    THE RESIDUAL, STATED: a subject that raises `NotImplementedError` is
+    recorded as REFUSING and does not block a PASS earned by another subject.
+    That is deliberate — `ibkr_mapping.IBKRDatafeedAdapter` is a refusing
+    skeleton whose whole contract is to raise, and reddening it for honouring
+    that contract is doctrine B.4's forbidden direction — and it is a hole an
+    adapter could hide in by raising `NotImplementedError` everywhere. Every
+    refusing subject is NAMED in the evidence on every run, which is the same
+    mitigation the seam-exclusion advisory gets in condition 5.
 
- 3. THE OBSERVER IS NOT DISCOVERABLE because it carries no return annotation,
-    or its annotation is a string the resolver cannot bind to the seam's enum.
-    GUARDED as CANNOT_MEASURE with the subject named, not as PASS — but the
-    RESIDUAL is real and is stated rather than hidden: a subject whose mode
-    resolution is inlined into `feed_lag()` with no separately annotated
-    callable presents arm B1 no binding site. Arm C still binds, arm B2/B3
-    still bind, and the gate reports exactly which arms measured. Closing it
-    means executing the adapter against a synthesised vendor SDK, which is
-    NAMED GAP 1 below.
+ 3. THE OBSERVER IS NOT DISCOVERABLE. This was the condition the gate FELL
+    THROUGH rather than the one it guarded, and the correction is the reason
+    arm B1 was rebuilt. As written, discovery was by RETURN ANNOTATION over a
+    subject module, so a module-level pure helper carrying that annotation was
+    collected beside the accessor and its three green legs were taken as the
+    subject's, by `max`. GUARDED NOW at the source: the observer is named by the
+    PORT ROSTER and the Protocol's own signature, and the trace assertion makes
+    "did the gate execute it?" a machine question. A port that declares no verb
+    returning the mode enum is CANNOT_MEASURE naming the roster, never PASS.
+    THE RESIDUAL that survives: driving requires the subject to be CONSTRUCTIBLE
+    offline. A vendor adapter that opens a socket in `__init__` presents no
+    binding site, is reported as `not constructible` with the exception, and is
+    CANNOT_MEASURE. That is honest, and it is not closed.
 
  4. THE VENDOR DEFAULT CHANGES to 0 upstream, making the sentinel
     indistinguishable from an unset field again while every assertion here
@@ -231,15 +286,31 @@ Seven conditions, each stated so it could be planted.
     it — and arm B1, which is behavioural, does not depend on the spelling at
     all.
 
-NAMED GAP 1 — DRIVING THE ADAPTER AGAINST A SYNTHESISED VENDOR SDK, ASSESSED
-AND NOT CLOSED. Arms B1 and C execute real code, but neither drives the full
-`subscribe -> callback -> feed_lag` sequence, because doing so requires a
-stand-in for the whole vendor client. A permissive stand-in is `debug.md`
-§7.12 instance 5 exactly — the polite fake whose missing `multiplier` made two
-different units numerically identical — and a faithful one is a second
-implementation of the vendor SDK, which nobody can keep honest. What closes
-this properly is a LIVE session, which is the known-red this gate carries.
-Recorded here rather than half-closed.
+ 8. THE VENDOR SLOT IS NEVER FOUND, so no construction reaches `connect()` and
+    the lifecycle never starts. NEW IN ARC 023, because the lifecycle is new.
+    GUARDED as CANNOT_MEASURE naming every candidate slot tried and the
+    exception each produced. The slot is found by DRIVING — each optional
+    `None`-defaulted constructor keyword is filled with an absorber in turn and
+    the first that completes the lifecycle wins — rather than by naming `ib`,
+    which would be `debug.md` §7.4's stale anchor pointed at a vendor keyword.
+
+NAMED GAP 1 — DRIVING THE ADAPTER AGAINST A SYNTHESISED VENDOR SDK. NARROWED
+IN ARC 023, NOT CLOSED, AND THE NARROWING IS WHAT THIS ARC BOUGHT. The gate now
+DOES drive `construct -> connect -> subscribe -> grant callback -> read ->
+re-subscribe` against the real adapter, which is the sequence this gap said it
+did not. What makes that admissible rather than `debug.md` §7.12 instance 5 —
+the polite fake whose missing `multiplier` made two different units numerically
+identical — is that `_Absorber` is a SINK AND NOT A SOURCE: it accepts every
+wire call and returns only more of itself, and every value asserted on comes
+back out of the subject's own state through the port's own verb. A stand-in that
+started returning meaningful values would void that argument.
+
+WHAT IS STILL NOT DRIVEN, and it is the real remainder: the venue's own
+behaviour. That IBKR grants 3 when 4 is requested, silently, is a fact about the
+venue, and no absorber can produce it. Only a LIVE session can, and that is the
+known-red this gate carries (`docs/CHECK-DEBT.md` D1.33). The gate now proves
+the adapter reports the grant it is GIVEN; it does not prove what the venue
+gives.
 """
 
 from __future__ import annotations
@@ -312,6 +383,11 @@ DATAFEED_QUORUM = 3
 # --------------------------------------------------------------------------
 VENDOR_MODE_FIELD = "marketDataType"
 VENDOR_REQUEST_CALLS: tuple[str, ...] = ("reqMarketDataType",)
+
+# Symbols the LIFECYCLE drive subscribes. Two, because the adapter-wide answer
+# over two DIFFERENTLY-granted subscriptions is a leg the single-symbol legs do
+# not imply. Spelled so they could never be a real contract.
+PROBE_SYMBOLS: tuple[str, str] = ("GATE-PROBE-A", "GATE-PROBE-B")
 
 # The three legs. (probe input, expected member, member it must NOT be.)
 # Leg 1's input is the sentinel; leg 2's is the vendor default, re-measured by
@@ -629,7 +705,17 @@ def _granted_names(tree: ast.Module) -> set[str]:
 def _arm_b23(
     home: Path, subject: Subject, sentinel: int
 ) -> tuple[list[tuple[str, str]], list[str]]:
-    """(defects, measured-notes) for the two structural sub-arms."""
+    """(defects, measured-notes) for the two structural sub-arms.
+
+    EVERY BRANCH EMITS A NOTE, INCLUDING THE BRANCH THAT MEASURED NOTHING. Added
+    ARC 023 (S2), and it is D3.15's lesson applied one gate over rather than
+    remembered: both of these arms were SILENT when they had no subject, so
+    "measured and found nothing wrong" and "found nothing to measure" produced
+    the same output — which is exactly how arm 4 of the sibling gate sat vacuous
+    for two arcs while two other rows leaned on it. On the real adapter today B2
+    is vacuous by construction (`marketDataType` is never read by name; the
+    grant arrives as a callback parameter) and B3's granted-side name set is
+    EMPTY (D2.20), and until now the run said neither."""
     tree = _parse(home / subject.rel)
     if tree is None:
         return [(subject.rel, "unparseable")], []
@@ -637,6 +723,19 @@ def _arm_b23(
     notes: list[str] = []
     reads = _mode_field_reads(tree)
     writes = _sentinel_writes(tree, sentinel)
+    requested, granted = _requested_names(tree), _granted_names(tree)
+    if not reads:
+        notes.append(
+            f"B2 {subject.rel}: VACUOUS — {VENDOR_MODE_FIELD} never read by name, so "
+            "this arm has no subject here (the lifecycle's re-subscribe leg is what "
+            "covers the property behaviourally)"
+        )
+    if not granted:
+        notes.append(
+            f"B3 {subject.rel}: VACUOUS on the granted side — no `granted_mode=` "
+            "keyword anywhere, so the intersection is empty whatever the request "
+            "names are (D2.20)"
+        )
     if reads:
         notes.append(f"B2 {subject.rel}: {reads} read(s), {writes} sentinel write(s)")
         if not writes:
@@ -650,11 +749,9 @@ def _arm_b23(
                     ),
                 )
             )
-    shared = _requested_names(tree) & _granted_names(tree)
-    if _requested_names(tree):
-        notes.append(
-            f"B3 {subject.rel}: request-call names {sorted(_requested_names(tree))}"
-        )
+    shared = requested & granted
+    if requested:
+        notes.append(f"B3 {subject.rel}: request-call names {sorted(requested)}")
     if shared:
         defects.append(
             (
@@ -671,23 +768,127 @@ def _arm_b23(
 # --------------------------------------------------------------------------
 # ARM B1 / ARM C — behavioural, in a subprocess under the venv interpreter
 # --------------------------------------------------------------------------
-def _observers(home: Path, subject: Subject) -> list[str]:
-    """Callables whose RETURN ANNOTATION is the seam's mode enum.
+def _returns_mode(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    if node.returns is None:
+        return False
+    return ast.unparse(node.returns).strip("\"'").split(".")[-1] == MODE_ENUM
 
-    Discovery by annotation, not by name: a rename of the function does not
-    hide it, which is `debug.md` §7.4's requirement applied to a scope."""
+
+def _class_node(home: Path, subject: Subject) -> ast.ClassDef | None:
+    tree = _parse(home / subject.rel)
+    if tree is None:
+        return None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == subject.cls:
+            return node
+    return None
+
+
+def _port_mode_verb(home: Path, roster: Roster) -> str | None:
+    """THE OBSERVER, NAMED BY THE SETTLED ROSTER AND NOT BY AN ANNOTATION.
+
+    D3.16, and this function is the whole of the rebuild's premise. What stood
+    here was `_observers()`, which collected every callable in a SUBJECT MODULE
+    whose return annotation was the mode enum. Its docstring said "discovery by
+    annotation, not by name … `debug.md` §7.4's requirement applied to a scope",
+    and the argument is not wrong in general — it is wrong about WHERE the
+    contract lives. The contract is the PORT. `resolve_granted_mode` is a
+    module-level pure helper in `broker_datafeed_ibkr.py` carrying exactly that
+    annotation, so annotation-discovery collected it beside the adapter's own
+    accessor, drove it happily three ways, and the resulting leg count masked
+    the three `AttributeError`s the real accessor raised. Two arcs of PASS over
+    a method the gate never executed.
+
+    So the observer is now the roster verb the PORT PROTOCOL declares as
+    returning the mode enum. It is derived twice over — membership from
+    `DATAFEED_PORT_VERBS`, type from the Protocol's own signature — and a
+    helper that is not on the port cannot be mistaken for it however it is
+    annotated."""
+    tree = _parse(home / roster.rel)
+    if tree is None:
+        return None
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef) or not _is_protocol(node):
+            continue
+        for body in node.body:
+            if not isinstance(body, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if body.name in roster.verbs and _returns_mode(body):
+                return body.name
+    return None
+
+
+def _resolvers(home: Path, subject: Subject) -> list[str]:
+    """MODULE-LEVEL pure mappings from a vendor integer to the seam's enum.
+
+    Kept, demoted, and RENAMED from what it was. This is the set annotation
+    discovery used to return, minus the methods; driving it is worth something
+    (a mapping that collapses 0 onto 1 is a real defect and this is the cheapest
+    place to catch it) and it is worth EXACTLY that. It contributes ZERO
+    lifecycle legs, so it can never again stand in for the accessor — which is
+    the mechanical form of D3.16's lesson, as opposed to the remembered form."""
     tree = _parse(home / subject.rel)
     if tree is None:
         return []
-    out: list[str] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        if node.returns is None:
-            continue
-        if ast.unparse(node.returns).strip("\"'").split(".")[-1] == MODE_ENUM:
-            out.append(node.name)
+    out = [
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and _returns_mode(node)
+        and len(node.args.args) == 1
+    ]
     return sorted(set(out))
+
+
+class GrantWriter(NamedTuple):
+    """A method through which a VENDOR grant reaches the subject's mode state."""
+
+    name: str
+    params: tuple[str, ...]
+    int_params: tuple[str, ...]
+
+
+def _grant_writers(home: Path, subject: Subject, mode_verb: str) -> list[GrantWriter]:
+    """The subject's grant-DELIVERY entry points, derived, not named.
+
+    A grant writer is a method that (a) assigns to an attribute spelled the same
+    as the port's mode verb — the state the verb reports — and (b) takes a
+    parameter annotated `int`, which is the vendor's wire value arriving from
+    outside. Both halves are needed and neither is a spelling this file invents:
+    (a) comes from the roster via `_port_mode_verb`, (b) is what makes the
+    method a DELIVERY rather than a reset.
+
+    On the real adapter this selects `_on_ib_market_data_type` and rejects both
+    `subscribe` and `disconnect`, which also write the field but write the
+    SENTINEL and take no vendor value. That distinction is the property: only a
+    venue callback may report a mode."""
+    node = _class_node(home, subject)
+    if node is None:
+        return []
+    out: list[GrantWriter] = []
+    for fn in ast.walk(node):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        writes = any(
+            isinstance(n, ast.Assign)
+            and any(
+                isinstance(t, ast.Attribute) and t.attr == mode_verb for t in n.targets
+            )
+            for n in ast.walk(fn)
+        )
+        if not writes:
+            continue
+        args = fn.args.args[1:]  # drop the binding name
+        ints = tuple(
+            a.arg
+            for a in args
+            if a.annotation is not None
+            and ast.unparse(a.annotation).split("[")[0].split(".")[-1] == "int"
+        )
+        if not ints:
+            continue
+        out.append(GrantWriter(fn.name, tuple(a.arg for a in args), ints))
+    return out
 
 
 def _venv_python(home: Path) -> Path:
@@ -791,39 +992,66 @@ def _arm_a2(
     return [], note, default
 
 
+class Drive(NamedTuple):
+    """What the behavioural probe came back with."""
+
+    defects: list[tuple[str, str]]
+    notes: list[str]
+    driven: list[str]
+    """Subjects whose FULL lifecycle ran. Only these can carry a PASS."""
+    broken: list[str]
+    """Subjects the gate could not drive. CANNOT_MEASURE, never PASS."""
+    refusing: list[str]
+    """Subjects that raised `NotImplementedError`. A NOTE — see `_drive_legs`."""
+    traced: dict[str, list[str]]
+    """subject -> the functions of its own module that actually EXECUTED."""
+
+
 def _behavioural(
     home: Path,
     subjects: list[Subject],
     members: dict[str, int],
-    events: tuple[str, ...],
-) -> tuple[list[tuple[str, str]], list[str], int, list[str]]:
-    """Arms B1 and C, one probe for the whole subject set."""
+    ctx: tuple[str, tuple[str, ...]],
+) -> Drive:
+    """Arms B1 (lifecycle), B0 (mapping) and C, one probe for the subject set."""
+    mode_verb, events = ctx
     payload = {
         "op": "drive",
         "home": str(home),
         "subjects": [
-            {"rel": s.rel, "cls": s.cls, "observers": _observers(home, s)}
+            {
+                "rel": s.rel,
+                "cls": s.cls,
+                "mode_verb": mode_verb,
+                "resolvers": _resolvers(home, s),
+                "grant_writers": [list(g) for g in _grant_writers(home, s, mode_verb)],
+            }
             for s in subjects
         ],
         "three_way": [list(t) for t in THREE_WAY],
         "members": members,
         "mode_enum": MODE_ENUM,
+        "sentinel": SENTINEL_MEMBER,
+        "symbols": list(PROBE_SYMBOLS),
         "events": list(events),
     }
     res = _drive(home, payload)
     if "error" in res:
-        return (
+        return Drive(
             [],
             [f"B1/C: probe unavailable — {res['error']}"],
-            0,
+            [],
             ["probe unavailable"],
+            [],
+            {},
         )
-    defects = [(d["site"], d["why"]) for d in res.get("defects", [])]
-    return (
-        defects,
-        list(res.get("notes", [])),
-        int(res.get("legs", 0)),
-        list(res.get("broken", [])),
+    return Drive(
+        defects=[(d["site"], d["why"]) for d in res.get("defects", [])],
+        notes=list(res.get("notes", [])),
+        driven=list(res.get("driven", [])),
+        broken=list(res.get("broken", [])),
+        refusing=list(res.get("refusing", [])),
+        traced={k: list(v) for k, v in res.get("traced", {}).items()},
     )
 
 
@@ -852,10 +1080,43 @@ def _static_arms(
     return defects, notes
 
 
+def _non_vacuity(drive: Drive, subjects: list[Subject], mode_verb: str) -> str:
+    """'' if the gate DEMONSTRATED it drove the port's mode verb on a real
+    subject; otherwise the reason it did not.
+
+    THIS IS D3.16 IN ONE FUNCTION, AND IT IS ASSERTED BEFORE ANY VERDICT IS
+    BELIEVED. `nix_check_contract.md` §5.1 step 2 and doctrine C.3 both require
+    non-vacuity to be proven before a plant; the two arcs this row covers show
+    why it has to be proven on EVERY RUN instead. The old gate could not have
+    answered "did you execute `IBKRBrokerDatafeed.granted_mode`?" — it had no
+    representation of the question. The probe now traces the lifecycle with
+    `sys.settrace` and reports which functions of the SUBJECT'S OWN MODULE
+    executed, and this asserts the mode verb is among them. A gate that cannot
+    show it drove its subject reports CANNOT_MEASURE and says which subject."""
+    if not drive.driven:
+        return (
+            f"no subject completed the {mode_verb} lifecycle — "
+            f"{len(subjects)} subject(s), {len(drive.refusing)} declared refusal(s) "
+            f"{drive.refusing}, {len(drive.broken)} undrivable {drive.broken}"
+        )
+    missing = [s for s in drive.driven if mode_verb not in drive.traced.get(s, [])]
+    if missing:
+        return (
+            f"the lifecycle ran but {mode_verb} never appeared in the execution "
+            f"trace of {missing} — the gate did not drive the method it reports on "
+            "(D3.16, and this is the assertion that makes that sentence checkable)"
+        )
+    return ""
+
+
 def _verdict(
-    defects: list[tuple[str, str]], evidence: str, legs: int, broken: list[str]
+    defects: list[tuple[str, str]],
+    evidence: str,
+    drive: Drive,
+    ctx: tuple[list[Subject], str],
 ) -> CheckResult:
-    """FAIL dominates; then the three-way must have actually run; only then PASS."""
+    """FAIL dominates; then non-vacuity; then no subject may be undrivable."""
+    subjects, mode_verb = ctx
     if defects:
         return CheckResult(
             name=NAME,
@@ -864,32 +1125,29 @@ def _verdict(
             evidence=evidence,
             detail="; ".join(f"{s}: {w}" for s, w in defects),
         )
-    if legs < len(THREE_WAY):
+    vacuous = _non_vacuity(drive, subjects, mode_verb)
+    if vacuous:
+        return _cannot(vacuous, evidence=evidence)
+    # D3.16, ARC 022/023. An undrivable subject is a cannot-measure about the
+    # INSTRUMENT — `nix_check_contract.md` §5.3 — and never a pass about the code,
+    # however well another subject drove. A declared `NotImplementedError` is not
+    # in this set: see `_drive_legs`.
+    if drive.broken:
         return _cannot(
-            f"arm B1 executed {legs} of {len(THREE_WAY)} legs — the three-way "
-            "distinction is unproven, so a PASS would measure nothing "
-            "(§7.12 cond. 2/3)",
-            evidence=evidence,
-        )
-    # D3.16, ARC 022. `legs` is a MAX across observers, so one observer executing
-    # all three masks another executing none. Before this arc that mask produced a
-    # PASS over a subject the gate never drove. An undrivable subject is a
-    # cannot-measure about the instrument — `nix_check_contract.md` §5.3 — and never
-    # a pass about the code.
-    if broken:
-        return _cannot(
-            "arm B1 could not DRIVE its subject — "
-            + "; ".join(broken)
-            + ". Another observer satisfied the three-way, which is what made this "
-            "a PASS until ARC 022; a leg that raised is not a leg that passed "
-            "(D3.16)",
+            "could not DRIVE a subject — "
+            + "; ".join(drive.broken)
+            + ". Another subject satisfied the lifecycle, which is the shape that "
+            "made this a PASS until ARC 022; a leg that raised is not a leg that "
+            "passed (D3.16)",
             evidence=evidence,
         )
     return CheckResult(name=NAME, status=Status.PASS, evidence=evidence)
 
 
 def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argument
-    """Verdict. PASS requires arm B1 to have executed all three legs."""
+    """Verdict. PASS requires the port's mode verb to have been DRIVEN through a
+    full subscribe/grant/re-subscribe lifecycle on a real subject, and the
+    execution trace to prove it."""
     home = ctx.nix_home
     roster = _roster(home)
     if roster is None:
@@ -897,11 +1155,18 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
     members = _enum_members(home, roster)
     if not members:
         return _cannot(f"{roster.rel} declares {ROSTER_CONST} but no {MODE_ENUM} enum")
+    mode_verb = _port_mode_verb(home, roster)
+    if mode_verb is None:
+        return _cannot(
+            f"no verb on {ROSTER_CONST} is declared by a Protocol in {roster.rel} as "
+            f"returning {MODE_ENUM} — the port does not oblige anyone to report the "
+            "granted mode, so this gate has no contract to bind to (§7.12 cond. 3)"
+        )
 
     defects, notes = _representational(home, roster, members)
     subjects, advisories = _scope(home, roster)
     notes.append(
-        f"scope: roster {roster.rel} {roster.verbs}; "
+        f"scope: roster {roster.rel} {roster.verbs}; mode verb {mode_verb!r}; "
         f"{len(subjects)} subject(s) {[f'{s.rel}:{s.cls}' for s in subjects]}; "
         f"{len(advisories)} advisory: {advisories}"
     )
@@ -915,12 +1180,24 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
     static_defects, static_notes = _static_arms(
         home, subjects, members[SENTINEL_MEMBER]
     )
-    beh_defects, beh_notes, legs, broken = _behavioural(
-        home, subjects, members, _datafeed_events(home, roster)
+    drive = _behavioural(
+        home, subjects, members, (mode_verb, _datafeed_events(home, roster))
     )
-    defects += static_defects + beh_defects
-    notes += static_notes + beh_notes
-    return _verdict(defects, "; ".join(notes), legs, broken)
+    defects += static_defects + drive.defects
+    notes += static_notes + drive.notes
+    notes.append(
+        "NON-VACUITY: driven "
+        + str(drive.driven)
+        + "; refusing "
+        + str(drive.refusing)
+        + "; "
+        + "; ".join(
+            f"{s} executed {len(fns)} function(s) of its own module including "
+            f"{mode_verb!r}: {mode_verb in fns}"
+            for s, fns in sorted(drive.traced.items())
+        )
+    )
+    return _verdict(defects, "; ".join(notes), drive, (subjects, mode_verb))
 
 
 # --------------------------------------------------------------------------
@@ -968,7 +1245,17 @@ def _probe_vendor_default(packages: list[str]) -> dict[str, Any]:
 def _drive_legs(
     fn: Any, site_prefix: str, three_way: list
 ) -> tuple[list, list, int, dict[int, str], list[str]]:
-    """Run one observer over all three legs. (defects, notes, legs, seen, broken).
+    """ARM B0 — run one MODULE-LEVEL MAPPING over all three legs.
+
+    Was arm B1 until ARC 023 stage 2, and the demotion is the point. This drives
+    a pure vendor-int -> enum function; it is real code and a collapsed mapping
+    is a real defect, so it keeps its defects. What it no longer does is
+    contribute a LEG, because a leg is now a step of the lifecycle in
+    `_run_lifecycle` and nothing else. See `_port_mode_verb` for why: this arm's
+    three green legs are precisely what masked three `AttributeError`s on the
+    accessor for two arcs (D3.16).
+
+    (defects, notes, legs, seen, broken).
 
     D3.16, ARC 022. A LEG THAT RAISED IS NOT A LEG THAT PASSED, and until this arc
     the two were indistinguishable in the verdict: every exception became a `note`
@@ -1041,53 +1328,421 @@ def _discrimination(site_prefix: str, seen: dict[int, str]) -> list:
     return []
 
 
-def _resolve_observer(mod: Any, spec: dict[str, Any], obs: str) -> Any:
-    fn = getattr(mod, obs, None)
-    if fn is None:
-        fn = getattr(getattr(mod, spec["cls"], None), obs, None)
-    return fn if callable(fn) else None
+def _probe_mappings(mod: Any, spec: dict[str, Any], payload: dict[str, Any]) -> tuple:
+    """ARM B0 over every module-level mapping in the subject module."""
+    defects: list[dict[str, str]] = []
+    notes: list[str] = []
+    broken: list[str] = []
+    for name in spec["resolvers"]:
+        fn = getattr(mod, name, None)
+        prefix = f"{spec['rel']}:{name}"
+        if not callable(fn):
+            notes.append(f"B0 {prefix}: not resolvable")
+            continue
+        got_d, got_n, _, seen, got_b = _drive_legs(fn, prefix, payload["three_way"])
+        defects += got_d + _discrimination(prefix, seen)
+        notes += got_n
+        broken += got_b
+    return defects, notes, broken
 
 
-def _drive_one_observer(
-    mod: Any, spec: dict[str, Any], obs: str, payload: dict[str, Any]
-) -> tuple[list, list, int, list[str]]:
-    """One observer, three legs, plus the discrimination assertion."""
-    prefix = f"{spec['rel']}:{obs}"
-    fn = _resolve_observer(mod, spec, obs)
-    if fn is None:
-        return [], [f"B1 {prefix}: not resolvable"], 0, []
-    defects, notes, legs, seen, broken = _drive_legs(fn, prefix, payload["three_way"])
-    return defects + _discrimination(prefix, seen), notes, legs, broken
+# --------------------------------------------------------------------------
+# ARM B1 — THE LIFECYCLE DRIVE. The rebuild, and the arc's headline.
+# --------------------------------------------------------------------------
+class _Absorber:
+    """A vendor client that absorbs every wire call and supplies NO VALUE.
+
+    `debug.md` §7.12 instance 5 is the polite fake whose missing `multiplier`
+    made two different units numerically identical, and it is the reason a
+    stand-in for a vendor SDK is normally refused here (NAMED GAP 1). This one
+    is admissible for a stated reason: it is a SINK, not a SOURCE. Every value
+    this arm asserts on comes back out of the subject's own state through the
+    port's own mode verb; the absorber's entire contribution is to let
+    `connect()` and `subscribe()` reach their ends without a socket. If it ever
+    started returning meaningful values, that argument would stop holding — so
+    it returns only more of itself, which is meaningful nowhere."""
+
+    def __getattr__(self, name: str) -> Any:
+        return _Absorber()
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        return _Absorber()
 
 
-def _probe_observers(
-    spec: dict[str, Any], payload: dict[str, Any]
-) -> tuple[list, list, int, list[str]]:
+def _ctor_slots(cls: type) -> tuple[list[str], list[str]]:
+    """(required parameters, OPTIONAL parameters defaulting to None).
+
+    The constructor is READ rather than typed. A vendor-neutral gate cannot know
+    the venue-client keyword is spelled `ib` — `debug.md` §7.4 says a gate that
+    typed it goes stale the first time a second venue lands — so the candidate
+    slots are every optional parameter whose default is `None`, and WHICH of
+    them is the vendor is settled by driving, in `_lifecycle_result`.
+
+    Defaulting to `None` is NOT sufficient on its own and this was measured, not
+    foreseen: `IBKRBrokerDatafeed.poll_lag_record` also defaults to `None` (the
+    poll channel is UNOBSERVED on this system), and filling it with an absorber
+    makes `_require_channel` refuse the construction — correctly, and loudly, in
+    AMENDMENT 6's own words."""
+    import inspect  # pylint: disable=import-outside-toplevel
+
+    required: list[str] = []
+    optional: list[str] = []
+    sig = inspect.signature(cls)  # the CLASS, not the instance's __init__ (mypy misc)
+    for name, param in sig.parameters.items():
+        if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
+            continue
+        if param.default is inspect.Parameter.empty:
+            required.append(name)
+        elif param.default is None:
+            optional.append(name)
+    return required, optional
+
+
+def _build(mod: Any, spec: dict[str, Any], events: tuple[str, ...], slots: list[str]):
+    """One construction: sink doubles into the required slots, absorbers into
+    `slots`, and every other default left exactly as the adapter declared it."""
+    cls = getattr(mod, spec["cls"])
+    required, _ = _ctor_slots(cls)
+    return cls(
+        *[_sink_double(events) for _ in required],
+        **{name: _Absorber() for name in slots},
+    )
+
+
+async def _maybe_await(value: Any) -> Any:
+    import inspect  # pylint: disable=import-outside-toplevel
+
+    return await value if inspect.isawaitable(value) else value
+
+
+class _Reader:  # pylint: disable=too-few-public-methods
+    """The port's mode verb, callable with or without a symbol.
+
+    A class and not a closure because the arity question — does this verb take a
+    symbol? — is answered ONCE off the signature and then reused at eight call
+    sites; re-deriving it per call would be a second place for it to be wrong."""
+
+    def __init__(self, inst: Any, mode_verb: str):
+        import inspect  # pylint: disable=import-outside-toplevel
+
+        self.fn = getattr(inst, mode_verb)
+        self.per_symbol = any(
+            p.kind
+            in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            )
+            for p in inspect.signature(self.fn).parameters.values()
+        )
+
+    def __call__(self, symbol: Any = None) -> str:
+        got = self.fn(symbol) if (symbol is not None and self.per_symbol) else self.fn()
+        return getattr(got, "name", repr(got))
+
+
+def _grant(inst: Any, writer: list, symbol: Any, value: int) -> Any:
+    """Deliver a VENDOR grant through the subject's own callback."""
+    name, params, int_params = writer[0], writer[1], set(writer[2])
+    fn = getattr(inst, name)
+    return fn(*[value if p in int_params else symbol for p in params])
+
+
+class _Lifecycle:  # pylint: disable=too-few-public-methods,too-many-instance-attributes
+    """One subject, driven from construction through re-subscription.
+
+    R0902/R0903 refused with a reason. The attribute count IS the sequence's
+    state — the instance, the reader, the writer, the defects, the notes, the
+    values seen and the leg count — and every one of them is read by more than
+    one step. Splitting it to satisfy a ceiling would put the lifecycle's state
+    in one object and its steps in another, which is the shape that lets a step
+    be added without the assertion that goes with it. One public entry point
+    (`run`) is the design: a caller may drive the whole sequence or none of it,
+    never half."""
+
+    def __init__(self, inst: Any, spec: dict[str, Any], payload: dict[str, Any]):
+        self.inst = inst
+        self.spec = spec
+        self.payload = payload
+        self.site = f"{spec['rel']}:{spec['cls']}"
+        self.read = _Reader(inst, spec["mode_verb"])
+        writers = spec["grant_writers"]
+        self.writer = writers[0] if writers else None
+        self.sentinel = payload["sentinel"]
+        self.defects: list[dict[str, str]] = []
+        self.notes: list[str] = []
+        self.seen: dict[int, str] = {}
+        self.legs = 0
+
+    def _fail(self, where: str, why: str) -> None:
+        self.defects.append({"site": f"{self.site}.{where}", "why": why})
+
+    def _expect(self, where: str, got: str, want: str, why: str) -> None:
+        self.notes.append(f"B1 {self.site}.{where} -> {got}")
+        if got != want:
+            self._fail(where, f"{why} (reported {got}, expected {want})")
+
+    async def _verb(self, name: str, *args: Any) -> Any:
+        return await _maybe_await(getattr(self.inst, name)(*args))
+
+    async def run(self) -> None:
+        """The sequence. Every step is a statement about the GRANT and none of
+        them is a statement about the request."""
+        sym, other = self.payload["symbols"]
+        # STEP 1 — CONSTRUCTED, NEVER CONNECTED. Nothing has been granted, so the
+        # only honest answer is the sentinel. Reporting a mode here is the absence
+        # principle's exact violation.
+        self._expect(
+            f"{self.spec['mode_verb']}()@no-session",
+            self.read(),
+            self.sentinel,
+            "never connected, yet reports a granted mode — a grant that did not happen",
+        )
+        await self._verb("connect")
+        await self._verb("subscribe", sym)
+        # STEP 2 — SUBSCRIBED, NO GRANT CALLBACK. This is leg 0 of the three-way,
+        # driven through the real absence rather than through a synthetic value.
+        got = self.read(sym)
+        self.seen[0] = got
+        self.legs += 1
+        self._expect(
+            f"{self.spec['mode_verb']}({sym})@subscribed-ungranted",
+            got,
+            self.sentinel,
+            "subscribed with no grant callback received, yet reports a mode",
+        )
+        self._expect(
+            f"{self.spec['mode_verb']}()@subscribed-ungranted",
+            self.read(),
+            self.sentinel,
+            "the adapter-wide answer names a mode while nothing has been granted "
+            "— that the request was made is not evidence of what was granted",
+        )
+        await self._granted_legs(sym)
+        await self._divergence(sym, other)
+
+    async def _granted_legs(self, sym: Any) -> None:
+        """The venue's grant, three ways, each followed by the re-subscription
+        assertion: A GRANT BELONGS TO A SUBSCRIPTION AND IS NOT INHERITED."""
+        if self.writer is None:
+            self.notes.append(
+                f"B1 {self.site}: no grant-delivery entry point — no method writes "
+                f"{self.spec['mode_verb']!r} from an int parameter, so the venue's "
+                "grant cannot be driven"
+            )
+            return
+        for value, want, forbid in self.payload["three_way"]:
+            if value == self.payload["members"][self.sentinel]:
+                continue  # driven as STEP 2, from the real absence
+            _grant(self.inst, self.writer, sym, value)
+            got = self.read(sym)
+            self.seen[value] = got
+            self.legs += 1
+            where = f"{self.spec['mode_verb']}({sym})@granted-{value}"
+            self._expect(where, got, want, "the venue's grant is misreported")
+            if got == forbid:
+                self._fail(where, f"reported {forbid} — the defect")
+            await self._verb("subscribe", sym)
+            self._expect(
+                f"{self.spec['mode_verb']}({sym})@re-subscribed-after-{value}",
+                self.read(sym),
+                self.sentinel,
+                "a RE-SUBSCRIPTION inherited the previous subscription's grant — "
+                "the new subscription has had no grant callback, and a grant that "
+                "outlives the subscription it was made to is a grant that did not "
+                "happen",
+            )
+        self.defects += [
+            {"site": self.site, "why": d["why"]}
+            for d in _discrimination(self.site, self.seen)
+        ]
+
+    async def _divergence(self, sym: Any, other: Any) -> None:
+        """TWO SUBSCRIPTIONS, TWO DIFFERENT GRANTS. A single mode reported for a
+        set that does not share one is a fabricated value — the same absence
+        principle as STEP 1, at the adapter-wide arity."""
+        if self.writer is None:
+            return
+        if not self.read.per_symbol:
+            self.notes.append(
+                f"B1 {self.site}: mode verb takes no symbol — divergence leg skipped"
+            )
+            return
+        legs = [v for v, _, _ in self.payload["three_way"]]
+        first, second = legs[1], legs[2]
+        _grant(self.inst, self.writer, sym, first)
+        await self._verb("subscribe", other)
+        _grant(self.inst, self.writer, other, second)
+        self._expect(
+            f"{self.spec['mode_verb']}()@divergent-grants",
+            self.read(),
+            self.sentinel,
+            f"two subscriptions granted {first} and {second} and the adapter-wide "
+            "answer names one of them — a single mode reported for a set that does "
+            "not share one is a fabricated value",
+        )
+
+
+class Attempt(NamedTuple):
+    """One construction of the subject, driven, with its own execution trace."""
+
+    slots: list[str]
+    defects: list
+    notes: list
+    outcome: str
+    legs: int
+    traced: list[str]
+
+
+def _attempt(
+    mod: Any, spec: dict[str, Any], payload: dict[str, Any], slots: list[str]
+) -> Attempt:
+    """Construct with `slots` filled by absorbers and run the whole lifecycle.
+
+    THE TRACE IS TAKEN AROUND THIS ATTEMPT AND NOTHING ELSE, so the non-vacuity
+    assertion cannot be satisfied by a construction that failed, by arm C, or by
+    the mapping arm. Only the attempt whose verdict is reported carries a trace.
+    """
+    site = f"{spec['rel']}:{spec['cls']}"
+    try:
+        inst = _build(mod, spec, tuple(payload["events"]), slots)
+    except NotImplementedError as exc:
+        return Attempt(
+            slots, [], [f"B1 {site}: declared refusal — {exc}"], "refusing", 0, []
+        )
+    except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
+        return Attempt(
+            slots,
+            [],
+            [f"B1 {site} {slots}: not constructible — {exc!r}"],
+            f"not constructible with {slots}",
+            0,
+            [],
+        )
+    cycle = _Lifecycle(inst, spec, payload)
+    cycle.notes.append(f"B1 {site}: constructed, absorbers in {slots}")
+
+    def thunk() -> str:
+        try:
+            _sync_run(cycle.run())
+        except NotImplementedError as exc:
+            cycle.notes.append(f"B1 {site}: declared refusal — {exc}")
+            return "refusing"
+        except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
+            cycle.notes.append(f"B1 {site}: raised {type(exc).__name__}: {exc}")
+            return f"{type(exc).__name__}: {exc}"
+        if cycle.legs < len(payload["three_way"]):
+            return f"only {cycle.legs} of {len(payload['three_way'])} legs ran"
+        return "driven"
+
+    outcome, traced = _traced(mod, thunk)
+    return Attempt(slots, cycle.defects, cycle.notes, outcome, cycle.legs, traced)
+
+
+def _lifecycle_result(
+    mod: Any, spec: dict[str, Any], payload: dict[str, Any]
+) -> Attempt:
+    """The subject's best attempt. outcome ∈ driven / refusing / <why not>.
+
+    THE VENDOR SLOT IS FOUND BY DRIVING, NOT BY NAMING. Each optional
+    `None`-defaulted constructor keyword is tried alone, then all of them
+    together, then none at all, and the first attempt that completes the
+    lifecycle wins. That is a behavioural derivation of a fact this file must
+    not state — which venue keyword holds the client — and it is why nothing
+    here knows the word `ib`.
+
+    A `NotImplementedError` short-circuits the search immediately. A refusing
+    skeleton has no vendor slot to find, and continuing to hunt for one would
+    turn its declared contract into a search failure, which is doctrine B.4's
+    forbidden direction dressed as diligence."""
+    cls = getattr(mod, spec["cls"], None)
+    if not isinstance(cls, type):
+        return Attempt(
+            [],
+            [],
+            [f"B1 {spec['rel']}: {spec['cls']} not resolvable"],
+            "class not resolvable",
+            0,
+            [],
+        )
+    _, optional = _ctor_slots(cls)
+    candidates: list[list[str]] = [[s] for s in optional] + [list(optional), []]
+    best: Attempt | None = None
+    for slots in candidates:
+        got = _attempt(mod, spec, payload, slots)
+        if got.outcome in ("driven", "refusing"):
+            return got
+        if best is None or got.legs > best.legs:
+            best = got
+    return best if best is not None else Attempt([], [], [], "no candidate", 0, [])
+
+
+def _sync_run(coro: Any) -> Any:
+    import asyncio  # pylint: disable=import-outside-toplevel
+
+    return asyncio.run(coro)
+
+
+def _traced(mod: Any, thunk: Any) -> tuple[Any, list[str]]:
+    """Run `thunk`, recording which functions OF `mod`'s OWN FILE executed.
+
+    THE NON-VACUITY INSTRUMENT, AND IT IS PERMANENT (D3.16). Its whole job is to
+    make "did this gate execute its subject?" a question with a machine answer
+    on every run, instead of a thing a docstring asserts. Filtering by the
+    subject's own filename is what keeps it from being satisfied by the probe's
+    own frames."""
+    import os  # pylint: disable=import-outside-toplevel
+
+    want = os.path.realpath(getattr(mod, "__file__", "") or "")
+    seen: set[str] = set()
+
+    def tracer(frame: Any, event: str, _arg: Any) -> Any:
+        # Returns None IMPLICITLY, and that is the contract rather than an
+        # omission: a global trace function returning None tells CPython not to
+        # trace that frame's lines, which is what keeps this affordable.
+        if event == "call" and os.path.realpath(frame.f_code.co_filename) == want:
+            seen.add(frame.f_code.co_name)
+
+    sys.settrace(tracer)
+    try:
+        return thunk(), sorted(seen)
+    finally:
+        sys.settrace(None)
+
+
+def _probe_subject(spec: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """Every behavioural arm over one subject, with the trace beside them."""
     import importlib  # pylint: disable=import-outside-toplevel
 
-    notes: list[str] = []
-    modname = Path(spec["rel"]).stem
+    site = f"{spec['rel']}:{spec['cls']}"
     try:
-        mod = importlib.import_module(modname)
+        mod = importlib.import_module(Path(spec["rel"]).stem)
     except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
-        notes.append(f"B1 {spec['rel']}: not importable — {type(exc).__name__}: {exc}")
-        return [], notes, 0, [f"{spec['rel']}: not importable"]
-    defects: list[dict[str, str]] = []
-    legs = 0
-    broken: list[str] = []
-    for obs in spec["observers"]:
-        got_defects, got_notes, got_legs, got_broken = _drive_one_observer(
-            mod, spec, obs, payload
-        )
-        defects += got_defects
-        notes += got_notes
-        broken += got_broken
-        # `max` is why D3.16 was invisible: one observer executing all three legs
-        # masked another executing none. The count still reports the best observer,
-        # but `broken` now travels beside it so the verdict cannot read that best
-        # as though it covered every subject.
-        legs = max(legs, got_legs)
-    return defects, notes, legs, broken
+        return {
+            "defects": [],
+            "notes": [
+                f"B1 {spec['rel']}: not importable — {type(exc).__name__}: {exc}"
+            ],
+            "broken": [f"{spec['rel']}: not importable"],
+            "refusing": [],
+            "driven": [],
+            "traced": {},
+        }
+    map_d, map_n, map_b = _probe_mappings(mod, spec, payload)
+    life = _lifecycle_result(mod, spec, payload)
+    off_d, off_n = _probe_offline(spec, tuple(payload["events"]))
+    return {
+        "defects": map_d + life.defects + off_d,
+        "notes": map_n + life.notes + off_n,
+        "broken": map_b
+        + (
+            []
+            if life.outcome in ("driven", "refusing")
+            else [f"{site}: {life.outcome}"]
+        ),
+        "refusing": [site] if life.outcome == "refusing" else [],
+        "driven": [site] if life.outcome == "driven" else [],
+        "traced": {site: life.traced},
+    }
 
 
 def _probe_offline(spec: dict[str, Any], events: tuple[str, ...]) -> tuple[list, list]:
@@ -1129,21 +1784,20 @@ def _probe_main(raw: str) -> int:
         return 0
     home = Path(payload["home"])
     sys.path[:0] = [str(home / "scripts"), str(home / "scripts" / "broker")]
-    events = tuple(payload.get("events", ()))
-    defects: list[dict[str, str]] = []
-    notes: list[str] = []
-    legs = 0
-    broken: list[str] = []
+    out: dict[str, Any] = {
+        "defects": [],
+        "notes": [],
+        "broken": [],
+        "refusing": [],
+        "driven": [],
+        "traced": {},
+    }
     for spec in payload["subjects"]:
-        obs_d, obs_n, obs_legs, obs_broken = _probe_observers(spec, payload)
-        off_d, off_n = _probe_offline(spec, events)
-        defects += obs_d + off_d
-        notes += obs_n + off_n
-        broken += obs_broken
-        legs = max(legs, obs_legs)
-    print(
-        json.dumps({"defects": defects, "notes": notes, "legs": legs, "broken": broken})
-    )
+        got = _probe_subject(spec, payload)
+        for key in ("defects", "notes", "broken", "refusing", "driven"):
+            out[key] += got[key]
+        out["traced"].update(got["traced"])
+    print(json.dumps(out))
     return 0
 
 

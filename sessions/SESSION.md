@@ -1939,3 +1939,124 @@ not an omission · `Bar.volume`'s absence is unmeasured (D1.39/D1.40, next tap) 
 measurement (D1.33) · `connectAsync` not bound, so the async split is declarative only · Tier 3 §5.6
 and §5.7 land across the arc's own gate runs and C's census rather than inside B's file, and Tier 3 is
 RUN not PASSED.
+
+---
+
+## ARC 023 — binding; the four product defects; per-channel freshness (2026-08-11)
+
+**THE HEADLINE: D3.10's DISCRIMINATION GAP CLOSED, FOR THE FIRST TIME IN THREE ARCS.** ARC 021 planted
+two real defects in the datafeed adapter and both gates passed, and so did all 49 of the adapter's own
+tests. ARC 022 re-ran them against the settled adapter and measured exit 2 / exit 2 and exit 0 / exit 0
+— identical verdicts either side, which is not discriminating. **ARC 023 re-ran the same two plants
+against the rebuilt gate: control exit 0, plant 1 exit 1, plant 2 exit 1, each naming its site.**
+Throwaway tree, pristine control, both restores byte-identical by sha256, `__pycache__` purged between
+every step, verdict-by-verdict never aggregate. `check_datafeed_bar_seal` stayed exit 0 on both and
+**that is correct, not a miss** — these are granted-mode defects, and reddening a gate outside its
+subject is doctrine B.4's forbidden direction.
+
+**D3.16's root cause was a citation used to justify its own inverse.** `_observers()` discovered gate
+subjects by RETURN ANNOTATION and cited *"`debug.md` §7.4's requirement applied to a scope."* §7.4 is
+about never anchoring to something that MOVES — and here the roster was the stable contract while the
+annotation was the moving thing. It returned `['granted_mode', 'resolve_granted_mode']`, the latter a
+module-level helper lifted in ARC 021 Phase 4 *precisely so arm B1 could drive it*; its three green
+legs plus `legs = max(...)` masked the accessor's three `AttributeError`s for two arcs. Discovery now
+comes from the settled roster; the helper survives as arm B0 contributing **no leg**; and non-vacuity
+is asserted **every run** under `sys.settrace`, with arm C deliberately outside the trace because it
+would have satisfied the assertion without the lifecycle running at all.
+
+**PHASE 0 caught two figures ARC 022 shipped wrong, and one of them was mine.** `broker_order_open_debt_rows`
+was reported at level 13 with Δ +2; re-derived with today's rule against all three trees (11 → 13 → 13)
+the level is right and **the delta is 0** — a real level and a real delta paired to the wrong interval.
+And the census tally was reported **7 BOUND / 5 UNBOUND**; derived from the ledger's own verdict column
+it is **6 / 6**. Sub-agent C reported it and I propagated it into RESULTS, SESSION and the series row
+without re-deriving.
+
+**THE SECURITY QUESTION WAS ANSWERED POSITIVELY, NOT REASONED.** D2.24 staged a symlink into the 0600
+credential directory and the repo is public. The blob exists — `daed7b5f`, **19 bytes**, content exactly
+`/home/bbt/nix/state`, hexdumped in full. It is reachable from **0 of 56 refs**, present in **0 of 139
+commits**, and there are **0** `state/`-or-`.venv/` paths and **0** mode-`120000` entries anywhere in
+reachable history on any of 25 remote refs including `origin/main`, confirmed by two independent
+methods. **Nothing reached pushed history.** Also corrected: ARC 022 reported "`git fsck` clean but for
+two dangling blobs" — that was `git fsck | tail -2` read as a total. The real figure is **120 dangling
+objects**, and neither blob I named was the symlink, so I never actually saw it last arc.
+
+**AMENDMENT 6, not 5 — the brief's number was already taken.** ARC 022 used AMENDMENT 5 for D1.38.
+Recorded as 6 with the ruling text byte-verbatim and the renumbering flagged in the file; the architect
+owns whether to renumber ARC 022's instead.
+
+**F21 — per-channel freshness, and the poll channel's lag was NOT invented.** `FeedChannel`,
+`ChannelState` (FRESH/STALE/**CANNOT_MEASURE**) and `FreshnessReport`, which deliberately carries **no
+collapsed verdict** — the absence is the enforcement and a test asserts it by name. The tick channel's
+measured 600.0–601.9 s is refused for the poll channel **structurally, not by comment**:
+`Stage0LagRecord` carries a channel and `_require_channel` raises if a record is installed on a slot it
+did not measure. **A refused the architect's spelling under §0b**: the grade and known-red marker were
+implemented as directed, but a *default figure* was refused because none exists in this tree — the tick
+constant measures the tick stream, and ARC 010's 624 s measures `reqHistoricalTicks` on a different call
+and a different quantity. **Consequence stated rather than hidden: a poll-only symbol still summarises
+STALE today.** What changed is the report says `cannot_measure` rather than `stale`, so an unanswerable
+question is distinguishable from a failed feed — which is the whole of F21. Both directions proven.
+
+**F17 — 60 s and floor 5 both SURVIVED measurement.** At ARC 013's measured rate a 60 s window holds 27
+samples and catches the 600→900 s degradation **on the first degraded packet**, where the session mean
+never caught it at all. Time-not-count confirmed hard: a 100-sample window spans 222 s at that rate and
+0.000028 s at this box's measured ingest ceiling. The architect's *"memory bounded regardless of rate"*
+needed more than the stated spelling — a pure 60 s window at the ceiling retains **20.5 GB** — so a
+**derived** count cap (1 MiB budget ÷ measured 96 B/sample = 10,922) is the backstop, and which bound
+applied is observable.
+
+**F13 — a publication debt, not a re-derivation.** The key is owed in the same breath as the seal and
+before the sink is called; the retry re-publishes **the same sealed object**, asserted by **identity,
+not equality**, so a re-derivation cannot pass and D1.14 is intact. `ok=True` over a lost bar is now
+unconstructible. **F12** — the poll path has its own map of its own type; `unsubscribe` on a
+never-subscribed symbol puts nothing on the wire, with a control in the same test proving unsubscribe
+still cancels.
+
+**Four reinstatement plants, and the catching channel is named for each: F12, F13, F17 and F21 are
+caught by PYTEST, by no gate.** Reported separately on purpose.
+
+**Two gates bound by re-framing the subject rather than perturbing a shared resource.** `check_venv`
+(D3.12) got a venv of its own — the row's own stated discharge condition met literally. `check_node_identity`
+(D3.13) measures DIVERGENCE, so perturbing the stored side against the real live UUID yields the
+observable a swapped disk yields; it also produced a **third verdict never before shown for this gate**
+(`findmnt`/`blkid` off PATH → cannot_measure, not exit 1). **`check_python_runtime` REFUSED** on the
+D3.7 standard, and the refusal is stronger than a defer: `MINIMUM` equals the only interpreter version
+on the box, so it is **unfailable** against this inventory.
+
+**TWO REPAIRS WERE BUILT, MEASURED AND THEN REFUSED — both because the measurement said they traded a
+false positive for a false negative.** Arm 3's one-hop reader made the plant arm 3 exists to fail stop
+failing, because `_ingest_history` also calls `_maybe_revise`, so the hop finds `on_bar_revision` and
+goes green over a swallowed publication (**D3.18**, with both measurements as its acceptance test). And
+`check_python_runtime`'s obvious plant was refused as the ARC 022 monkeypatch re-spelled as a file edit
+— it moves the ruler, not the subject.
+
+**A NEW RULE OF RECORD: a compensating control must be AIMED before it is checked for existence.** D3.15
+showed arm 4 measured nothing while two rows cited it. The sweep asked the prior question and found arm
+4 was **mis-aimed** for D2.21 — that row's subject is guard polarity in the source; arm 4 drives
+published types' immutability, a path an inverted guard never reaches. **Confirmed after repairing it.**
+The corollary is recorded too: D2.20's control *is* aimed, so the rule disqualifies mis-aimed controls,
+not controls.
+
+**Sub-agent B refused the architect's reopen instruction and the refusal was endorsed.** D2.21's
+discharge rests on the `_absent_proofs` strict-subset repair and its eight-spelling table, not on arm 4;
+reopening would make the ledger assert an unrepaired residual the measurement says is repaired.
+
+**The claims harness can now see a demonstration go untrue** — D1.14's banked claim became false at the
+ARC 021 merge and `check_derived_claims` reported 13/13 across it. The new arm registers a demonstration
+in the state it is actually in, so it reddens in **both** directions, and **it fired during Stage 2
+before the ledger was touched**: *"registered as does-not-perform; the re-execution observed performs."*
+
+**Measured at close, all five raw, `git add -A` first:** `verify.py` exit 1 — **10 passed / 1 failed /
+1 cannot-measure**. The cannot-measure count fell from 2 to 1 exactly as predicted, because the rebuilt
+gate now passes; the only non-passes left are the Gateway pair, both named and both pre-existing. pytest
+**351 passed + 2 xfailed** (353 collected). pre-commit **8/8**. claims **13/13 + 2/2 demonstrations**,
+exit 0. citations exit 0. CHECK-DEBT **61** — the first arc in this series whose count went DOWN.
+
+**Not done, explicitly:** D3.9 and D3.10 stay open on a green tree, and the reason is the rule of record
+— **binding is PER SUBJECT**: `IBKRBrokerDatafeed` is bound, `ibkr_mapping.IBKRDatafeedAdapter` is not
+and cannot be while it refuses, and the next adapter presents a third shape · neither datafeed gate has
+a `test_check_*.py` companion, so its binding evidence lives in arc reports rather than in anything that
+re-runs it — the D3.15 shape one level up · the ARC 022 census table's verdict column is stale in four
+rows, left unrewritten per directive 6 and flagged, with the note that **the next census belongs in a
+gate, not in prose** · the poll channel's lag and `Bar.volume`'s sentinel remain VENDOR_DECLARED and
+unmeasured (D1.39/D1.40, next tap) · D1.33 · `connectAsync` still unbound, so the async split stays
+declarative · `history_source` still has no declared row contract.

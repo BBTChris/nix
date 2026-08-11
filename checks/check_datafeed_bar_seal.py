@@ -222,6 +222,7 @@ from __future__ import annotations
 
 import ast
 import enum
+import itertools
 import re
 import tomllib
 from pathlib import Path
@@ -709,6 +710,29 @@ def _absent_proofs(
 
 
 def _emits_event(fn: ast.AST, events: tuple[str, ...]) -> bool:
+    """True if a datafeed EVENT emission appears in `fn`'s OWN body.
+
+    ONE HOP THROUGH A SAME-CLASS HELPER WAS BUILT, MEASURED, AND REFUSED IN
+    ARC 023 STAGE 2 — see CHECK-DEBT D3.18, which carries both measurements.
+    Stage 1 of this arc measured the FALSE POSITIVE this reader has: extracting
+    the publish out of `_ingest_history` into a helper made arm 3 report
+    *"store is guarded but `_ingest_history` emits no datafeed event"* against a
+    correct implementation, which doctrine B.4 calls BROKEN and not strict. The
+    obvious repair is to follow one call through `self.<method>`. It was
+    implemented and then measured against the plant this arm exists to fail —
+    deleting the `on_bar` emission from `_ingest_history` — and the plant
+    STOPPED FAILING: `_ingest_history` also calls `self._maybe_revise(...)`,
+    which emits `on_bar_revision`, so the hop finds an event and the arm goes
+    green over a swallowed publication. The plant is caught at zero hops and not
+    at one, verified both ways in a scratch copy of the tree.
+
+    So the hop is a real reduction in strictness on a real input, which
+    `VERIFY-AND-CHECKS.md` Part C rule 2 and this arc's own prohibition forbid,
+    and BOTH halves are symptoms of the same thing: "does this FUNCTION reach an
+    event" cannot distinguish *the revision is declared* from *some event is
+    emitted somewhere in here*, and widening the window makes that worse rather
+    than better. The false positive is left standing and named rather than
+    traded for a false negative."""
     for node in ast.walk(fn):
         if isinstance(node, ast.Call):
             func = node.func
@@ -895,51 +919,212 @@ def _field_annotations(node: ast.ClassDef) -> dict[str, str]:
     }
 
 
-def _synth_value(ann: str, mod: object) -> tuple[object, bool] | None:
+def _union_members(ann: str) -> list[str]:
+    """A union annotation split into its members, outermost `|` only.
+
+    D3.15, ARC 023 stage 2. The reader this replaces was
+    `ann.split("[")[0].split(".")[-1]`, which takes the head of the string and
+    therefore reads `float | None` as the single name `float | None`. Nothing
+    resolves under that name, one unresolvable field makes the whole type
+    unsynthesisable, and `Bar.volume: float | None` was enough to skip `Bar`
+    entirely. All five published types reported `not synthesisable` and the arm
+    — named by BOTH D2.20 and D2.21 as their compensating control — executed
+    nothing for two arcs.
+
+    Depth-tracked because `dict[str, int] | None` must split into two members
+    and `dict[str, int]` must not split into three. `Optional[X]` is unwrapped
+    to `X` for the same reason a bare `X | None` is: both spell "X or absent",
+    and the synthesiser's job is to produce ONE inhabitant of the annotation,
+    not to enumerate it."""
+    head = ann.split("[")[0].strip().split(".")[-1]
+    if head == "Optional" and "[" in ann:
+        inner = ann[ann.index("[") + 1 : ann.rindex("]")]
+        return _union_members(inner) + ["None"]
+    parts: list[str] = []
+    depth = 0
+    cur = ""
+    for ch in ann:
+        if ch in "[(":
+            depth += 1
+        elif ch in "])":
+            depth -= 1
+        if ch == "|" and depth == 0:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    parts.append(cur)
+    return [p.strip().strip("\"'") for p in parts if p.strip()]
+
+
+NONE_NAMES: frozenset[str] = frozenset({"None", "NoneType"})
+
+MAX_SYNTH_CANDIDATES = 1024
+"""Hard ceiling on the assignments tried per published type (D3.15).
+
+A ceiling and not a hope: the search below is a cartesian product over the
+enum-typed fields, so a type with six five-member enums is 15 625 constructions
+and this gate has a boot-time budget. Exhausting the ceiling is reported as
+`not constructible`, which is a NOTE — the arm says it could not build the type,
+it never says the type is wrong."""
+
+
+def _synth_one(ann: str, mod: object) -> tuple[list[object], bool] | None:
+    """(candidate values, is_numeric) for ONE non-union annotation.
+
+    A LIST rather than a single value since D3.15: an enum field offers every
+    member, because a type with cross-field invariants is constructible for some
+    assignments and not others and picking `members[0]` is picking one draw from
+    that space and calling the type unbuildable when it loses. `FeedLag` is the
+    measured case — `provenance=LagProvenance.UNOBSERVED` beside a non-`None`
+    `observed_lag_s` is refused by its own `__post_init__`, correctly."""
+    tail = ann.split("[")[0].split(".")[-1].strip("\"'")
+    resolved = getattr(mod, tail, None)
+    if tail == "int":
+        return [1], True
+    if tail == "float":
+        return [1.0], True
+    if tail == "bool":
+        return [False], False
+    if isinstance(resolved, type) and issubclass(resolved, enum.Enum):
+        members: list[object] = list(resolved)
+        return (members, False) if members else None
+    if resolved is str or tail == "str":
+        return ["x"], False
+    return None
+
+
+def _synth_value(ann: str, mod: object) -> tuple[list[object], bool] | None:
     """(value, is_numeric) for one annotation, resolved against its module.
 
     Resolving against the module rather than a table of primitive names is what
     lets an enum-typed or alias-typed field be filled with a REAL member instead
     of making the whole type unsynthesisable — `FeedLag.granted_mode` is the
-    case that forced it."""
-    tail = ann.split("[")[0].split(".")[-1].strip("\"'")
-    resolved = getattr(mod, tail, None)
-    if tail == "int":
-        return 1, True
-    if tail == "float":
-        return 1.0, True
-    if tail == "bool":
-        return False, False
-    if isinstance(resolved, type) and issubclass(resolved, enum.Enum):
-        members = list(resolved)
-        return (members[0], False) if members else None
-    if resolved is str or tail == "str":
-        return "x", False
+    case that forced it.
+
+    A UNION resolves to its FIRST SYNTHESISABLE NON-`None` MEMBER (D3.15), and
+    falls back to `None` only when no other member resolves. The ORDER is
+    load-bearing in both directions and neither half is arbitrary:
+
+      * Preferring the non-`None` member is what keeps the field NUMERIC.
+        `Bar.volume: float | None` filled with `None` would leave `Bar`
+        constructible but would remove a field the plan can vary; take that
+        preference away from every optional numeric field and a type can end up
+        with no numeric field at all, at which point `_synth` returns None
+        again and the arm is back to measuring nothing.
+      * Falling back to `None` is what keeps the type CONSTRUCTIBLE when the
+        non-`None` member is a type this synthesiser cannot build —
+        `FeedLag.window: LagWindow | None` is exactly that case, and refusing
+        the whole of `FeedLag` over one optional composite field is D3.15's
+        defect in a second costume. `None` IS an inhabitant of the annotation;
+        substituting it is not a fabricated value.
+
+    What is NOT done here is synthesising the composite recursively. That would
+    make the arm's reach depend on how deep the synthesiser can dig, and a
+    partial dig produces a half-built object the type's own `__post_init__` may
+    reject — reported as `not constructible` against correct code, which is
+    doctrine B.4's forbidden direction."""
+    members = _union_members(ann)
+    optional = any(m in NONE_NAMES for m in members)
+    for member in members:
+        if member in NONE_NAMES:
+            continue
+        got = _synth_one(member, mod)
+        if got is not None:
+            values, numeric = got
+            # `None` LAST, so the non-`None` fill is preferred and the field
+            # stays numeric wherever it can be; it is still offered, because
+            # `observed_lag_s=None` is what makes several `FeedLag` assignments
+            # legal at all.
+            return (list(values) + [None] if optional else list(values)), numeric
+    if optional:
+        return [None], False
     return None
 
 
-def _synth(node: ast.ClassDef, mod: object) -> Plan | None:
-    """Two field maps differing in exactly one NUMERIC field.
+def _constructs(cls: type, base: dict, other: dict) -> bool:
+    """True if the type accepts BOTH halves of a candidate plan.
+
+    The exception is swallowed BY DESIGN and that is not a silent failure: a
+    refusal here is the type's own `__post_init__` declining an assignment the
+    synthesiser guessed, which is information about the GUESS and not about the
+    type. If every candidate is refused, `_synth` reports it as a note naming
+    the count — so the aggregate is loud even though each individual refusal is
+    not."""
+    try:
+        cls(**base)
+        cls(**other)
+    except Exception:  # pylint: disable=broad-except  # noqa: BLE001
+        return False
+    return True
+
+
+def _numeric_field(base: dict[str, object]) -> str | None:
+    """The first field holding a real number. `bool` is excluded explicitly:
+    `isinstance(True, int)` is True, and varying a bool by +1 leaves the
+    annotation's domain."""
+    for name, value in base.items():
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            return name
+    return None
+
+
+def _synth(node: ast.ClassDef, mod: object) -> tuple[Plan | None, str]:
+    """(plan, reason-if-none). Two field maps differing in exactly one NUMERIC
+    field, and BOTH PROVEN TO CONSTRUCT before the plan is returned.
 
     Numeric so "differs by one field" is unambiguous and the difference is one
-    the type's own equality must be able to see."""
-    base: dict[str, object] = {}
-    numeric: list[str] = []
-    for name, ann in _field_annotations(node).items():
+    the type's own equality must be able to see.
+
+    D3.15, ARC 023 stage 2 — WHY THIS SEARCHES RATHER THAN PICKS. The reader
+    this replaces built exactly one assignment, from the first candidate for
+    every field, and handed it to the caller to construct. For a type whose
+    fields are independent that is the same thing as a search; for a type with
+    CROSS-FIELD INVARIANTS it is one draw, and `FeedLag` refuses that draw for a
+    correct reason of its own (`observed_lag_s` set beside a provenance that is
+    not `OBSERVED` is an observation that does not declare itself observed).
+    Reporting `not constructible` there says something false about a type this
+    gate is supposed to be driving.
+
+    THE SEARCH IS BOUNDED AND ITS EXHAUSTION IS REPORTED, never silent: a type
+    whose product exceeds `MAX_SYNTH_CANDIDATES` is a NOTE naming the count, and
+    a note has never been a defect in this arm. What the search may NOT do is
+    weaken an assertion to find a fit — every returned plan still has to survive
+    all three of `_drive_seal`'s assertions afterwards, unchanged."""
+    fields = _field_annotations(node)
+    if not fields:
+        return None, "not synthesisable from annotations"
+    names: list[str] = []
+    choices: list[list[object]] = []
+    for name, ann in fields.items():
         got = _synth_value(ann, mod)
         if got is None:
-            return None
-        value, is_numeric = got
-        base[name] = value
-        if is_numeric:
-            numeric.append(name)
-    if not numeric:
-        return None
-    vary = numeric[0]
-    bumped = base[vary]
-    if not isinstance(bumped, (int, float)):
-        return None
-    return Plan(base=base, other={**base, vary: bumped + 1}, vary=vary)
+            return None, "not synthesisable from annotations"
+        names.append(name)
+        choices.append(got[0])
+    cls = getattr(mod, node.name, None)
+    if not isinstance(cls, type):
+        return None, "not constructible — the class is not importable by name"
+    tried = 0
+    for combo in itertools.product(*choices):
+        tried += 1
+        if tried > MAX_SYNTH_CANDIDATES:
+            return None, (
+                f"not constructible — {MAX_SYNTH_CANDIDATES} candidate assignments "
+                "exhausted without one the type accepts"
+            )
+        base = dict(zip(names, combo, strict=True))
+        vary = _numeric_field(base)
+        if vary is None:
+            continue
+        other = {**base, vary: base[vary] + 1}  # type: ignore[operator]
+        if _constructs(cls, base, other):
+            return Plan(base=base, other=other, vary=vary), ""
+    return None, (
+        f"not constructible — no assignment of {tried} candidate(s) the type accepts"
+    )
 
 
 def _drive_seal(cls: type, plan: Plan, site: str) -> tuple[list, str]:
@@ -1026,9 +1211,9 @@ def _arm4_one(
         mod = importlib.import_module(Path(rel).stem)
     except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
         return [], f"arm4 {site}: not importable — {type(exc).__name__}"
-    plan = _synth(node, mod)
+    plan, reason = _synth(node, mod)
     if plan is None:
-        return [], f"arm4 {site}: not synthesisable from annotations"
+        return [], f"arm4 {site}: {reason}"
     try:
         return _drive_seal(getattr(mod, name), plan, site)
     except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
