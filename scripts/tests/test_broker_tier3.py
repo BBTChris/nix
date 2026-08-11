@@ -656,7 +656,12 @@ async def test_t4_fill_after_disconnect_is_dropped_and_misattributed(caplog) -> 
     is only ever in one of them. A future debugger reading this line is sent to §4's
     cold-start ordering to look for a violation that did not occur. Repair is one branch
     on `_connected`; it is adapter-internal and does not need a consumer.
-    Disposition: trivial, fixable in Phase 4.
+    Disposition: trivial, fixable in Phase 4. **REPAIRED, ARC 019 Phase 4** — the two
+    windows now branch on `_connected` and the disconnect side names its own cause and
+    points at `query_order_status` (§4:241, never auto-resend). The assertion below was
+    inverted in the same motion, exactly as this file's strict-xfail rule requires: a
+    marker left standing over a repaired defect is a permanently-green measurement of
+    nothing.
 
     NOT ASSERTED, because the spec does not determine it: whether a fill arriving after a
     requested disconnect SHOULD be published. §2A defines `disconnect()` as "tear down the
@@ -691,11 +696,17 @@ async def test_t4_fill_after_disconnect_is_dropped_and_misattributed(caplog) -> 
     errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert len(errors) == 1, f"the drop was not loud exactly once: {errors}"
     message = errors[0].getMessage()
-    assert "t4-buy" in message  # it names the site — that half is right
-    # The defect: the message asserts a cause that is false in this sequence.
-    assert "concurrently with connect()" in message, (
-        "the misattribution has been repaired — FINDING T3-03 is closed and this "
-        "assertion must be replaced by the invariant it was standing in for"
+    assert "t4-buy" in message  # it names the site — that half was always right
+    # T3-03 REPAIRED in ARC 019 Phase 4, and this is the invariant the finding's
+    # assertion was standing in for: the loud drop must name a cause that CAN be true in
+    # the window it fired in. `_connected` is the discriminator — True inside connect(),
+    # False after disconnect() — so the connect()-side cause must not appear here.
+    assert "concurrently with connect()" not in message, (
+        "the drop on the DISCONNECT side is again naming the connect()-side cause; "
+        "T3-03 has regressed"
+    )
+    assert "disconnect()" in message, (
+        f"the drop does not name the window it actually fired in: {message}"
     )
     assert ad._connected is False
 

@@ -958,20 +958,36 @@ class IBKRBrokerOrder:
         """A refusal by the startup gate is silent by design — startup replay is noise and
         `_from_ib` is empty across the whole window, so nothing is lost.
 
-        The ONE case that is not noise is an event whose id this adapter recognises. That
-        can only happen if a caller placed an order concurrently with connect(), which §4's
-        cold-start ordering forbids. Closing the gate across the mirror rebuild (ARC 017
-        A3) makes that drop possible where before it was a phantom fill instead, so it is
-        made LOUD: a real event refused must never be indistinguishable from replay noise.
+        The ONE case that is not noise is an event whose id this adapter recognises, and it
+        is made LOUD: a real event refused must never be indistinguishable from replay
+        noise. Closing the gate across the mirror rebuild (ARC 017 A3) makes that drop
+        possible where before it was a phantom fill instead.
+
+        `_startup_complete` is False in TWO windows, not one, and the cause differs
+        (ARC 019 sub-agent B, T3-03). `_connected` discriminates them: during connect() it
+        is already True (set before the rebuild is awaited), and after disconnect() it is
+        False. Naming the connect()-side cause on the teardown side told the operator to
+        hunt a §4 cold-start ordering violation that cannot have occurred.
         """
         if ib_id in self._from_ib:
-            log.error(
-                "startup gate refused a %s for %s, which is a LIVE order in this session "
-                "— an order was placed concurrently with connect(), violating §4 "
-                "cold-start ordering. The event was DROPPED.",
-                kind,
-                self._from_ib[ib_id],
-            )
+            if self._connected:
+                log.error(
+                    "startup gate refused a %s for %s, which is a LIVE order in this "
+                    "session — an order was placed concurrently with connect(), violating "
+                    "§4 cold-start ordering. The event was DROPPED.",
+                    kind,
+                    self._from_ib[ib_id],
+                )
+            else:
+                log.error(
+                    "startup gate refused a %s for %s, which is a LIVE order in this "
+                    "session — it arrived after disconnect() tore the session down, so "
+                    "the venue's view and ours have diverged and this order's outcome is "
+                    "UNKNOWN to us. The event was DROPPED; resolve via query_order_status "
+                    "on reconnect (§4:241 — never auto-resend).",
+                    kind,
+                    self._from_ib[ib_id],
+                )
 
     def _on_ib_order_status(self, trade) -> None:
         """IBKR re-emits orderStatus on every change, so ack and cancel are deduped."""

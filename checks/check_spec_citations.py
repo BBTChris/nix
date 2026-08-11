@@ -378,6 +378,17 @@ def build_index(nix_home: Path) -> dict[str, dict[str, Section]]:
     """
     docs: dict[str, dict[str, Section]] = {}
     for path in sorted((nix_home / DOC_DIR).glob("*.md")):
+        # AppleDouble sidecars (`._name.md`) are macOS resource forks, not documents.
+        # They match `*.md`, are not UTF-8, and are absent from a fresh worktree — which
+        # is why ARC 019 sub-agent C never saw them and this gate raised
+        # UnicodeDecodeError on its first run in the real tree. Skipping them by NAME
+        # rather than by decode failure is deliberate: a genuinely undecodable document
+        # in docs/ must still raise, because that is a real finding and this gate fails
+        # closed. Indexing one would also be worse than crashing — a sidecar carries no
+        # headings, and an un-indexable document is the map entry that EXEMPTS citations
+        # attributed to it, so `._debug.md` would silently become an escape hatch.
+        if path.name.startswith("._"):
+            continue
         docs[path.name] = index_document(path.read_text(encoding="utf-8"))
     return docs
 

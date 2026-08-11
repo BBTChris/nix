@@ -1,0 +1,16 @@
+[Unit]
+Description=Nix D1.12 — capture IB Gateway service state at boot, before console access
+# After, NOT Requires: if the gateway unit failed, that IS the measurement. Requiring it
+# would make this unit fail to run in exactly the case it exists to record.
+After=multi-user.target ibgateway.service
+Wants=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/bbt/nix/.venv/bin/python /home/bbt/nix/scripts/d1_12_reboot_capture.py
+User=bbt
+Group=bbt
+# No TimeoutStartSec override: the check is offline and bounded.
+
+[Install]
+WantedBy=multi-user.target
