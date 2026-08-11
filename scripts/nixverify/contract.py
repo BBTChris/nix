@@ -21,7 +21,7 @@ class Mode(StrEnum):
 
 
 class Status(StrEnum):
-    """Five outcomes (§4.1). CANNOT_MEASURE is never a failure."""
+    """Six outcomes (§4.1, as amended). CANNOT_MEASURE is never a failure."""
 
     # nosec B105 - enum member value, not a credential. B105's heuristic keys
     # on the literal "pass"; renaming it to satisfy the scanner would change
@@ -32,13 +32,19 @@ class Status(StrEnum):
     FAIL_NEEDS_OPERATOR = "fail_needs_operator"
     CANNOT_MEASURE = "cannot_measure"
     SKIPPED = "skipped"
+    #: AMENDMENT 1 to the check contract (ARC 024). The subject is real and was
+    #: measured; the check carries a known-red marker naming the arc that
+    #: discharges it. Neither a PASS (nothing was proven) nor a FAIL (nothing is
+    #: broken) — a deferral **with an owner**. Withholds certification, never
+    #: durability. See docs/CHECK-CONTRACT-AMENDMENTS.md.
+    GUARDED = "guarded"
 
 
 FAILURES = (Status.FAIL_REPAIRABLE, Status.FAIL_NEEDS_OPERATOR)
 
 
 @dataclasses.dataclass
-class CheckResult:
+class CheckResult:  # pylint: disable=too-many-instance-attributes
     """One check's outcome. `site` and `evidence` are load-bearing — see §5."""
 
     name: str
@@ -48,6 +54,16 @@ class CheckResult:
     detail: str = ""
     action: str = ""
     upstream_available: str = ""
+    #: ARC 024. The arc that discharges a GUARDED verdict. Mechanically required
+    #: for GUARDED (see `validate_result`) — a deferral with no owner is
+    #: `CHECK-DEBT.md` doctrine B.3's "no owner wearing a name", and would let
+    #: GUARDED become the drawer everything awkward is filed in.
+    guard_owner: str = ""
+    #: ARC 024. Wall-clock seconds the check took, stamped by the engine. Feeds
+    #: the Plane-2 verdict event and the progress surface. Never an input to a
+    #: verdict — a check whose duration decided its status would be anchored to
+    #: a moving value (debug.md §7.4).
+    duration_s: float = 0.0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -81,6 +97,23 @@ def validate_result(result: CheckResult) -> CheckResult:
         reason = "engine: PASS rejected — no evidence recorded (§5)"
     elif result.status in FAILURES and not result.site.strip():
         reason = "engine: FAIL rejected — no site named (§5)"
+    # AMENDMENT 1 (ARC 024). GUARDED is the one status that could rot into a
+    # drawer for anything inconvenient, because unlike FAIL it costs nothing to
+    # claim. Both of its defining properties are therefore enforced here rather
+    # than asked for in prose: it must have MEASURED (evidence), and it must
+    # name the arc that discharges it (guard_owner). A GUARDED verdict missing
+    # either one is not a deferral, it is an unmeasured claim with a colour, and
+    # it degrades to CANNOT_MEASURE like every other unmeasured claim.
+    elif result.status is Status.GUARDED and not result.evidence.strip():
+        reason = (
+            "engine: GUARDED rejected — no evidence recorded; a deferral must "
+            "have measured (§5, AMENDMENT 1)"
+        )
+    elif result.status is Status.GUARDED and not result.guard_owner.strip():
+        reason = (
+            "engine: GUARDED rejected — no discharging arc named "
+            "(CHECK-DEBT.md B.3: an owner that cannot pay is no owner wearing a name)"
+        )
     if reason:
         result.status = Status.CANNOT_MEASURE
         # Append, never replace: the downgrade path is exactly where an
@@ -120,9 +153,20 @@ def result_from_defects(
 
 
 def exit_code_for(status: Status) -> int:
-    """§4.2. SKIPPED maps to 2: a check that never ran is not a pass."""
+    """§4.2, as amended. SKIPPED maps to 2: a check that never ran is not a pass.
+
+    AMENDMENT 1 (ARC 024) adds `3 — GUARDED` and is **strictly additive**:
+    `0`/`1`/`2` keep the meanings `VERIFY-AND-CHECKS.md` §B.2 gives them, and
+    exit 2 in particular is untouched. Part D item 2 of the doctrine — *"keep
+    the exit-code contract, including exit 2; it exists because of a measured
+    incident"* — is preserved rather than amended, because the incident that
+    produced exit 2 was a gate reporting a violation while having measured
+    nothing, and GUARDED is a status only available to a gate that DID measure.
+    """
     if status is Status.PASS:
         return 0
     if status in FAILURES:
         return 1
+    if status is Status.GUARDED:
+        return 3
     return 2

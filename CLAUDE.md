@@ -33,7 +33,8 @@ Not auto-loaded. Read the ones an arc touches; they cost nothing until opened. F
 | `directory_structure.md` | canonical topology (v1.3.0) | adding artifacts or regenerating `directory-layout.md` |
 | `elements_v2.md` | **non-authoritative ops input** (v2.1) | provisioning, `install.sh`, credential encryption, `verify.py`, versioning, backup/DR. Risk spec wins wherever they meet |
 | `VERIFY-AND-CHECKS.md` | **doctrine — external, inherited; outranks `nix_check_contract.md`** | any work on a check or gate. Parts C and D are binding rules; Part A/B *inventory* describes the predecessor system's tree, not Nix's — inherit the lessons, never the inventory (see `nix_check_contract.md` §15.4) |
-| `nix_check_contract.md` | **derived implementation spec** (v1.1.0) — subordinate to `VERIFY-AND-CHECKS.md` | any work on `install.sh`, `bootstrap.sh`, `scripts/verify.py`, or `checks/check_*.py`. §15 is the doctrine conformance map: read it first when the two appear to disagree. Was itself named `VERIFY-AND-CHECKS.md` until ARC 010 |
+| `nix_check_contract.md` | **derived implementation spec** (v1.2.0) — subordinate to `VERIFY-AND-CHECKS.md` | any work on `install.sh`, `bootstrap.sh`, `scripts/verify.py`, or `checks/check_*.py`. §15 is the doctrine conformance map: read it first when the two appear to disagree. Was itself named `VERIFY-AND-CHECKS.md` until ARC 010 |
+| `CHECK-CONTRACT-AMENDMENTS.md` | **amendment ledger for the check contract — a RECORD, not an authority** | any change to check status, actuation, or the coverage trigger. `VERIFY-AND-CHECKS.md` is unversioned, external, and has no amendment mechanism: amendments land in `nix_check_contract.md` and are recorded here. Numbered independently of `SPEC-AMENDMENTS.md`, which amends the frozen *risk* spec |
 | `CHECK-DEBT.md` | ledger of owed-but-unwritten checks (doctrine A.4) | every arc that changes the environment: record the debt rather than blocking on it |
 | `dev_and_services_plan.md` | staging plan | vendor/account/stage questions: Stage 0–4 sequence, dev box, QuantVPS |
 | `nix-strategy-evaluator-pipeline-6.docx` | **Crucible pipeline design** (planning-stage, no code yet; supersedes pipeline-5) | strategy candidate scoring: static/contract/structural checks, historical scoring, WFO, holdout, AI council review, paper trading, live-promotion gate, monitoring, retirement (pipeline Gates 0–9 / scorer gates G1–G7) |
@@ -73,6 +74,20 @@ Not auto-loaded. Read the ones an arc touches; they cost nothing until opened. F
 - Self-contained home `~/nix`, except the system PostgreSQL cluster. Python based.
 - Per-module JSON configs only; config-role and data-role JSON stay separate. Risk spec §12A is the **semantic** authority for tunables (names, defaults, cross-knob boot validation); per-module JSON is the **physical** layout; boot-loaded, restart-only lifecycle applies throughout.
 - Daemons headless and self-healing; no runtime operator input. (Spec §12.11 authenticated operator verbs are exceptional control, not runtime input — build them.)
+
+## Check contract (v2 — actuation)
+
+Amendments recorded in `docs/CHECK-CONTRACT-AMENDMENTS.md`; mechanics in `docs/nix_check_contract.md` v1.2.0.
+
+1. Every check verifies, corrects, installs, selected by flags — on the runner **and on the check's own CLI**. Default = measure-only; a flagless check never mutates.
+2. Correct/install is followed by an **independent** re-measurement: fresh process, verify-only, real effective state. A return value from the correcting path is not a verification. The verdict after a mutation is the re-verify's.
+3. Any module or setting written to disk, or changed, ships an associated check script in the same arc — or a `CHECK-DEBT.md` row. Broader than the prior environment-change trigger; supersedes it. Ledger obligation, never a build gate.
+4. Status: green=Pass(0) · red=Fail(1) · light blue=Cannot-measure/skipped(2) · yellow=Guarded(3). Guarded = measured subject + known-red marker naming the discharging arc. Guarded withholds certification, never durability. Aggregate: Fail > Cannot-measure > Guarded > Pass.
+5. `checks/registry.json` is the master execution plan. (The operator ruling calls it `manifest.json`; **the file on disk is `registry.json` and the NAME IS AN OPEN OPERATOR RULING — do not rename either way.**) Blocks ordered least- to most-dependent. Single-check blocks sequential; multi-check blocks parallel **only** where members' declared resources are proven disjoint.
+6. Every check declares its dependency (`DEPENDS_ON`) and its resource claims (`RESOURCES`) to `verify.py`. Declarations are read **statically (AST), never by importing the check**.
+7. `verify.py --optimize` derives the plan from the folder. Cycles, orphans (both directions), undeclared dependencies, and non-disjoint parallel blocks are loud errors and **no plan is written**. Proposes `<manifest>.proposed`; `--commit` installs.
+8. `verify.py` emits Plane-2 structured events to journald (risk spec §12.10) via stdlib `SysLogHandler`→`/dev/log`. Presentation output never enters the journal; Plane 2 never lands in `logs/`. `verify.py` never writes Plane 1.
+9. A retrofitted check is a **new** check: its can-fail binding does not survive the retrofit and must be re-established, or it reverts to UNBOUND.
 
 ## Naming
 

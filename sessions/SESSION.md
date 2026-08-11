@@ -2060,3 +2060,92 @@ rows, left unrewritten per directive 6 and flagged, with the note that **the nex
 gate, not in prose** · the poll channel's lag and `Bar.volume`'s sentinel remain VENDOR_DECLARED and
 unmeasured (D1.39/D1.40, next tap) · D1.33 · `connectAsync` still unbound, so the async split stays
 declarative · `history_source` still has no declared row contract.
+
+---
+
+## ARC 024 — The check contract: Plane 2, actuation, orchestration (2026-08-11)
+
+Phase 0 answered six reconciliations from disk and **three of them found the brief wrong against the
+tree**: `manifest.json` does not exist and never has (the string occurs in exactly one file in this
+repo — the brief itself), the three check-contract governing documents ARE all present in
+`CLAUDE.md`'s specs table at lines 35/36/37, and `debug.md`'s claimed v1.1.0 drift does not exist —
+disk and index both read v1.2.0, and the row itself records that ARC 018 already made that repair.
+The name question was reported and **not resolved**: `registry.json` and "manifest" are one artifact
+whose file ARC 010 renamed under doctrine A.4/D.5 and whose vocabulary was left behind, still visible
+in `nixverify/manifest.py`, `ManifestError`, `load_manifest()`, the `--manifest` flag and the file's
+own `"manifest_version"` key. Nothing was renamed, merged or created. Phase 0.4 also corrected the
+arc's own premise: the population is **12 checks with zero orphans**, not hundreds, and
+`--mode verify|correct|install` **already existed and already defaulted to verify**, so the
+architect's measure-only ruling was the policy already on disk rather than a change to it.
+
+**The headline is that a fourth status exists and is live on a real subject.** AMENDMENT 1 adds
+`GUARDED` -> exit 3 — measured subject plus a known-red marker naming the discharging arc, withholds
+certification but never durability — and both of its defining properties are enforced mechanically
+in `validate_result` rather than asked for in prose: a GUARDED verdict with no evidence, or with no
+`guard_owner`, degrades to CANNOT_MEASURE. `check_artifact_gate_coverage` is its first emitter, so
+`verify.py` now reads **11 passed | 1 failed | 1 cannot measure | 0 skipped | 1 guarded, exit 1**.
+The aggregate is still 1, which is the dominance rule (FAIL > CANNOT-MEASURE > GUARDED > PASS)
+holding a **live** guarded below a live FAIL. The non-regression claim was first written as *the
+branch is unreachable today*; that stopped being true inside the same arc, and both measurements are
+recorded rather than the stale one left standing.
+
+**Plane 2's transport was chosen by measurement and the rejected candidate is the interesting one.**
+`systemd.journal.JournalHandler` imports under `/usr/bin/python3` and raises `ModuleNotFoundError`
+under `.venv/bin/python3`, and `verify.py` runs under both — so it was **REFUSED**, because a
+handler chosen on the strength of one interpreter would attach cleanly, log nothing and raise
+nothing under the other. That is exactly the vacuity `check_verify_logging` exists to fail, built in
+at the transport layer where the gate could not see it. Stdlib `SysLogHandler` -> `/dev/log`
+round-trips under both. §1.3 was proven rather than asserted: a pty run put **46 spinner frames and
+14 ANSI escapes on the terminal and 0 of each into Plane 2**; piped runs 0/0. The gate's own control
+made the instrument better mid-build — a `Plane2` aimed at a regular file reported
+`available=True delivered=0`, so `available` was tightened to mean *the destination is a socket*.
+
+**The §0b refusal is Stage 3.1's parallel-block spelling, refused with a measurement.** A
+`socket.connect` spy recorded `check_ibgateway_config` and `check_ibgateway_service` each dialling
+`('127.0.0.1', 4002)` from the same registry block, with the service gate importing the config
+gate's handshake. Promoting that block would put two checks concurrently on the same IBKR API port —
+and **the hazard is masked by the Gateway being down**, which is what would have made the promotion
+look harmless today and fail intermittently later, reading as a network problem rather than a tooling
+one. Blocks left sequential; the refusal is banked as a test, and D1.41 records that the refusal
+currently rests on the undeclared-member rule rather than on the gates declaring what they claim.
+
+**§3.3's mechanism was chosen by building both and measuring them, and the first measurement was
+thrown away for being unfair.** Import-to-read initially scored 1/13 — because the probe omitted
+`loader.py`'s `sys.path` step — and was re-taken at 13/13 in 29.7 ms against AST's 13/13 in 27.8 ms
+before either figure was used. Cost is therefore not the discriminator; the discriminators are that
+import cannot promise not to execute measurement logic, permanently adds 76 modules to
+`sys.modules`, and fails closed in the wrong direction. The failure mode of the mechanism **not**
+chosen is demonstrated rather than asserted, by a planted check whose module level writes a file.
+
+**A latent loader defect was found by the first check to use a module-level dataclass.**
+`loader._import_module` registered in `sys.modules` *after* `exec_module`, so `@dataclass` resolved
+its module to `None` and the import failed with a message naming neither the decorator nor the
+loader. Registration now precedes exec and is rolled back if exec raises. Every check written before
+this arc happened to avoid the construct, so the defect sat latent in shared code rather than being
+absent from it.
+
+**Stage 6 retrofitted three pilots and all three re-earned their bindings per §0c**, each against its
+real subject with the control restored byte-identical: `check_python_deps` (control sha `db23631d`,
+**matching ARC 022's banked figure exactly**, plant `ib_async` 2.1.0->2.0.1 ⇒ exit 1),
+`check_order_path_bans` (control sha `7bb4b539`, also matching the banked figure, `import tenacity`
+into the real `broker_order_ibkr.py` ⇒ exit 1 naming line 146), and `check_venv` (a real absent venv
+⇒ exit 1, `--correct` built it, **an independent fresh-process re-verify** confirmed it). §2.2's
+control is the load-bearing test of the arc: a check that returns PASS in CORRECT mode and FAIL when
+re-measured must exit 1, and it does — and the first version of that test passed for the wrong
+reason, because the subprocess crashed and also returned 1, caught only because the test asserted the
+message as well as the code.
+
+Close-out: `verify.py` exit 1 with the baseline preserved and no further FAILURE · pytest **438
+passed, 1 skipped, 2 xfailed** · pre-commit **8/8** · derived-claims 13/13 with 2/2 demonstrations
+re-executed · CHECK-DEBT **61 -> 66**, and nothing was typed: the harness caught derived 66 against
+stated 61 before the series row existed. Five rows opened (D1.41, D2.26, D2.27, D3.19, D3.20) and
+four of the five are limits this arc's own instruments created and stated at the moment they were
+created — including D3.19, in which `check_artifact_gate_coverage` declares its own UNBOUND status
+in the evidence of every verdict it emits, because proving an artifact is *named* by a check is
+strictly weaker than proving it is *measured* by one, and that gap is D3.16 one level up. Order-side
+contamination disclosed and measured rather than assumed: `broker_order_open_debt_rows` moved 13 ->
+15 while nothing touched broker-order, because two new rows legitimately name `broker_order_ibkr.py`
+as a plant site. `--optimize` is **inert** until the bulk retrofit — 9 of 14 checks declare nothing,
+so it exits 1 with one named error each and writes nothing, not even a `.proposed` file — and that
+is D2.26 rather than a surprise waiting for an operator. Six items returned to the operator; all five
+architect rulings implemented as written and flagged, none stalled waiting on ratification.

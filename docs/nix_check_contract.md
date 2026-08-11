@@ -1,7 +1,14 @@
-# nix_check_contract — Nix provisioning engine and check contract — v1.1.0
+# nix_check_contract — Nix provisioning engine and check contract — v1.2.0
 
 **Status: derived implementation spec, subordinate to `VERIFY-AND-CHECKS.md`.** Governs
 `bootstrap.sh`, `install.sh`, `scripts/verify.py`, and every `checks/check_*.py`.
+
+**Amendments.** `VERIFY-AND-CHECKS.md` is external, inherited, **unversioned, and has no amendment
+mechanism**; it is never edited in place. Where Nix extends or diverges from it, the change is
+implemented **here** and recorded in `docs/CHECK-CONTRACT-AMENDMENTS.md`. Three amendments are live
+as of v1.2.0: **1 — `GUARDED`** (§4.1, §4.2), **2 — actuation** (§4.3), **3 — the broadened coverage
+trigger** (§1). That ledger is numbered independently of `docs/SPEC-AMENDMENTS.md`, which amends the
+frozen risk spec and is a different document with a different authority.
 
 **Authority order.** `VERIFY-AND-CHECKS.md` (verification doctrine, external, inherited) →
 this file (Nix-side mechanics) → `elements_v2.md`. Where this file meets
@@ -23,11 +30,17 @@ document's Part/section letters (A.2, B.4, C.3 …).
 
 ## 1. The standing rule — a ledger obligation, not a build gate
 
-> **Every environment change owes a check.** Installing a package, writing a setting, wiring a
-> unit, creating a file — each obligates a `checks/check_*.py` that can verify it, and, where
-> possible, correct or install it.
+> **Any time any module or setting is written to disk or changes, an associated check script is
+> owed.** A `checks/check_*.py` that can verify it, and, where possible, correct or install it.
 
-**The obligation is recorded, not blocking** (doctrine A.7). An arc that makes an environment
+**Broadened by AMENDMENT 3 (ARC 024, operator ruling 4); see
+`docs/CHECK-CONTRACT-AMENDMENTS.md`.** The prior wording — *"every **environment** change owes a
+check: installing a package, writing a setting, wiring a unit, creating a file"* — is **superseded**.
+It is strictly narrower: a module written into `scripts/` changes no environment and owed nothing
+under it. It owes now.
+
+**What the broadening does NOT change is the character of the obligation: it is recorded, not
+blocking** (doctrine A.7). An arc that makes an environment
 change and does not write its check records the debt in `docs/CHECK-DEBT.md` and proceeds. The
 check system is deliberately built late, because a check declares a desired state and most of
 Nix's desired states do not exist yet.
@@ -35,7 +48,18 @@ Nix's desired states do not exist yet.
 **Do not build a gate on "CHECK-DEBT fully drained."** Doctrine A.7 records the measured
 counter-example: on the predecessor system that ledger rose monotonically across seventeen arcs
 and never once fell. A gate whose criterion the trend line says can never be met is furniture.
-The drain target is per-arc movement, not zero.
+The drain target is per-arc movement, not zero. **Broadening the trigger raises the accrual rate,
+which makes that warning more binding, not less.**
+
+**The enforcing gate and its ceiling.** `checks/check_artifact_gate_coverage.py` enumerates the
+tracked module and config artifacts, enumerates the subjects declared by the check population
+(§4.4), and reports any artifact with zero declaring check. A ratchet: existing debt is `GUARDED`
+against `checks/gate_coverage_baseline.json` and owned by the bulk retrofit arc; a *new* uncovered
+artifact is a FAIL; a baseline entry that has become covered is also a FAIL, so the baseline can
+only tighten. **[ARCHITECT RULING — revocable]** it ships **UNBOUND per `CHECK-DEBT.md`'s D3.10 rule
+of record and says so in its own verdict**: it proves that *some check names the artifact*, which is
+strictly weaker than *some check measures it*. A check naming a subject it never drives is D3.16
+exactly and this gate cannot see that class. **Its green is not coverage.**
 
 §3 keeps the rule structural where it can be: a component's installation procedure lives *only*
 in its check, so there is nowhere else to put it.
@@ -93,6 +117,7 @@ class Status(StrEnum):
     FAIL_NEEDS_OPERATOR = "fail_needs_operator"
     CANNOT_MEASURE      = "cannot_measure"
     SKIPPED             = "skipped"
+    GUARDED             = "guarded"    # AMENDMENT 1 (ARC 024)
 
 @dataclass
 class CheckResult:
@@ -103,6 +128,8 @@ class CheckResult:
     detail:   str = ""
     action:   str = ""                # what correct/install actually did
     upstream_available: str = ""      # advisory only (§7)
+    guard_owner: str = ""             # AMENDMENT 1 — arc that discharges a GUARDED
+    duration_s: float = 0.0           # stamped by the engine; never an input to a verdict
 
 def run(mode: Mode, ctx: Context) -> CheckResult: ...
 ```
@@ -122,6 +149,8 @@ force-reinstall firing there would be destructive.
 
 ### 4.1 Status semantics
 
+**Six statuses** since AMENDMENT 1 (ARC 024).
+
 | Status | Meaning | `--correct` behaviour |
 |---|---|---|
 | `PASS` | verified correct against real state | nothing |
@@ -129,6 +158,22 @@ force-reinstall firing there would be destructive.
 | `FAIL_NEEDS_OPERATOR` | requires human input the engine cannot supply (e.g. an absent API key) | **refuse** — report, direct to `install.sh` |
 | `CANNOT_MEASURE` | truth is unknowable right now (service down, host unreachable) | **not a failure** — report, continue |
 | `SKIPPED` | did not run (halted block, wrong privilege, `INTERACTIVE` while headless) | n/a |
+| `GUARDED` | **the subject is real and WAS measured, and the check carries a known-red marker naming the arc that discharges it** | report; the deferral is the answer |
+
+`GUARDED` is neither a pass (nothing was proven) nor a failure (nothing is broken) — **a deferral
+with an owner**. **It withholds certification, never durability**: the arc still banks, recorded NOT
+CERTIFIED, which is doctrine §B.1's rule for RED applied unchanged.
+
+**Both of its defining properties are enforced, not requested.** `validate_result()` downgrades a
+`GUARDED` to `CANNOT_MEASURE` when `evidence` is empty (a deferral that measured nothing is an
+unmeasured claim with a colour) or when `guard_owner` is empty (`CHECK-DEBT.md` doctrine B.3 — *an
+owner that cannot pay is no owner wearing a name*). GUARDED is the one status that would rot into a
+drawer for anything inconvenient, because unlike `FAIL_*` it costs nothing to claim.
+
+Presentation: green `PASS` · red `FAIL_*` · **light blue** `CANNOT_MEASURE`/`SKIPPED` · **yellow**
+`GUARDED`. Yellow was `CANNOT_MEASURE`'s up to ARC 023; the reassignment loses no information
+because the two keep distinct glyphs in both glyph sets (`⚠`/`·`, `[??]`/`[--]`) and already shared
+exit code `2`. §12's 1:1 glyph map gains `◐` / `[GRD]` for `GUARDED`.
 
 `CANNOT_MEASURE` must **never** collapse into a failure status. A connection exception means the
 gate could not measure — not that the subject is misconfigured. Collapsing them makes a downed
@@ -148,12 +193,98 @@ contracts, no duplicated logic.**
 | `PASS` | `0` — PASS |
 | `FAIL_REPAIRABLE`, `FAIL_NEEDS_OPERATOR` | `1` — FAIL |
 | `CANNOT_MEASURE`, `SKIPPED` | `2` — CANNOT MEASURE |
+| `GUARDED` | `3` — GUARDED (AMENDMENT 1, ARC 024) |
 
 `SKIPPED → 2` deliberately: a check that never ran reporting exit `0` is vacuous success, the
 exact failure this document exists to prevent.
 
-**`verify.py` aggregate exit**, failure dominating: any `FAIL_*` → `1`; else any
-`CANNOT_MEASURE`/`SKIPPED` → `2`; else `0`.
+**AMENDMENT 1 is strictly additive.** `0`/`1`/`2` keep exactly the meanings doctrine §B.2 gives
+them, and exit `2` in particular is **untouched** — Part D item 2 (*keep the exit-code contract,
+including exit 2; it exists because of a measured incident*) is preserved rather than amended. It
+can be, because §B.2's incident was a gate reporting a violation **while having measured nothing**,
+and `GUARDED` is available only to a gate that DID measure. Exit `2` is *"I could not look"*; exit
+`3` is *"I looked, and this is known-red with a named owner."*
+
+**`verify.py` aggregate exit** — dominance order **FAIL > CANNOT-MEASURE > GUARDED > PASS**: any
+`FAIL_*` → `1`; else any `CANNOT_MEASURE`/`SKIPPED` → `2`; else any `GUARDED` → `3`; else `0`.
+
+**GUARDED ranks below cannot-measure and the order is the ruling.** A cannot-measure carries **no
+information about its subject**; a GUARDED verdict carries a measurement *and* the name of the arc
+that discharges it. Ranking the informative state above the uninformative one would let a run of
+known-red deferrals out-shout a gate that went blind — the direction §B.2's exit 2 exists to
+prevent.
+
+**Non-regression, measured twice.** At the point AMENDMENT 1 landed no check emitted `GUARDED`, the
+branch was unreachable and the aggregate was bit-identical to the pre-amendment function. Since
+Stage 2.7, `check_artifact_gate_coverage` emits it; re-measured 2026-08-11:
+`11 passed | 1 failed | 1 cannot measure | 0 skipped | 1 guarded — exit 1`. **The aggregate is still
+`1`, and that is the dominance rule working:** a live GUARDED did not displace a live FAIL.
+
+### 4.3 Actuation — verify / correct / install (AMENDMENT 2, ARC 024)
+
+Implemented in `scripts/nixverify/actuation.py`. All four rulings below are
+**[ARCHITECT RULING — revocable]**, implemented as written, awaiting operator ratification; see
+`docs/CHECK-CONTRACT-AMENDMENTS.md` AMENDMENT 2.
+
+**The flag surface.** Every check exposes verify/correct/install on **its own CLI** via
+`actuation.standalone_main`. `--correct` and `--install` are mutually exclusive and explicit per
+invocation; **the default is measure-only and a flagless check never mutates.** No environment
+variable and no config key turns them on. This was already `verify.py`'s policy (`--mode`, default
+`verify`, since ARC 009); what was missing was the check's own CLI, where all 13 registered checks
+hardcoded `Mode.VERIFY` in `__main__`.
+
+**The independent re-verify.** After a correction or install, `actuation.reverify()` re-executes
+the check **as a fresh subprocess in verify-only mode** and reads its exit code. It does not call
+`run()` again in-process and accepts no value from the correcting path — a `correct()` returning
+`True` and the check reporting PASS on that basis is a vacuous pass *by construction*, since the
+correcting code and the confirming code share every assumption, cache, and module-level import.
+**The verdict after a mutation is the re-verify's, not the correction's**, and a disagreement is
+printed loudly rather than resolved in the correction's favour.
+
+**The non-correctable class.** `CORRECTABLE = False` plus a **mandatory** `NON_CORRECTABLE_REASON`;
+the check then refuses `--correct`/`--install` loudly, naming its reason. **A refusal with no reason
+is a declaration error** (§4.4). Proposed members — *operator to ratify or narrow*: the order path;
+credentials or `state/` (0600); broker session state, clientId assignments, open positions. Charter
+member implemented: `checks/check_order_path_bans.py`.
+
+**The session interlock.** `--correct`/`--install` refuse unless a trading session is **positively
+measured INACTIVE** (no unit active inside `nix-trading.slice`). **Three states, not two:** `active`
+refuses; `inactive` permits; `unknown` **refuses and names what it could not determine**. A
+two-state interlock would have to guess, and a guess here is either a refusal that never lifts or a
+permission that was never earned. **`--force` does not override it.** The per-check `CORRECTABLE =
+False` refusal is evaluated *before* the interlock, so a non-correctable check refuses for its own
+reason even on a quiet box.
+
+### 4.4 Orchestration declarations — read statically, never by import
+
+Module-level symbols read by `scripts/nixverify/declarations.py` and consumed by `--optimize` (§6):
+
+| symbol | meaning |
+|---|---|
+| `DEPENDS_ON` | checks that must run first. Required — a check that declares nothing cannot be placed |
+| `RESOURCES` | what the check claims (ports, clientIds, files it writes, services it restarts, the journal, `state/`). Required for parallel eligibility |
+| `TIME_BOUND` | the runtime is dominated by a bound, not by work |
+| `EXPECTED_S` | expected duration, derived from the check's own timeout, never from an observed run |
+| `CORRECTABLE` | §4.3 |
+| `NON_CORRECTABLE_REASON` | mandatory when `CORRECTABLE` is False |
+
+**Binding invariant: `--optimize` reads every declaration without executing the check's measurement
+logic.** Both candidate mechanisms were built and measured against all 13 registered checks before
+one was chosen; cost was not the discriminator (27.8 ms AST vs 29.7 ms import). **AST parse is
+chosen because import cannot promise not to execute measurement logic and AST cannot execute it** —
+the guarantee has to hold for a check nobody has written yet, one that dials IBKR or spawns a
+subprocess at module level. Import also permanently mutates the process (+76 `sys.modules` entries,
+measured) and fails closed in the wrong direction: a module whose top level raises yields *no
+declaration*, and the tempting recovery is to read that as "declares nothing", which lands the check
+in a parallel block it does not belong in.
+
+**AST's own weakness is handled, not ignored.** `RESOURCES = _BASE + ("journal",)` is not
+literal-evaluable. A declaration that is present but unreadable, or absent entirely, produces a
+**named error** in `Declaration.errors` and is loud at the point of use. It is **never** silently
+read as "no dependencies" and **never** assumed to claim nothing.
+
+**Declarations are the check's; scheduling is the plan's** — one source of truth per fact, so the
+two cannot disagree (the same rule §4 applies to `PRIVILEGE`/`INTERACTIVE`/`DISRUPTIVE`).
 
 ---
 
@@ -286,6 +417,22 @@ ARC 010.
   runs undiffable, defeating drift detection.
 - A check raising an exception is caught, becomes its own `CANNOT_MEASURE`, and never aborts the
   run — including at *import* time (§9).
+
+**ARC 024 additions.** `verify.py --optimize` derives this plan **from the `checks/` folder**, not
+from the registry: a registry that enumerates its own scope cannot report an ORPHAN, because an
+orphan is precisely a file it does not know about. Blocks are dependency levels, least- to
+most-dependent. A level goes `parallel: true` **only** where every member declared `RESOURCES` and
+those claims are pairwise disjoint (§4.4) — *"by definition no dependency"* is true of ordering and
+false of resource contention, and the hazard is live: two Gateway gates in one block both dial
+`127.0.0.1:4002`. Cycles (naming the participants), orphans **in both directions**, undeclared
+dependencies, and unreadable declarations are loud errors and **no plan is written at all**, not
+even as a proposal. A valid plan is written to `<manifest>.json.proposed`; `--commit` installs it.
+The bound is stated rather than buried: disjointness is checked over **declarations**, so a false
+declaration is the residual and no static mechanism closes it.
+
+**Name, open.** The ARC 024 operator ruling calls this artifact `checks/manifest.json`; the file on
+disk is `checks/registry.json`, named per doctrine A.4/D.5. **Unresolved operator ruling — do not
+rename in either direction.**
 
 ---
 
@@ -666,9 +813,48 @@ on-disk state outranks documentation.
 - **A.7's "95 → ~190 across seventeen arcs" CHECK-DEBT series.** Luna's measurement. Nix's ledger
   starts at ARC 010 and its own series must be measured, not assumed to follow Luna's.
 
+### 15.5 ARC 024 amendments — verdicts they change (additive; §15.1–§15.4 stand as written)
+
+Recorded in `docs/CHECK-CONTRACT-AMENDMENTS.md`. Rows here are **deltas** to the map above, not
+replacements for it.
+
+| doctrine | prior verdict | ARC 024 verdict |
+|---|---|---|
+| B.2 exit `0`/`1`/`2`, and exit `2` must survive | matches (§4.2) | **still matches — extended, not revised.** §4.2 adds `3 — GUARDED`; `0`/`1`/`2` keep §B.2's meanings verbatim |
+| D.2 keep the exit-code contract including exit 2 | matches (§4.2) | **still matches.** Exit `2` is untouched. `GUARDED` cannot recreate §B.2's incident: it is available only to a gate that measured |
+| A.2 `verify` read-only by default | matches (`verify.py --mode` defaults to `verify`) | **matches + widened** to each check's own CLI (§4.3); previously the 13 checks hardcoded `Mode.VERIFY` in `__main__` and had no flag surface at all |
+| A.1 assess-and-converge are the same unit | matches | **matches + strengthened.** §4.3's post-mutation verdict is an *independent* re-measurement in a fresh process, so the converging code never reports on its own result |
+| A.7 coverage is a ledger obligation, not a build gate | corrected (§1, ARC 010) | **unchanged in character, broadened in trigger** (AMENDMENT 3): any module or setting written to disk or changed. Still a ledger obligation |
+| B.3 the `known-red` marker, and a runner that discriminates expected REDs from new ones | **owed** (§15.3 — "no marker mechanism exists") | **narrowed, not discharged.** `Status.GUARDED` + `CheckResult.guard_owner` give the marker a mechanism and mechanically enforce B.3's "name the arc that can discharge it", and `check_artifact_gate_coverage` is the first emitter. **Nothing yet discriminates expected REDs from new ones at an arc boundary** — Nix has no `bank.sh` (§15.4). Row stays open |
+
+**One Nix addition beyond the doctrine, recorded per §15.2's convention.** §4.4's declaration set
+(`DEPENDS_ON`, `RESOURCES`, `TIME_BOUND`, `EXPECTED_S`, `CORRECTABLE`, `NON_CORRECTABLE_REASON`),
+read statically by AST, has **no counterpart in the doctrine** — it neither requires nor forbids it.
+§B.1's scheduling model is `bank.sh` running a flat registered set; Nix's is a derived dependency
+plan. Compatible: the doctrine's D.5 requirement that every consumer derive from the registry rather
+than restate it is what §4.4 exists to satisfy, one level deeper.
+
 ---
 
 ## Changelog
+
+**v1.2.0 (ARC 024)** — three amendments to the check contract, recorded in
+`docs/CHECK-CONTRACT-AMENDMENTS.md` (a new ledger, separate from `SPEC-AMENDMENTS.md`, which amends
+the frozen *risk* spec). **AMENDMENT 1:** `Status.GUARDED` → exit `3`, a fourth exit code; §4.1
+becomes six statuses; §4.2 gains the row, the dominance order FAIL > CANNOT-MEASURE > GUARDED >
+PASS, and the reasoning for why exit `2` is preserved rather than amended. Additive: bit-identical
+aggregate at the point it landed; re-measured after Stage 2.7 with one live emitter and still exit
+`1`, the dominance rule holding a GUARDED below a FAIL. **AMENDMENT 2:** §4.3 (new) — the
+actuation contract: verify/correct/install on each check's own CLI with a measure-only default, the
+independent post-mutation re-verify in a fresh process, the non-correctable class, and the
+three-state session interlock that `--force` does not override. §4.4 (new) — the orchestration
+declarations, read statically by AST, never by import. All four §4.3 rulings are architect rulings
+awaiting ratification. **AMENDMENT 3:** §1's trigger broadened from *every environment change* to
+*any module or setting written to disk or changed*; the ledger-obligation character is unchanged and
+the enforcing gate's UNBOUND ceiling (D3.10 / D3.16) is stated. §6 records `--optimize`'s
+folder-derived plan, its loud-error set, propose-then-commit, and the unresolved
+`manifest.json` / `registry.json` name ruling. §15.5 (new) records the verdict deltas; §15.1–§15.4
+stand as written.
 
 **v1.1.0 (ARC 010)** — reconciled against the real `VERIFY-AND-CHECKS.md`, which arrived on disk
 this arc. Renamed from `VERIFY-AND-CHECKS.md` to `nix_check_contract.md` and demoted from

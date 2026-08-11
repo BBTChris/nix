@@ -18,6 +18,15 @@ PRIVILEGE = "user"
 INTERACTIVE = False
 DISRUPTIVE = False
 
+# --- ARC 024 orchestration declarations (read statically, never imported) ---
+DEPENDS_ON: tuple[str, ...] = ()
+#: Claims the venv: CORRECT/INSTALL rebuilds it with `python -m venv`.
+RESOURCES: tuple[str, ...] = ("venv",)
+TIME_BOUND = False
+CORRECTABLE = True
+NON_CORRECTABLE_REASON = ""
+SUBJECTS: tuple[str, ...] = ()
+
 NAME = "check_venv"
 
 
@@ -189,11 +198,12 @@ def run(  # pylint: disable=too-many-return-statements
 # trailing disable comment here (verified empirically, pylint v4.0.6).
 # pylint: disable=duplicate-code
 if __name__ == "__main__":
-    from nixverify.contract import exit_code_for, validate_result
+    from nixverify.actuation import standalone_main
 
-    HOME = Path(__file__).resolve().parent.parent
-    OUTCOME = validate_result(
-        run(Mode.VERIFY, Context(nix_home=HOME, mode=Mode.VERIFY))
+    sys.exit(
+        standalone_main(
+            Path(__file__).resolve(),
+            run,
+            "check_venv",
+        )
     )
-    print(f"{OUTCOME.status.value}: {OUTCOME.evidence or OUTCOME.detail}")
-    sys.exit(exit_code_for(OUTCOME.status))

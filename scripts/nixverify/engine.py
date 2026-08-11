@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import dataclasses
+import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Protocol
 
 from nixverify.contract import (
     FAILURES,
@@ -44,7 +47,52 @@ _WITHHELD_NOTE = (
 )
 
 
-def _execute(checks_dir: Path, name: str, ctx: Context) -> CheckResult:
+class Observer(Protocol):
+    """What the engine tells an onlooker as it goes.
+
+    Two implementations exist: the Plane-2 emitter (`verify.py`) and the
+    progress surface (`render.LiveProgress`). They are deliberately separate
+    objects with no shared state — §1.3 of the ARC 024 ruling requires that
+    presentation can never enter the journal, and the cheapest way to guarantee
+    that is for the two sinks never to touch.
+
+    **Called from worker threads** when a block is parallel, so an implementation
+    must be safe to re-enter. Both shipped implementations serialise on a lock.
+    """
+
+    def check_start(self, name: str) -> None:
+        """A check is about to run."""
+
+    def check_verdict(self, result: CheckResult) -> None:
+        """A check has returned; `result.duration_s` is stamped."""
+
+
+def _timed(fn: Callable[[], CheckResult]) -> CheckResult:
+    """Run `fn`, stamping wall-clock onto whatever CheckResult comes back.
+
+    `perf_counter` rather than wall time: this number is reported, and a clock
+    step (NTP, DST) must not be able to produce a negative duration in the
+    journal. It is never an input to a verdict.
+    """
+    started = time.perf_counter()
+    result = fn()
+    result.duration_s = round(time.perf_counter() - started, 4)
+    return result
+
+
+def _execute(
+    checks_dir: Path, name: str, ctx: Context, observer: Observer | None = None
+) -> CheckResult:
+    """Run one check with every failure path captured, timed, and announced."""
+    if observer is not None:
+        observer.check_start(name)
+    result = _timed(lambda: _execute_inner(checks_dir, name, ctx))
+    if observer is not None:
+        observer.check_verdict(result)
+    return result
+
+
+def _execute_inner(checks_dir: Path, name: str, ctx: Context) -> CheckResult:
     """Run one check with every failure path captured."""
     loaded = load_check(checks_dir, name)
     if loaded.load_error:
@@ -88,19 +136,25 @@ def _execute(checks_dir: Path, name: str, ctx: Context) -> CheckResult:
     return validate_result(result)
 
 
-def _run_block(block: Block, checks_dir: Path, ctx: Context) -> list[CheckResult]:
+def _run_block(
+    block: Block, checks_dir: Path, ctx: Context, observer: Observer | None = None
+) -> list[CheckResult]:
     """Execute one block. Parallel blocks still report in manifest order."""
     if not block.parallel or len(block.checks) == 1:
-        return [_execute(checks_dir, name, ctx) for name in block.checks]
+        return [_execute(checks_dir, name, ctx, observer) for name in block.checks]
     with ThreadPoolExecutor(max_workers=len(block.checks)) as pool:
         futures = [
-            pool.submit(_execute, checks_dir, name, ctx) for name in block.checks
+            pool.submit(_execute, checks_dir, name, ctx, observer)
+            for name in block.checks
         ]
         return [future.result() for future in futures]
 
 
 def run_blocks(
-    blocks: tuple[Block, ...], checks_dir: Path, ctx: Context
+    blocks: tuple[Block, ...],
+    checks_dir: Path,
+    ctx: Context,
+    observer: Observer | None = None,
 ) -> list[CheckResult]:
     """Execute blocks in order, honouring on_fail policy."""
     results: list[CheckResult] = []
@@ -112,7 +166,7 @@ def run_blocks(
                 for name in block.checks
             )
             continue
-        block_results = _run_block(block, checks_dir, ctx)
+        block_results = _run_block(block, checks_dir, ctx, observer)
         results.extend(block_results)
         if block.on_fail == "halt" and any(r.status in FAILURES for r in block_results):
             halted_by = block.name
@@ -120,9 +174,30 @@ def run_blocks(
 
 
 def aggregate_exit(results: list[CheckResult]) -> int:
-    """§4.2: failure dominates cannot-measure, which dominates pass."""
+    """§4.2 as amended: FAIL > CANNOT-MEASURE > GUARDED > PASS.
+
+    **GUARDED ranks BELOW cannot-measure, and the order is the ruling.** A
+    cannot-measure carries no information about its subject; a GUARDED verdict
+    carries a measurement *and* the name of the arc that discharges it. Ranking
+    the informative state above the uninformative one would let a run of
+    known-red deferrals out-shout a gate that went blind, which is the direction
+    `VERIFY-AND-CHECKS.md` §B.2's exit 2 exists to prevent.
+
+    **Non-regression was measured twice, and the second measurement is the
+    stronger one.** When the amendment landed no check emitted GUARDED, so the
+    branch was unreachable and the aggregate was bit-identical to the
+    pre-amendment function — verified by the full suite and by `verify.py`
+    returning exit 1 with the same 10/1/1 triple. That claim then stopped being
+    true in the same arc: `check_artifact_gate_coverage` is the first emitter,
+    and the re-measured run reads
+    `11 passed | 1 failed | 1 cannot measure | 0 skipped | 1 guarded — exit 1`.
+    The aggregate is still 1, which is this dominance rule holding a **live**
+    GUARDED below a live FAIL rather than an unexercised branch being harmless.
+    """
     if any(r.status in FAILURES for r in results):
         return 1
     if any(r.status in (Status.CANNOT_MEASURE, Status.SKIPPED) for r in results):
         return 2
+    if any(r.status is Status.GUARDED for r in results):
+        return 3
     return 0

@@ -99,15 +99,48 @@ def _main_block_source(path: Path) -> str:
     return ""
 
 
+#: ARC 024. The shared actuation entry point. A check that delegates to it
+#: satisfies this guard through it rather than textually — see the test below,
+#: which pins that `standalone_main` really does call `validate_result` so the
+#: delegation can never become a way around the rule.
+_DELEGATE = "standalone_main("
+
+
+def test_standalone_main_itself_calls_validate_result() -> None:
+    """The delegation route must not be a hole in the guard below.
+
+    Every retrofitted check routes `__main__` through
+    `nixverify.actuation.standalone_main` instead of repeating the pattern. That
+    is only acceptable while the helper applies §5 itself — if this assertion
+    ever fails, the next test's `_DELEGATE` allowance is silently excusing four
+    checks from the rule it exists to enforce.
+    """
+    source = (
+        Path(__file__).resolve().parent.parent / "nixverify" / "actuation.py"
+    ).read_text(encoding="utf-8")
+    assert "validate_result(run_fn(" in source, (
+        "standalone_main no longer routes the check's result through "
+        "validate_result — the delegation allowance below is now a bypass"
+    )
+
+
 def test_every_real_check_standalone_block_calls_validate_result() -> None:
     """Regression guard: every checks/check_*.py must route its __main__
     block through validate_result, not call exit_code_for(run(...).status)
     directly — proven achievable by test_standalone_pattern_* above.
+
+    ARC 024: delegation to `standalone_main` counts, because that helper applies
+    `validate_result` on the check's behalf (pinned by the test immediately
+    above). The property enforced is *the result is validated*, never *these
+    exact characters appear in this block* — and the four retrofitted pilots
+    satisfy the property through one implementation rather than four copies,
+    which is doctrine C.9's direction.
     """
     missing = [
         path.name
         for path in CHECK_FILES
-        if "validate_result(" not in _main_block_source(path)
+        if "validate_result(" not in (block := _main_block_source(path))
+        and _DELEGATE not in block
     ]
     assert not missing, f"checks/*.py missing validate_result in __main__: {missing}"
 
