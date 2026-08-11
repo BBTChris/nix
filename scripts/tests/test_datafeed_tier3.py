@@ -175,6 +175,42 @@ next person to edit this file is the one who needs it.
   claims — which is the discrimination §7.7 asks for, verdict by verdict rather than in
   aggregate.
 
+  ARC 023 — FOUR FINDINGS CLOSED, AND WHAT THAT DID TO THIS FILE. Appended, not rewritten: the
+  block above is ARC 022's banked evidence (`CLAUDE.md` directive 6).
+
+    FLIPPED, because the fix made the encoding stale: T11 (F12), T12 (F13), T16 (F17), T19
+    (D1.39/D1.40) and T20 (F21). Each keeps its SEQUENCE — the sequence is what proves the
+    repair — and its docstring now records what it found, what the repair is, and what is still
+    open. NO FINDING WAS DELETED and no new Tier 3 was written.
+
+    SIX TRAVERSALS WERE CAUGHT VACUOUS BY THEIR OWN `nonvac()` GUARDS the moment the lag
+    window's SAMPLE FLOOR landed — T1b, T7, T7b, T10, T15 and one arm of T16 drove one to four
+    ticks and the floor declares absence below five, so every one of them reported *"the
+    traversal never reached its subject"* rather than a false finding about the adapter. That
+    is §7.3 working, not a suite that needed repairing, and it is why `saturate()` derives its
+    packet count from `LAG_SAMPLE_FLOOR` instead of typing one.
+
+    THE PLANTS, run ARC 023 against a SCRATCH COPY of the whole tree outside the worktree
+    (§7.2). The tree's own adapter was never modified and its sha256 was identical before and
+    after every one (`9eb19c2cb3…105c175d`). `__pycache__` purged between every step. CONTROL
+    after each restore: 109 passed / 2 xfailed across this file and `test_broker_datafeed.py`.
+
+      P1  `_report_for`: the POLL channel branch removed — F21 itself.        3 failed
+      P2a `_LagWindowStore.record`: both trims removed (unbounded again).     3 failed
+      P2b `windowed_mean_s`: the sample floor removed.                       12 failed
+      P2c `windowed_mean_s`: returns the SESSION mean — F17's exact inversion. 2 failed
+      P3a the publication debt is discarded as soon as it is added.          18 failed
+      P3b the debt is discharged BEFORE `on_bar` (§7.12 condition 2).          2 failed
+      P3c the retry RE-DERIVES the bar instead of re-publishing the seal.      3 failed
+      P4  `poll_history` calls `_symbols.setdefault` again — F12 itself.       2 failed
+      P5  the IBKR volume sentinel is not translated at the boundary.          2 failed
+      P6  the TICK channel's measured figure serves the POLL channel too.      3 failed
+
+    P3c is the one worth reading: besides T12 it reddened
+    `test_the_adapter_derives_no_bar_from_ticks`, AMENDMENT 4's proof-by-absence gate, which
+    counts `Bar(...)` constructions in the module by AST. A gate written for one property
+    caught a violation of another, from a different arc, without being asked.
+
 WHAT THIS SUITE CANNOT MEASURE, stated rather than left to be found:
   - Anything cross-THREAD or cross-PROCESS. `nics_risk_subsystem_spec_v1.3.md` §13:919-920
     objective 24 puts broker-datafeed in its own process; nothing here crosses that boundary.
@@ -235,14 +271,18 @@ from broker_datafeed_ibkr import IBKRBrokerDatafeed
 from broker_seam import (
     DATAFEED_ASYNC_VERBS,
     DATAFEED_PORT_VERBS,
+    LAG_SAMPLE_FLOOR,
+    LAG_WINDOW_S,
     Bar,
     BarSource,
     BrokerNotConnected,
+    FeedChannel,
     FeedPollExhausted,
     FeedState,
     HollowBrokerDatafeed,
     LagAgreement,
     LagProvenance,
+    LagWindowBound,
     MarketDataMode,
     RecordingFeedSink,
     check_structural_conformance,
@@ -418,6 +458,25 @@ async def new_ad(*, grant_map=None, history=None, log=None, connect=True, **kwar
     if connect:
         await ad.connect()
     return ad, sink, fake
+
+
+def saturate(ad, symbol, *, lag: float = 600.0, base_recv: float = 700.0) -> float:
+    """Deliver exactly `LAG_SAMPLE_FLOOR` venue-stamped ticks and return the last `recv_ts`.
+
+    ARC 023 (F17): the lag window declares ABSENCE below its floor rather than reporting a mean
+    over too few samples, so a traversal that needs an OBSERVED reading has to reach the floor.
+    THE COUNT IS DERIVED FROM `LAG_SAMPLE_FLOOR`, never typed — a literal here is `debug.md`
+    §7.4's third row and it is exactly what went stale when the floor landed: six traversals
+    drove one to four ticks and their own `nonvac()` guards caught every one of them, which is
+    §7.3 working rather than a suite that had to be repaired.
+
+    The packets are one second apart, so the whole set sits inside one `LAG_WINDOW_S` and the
+    time bound is not what is being measured here."""
+    last = base_recv
+    for i in range(LAG_SAMPLE_FLOOR):
+        last = base_recv + i
+        ad._on_ib_tick(symbol, 1.0, 1.0, last - lag, recv_ts=last)
+    return last
 
 
 async def spin(times: int = 4) -> None:
@@ -683,9 +742,9 @@ async def test_t1b_resubscribe_is_not_unsubscribe_then_subscribe() -> None:
     """
     ad_a, _, fake_a = await new_ad()
     await ad_a.subscribe(SYM)
-    ad_a._on_ib_tick(SYM, 1.0, 1.0, 100.0, recv_ts=700.0)
+    last_a = saturate(ad_a, SYM)
     nonvac(
-        ad_a.feed_lag(SYM).observed_n == 1,
+        ad_a.feed_lag(SYM).observed_n == LAG_SAMPLE_FLOOR,
         "no lag sample was collected, so neither path has anything to preserve or drop",
     )
     fake_a._adapter = None
@@ -693,8 +752,11 @@ async def test_t1b_resubscribe_is_not_unsubscribe_then_subscribe() -> None:
 
     ad_b, _, fake_b = await new_ad()
     await ad_b.subscribe(SYM)
-    ad_b._on_ib_tick(SYM, 1.0, 1.0, 100.0, recv_ts=700.0)
-    nonvac(ad_b.feed_lag(SYM).observed_n == 1, "arm B collected no lag sample")
+    saturate(ad_b, SYM)
+    nonvac(
+        ad_b.feed_lag(SYM).observed_n == LAG_SAMPLE_FLOOR,
+        "arm B collected no lag sample",
+    )
     fake_b._adapter = None
     await ad_b.unsubscribe(SYM)
     await ad_b.subscribe(SYM)
@@ -705,9 +767,12 @@ async def test_t1b_resubscribe_is_not_unsubscribe_then_subscribe() -> None:
 
     # And the observation history does not: one arm kept it, the other did not.
     a_lag, b_lag = ad_a.feed_lag(SYM), ad_b.feed_lag(SYM)
-    assert a_lag.provenance is LagProvenance.OBSERVED and a_lag.observed_n == 1
+    assert (
+        a_lag.provenance is LagProvenance.OBSERVED
+        and a_lag.observed_n == LAG_SAMPLE_FLOOR
+    )
     assert b_lag.provenance is LagProvenance.PRIOR_ARC and b_lag.observed_n == 0
-    assert ad_a.last_tick_recv_ts(SYM) == 700.0
+    assert ad_a.last_tick_recv_ts(SYM) == last_a
     assert ad_b.last_tick_recv_ts(SYM) is None
     # THE CONTRADICTION, stated as a relation rather than as two snapshots: the surviving
     # measurement is reported alongside a grant the adapter says it does not know.
@@ -1084,9 +1149,9 @@ async def test_t7_subscriptions_are_not_re_established_and_their_state_outlives_
     """
     ad, _, fake = await new_ad()
     await ad.subscribe(SYM)
-    ad._on_ib_tick(SYM, 1.0, 1.0, 100.0, recv_ts=700.0)
+    last_recv = saturate(ad, SYM)
     nonvac(
-        ad.feed_lag(SYM).observed_n == 1
+        ad.feed_lag(SYM).observed_n == LAG_SAMPLE_FLOOR
         and ad.granted_mode(SYM) is MarketDataMode.DELAYED,
         "the traversal did not establish a granted subscription with an observation to outlive "
         "it — there is no session boundary to cross",
@@ -1106,8 +1171,8 @@ async def test_t7_subscriptions_are_not_re_established_and_their_state_outlives_
     assert SYM in ad._symbols
     after = ad.feed_lag(SYM)
     assert after.provenance is LagProvenance.OBSERVED
-    assert after.observed_lag_s == 600.0 and after.observed_n == 1
-    assert ad.last_tick_recv_ts(SYM) == 700.0
+    assert after.observed_lag_s == 600.0 and after.observed_n == LAG_SAMPLE_FLOOR
+    assert ad.last_tick_recv_ts(SYM) == last_recv
 
     # HALF TWO — nothing was re-subscribed, and the venue is asked to cancel it anyway.
     assert fake.subscribed == subscribed_before
@@ -1143,9 +1208,9 @@ async def test_t7b_a_tick_arriving_after_disconnect_is_published_over_a_dead_ses
     """
     ad, sink, _ = await new_ad()
     await ad.subscribe(SYM)
-    ad._on_ib_tick(SYM, 1.0, 1.0, 100.0, recv_ts=700.0)
+    last_recv = saturate(ad, SYM)
     nonvac(
-        len(sink.ticks) == 1,
+        len(sink.ticks) == LAG_SAMPLE_FLOOR,
         "the live-session arm never delivered a tick to compare with",
     )
 
@@ -1156,15 +1221,20 @@ async def test_t7b_a_tick_arriving_after_disconnect_is_published_over_a_dead_ses
     )
 
     before = len(sink.ticks)
-    ad._on_ib_tick(SYM, 2.0, 1.0, 200.0, recv_ts=900.0)
+    # DELIVERED INSIDE THE SAME LAG WINDOW as the live-session packets (ARC 023): the finding
+    # is about a DEAD SESSION, and a packet placed a window-width later would be excluded by
+    # the time bound instead, which measures something else.
+    dead_recv = last_recv + 1.0
+    ad._on_ib_tick(SYM, 2.0, 1.0, dead_recv - 600.0, recv_ts=dead_recv)
 
     # THE FINDING: a full publication over a session the adapter has declared DOWN.
     assert len(sink.ticks) == before + 1
-    assert sink.ticks[-1] == (SYM, 2.0, 1.0, 200.0, 900.0)
+    assert sink.ticks[-1] == (SYM, 2.0, 1.0, dead_recv - 600.0, dead_recv)
     assert sink.sequence[-1] == "on_tick"
     assert ad.feed_state() is FeedState.DOWN
-    assert ad.feed_lag(SYM).observed_n == 2  # and it moved the statistics
-    assert ad.last_tick_recv_ts(SYM) == 900.0
+    # AND IT MOVED THE STATISTICS: the window grew by exactly the dead-session packet.
+    assert ad.feed_lag(SYM).observed_n == LAG_SAMPLE_FLOOR + 1
+    assert ad.last_tick_recv_ts(SYM) == dead_recv
 
 
 # ===========================================================================
@@ -1320,8 +1390,7 @@ async def test_t10_feed_lag_read_across_a_reconnect_reports_a_dead_session_as_ob
     """
     ad, _, _ = await new_ad()
     await ad.subscribe(SYM)
-    ad._on_ib_tick(SYM, 1.0, 1.0, 100.0, recv_ts=700.0)
-    ad._on_ib_tick(SYM, 1.0, 1.0, 200.0, recv_ts=800.6)
+    saturate(ad, SYM, lag=600.3)
 
     live = ad.feed_lag(SYM)
     nonvac(
@@ -1357,7 +1426,7 @@ async def test_t10_feed_lag_read_across_a_reconnect_reports_a_dead_session_as_ob
 
 
 @pytest.mark.asyncio
-async def test_t11_polling_an_unsubscribed_symbol_manufactures_subscription_state() -> (
+async def test_t11_polling_an_unsubscribed_symbol_manufactures_no_subscription_state() -> (
     None
 ):
     """SEQUENCE: subscribe(SYM) -> read the adapter-wide grant -> poll_history(OTHER) -> read
@@ -1365,25 +1434,32 @@ async def test_t11_polling_an_unsubscribed_symbol_manufactures_subscription_stat
 
     PRECONDITIONS: one genuinely subscribed symbol holding a real grant, and a second symbol
       that has NEVER been subscribed.
-    EXPECTED END STATE: undetermined. Observed: `poll_history` calls
-      `self._symbols.setdefault(symbol, _SymbolFeedState())`, so polling creates a full
-      subscription record for a symbol nobody subscribed. The adapter-wide `granted_mode()`
-      collapses from DELAYED to UNKNOWN as a result, and a later `unsubscribe(OTHER)` issues a
-      REAL `cancelMktData` to the venue for a subscription that never existed.
-    OBSERVABLE: `granted_mode()` before/after, `_symbols` membership, the fake's `cancelled`
-      list, and `evaluate_freshness()`'s target set.
+    EXPECTED END STATE (determined by the repair below): the poll is RECORDED and no
+      subscription is created — `OTHER` is in `polled_symbols()` and not in `_symbols`, the
+      adapter-wide grant is unmoved, and `unsubscribe(OTHER)` puts nothing on the wire.
+    OBSERVABLE: `granted_mode()` before/after, `_symbols` and `polled_symbols()` membership,
+      and the fake's `cancelled` list.
 
-    FINDING — CODE DEFECT. `_SymbolFeedState` is documented as *"Everything this adapter knows
-    about ONE subscription"*, and `granted_mode(None)`'s docstring justifies its pessimism on
-    the grounds that *"a single mode reported for a set that does not share one is a fabricated
-    value"* — the set it means is the set of SUBSCRIPTIONS. A poll silently widens that set, so
-    the adapter-wide grant of a correctly-granted feed is degraded by an unrelated history poll,
-    and the venue receives a cancel derived from one.
+    FINDING — CODE DEFECT, **CLOSED IN ARC 023 (F12)**, and this traversal is flipped rather
+    than deleted because the sequence is what proves the repair holds.
 
-    THE COLLAPSE ITSELF IS FAIL-CLOSED and therefore not the harm; the `cancelMktData` is. It is
-    a real vendor call for a subscription this library never made, on a clientId whose whole
-    argument (`DATAFEED_CLIENT_ID`, and the 0/1 refusals) is that venue-side activity must be
+    WHAT IT FOUND: `poll_history` called `self._symbols.setdefault(symbol,
+    _SymbolFeedState())`, so polling created a full subscription record for a symbol nobody
+    subscribed. `_SymbolFeedState` is documented as *"Everything this adapter knows about ONE
+    subscription"* and stopped being true; `granted_mode(None)`'s pessimism — justified on the
+    grounds that *"a single mode reported for a set that does not share one is a fabricated
+    value"* — was applied to a set a poll had silently widened; and a later `unsubscribe`
+    issued a REAL `cancelMktData` for a subscription that never existed.
+
+    THE COLLAPSE ITSELF WAS FAIL-CLOSED and was never the harm; the `cancelMktData` was. A real
+    vendor call for a subscription this library never made, on a clientId whose whole argument
+    (`DATAFEED_CLIENT_ID`, and the 0/1 refusals) is that venue-side activity must be
     unambiguously attributable to one library's intent.
+
+    THE REPAIR: the poll path has its own map of its own type — `_polled: dict[Symbol,
+    _SymbolPollState]` — and no member of it can reach `cancelMktData`, `granted_mode` or
+    `reqMktData`. What the poll needs to record is a POLL observation, so it is not named or
+    typed as a subscription.
     """
     ad, _, fake = await new_ad(history=lambda s: [bar_row(100.0)])
     await ad.subscribe(SYM)
@@ -1398,14 +1474,19 @@ async def test_t11_polling_an_unsubscribed_symbol_manufactures_subscription_stat
 
     await ad.poll_history(OTHER)
 
-    # THE FINDING, in three observables.
-    assert OTHER in ad._symbols
-    assert ad.granted_mode() is MarketDataMode.UNKNOWN
-    assert ad.granted_mode(SYM) is MarketDataMode.DELAYED  # the real one is untouched
+    # THE REPAIR, in the same three observables the defect was reported in.
+    assert OTHER not in ad._symbols
+    assert ad.polled_symbols() == (OTHER,)  # recorded, and recorded as a POLL
+    assert ad.granted_mode() is MarketDataMode.DELAYED  # unmoved by an unrelated poll
+    assert ad.granted_mode(SYM) is MarketDataMode.DELAYED
 
     await ad.unsubscribe(OTHER)
-    assert fake.cancelled == [OTHER]
-    assert OTHER not in fake.subscribed  # never subscribed, and cancelled anyway
+    assert fake.cancelled == []  # nothing on the wire for a symbol never subscribed
+    assert OTHER not in fake.subscribed
+    # CONTROL: the real subscription still cancels, so this is not "unsubscribe stopped
+    # working" — the two verdicts a can-fail needs (debug.md §7.1).
+    await ad.unsubscribe(SYM)
+    assert fake.cancelled == [SYM]
 
 
 # ===========================================================================
@@ -1417,7 +1498,7 @@ async def test_t11_polling_an_unsubscribed_symbol_manufactures_subscription_stat
 
 
 @pytest.mark.asyncio
-async def test_t12_a_consumer_that_raises_mid_ingest_loses_a_sealed_bar_permanently() -> (
+async def test_t12_a_consumer_that_raises_mid_ingest_owes_a_publication_it_can_recover() -> (
     None
 ):
     """SEQUENCE: poll returning four bars into a sink whose `on_bar` raises on the third ->
@@ -1425,30 +1506,37 @@ async def test_t12_a_consumer_that_raises_mid_ingest_loses_a_sealed_bar_permanen
 
     PRECONDITIONS: a live subscription; a history source returning four distinct bars; a sink
       that raises `RuntimeError` on its third `on_bar` and is then repaired.
-    EXPECTED END STATE: the poll raises out to the caller. Three bars are SEALED, two were
-      PUBLISHED, and the attempt is recorded `ok=True` with all four rows. On the retry the
-      three already-sealed bars are recognised and dropped — including the one that was sealed
-      but never published, which is therefore lost from the consumer's stream FOREVER, with no
-      revision, no error and no observable naming it.
-    OBSERVABLE: `sealed_bars()` versus the sink's `bars` after each step, and `poll_attempts()`.
+    EXPECTED END STATE (determined by the repair below): the poll raises out to the caller.
+      Three bars are SEALED, two were PUBLISHED, the third is OWED and readable as owed, and
+      the attempt is recorded `ok=False, undelivered=1`. On the retry the owed seal is
+      RE-PUBLISHED — the same object, not a re-derived one — and the debt clears.
+    OBSERVABLE: `sealed_bars()` versus the sink's `bars` after each step, `unpublished_seals()`,
+      and `poll_attempts()`.
 
-    FINDING — CODE DEFECT, and the sharpest one this suite found. `_ingest_history` writes the
-    seal store BEFORE it publishes: `self._sealed[key] = bar` then `self._sink.on_bar(bar)`. The
-    seal is what makes the poll path idempotent, and that is genuinely good — the retry does not
-    duplicate anything. But the seal is also what makes the publication UNREPEATABLE, so a
-    publication that failed can never be re-attempted: on every subsequent poll the bar is
-    "already sealed", identical, and dropped as a no-op re-poll. D1.14's rule is *seal and never
-    rewrite*; the consequence nobody wrote down is *seal and never re-publish*.
+    FINDING — CODE DEFECT, the sharpest one this suite found, **CLOSED IN ARC 023 (F13)**. The
+    traversal is flipped rather than deleted: the sequence is what proves the repair, and a
+    partial failure that has already had a side effect is the only sequence that can.
 
-    IT IS DETECTABLE FROM INSIDE THE ADAPTER TODAY and nothing detects it: `len(sealed_bars())`
-    and the count of bars handed to the sink diverge, and the attempt record says `ok=True,
-    rows=4` — the poll reports full success for a poll whose consumer received half of it.
+    WHAT IT FOUND, TWO DEFECTS. `_ingest_history` wrote the seal store BEFORE it published:
+    `self._sealed[key] = bar` then `self._sink.on_bar(bar)`. The seal is what makes the poll
+    path idempotent, which is genuinely good — the retry duplicates nothing. But the seal was
+    also what made the publication UNREPEATABLE, so a publication that failed could never be
+    re-attempted: on every later poll the bar was "already sealed", identical, and dropped as a
+    no-op re-poll. D1.14's rule is *seal and never rewrite*; the consequence nobody wrote down
+    was *seal and never re-publish*. And the second defect sat on top of it: the attempt record
+    said `ok=True, rows=4` — full success for a poll whose consumer received half of it.
 
-    RECOMMENDED DISPOSITION IS THE PARENT'S. Publish-then-seal, a published flag on the seal, or
-    a declared "the sink must not raise" contract are all defensible and they are not the same
-    decision; §2A declares nothing about sink exceptions on either port, so this is ALSO a spec
-    gap — `nics_risk_subsystem_spec_v1.3.md` §2A:90-92 (event declaration) would have to say
-    what a raising consumer means.
+    THE REPAIR IS A PUBLICATION DEBT, NOT A RE-DERIVATION, and the distinction is load-bearing.
+    `self._unpublished` holds the seal keys the sink has not accepted; the next poll to reach
+    the key re-publishes the SEALED OBJECT with its original `seal_seq`, `recv_ts` and payload.
+    Rebuilding the bar from the retry's row was the tempting fix and is worse than the defect:
+    the retry's row may carry the venue's REVISED values, so a re-derived bar would seal a
+    revision as though it were the original and the revision fact — observable only here
+    (`docs/SPEC-AMENDMENTS.md` AMENDMENT 4) — would vanish. D1.14 is intact.
+
+    `ok` NARROWED AND `venue_answered` WAS ADDED rather than `ok` being overloaded: *the venue
+    answered* and *everything it returned reached the sink* are two facts, and one field
+    carrying both is the `avg_price` shape `docs/CHECK-DEBT.md` D1.29 records.
     """
 
     class BlowsUp(RecordingFeedSink):
@@ -1477,8 +1565,16 @@ async def test_t12_a_consumer_that_raises_mid_ingest_loses_a_sealed_bar_permanen
         f"no partial ingest occurred (sealed={len(ad.sealed_bars())} "
         f"published={len(sink.bars)}) — there is nothing to retry after",
     )
-    # The attempt reports unqualified success for a poll that tore.
-    assert [(a.ok, a.rows) for a in ad.poll_attempts()] == [(True, 4)]
+
+    # DEFECT 2 CLOSED: the attempt cannot report success over the loss, and the transport fact
+    # it used to stand for is still readable under its own name.
+    attempt = ad.poll_attempts()[-1]
+    assert (attempt.ok, attempt.venue_answered, attempt.rows) == (False, True, 4)
+    assert (attempt.sealed, attempt.published, attempt.undelivered) == (3, 2, 1)
+
+    # DEFECT 1, HALF ONE: the loss is a VALUE while it lasts, not an absence of evidence.
+    owed = ad.unpublished_seals()
+    assert [b.seal_key for b in owed] == [(SYM, 220.0, 60.0)]
 
     sink.limit = 99  # the consumer recovers
     assert await ad.poll_history(SYM) == 4
@@ -1487,13 +1583,15 @@ async def test_t12_a_consumer_that_raises_mid_ingest_loses_a_sealed_bar_permanen
     keys = [b.seal_key for b in ad.sealed_bars()]
     assert len(keys) == len(set(keys)) == 4
 
-    # THE DEFECT: the third bar is sealed and was never published, and no retry can recover it.
+    # DEFECT 1, HALF TWO: nothing is lost, and what came back is the SEAL and not a rebuild.
     published = {b.seal_key for b in sink.bars}
     sealed = {b.seal_key for b in ad.sealed_bars()}
-    lost = sealed - published
-    assert len(lost) == 1
-    assert lost == {(SYM, 220.0, 60.0)}
-    assert sink.bar_revisions == []  # not even reported as a revision
+    assert sealed - published == set()
+    assert ad.unpublished_seals() == ()
+    recovered = next(b for b in sink.bars if b.seal_key == (SYM, 220.0, 60.0))
+    assert recovered is owed[0]  # identity, not equality — D1.14's seal, re-published
+    assert sink.bar_revisions == []  # and no revision was invented to carry it
+    assert ad.poll_attempts()[-1].ok is True
 
 
 # ===========================================================================
@@ -1738,8 +1836,13 @@ async def test_t15_adapter_wide_feed_lag_averages_across_symbols_the_module_says
     fake.grant_map = {4: 4}
     await ad.subscribe(OTHER)
 
-    ad._on_ib_tick(SYM, 1.0, 1.0, 100.0, recv_ts=700.0)  # 600 s behind
-    ad._on_ib_tick(OTHER, 1.0, 1.0, 100.0, recv_ts=101.0)  # 1 s behind
+    # ARC 023: both symbols are fed inside ONE `LAG_WINDOW_S`, and that is a precondition the
+    # traversal now has to meet rather than a detail. The adapter-wide read re-windows every
+    # symbol's samples together, so two symbols whose packets are further apart in RECEIPT time
+    # than the window cannot co-exist in it — and the average would then be one symbol's figure
+    # wearing the adapter-wide name, which is a different (and quieter) defect from this one.
+    saturate(ad, SYM, lag=600.0, base_recv=700.0)  # 600 s behind
+    saturate(ad, OTHER, lag=1.0, base_recv=700.0)  # 1 s behind
 
     # NON-VACUITY: the two subscriptions must genuinely differ, or there is nothing to average
     # ACROSS and the traversal degrades into a one-symbol read.
@@ -1760,7 +1863,7 @@ async def test_t15_adapter_wide_feed_lag_averages_across_symbols_the_module_says
     wide = ad.feed_lag()
     assert wide.granted_mode is MarketDataMode.UNKNOWN
     assert wide.provenance is LagProvenance.OBSERVED
-    assert wide.observed_n == 2
+    assert wide.observed_n == 2 * LAG_SAMPLE_FLOOR
     assert wide.observed_lag_s == sum(per_symbol) / 2
     assert wide.observed_lag_s not in per_symbol  # true of neither feed
     MEASURED["adapter_wide_lag_vs_per_symbol"] = (wide.observed_lag_s, per_symbol)
@@ -1775,42 +1878,50 @@ async def test_t15_adapter_wide_feed_lag_averages_across_symbols_the_module_says
 
 
 @pytest.mark.asyncio
-async def test_t16_lag_samples_grow_without_bound_and_the_mean_hides_recent_degradation() -> (
+async def test_t16_the_lag_window_is_bounded_and_a_recent_degradation_is_visible() -> (
     None
 ):
     """SCALE, §5.4: drive the tick path at volume and measure growth, cost and sensitivity.
 
     PRECONDITIONS: one live subscription. N healthy packets (lag 600 s, matching the banked
       ARC 013 figure) followed by M degraded ones at 900 s — a feed that has fallen 50% further
-      behind, which is 60 times the `divergence_tolerance_s` the object itself carries.
-    EXPECTED END STATE: undetermined by any document. Measured: `lag_samples` holds exactly one
-      float per packet forever — nothing trims it — and `feed_lag()` recomputes a SESSION-WIDE
-      mean on every call, so the mean is dominated by history and the reading still says AGREES
-      while the feed's recent behaviour is an order of magnitude outside tolerance.
-    OBSERVABLE: `len(_symbols[SYM].lag_samples)` against packets delivered; `agreement` computed
-      over the whole session versus over the recent window; wall time recorded, asserted on
-      nowhere.
+      behind, which is 60 times the `divergence_tolerance_s` the object itself carries. The
+      packets carry a MONOTONIC receipt clock, one per second, because the window trims by TIME.
+    EXPECTED END STATE (determined by the repair below): retained samples are bounded by the
+      window and not by the packet count, and the reading reports DIVERGED over the degraded
+      tail while the separately-named session figure still shows the dilution.
+    OBSERVABLE: `feed_lag(SYM).window` against packets delivered; `agreement`;
+      `session_mean_lag_s` beside `observed_lag_s`; wall time recorded, asserted on nowhere.
 
-    FINDING — CODE DEFECT with a scale consequence, and it is the one §5.4 exists to find.
-    Two halves, one structure:
-      (a) UNBOUNDED GROWTH. One float per tick, per symbol, for the life of the process. At
-          ARC 013's measured delayed-stream rate this is small per hour and it is monotone,
-          and `feed_lag()` is O(n) in it — a Limiter reading freshness every cycle pays a cost
-          that rises for the whole session (`debug.md` §5.4: *"anything per-item that is not
-          released is a leak that only appears at scale"*).
-      (b) THE MEAN IS THE WRONG STATISTIC FOR THE QUESTION ASKED OF IT. `feed_lag()` feeds
-          `evaluate_freshness`, whose job is to notice that the feed is behind NOW.
-          `LagAgreement.DIVERGED` is documented as *"A FINDING the consumer reads off the
-          object"*, and a session-wide mean cannot produce that finding for a feed that
-          degraded recently: the traversal below shows AGREES over a feed whose last hundred
-          packets sit 60 tolerances outside the declared figure. The dilution is arithmetic, so
-          the longer the session has been healthy the harder a real degradation is to see —
-          which is the curve bend §5.4 asks for, and it bends the wrong way.
+    FINDING — CODE DEFECT with a scale consequence, **CLOSED IN ARC 023 (F17)**. Flipped rather
+    than deleted: volume is the only thing that can show a bound holding.
 
-    NO REMEDY ASSERTED. A ring buffer, a windowed mean, a recent/whole pair, or an explicit
-    `reset` at the session boundary (which is also T7's and T10's finding) are different
-    decisions with different consumers. `nics_risk_subsystem_spec_v1.3.md` §2A:86-92 declares no
-    lag concept, so nothing determines the window.
+    WHAT IT FOUND, two halves and one structure:
+      (a) UNBOUNDED GROWTH. `lag_samples` held one float per tick, per symbol, for the life of
+          the process, and `feed_lag()` was O(n) in it — a Limiter reading freshness every
+          cycle paid a cost that rose for the whole session (`debug.md` §5.4: *"anything
+          per-item that is not released is a leak that only appears at scale"*).
+      (b) THE MEAN WAS THE WRONG STATISTIC FOR THE QUESTION ASKED OF IT, and it was wrong IN
+          THE DIRECTION THAT MATTERS: the session-wide mean read AGREES at 602.97 s while the
+          last hundred packets sat at 900 s, sixty tolerances outside. It said the feed agreed
+          while the feed had degraded by 300 s. The dilution is arithmetic, so the longer the
+          session had been healthy the harder a real degradation was to see.
+
+    THE REPAIR, and every number in it was MEASURED in ARC 023 rather than chosen:
+      * the window is bounded BY TIME (`LAG_WINDOW_S` = 60 s), not by count. A 100-sample count
+        window spans 222.2 s at ARC 013's measured rate (18 ticks / 40 s) and 0.000028 s at this
+        box's measured ingest ceiling (3,561,839 samples/s) — one count cannot mean one thing at
+        both ends of that range (`debug.md` §7.4).
+      * a SAMPLE FLOOR (`LAG_SAMPLE_FLOOR` = 5): below it the object declares ABSENCE rather
+        than a mean over too few, and it does NOT fall back to the session figure (AMENDMENT 3).
+        At ARC 013's rate the floor is reached in 11.1 s and the window holds 27 samples.
+      * memory is bounded REGARDLESS OF RATE, which a time window alone does not achieve — at
+        the ingest ceiling a pure 60 s window would retain 213,710,318 samples = 20.5 GB. So a
+        COUNT backstop exists, and WHICH BOUND APPLIED is readable off `LagWindow.bound`.
+      * the session-wide figure is retained, INFORMATIONAL, and separately named
+        (`FeedLag.session_mean_lag_s`). Nothing decides on it.
+      * detection at ARC 013's measured rate: the windowed reading goes DIVERGED after the
+        FIRST degraded packet (2.2 s), where the session-wide mean never did.
 
     NOTHING BELOW IS ASSERTED AGAINST A MEASURED NUMBER (§7.4). The relations are asserted; the
     numbers go to `MEASURED` for the arc report.
@@ -1823,43 +1934,62 @@ async def test_t16_lag_samples_grow_without_bound_and_the_mean_hides_recent_degr
     start = time.perf_counter()
     for i in range(healthy):
         ad._on_ib_tick(SYM, 1.0, 1.0, float(i), recv_ts=float(i) + healthy_lag)
-    for i in range(degraded):
+    for i in range(healthy, healthy + degraded):
         ad._on_ib_tick(SYM, 1.0, 1.0, float(i), recv_ts=float(i) + degraded_lag)
     ingest_s = time.perf_counter() - start
 
-    samples = ad._symbols[SYM].lag_samples
+    store = ad._symbols[SYM].lag_window
     nonvac(
         len(sink.ticks) == healthy + degraded,
         f"only {len(sink.ticks)} packets reached the sink — the volume was never delivered",
     )
-
-    # (a) THE RELATION, not a number: one retained float per packet, nothing released.
-    assert len(samples) == healthy + degraded
+    nonvac(
+        store.session_n == healthy + degraded,
+        f"only {store.session_n} samples were recorded at all — the volume never reached the "
+        "window under measurement",
+    )
 
     t0 = time.perf_counter()
     whole = ad.feed_lag(SYM)
     read_s = time.perf_counter() - t0
+    win = whole.window
+    assert win is not None
 
-    # (b) THE RELATION: the session mean agrees while the recent window does not.
-    recent = samples[-degraded:]
-    recent_mean = sum(recent) / len(recent)
+    # (a) THE RELATION, not a number: retention is bounded by the WINDOW, not by the packet
+    # count, and the bound that applied is readable.
+    assert win.n_in_window < healthy + degraded
+    assert win.span_s is not None and win.span_s <= LAG_WINDOW_S
+    assert win.bound is LagWindowBound.TIME
+    assert win.n_in_window <= win.max_samples
+
+    # (b) THE RELATION THAT WAS INVERTED BEFORE: the reading follows the RECENT packets, and
+    # the session figure — which nothing decides on — still shows the dilution the old
+    # observable reported as agreement.
     nonvac(
-        abs(recent_mean - (whole.declared_lag_s or 0.0)) > whole.divergence_tolerance_s,
-        f"the degraded packets ({recent_mean} s) are not actually outside the tolerance "
+        abs(degraded_lag - (whole.declared_lag_s or 0.0))
+        > whole.divergence_tolerance_s,
+        f"the degraded packets ({degraded_lag} s) are not actually outside the tolerance "
         f"({whole.divergence_tolerance_s} s) — the traversal never degraded the feed",
     )
-    assert whole.agreement is LagAgreement.AGREES
-    assert whole.observed_n == healthy + degraded
+    assert whole.agreement is LagAgreement.DIVERGED
+    assert whole.observed_lag_s == degraded_lag
+    assert whole.session_mean_lag_s is not None
+    assert whole.session_mean_lag_s < whole.observed_lag_s
+    assert (
+        whole.effective_lag_s == whole.observed_lag_s
+    )  # the WINDOW decides, not the session
 
     MEASURED["scale"] = {
         "ticks": healthy + degraded,
         "ingest_s": round(ingest_s, 4),
         "ticks_per_s": round((healthy + degraded) / ingest_s),
-        "retained_samples": len(samples),
+        "retained_samples": win.n_in_window,
+        "retained_span_s": win.span_s,
+        "window_bound": win.bound.value,
         "feed_lag_read_s": round(read_s, 6),
-        "session_mean_s": whole.observed_lag_s,
-        "recent_window_mean_s": recent_mean,
-        "session_agreement": whole.agreement.value,
+        "windowed_mean_s": whole.observed_lag_s,
+        "session_mean_s": whole.session_mean_lag_s,
+        "windowed_agreement": whole.agreement.value,
     }
     print(f"\n§5.4 MEASURED: {MEASURED['scale']}")
 
@@ -2019,7 +2149,7 @@ def test_t18_a_bar_is_validated_on_provenance_and_on_nothing_else() -> None:
 
 
 @pytest.mark.asyncio
-async def test_t19_the_ibkr_not_reported_volume_sentinel_crosses_the_seam_as_a_value() -> (
+async def test_t19_the_ibkr_not_reported_volume_sentinel_is_translated_at_the_boundary() -> (
     None
 ):
     """SEQUENCE: poll a history row whose `volume` is IBKR's documented not-reported sentinel.
@@ -2027,33 +2157,37 @@ async def test_t19_the_ibkr_not_reported_volume_sentinel_crosses_the_seam_as_a_v
     PRECONDITIONS: a live subscription and a history source returning `volume=-1.0`, which
       `Bar.volume`'s own docstring names as *"IBKR returns `BarData.volume = -1` — its own
       not-reported sentinel — for bar types where volume is not a fact about the bar"*.
-    EXPECTED END STATE: undetermined — see the gap below. Observed: `-1.0` is sealed and
-      published unchanged, and `Bar.volume` is `-1.0`, not `None`.
+    EXPECTED END STATE (determined by the repair below): `-1.0` is TRANSLATED into the absence
+      it denotes, so the sealed bar's `volume` is `None` and the sentinel does not cross.
     OBSERVABLE: the sealed bar's `volume`; and the control arm, where a genuinely absent key
-      does produce `None`.
+      also produces `None`.
 
-    FINDING — SPEC/CONTRACT GAP, and it is about a boundary that is not written down anywhere.
-    `Bar.volume` keeps its `| None` under AMENDMENT 3's refinement on the strength of one
-    justification: the `-1` sentinel is the OBSERVABLE ABSENCE that earns the optional. But
-    nothing in the module translates `-1` into that absence. Either the translation belongs in
-    `_ingest_history` (and is missing), or it belongs in whatever produces the row dicts (and
-    the optional is being justified by an absence a component outside this module is
-    responsible for producing). `history_source` is an INJECTED callable with NO declared row
-    contract at all — key names, types, and sentinel handling are nowhere specified, and
-    `_require_ohlc` enforces one clause of a contract that otherwise does not exist.
+    FINDING — SPEC/CONTRACT GAP, **the code half CLOSED IN ARC 023 (D1.39/D1.40)**; the
+    contract half is still open and is reported below.
 
-    UNTIL THAT BOUNDARY IS DRAWN, a consumer doing arithmetic on `volume` can receive `-1.0` and
-    read it as "one contract traded, short" — which is the substitution AMENDMENT 3 forbids,
-    arriving through the field the amendment kept optional in order to prevent it.
+    WHAT IT FOUND: `Bar.volume` keeps its `| None` under AMENDMENT 3's refinement on the
+    strength of one justification — the `-1` sentinel is the OBSERVABLE ABSENCE that earns the
+    optional — and nothing in the module translated `-1` into that absence. A consumer doing
+    arithmetic on `volume` could receive `-1.0` and read it as *one contract traded, short*,
+    which is the substitution AMENDMENT 3 forbids arriving through the field the amendment kept
+    optional in order to prevent it.
 
-    THE SECTION THAT WOULD HAVE TO SAY IT: `docs/SPEC-AMENDMENTS.md` AMENDMENT 3's ARC 022
-    refinement, which introduced the observable-absence test and named this sentinel as the
-    justification, plus a declared row contract for `history_source` — which has no home today
-    and is the more basic of the two.
+    THE REPAIR: `broker_datafeed_ibkr._volume` translates `IB_VOLUME_NOT_REPORTED` at the
+    VENDOR boundary, which is where it belongs — a sentinel is a vendor type wearing a float's
+    clothes, and §2A:104-105 invariant 2 keeps vendor types off the seam. Only the ONE
+    documented sentinel is translated; a value no document assigns a meaning to does not
+    acquire one here.
 
-    EVIDENCE GRADE, stated (debug.md failure mode #12): the `-1` sentinel is IBKR-DOCUMENTED and
-    NOT MEASURED on this system, which the field's own docstring already records. This traversal
-    does not raise its grade; it observes what the code does with the value.
+    STILL OPEN, AND IT IS THE MORE BASIC HALF: `history_source` is an INJECTED callable with NO
+    declared row contract — key names, types and sentinel handling are nowhere specified, and
+    `_require_ohlc` plus `_volume` now enforce two clauses of a contract that otherwise does
+    not exist. THE SECTION THAT WOULD HAVE TO SAY IT is a declared row contract, which has no
+    home today.
+
+    EVIDENCE GRADE, UNCHANGED BY THE REPAIR and stated (debug.md failure mode #12): the `-1`
+    sentinel is IBKR-DOCUMENTED and NOT MEASURED on this system. Translating a declaration does
+    not promote it to a measurement; it stays VENDOR_DECLARED and known-red against the tap in
+    `~/nix/downloads/tap_session_runbook.md`.
     """
     ad, sink, _ = await new_ad(history=lambda s: [bar_row(100.0, v=-1.0)])
     await ad.subscribe(SYM)
@@ -2062,9 +2196,8 @@ async def test_t19_the_ibkr_not_reported_volume_sentinel_crosses_the_seam_as_a_v
         len(sink.bars) == 1, "nothing was sealed — the sentinel never reached the seam"
     )
 
-    # THE FINDING: the sentinel crosses as a number.
-    assert sink.bars[0].volume == -1.0
-    assert sink.bars[0].volume is not None
+    # THE REPAIR: the sentinel does NOT cross as a number.
+    assert sink.bars[0].volume is None
 
     # THE CONTROL: a genuinely absent key DOES produce the declared absence, so the optional is
     # reachable and this is a translation gap and not a dead field.
@@ -2092,35 +2225,42 @@ async def test_t20_a_symbol_fed_only_by_polling_is_permanently_stale() -> None:
     PRECONDITIONS: a live subscription and a history source that answers every poll with a bar
       whose venue timestamp is CURRENT. No tick is delivered, which is Stage 0's measured shape:
       `reqTickByTickData` returns Err 10189 and the delayed stream is a separate grant.
-    EXPECTED END STATE: undetermined. Observed: `evaluate_freshness` reads `last_tick_venue_ts`
-      and nothing else, so a symbol fed entirely by successful polls has `excess_staleness_s`
-      of `None` — CANNOT COMPUTE — which the adapter correctly treats as STALE. The feed is
-      healthy, current, and permanently STALE.
-    OBSERVABLE: `evaluate_freshness(now)` after a fresh successful poll; `last_poll_recv_ts` and
-      `last_tick_venue_ts` read per writer.
+    EXPECTED END STATE (determined by AMENDMENT 6): the two channels are reported SEPARATELY.
+      The poll channel carries a real, current venue timestamp and NO measured lag, so it reads
+      `CANNOT_MEASURE` — which is not `STALE`. The tick channel, on which nothing has arrived,
+      reads `CANNOT_MEASURE` too. Nothing is reported stale.
+    OBSERVABLE: `freshness(now, SYM)`'s per-channel states; `last_poll_recv_ts`,
+      `last_bar_venue_ts` and `last_tick_venue_ts` read per writer.
 
-    FINDING — §5.2 FIT FOR PURPOSE, and a spec gap underneath it. The module's own GAP-D4 says
-    *"THE POLL FALLBACK IS THE ONLY MARGIN-CLASS PATH"* and GAP-D1 records that the real-time
-    tick stream does not exist on this account. So the path the adapter documents as the only
-    one it has is the path its freshness derivation cannot see. Under
-    `nics_risk_subsystem_spec_v1.3.md` §6.4:373-374 a STALE verdict means *halt new entries AND
-    flatten open* — so a Limiter wired to this adapter at Stage 0, on the poll path, would be
-    permanently halted.
+    FINDING — §5.2 FIT FOR PURPOSE, **the collapse CLOSED IN ARC 023 (F21)**, the missing
+    measurement still open and reported below.
 
-    THE DIRECTION IS FAIL-CLOSED and that is why it is a §5.2 finding rather than a §5.3 one:
-    nothing unsafe happens, and the module cannot do its job. debug.md §5.2 says exactly this is
-    in scope and is a legitimate certification failure — *"a module can be entirely correct and
-    still be wrong for its job."*
+    WHAT IT FOUND: `evaluate_freshness` read `last_tick_venue_ts` and nothing else, so a symbol
+    fed entirely by successful polls had `excess_staleness_s` of `None` — CANNOT COMPUTE —
+    which the adapter treated as STALE. The module's own GAP-D4 says *"THE POLL FALLBACK IS THE
+    ONLY MARGIN-CLASS PATH"* and GAP-D1 records that the real-time tick stream does not exist on
+    this account, so the path the adapter documents as the only one it has was the path its
+    freshness derivation could not see. Under `nics_risk_subsystem_spec_v1.3.md` §6.4:373-374 a
+    STALE verdict means *halt new entries AND flatten open*: a Limiter wired to this adapter at
+    Stage 0, on the poll path, would have been permanently halted.
 
-    THE SECTION THAT WOULD HAVE TO SAY IT: `nics_risk_subsystem_spec_v1.3.md` §6.4:371-374
-    defines staleness against "the freshness stamp" and §2A declares no bar event, so it also
-    declares no freshness stamp for one. `docs/SPEC-AMENDMENTS.md` AMENDMENT 4 gave the polled
-    bar an owner and did not give it a freshness role. NO ANSWER IS INVENTED: whether
-    `bar_start_venue_ts` is a freshness stamp, whether a poll-fed symbol is exempt, and whether
-    the two clocks combine are three different rulings.
+    THE ANSWER WAS NOT INVENTED HERE. It was issued as `docs/SPEC-AMENDMENTS.md` AMENDMENT 6
+    (operator ruling, ARC 023): freshness is PER CHANNEL, the seam declares which channels are
+    fresh and which are stale, and the consumer decides which channels it requires. The three
+    rulings this traversal listed as undetermined were decided that way — `bar_start_venue_ts`
+    IS the poll channel's freshness stamp, a poll-fed symbol is not exempt, and the two clocks
+    do NOT combine into one.
 
-    THE CONTROL IS THE OTHER ARM: the same adapter, same threshold, with ONE tick delivered,
-    reads UP — so this is not "the traversal cannot make anything read UP".
+    WHAT IS STILL OPEN, AND IT IS NOT A CODE DEFECT: the poll channel's `effective_lag_s` has
+    never been measured on this system, so the channel reads `CANNOT_MEASURE` rather than
+    `FRESH`. The tick channel's measured 600.0-601.9 s figure is NOT substituted for it — that
+    would be AMENDMENT 3's substitution wearing a plausible number — and the adapter refuses the
+    substitution structurally. KNOWN-RED, discharged by the tap in
+    `~/nix/downloads/tap_session_runbook.md`; `broker_datafeed_ibkr.IB_POLL_LAG_RECORD` carries
+    the marker.
+
+    THE CONTROL IS THE OTHER ARM: the same adapter, same threshold, with ticks delivered, reads
+    UP — so this is not "the traversal cannot make anything read UP".
     """
     now = 1000.0
     ad, sink, _ = await new_ad(history=lambda s: [bar_row(now - 1.0)])
@@ -2141,9 +2281,21 @@ async def test_t20_a_symbol_fed_only_by_polling_is_permanently_stale() -> None:
         "the poll clock was never written — the poll path did not run",
     )
 
-    # THE FINDING: current data on the only working path, and the verdict is STALE.
+    # THE REPAIR: the poll channel is SEEN, carries the venue's own stamp, and its unanswerable
+    # question reads as unanswerable rather than as a halt trigger.
+    report = ad.freshness(now, SYM)[0]
+    assert report.observed_channels == (FeedChannel.TICK, FeedChannel.POLL)
     assert ad._symbols[SYM].last_tick_venue_ts is None
-    assert ad.feed_lag(SYM).excess_staleness_s(None, now) is None
+    assert ad.last_bar_venue_ts(SYM) == now - 1.0
+    poll = report.channel(FeedChannel.POLL)
+    assert poll is not None and poll.venue_ts == now - 1.0
+    assert report.stale_channels == ()
+    assert set(report.cannot_measure_channels) == {FeedChannel.TICK, FeedChannel.POLL}
+    # THE RESIDUAL, asserted so it cannot be closed silently: the poll channel is unmeasured,
+    # and the tick channel's figure has not been borrowed for it.
+    assert poll.lag.declared_lag_s is None
+    assert poll.lag.provenance is LagProvenance.UNOBSERVED
+    # And the §2A:92 single-state summary still fails closed while nothing is fresh.
     assert ad.evaluate_freshness(now=now, symbol=SYM) is FeedState.STALE
 
     # THE CONTROL: one tick, same adapter, same threshold — UP. The traversal can reach UP.
@@ -2185,6 +2337,12 @@ async def test_t20b_freshness_is_derived_for_a_symbol_the_adapter_has_never_hear
     assert len(sink.feed_statuses) == before + 1
     state, symbol, reason = sink.feed_statuses[-1]
     assert (state, symbol) == (FeedState.STALE, "ZZZZ")
-    assert "1 symbol(s)" in reason
+    # ARC 023: the reason is now the PER-CHANNEL summary, and the finding sharpens rather than
+    # closes. The old text claimed the verdict was "derived from excess staleness over 1
+    # symbol(s)" — a claim about a measurement that had no inputs. The new text names the empty
+    # channel set, so the STALE is visibly an absence of evidence; the EMISSION, which is what
+    # this traversal reports, is unchanged.
+    assert "fresh=[] stale=[] cannot_measure=[]" in reason
+    assert ad.freshness(1.0, "ZZZZ")[0].observed_channels == ()
     # And the symbol is still unknown afterwards — the verdict created no record to justify it.
     assert ad._symbols == {}
