@@ -42,10 +42,19 @@ from __future__ import annotations
 #   import-outside-toplevel
 #       `inspect` is imported inside check_await_conformance so the conformance
 #       harness costs nothing to anyone who only imports the value types.
+#   too-many-lines
+#       Crossed 1000 in ARC 020 and the overage is entirely PROSE. Every Nix
+#       ADDITION in this file (RejectCategory, SessionState.UP_DATA_LOSS,
+#       SendBacklog, FlattenAttempt, OrderStatus.state's `indeterminate`) is a
+#       declared departure from a FROZEN spec, and the declaration is the whole
+#       defence: a reader has to be able to check what §2A does and does not say
+#       without leaving the file. Deleting that reasoning to satisfy a line count
+#       would remove the only thing standing between an addition and a silent
+#       redefinition of a locked contract.
 # pylint: disable=missing-class-docstring,missing-function-docstring
 # pylint: disable=unused-argument,too-many-arguments,too-many-positional-arguments
 # pylint: disable=too-many-instance-attributes,invalid-overridden-method
-# pylint: disable=import-outside-toplevel
+# pylint: disable=import-outside-toplevel,too-many-lines
 import enum
 import time
 from collections.abc import Iterable
@@ -388,8 +397,182 @@ class Balance:
 class OrderStatus:
     client_order_id: ClientOrderId
     terminal: bool
-    state: str  # working | filled | cancelled | rejected | unknown
+    state: str
+    """working | filled | cancelled | rejected | unknown | indeterminate.
+
+    `indeterminate` is a NIX ADDITION (ARC 020, D1.24), flagged exactly as
+    `feed_lag()`/`MarketDataMode`/`SessionState.UP_DATA_LOSS`/`RejectCategory` are — and it
+    is the least invented of them, because §4 "Failure resolution" already NAMES the
+    outcome: a pending-timeout query "Resolves confirmed / cancelled / **indeterminate**".
+    The frozen spec is not edited; the seam declares the spelling §4 has no field for.
+
+    WHY IT IS OWED, and why `unknown` could not carry it. Before ARC 020 this adapter could
+    reach only two of §4's three outcomes. `unknown` is emitted when the adapter holds NO
+    record of the id — which is also what it emits for an id that was never placed, so the
+    two most different facts in the set ("we never heard of this" and "we placed this and
+    cannot tell you what became of it") shared one spelling. A Limiter cannot act on that:
+    §4 sends a flatten-on-uncertainty for the second and must not for the first.
+
+      unknown       — this adapter has no record of the id. Not a statement about the
+                      venue at all. Safe to mint the id.
+      indeterminate — this adapter DID place the order, and the session it lived in is
+                      gone, so its venue-side fate is unresolvable from here. §4's
+                      flatten-on-uncertainty is the response, and the id must NOT be
+                      re-minted while the answer is outstanding.
+
+    `terminal` is False for `indeterminate`: nothing has been resolved, and reporting an
+    unresolved order as terminal would be the confident lie in the other direction."""
+
     cumulative_qty: int
+
+
+@dataclass(frozen=True)
+class SendBacklog:
+    """How much this adapter is ABSORBING on the send path. Declared Nix addition (ARC 020).
+
+    NIX ADDITION (ARC 020 A7, D1.22), flagged exactly as `feed_lag()` is. Not in §2A, and
+    §2A cannot express it: the seam declares the send path "non-blocking" (invariant 5) and
+    says nothing about what non-blocking COSTS.
+
+    WHY IT IS OWED — measured, not argued. ARC 019 drove 200 `place_order` calls into a
+    verified-saturated pipe. All 200 returned normally, in 0.032 s total, leaving 155
+    messages in `ib_async.Client._msgQ`, 10204 B in asyncio's transport buffer, and ZERO
+    bytes delivered to the peer. So the send path does not block — it ABSORBS, and no send
+    verb can tell the caller which of its orders reached the venue. Without this value a
+    consumer has to infer absorption from silence, and silence is also what a healthy quiet
+    session looks like.
+
+    WHAT THIS IS NOT. It is NOT a resolution of D1.22: §4 resolves that with the
+    pending-timeout state machine plus `query_order_status`, both the Limiter's, and the
+    repair is NEVER a resend (§2A:71, §4:241, §12A:830). It is NOT a bounded-queue policy
+    either — where the bound sits and what happens at it is a Limiter decision recorded in
+    D1.22, and nothing here enforces one.
+
+    NOT ADDED TO `ORDER_PORT_VERBS`, deliberately. A port verb binds EVERY vendor, and
+    whether Tradovate can report its own queue depth is unmeasured; declaring the obligation
+    from one venue's internals would be inventing a cross-vendor requirement from a sample
+    of one. It is adapter-observable state in the same sense `_mirror_stale` is, and its
+    promotion to the port is a `BrokerCapabilities` question for the second vendor.
+
+    `measured` is the CANNOT-MEASURE floor (debug.md §7.9, failure mode #10): a zero-depth
+    healthy pipe and a vendor whose internals could not be read must never be the same
+    reading. When `measured` is False both counts are None, never 0."""
+
+    vendor_queue_depth: int | None
+    """Messages the vendor client is holding in front of the transport. `None` == could not
+    be read."""
+
+    transport_write_buffer_bytes: int | None
+    """Bytes asyncio's transport has buffered in userspace because the kernel would not take
+    them. `None` == could not be read."""
+
+    measured: bool
+    """False == CANNOT MEASURE. Never confuse with an idle pipe."""
+
+    detail: str = ""
+    """Why a reading is absent, when it is. Human channel only — never parsed."""
+
+
+@dataclass(frozen=True)
+class FlattenIntent:
+    """One symbol's leg of a protective flatten: what the adapter DECIDED to send.
+
+    Part of the ARC 020 A6 attempt record (D1.28). A declaration of INTENT, not a claim
+    about the venue — D1.22 is exactly why those two cannot be the same object."""
+
+    symbol: Symbol
+    side: Side
+    qty: int
+    client_order_id: ClientOrderId
+
+
+@dataclass(frozen=True)
+class FlattenSuppression:
+    """One symbol's leg that was NOT sent, because a prior intent was still inside its
+    declared idempotency window (ARC 020 A6, operator-ratified)."""
+
+    symbol: Symbol
+    prior_client_order_id: ClientOrderId
+    prior_attempt_seq: int
+    age_ms: float
+    window_ms: int
+
+
+@dataclass(frozen=True)
+class FlattenAttempt:
+    """THE OBSERVABLE ATTEMPT RECORD — what a `flatten()` call did, and did not do.
+
+    NIX ADDITION (ARC 020 A6, D1.28), flagged exactly as `feed_lag()` is. §2A defines
+    `flatten(symbol | all)` as "market-close a position (protective path; must not block)"
+    and gives it no return value and no event. So the one question the protective path most
+    needs to answer — *did it do the thing?* — had nowhere to live.
+
+    WHY IT IS OWED. ARC 019 measured three ways a `flatten` can fail to achieve its purpose
+    while telling the caller nothing: an under-sized close after a fill raced the mirror
+    snapshot (observed mirror `+2` against a `SELL 1`); a `flatten(symbol)` on an unheld
+    symbol that returns None, places nothing, raises nothing and logs nothing, so
+    "already flat" and "the mirror has lost this position" are indistinguishable
+    (debug.md failure mode #11, doctrine C.7); and, after ARC 020, a leg deliberately
+    suppressed by the idempotency window, which is a NEW way to send nothing and therefore
+    owes a NEW observable in the same motion.
+
+    THE PATTERN IS `place_order`'s, not a signature change. `place_order` retains its vendor
+    receipt locally (`self._trades[cid] = trade`) rather than returning it, because §2A
+    declares the verb `-> None` and invariant 2 forbids the receipt crossing the seam. The
+    same shape applies here: `flatten()` stays `-> None`, and the record is retained locally
+    and read back through an accessor. The §2A signature is untouched, so this is visibly an
+    addition rather than a redefinition.
+
+    WHAT THIS IS NOT: the reconciler. Comparing this INTENT against venue OUTCOME is §4's
+    "reconciles against broker truth afterward and publishes whichever is real", and that
+    belongs to the Limiter. This record is the input that reconciliation currently has no
+    way to obtain, and nothing more."""
+
+    seq: int
+    """Monotonic per-adapter attempt number. Lets a consumer tell two attempts apart even
+    when their contents are identical — which, for a repeat protective flatten, they are."""
+
+    requested_symbol: Symbol | None
+    """Exactly what the caller asked for. `None` == flatten-all, preserved rather than
+    expanded, because "flatten everything and there was nothing" and "flatten MESU6 and
+    there was nothing" are different facts."""
+
+    monotonic_ts: float
+    """`time.monotonic()` at the attempt. Monotonic, not wall clock: this is compared
+    against other attempts, and §12.3 clock integrity makes wall-clock deltas unsafe."""
+
+    intents: tuple[FlattenIntent, ...]
+    """Legs the adapter handed to the send path. NOT legs the venue accepted (D1.22)."""
+
+    suppressed: tuple[FlattenSuppression, ...]
+    """Legs deliberately NOT sent because a prior intent was still inside its window."""
+
+    no_position: tuple[Symbol, ...]
+    """Symbols asked for that the mirror did not hold. The D1.28(b) observable: this is
+    what "already flat, OR the mirror has lost it" looks like when it is written down
+    instead of being silence. Read it WITH `mirror_stale` — that flag is which of the two
+    worlds the adapter may be in, and it is the reason this tuple is not just a no-op."""
+
+    failures: tuple[tuple[Symbol, str], ...]
+    """Legs whose send RAISED. The protective path continues past one symbol's failure and
+    then raises once with the full picture; this is that picture, retained."""
+
+    mirror_stale: bool
+    """`_mirror_stale` AT ATTEMPT TIME. The sizing input's own trustworthiness, captured
+    with the sizing rather than left to be re-read later when it may have changed."""
+
+    @property
+    def emitted_anything(self) -> bool:
+        """True if any leg reached the send path. The cheapest honest question a consumer
+        can ask, spelled once here so no caller has to re-derive it from three tuples."""
+        return bool(self.intents)
+
+    @property
+    def is_silent_no_op(self) -> bool:
+        """True when the attempt sent nothing, suppressed nothing and failed on nothing —
+        i.e. every requested symbol was simply not held. THIS IS THE CASE D1.28(b) NAMES,
+        and it is now a readable property rather than an absence of evidence."""
+        return not self.intents and not self.suppressed and not self.failures
 
 
 @dataclass(frozen=True)

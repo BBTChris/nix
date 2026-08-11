@@ -88,6 +88,23 @@ Six conditions, every one of them plantable:
   V6. AN xfail SILENTLY BECOMES AN xpass. A finding that got fixed while its marker
       stayed would leave a permanently-green marker measuring nothing. PLANT: fix any
       one defect below. DEFENCE: every xfail is `strict=True`, so an xpass is a FAILURE.
+      STATUS AFTER ARC 020: this file now carries ZERO xfail markers — all five were
+      removed, each in the same motion as the fix it marked (T3-01/A2, T3-01b/A1,
+      T3-02/A1, T3-02b/A3, T3-10/A5). The defence WORKED and is recorded rather than
+      deleted: every one of the five turned the suite RED as an xpass the moment its
+      repair landed, which is exactly what forced the assertion to be inverted instead of
+      the marker quietly rotting. The count is DERIVED from the suite, never asserted
+      against an expectation — see the arc report.
+
+  V7. AN INVERTED ASSERTION MEASURES THE OPPOSITE OF NOTHING (new, ARC 020). Five
+      assertions in this file were inverted when their findings were repaired or ruled on.
+      An inversion is the moment a traversal is most likely to become one-sided: T7 could
+      assert "the ack was admitted" without ever proving anything is still refused, and a
+      gate that admits everything would pass. PLANT: delete the refusal half of T7, or the
+      "emits again after expiry" half of T1b. DEFENCE: every inverted traversal asserts
+      BOTH directions — an admission AND a refusal (T7), suppression AND expiry (T1/T1b),
+      indeterminate AND unknown AND working (T5b), a refused cancel AND a working one
+      (T10), no publish over a dead session AND a publish over a live one (T11).
 
 CAN-FAIL EVIDENCE, with CONTROL (debug.md §7.1) — recorded here rather than in an arc
 report, because the next person to edit this file is the one who needs it.
@@ -175,6 +192,7 @@ from __future__ import annotations
 # pylint: disable=super-init-not-called,use-implicit-booleaness-not-comparison
 import asyncio
 import logging
+from collections import deque
 from dataclasses import dataclass, field
 
 import pytest  # pylint: disable=import-error
@@ -415,32 +433,35 @@ def test_control_cid_blind_ordering_is_blind() -> None:
 
 
 @pytest.mark.asyncio
-async def test_t1_flatten_twice_fires_twice() -> None:
+async def test_t1_flatten_twice_inside_the_window_emits_once() -> None:
     """SEQUENCE: two concurrently-scheduled `flatten()` calls over one mirrored position.
 
     PRECONDITIONS: session up, mirror holds MESU6 +2 from a positionEvent.
-    OBSERVABLE: `ib.placed`, and a per-fan-out sample of `ad._mirror` taken from an
-      instrumented contract resolver.
+    OBSERVABLE: `ib.placed`, a per-fan-out sample of `ad._mirror` taken from an
+      instrumented contract resolver, and the adapter's flatten ATTEMPT RECORD.
 
-    WHAT IS DETERMINED, and asserted: `flatten()` is sync and contains no `await`, so it
-    is ATOMIC with respect to the loop. Neither call can observe the other's partial
-    work, and each therefore reads the SAME mirror — `place_order` does not decrement it,
-    only a fill does. So N calls emit N opposing orders each sized at the full held
-    quantity. Asserted as a relation derived from the inputs (calls x held qty), never as
-    a literal, per debug.md §7.4.
+    T3-04 — RESOLVED IN ARC 020 (A6) BY OPERATOR RULING. This traversal previously
+    reported the spec gap: two protective flattens over one `+2` mirror emitted `−4` of
+    market orders, because `place_order` does not decrement the mirror and only a fill
+    does. §2A's `flatten` bullet defines the verb and is silent on repeat invocation, so
+    ARC 019 recorded the finding and deliberately did not invent the answer. The ruling
+    landed in ARC 020 and §4 "Exits (dual authority)" is the section named:
 
-    FINDING T3-04 — SPEC GAP, not a code defect. Two protective flattens over one +2
-    position emit -4 of market orders. §2A line 68 defines `flatten(symbol | all)` as
-    "market-close a position (protective path; must not block)" and says nothing about
-    repeat invocation; debug.md §5.5 requires idempotence to be PROVEN, not hoped for,
-    and it is not a property this adapter has. The adapter's own docstring calls itself
-    'dumb hands' and puts serialisation on the Limiter — but §4's protective exits are
-    listed as SIX independent triggers ("stop / stale / floor / session / uncertainty /
-    orphan") and are "unconditional", so two of them firing in one cycle is a designed
-    shape, not a caller error. §4's "one in-flight action per strategy" governs STRATEGY
-    signals, not Limiter-side protective exits.
-    THE SECTION THAT WOULD HAVE TO SAY: §2A broker-order commands (the `flatten` bullet),
-    or §4 "Exits (dual authority)". Neither currently does. NOT INVENTED HERE.
+      A protective `flatten` is idempotent with respect to IN-FLIGHT DECLARED INTENT. A
+      second invocation inside the declared window emits NO ADDITIONAL ORDERS and records
+      the suppressed attempt. The window is bounded; on expiry the intent is discarded and
+      a later `flatten` emits normally. The adapter NEVER auto-refires on expiry.
+
+    So the assertion inverts, in the same motion as the fix, exactly as this file's rule
+    requires. What is asserted now:
+      - ONE set of orders from two invocations inside the window, sized at the full held
+        quantity — a relation derived from the inputs, never a literal (§7.4);
+      - exactly ONE suppression recorded, naming the intent it was suppressed by;
+      - and the atomicity property that made the old finding reachable is UNCHANGED and
+        still asserted: `flatten()` has no await, so both calls read the same `+2` mirror.
+        That is what makes suppression necessary rather than incidental — if the second
+        call had seen a decremented mirror it would have emitted nothing anyway and this
+        traversal would prove nothing about the window.
     """
     ad, ib, sink = new_ad()
     await ad.connect()
@@ -460,23 +481,130 @@ async def test_t1_flatten_twice_fires_twice() -> None:
     t_b = asyncio.create_task(_call_flatten(ad))
     await asyncio.gather(t_a, t_b)
 
-    # NON-VACUITY: both calls really reached the fan-out, and both really read +2. If the
-    # first had decremented the mirror the second sample would differ and this traversal
-    # would be reporting on a sequence that did not happen.
-    nonvac(len(seen_at_fanout) == 2, f"fan-out ran {len(seen_at_fanout)} times, not 2")
+    # NON-VACUITY, and it is the SAME guard as before the ruling: the second call really
+    # did read an undecremented +2 mirror. A suppression asserted over a call that would
+    # have emitted nothing regardless measures nothing.
+    nonvac(len(seen_at_fanout) == 1, f"fan-out ran {len(seen_at_fanout)} times, not 1")
     nonvac(
-        seen_at_fanout == [2, 2],
-        f"the two flattens did not read the same mirror: {seen_at_fanout}",
+        ad._mirror["MESU6"].net_qty == 2,
+        "the mirror was decremented by the send, so suppression was not what stopped the "
+        "second emission",
+    )
+    attempts = ad.flatten_attempts()
+    nonvac(
+        len(attempts) == 2, f"both flatten calls did not record an attempt: {attempts}"
     )
 
+    # THE RULING: one set of orders from two invocations.
     flats = [o for _c, o, _t in ib.placed]
-    calls, held = 2, 2
-    assert len(flats) == calls
-    assert sum(int(o.totalQuantity) for o in flats) == calls * held
+    held = 2
+    assert len(flats) == 1
+    assert sum(int(o.totalQuantity) for o in flats) == held
     assert all(o.action == "SELL" for o in flats)
-    # Distinct ids: the ONE thing the adapter does guarantee across repeats.
+
+    # ...and the suppression is RECORDED, not merely absent. A protective action that was
+    # requested and deliberately not sent is a fact the consumer needs (D1.28).
+    first, second = attempts
+    assert len(first.intents) == 1 and not first.suppressed
+    assert not second.intents and len(second.suppressed) == 1
+    sup = second.suppressed[0]
+    assert sup.symbol == "MESU6"
+    assert sup.prior_client_order_id == first.intents[0].client_order_id
+    assert sup.prior_attempt_seq == first.seq
+    assert sup.age_ms < sup.window_ms
+
+    # Distinct ids: the guarantee the adapter has always had across repeats.
     ids = [cid for cid, _s, _r, _rc in sink.acks] or list(ad._neutral)
     assert len(set(ids)) == len(ids)
+
+
+@pytest.mark.asyncio
+async def test_t1b_flatten_outside_the_window_emits_again() -> None:
+    """The OTHER half of the ruling, and the one that stops idempotency becoming a refusal
+    to protect.
+
+    PRECONDITIONS: session up, mirror holds MESU6 +2, one flatten already emitted.
+    OBSERVABLE: `ib.placed` across the window boundary.
+    EXPECTED: "The window is bounded; on expiry the intent is discarded and a subsequent
+      `flatten` emits normally. The adapter never auto-refires on expiry."
+
+    WHY BOTH HALVES ARE REQUIRED. Permanent idempotency was REJECTED in the ruling because
+    D1.22 shows a flatten can return normally and never reach the venue — an adapter that
+    refused to re-flatten because it "already did" would refuse to protect. So a test that
+    only proved suppression would be proving the wrong half of the property.
+
+    THE CLOCK IS MOVED, NOT WAITED ON (debug.md failure mode #6: a test whose timing window
+    stops biting). The recorded intent's monotonic timestamp is aged past the window
+    directly, so this traversal has no wall-clock dependency and cannot go flaky or go
+    stale if the configured window changes.
+    """
+    ad, ib, _sink = new_ad()
+    await ad.connect()
+    ib.push_position("MESU6", 2, 7773.50)
+
+    ad.flatten("MESU6")
+    nonvac(len(ib.placed) == 1, f"the first flatten did not emit: {ib.placed}")
+    cid, ts, seq = ad._flatten_intent["MESU6"]
+
+    # Inside the window: suppressed. Asserted first, so "emits again" below is a
+    # transition rather than a state that was always true.
+    ad.flatten("MESU6")
+    nonvac(len(ib.placed) == 1, "the in-window repeat emitted after all")
+
+    # Age the intent past the window. Derived from the CONFIGURED window, never a literal.
+    ad._flatten_intent["MESU6"] = (
+        cid,
+        ts - (ad._cfg.flatten_idempotency_window_ms / 1000.0) - 0.001,
+        seq,
+    )
+    ad.flatten("MESU6")
+
+    assert len(ib.placed) == 2, (
+        f"an EXPIRED intent still suppressed the protective path: {ib.placed}"
+    )
+    # And nothing fired by itself while the intent sat there expiring.
+    attempts = ad.flatten_attempts()
+    assert len(attempts) == 3, f"attempts recorded: {[a.seq for a in attempts]}"
+    assert [len(a.intents) for a in attempts] == [1, 0, 1]
+    assert [len(a.suppressed) for a in attempts] == [0, 1, 0]
+
+
+@pytest.mark.asyncio
+async def test_t1c_flatten_on_an_unheld_symbol_is_observable() -> None:
+    """D1.28(b): "already flat" and "the mirror has lost this position" were the same
+    SILENCE. They are still the same fact — the adapter genuinely cannot tell them apart —
+    but the fact is now written down.
+
+    PRECONDITIONS: session up, empty mirror.
+    OBSERVABLE: the attempt record, and `_mirror_stale` captured on it.
+    EXPECTED: an observable no-op, not silence. Deliberately NOT an exception: §4's
+      flatten-on-uncertainty "may hit nothing OR close a real position", so a protective
+      flatten finding nothing is a designed outcome, and raising would make the safe case
+      look like a fault. debug.md failure mode #11 asks for an OBSERVABLE, not a throw.
+    """
+    ad, ib, _sink = new_ad()
+    await ad.connect()
+    nonvac(
+        ad._mirror == {}, "the mirror was not empty — this is not the case under test"
+    )
+
+    ad.flatten("MESU6")
+    assert not ib.placed
+
+    att = ad.last_flatten_attempt()
+    assert att is not None, "a protective flatten produced NO record at all"
+    assert att.requested_symbol == "MESU6"
+    assert att.no_position == ("MESU6",)
+    assert att.is_silent_no_op is True
+    assert att.mirror_stale is False  # which of the two worlds — readable, not inferred
+
+    # NON-VACUITY: the same observable can express the OTHER verdict, so `is_silent_no_op`
+    # is not simply always True.
+    ib.push_position("MESU6", 1, 7773.50)
+    ad.flatten("MESU6")
+    att2 = ad.last_flatten_attempt()
+    assert att2 is not None and att2.is_silent_no_op is False
+    assert att2.no_position == () and len(att2.intents) == 1
 
 
 async def _call_flatten(ad) -> None:
@@ -684,9 +812,19 @@ async def test_t4_fill_after_disconnect_is_dropped_and_misattributed(caplog) -> 
     # NON-VACUITY for the window: shut gate, live id map. Both are required for the loud
     # branch of _log_gated_drop to be the one that runs.
     nonvac(ad._startup_complete is False, "disconnect did not shut the gate")
+    # ARC 020 A1: the LIVE registry is cleared at teardown (that clearing is what stops a
+    # cancel putting a foreign order's id on the wire), so the loud branch now reads the
+    # diagnostics-only copy of the session that just ended. Both halves are asserted —
+    # the live map must be EMPTY and the prior map must still NAME the order — because
+    # either one alone would leave this traversal unable to tell "cleared" from "moved".
     nonvac(
-        ib_id in ad._from_ib,
-        "disconnect cleared the id map — the loud branch is unreachable",
+        ib_id not in ad._from_ib,
+        "the live id map survived the teardown — A1's clearing did not happen",
+    )
+    nonvac(
+        ad._prior_from_ib.get(ib_id) == "t4-buy",
+        "the prior-session map does not name the order — the loud branch is unreachable "
+        "and the drop would be anonymous",
     )
 
     caplog.clear()
@@ -704,6 +842,9 @@ async def test_t4_fill_after_disconnect_is_dropped_and_misattributed(caplog) -> 
     assert "concurrently with connect()" not in message, (
         "the drop on the DISCONNECT side is again naming the connect()-side cause; "
         "T3-03 has regressed"
+    )
+    assert "indeterminate" in message, (
+        f"the drop does not point at the §4 outcome that now exists for it: {message}"
     )
     assert "disconnect()" in message, (
         f"the drop does not name the window it actually fired in: {message}"
@@ -761,18 +902,15 @@ async def test_t5_disconnect_cannot_interleave_inside_place_order() -> None:
     assert ad._connected is False
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING T3-02 (CODE DEFECT): query_order_status returns a cached pre-disconnect "
-        "status across a session boundary. §4's pending-timeout path must resolve "
-        "confirmed / cancelled / INDETERMINATE; this adapter has no way to say "
-        "indeterminate and answers 'working' for an order whose session is gone."
-    ),
-)
 @pytest.mark.asyncio
 async def test_t5b_order_status_is_stale_across_a_session_boundary() -> None:
     """SEQUENCE: place an order, lose the session, reconnect, ask for its status.
+
+    FINDING T3-02 — REPAIRED IN ARC 020 (A1, D1.24). The `strict=True` xfail that held this
+    open is removed in the same motion as the fix, per this file's rule. `_trades` no
+    longer survives a session boundary; an order that was NON-TERMINAL when the session
+    ended is TOMBSTONED, and `query_order_status` answers `indeterminate` — §4's own third
+    outcome, which this adapter previously could not reach.
 
     PRECONDITIONS: `t5b-buy` placed in session 1 and left working; disconnect; connect.
     EXPECTED INVARIANT (spec-determined): §4 "Failure resolution" names exactly three
@@ -809,6 +947,34 @@ async def test_t5b_order_status_is_stale_across_a_session_boundary() -> None:
         f"a dead session's order still reports {status.state!r} with terminal="
         f"{status.terminal} — §4 has no fourth outcome for it to be reported as"
     )
+    # ARC 020 A1: and it is the SPECIFIC one, not the generic "never heard of it".
+    # `unknown` would also be the answer for an id that was never placed, and a Limiter
+    # must respond differently to those two — §4 sends a flatten-on-uncertainty for one
+    # and may freely mint the id for the other.
+    assert status.state == "indeterminate", (
+        f"a dead session's IN-FLIGHT order reports {status.state!r}, which is this "
+        "adapter's spelling of 'no record at all' — the two most different facts in the "
+        "set would share one answer"
+    )
+    assert status.terminal is False, "nothing was resolved, so nothing is terminal"
+
+    # NON-VACUITY: `indeterminate` is not simply what this verb always says now. An id
+    # that was NEVER placed still answers `unknown`, and a live order in this session
+    # answers its real state.
+    assert ad.query_order_status("t5b-never-placed").state == "unknown"
+    ad.place_order(mkt("t5b-live", qty=1))
+    ib.push_status(ib.placed[-1][2], "Submitted")
+    assert ad.query_order_status("t5b-live").state == "working"
+
+    # And the id is NOT re-mintable while the answer is outstanding: two orders under one
+    # id — one possibly live at the venue, one certainly live — is the ambiguity §4's
+    # pending-timeout resolution exists to remove.
+    with pytest.raises(BrokerSeamError, match="IN FLIGHT"):
+        ad.place_order(mkt("t5b-buy", qty=1))
+    # ...nor cancellable, which is the D1.24(a) half: the stale vendor id would target
+    # whichever order the venue has since assigned it to.
+    with pytest.raises(BrokerSeamError, match="has ended"):
+        ad.cancel_order("t5b-buy")
 
 
 # ===========================================================================
@@ -862,17 +1028,14 @@ async def test_t6_query_positions_cancelled_mid_flight_leaves_the_mirror_intact(
     assert gated.completions == [], "the gated call completed despite being cancelled"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING T3-01 (CODE DEFECT, most severe): a connect() cancelled during the "
-        "mirror rebuild leaves _connected=True and _startup_complete=False — the adapter "
-        "accepts orders and silently drops every ack and fill for them, forever."
-    ),
-)
 @pytest.mark.asyncio
 async def test_t6b_cancelled_connect_leaves_a_deaf_but_accepting_adapter() -> None:
     """SEQUENCE: `asyncio.wait_for(connect(), t)` times out during the mirror rebuild.
+
+    FINDING T3-01 — REPAIRED IN ARC 020 (A2, D1.23). The `strict=True` xfail is removed in
+    the same motion as the fix. `connect()` now wraps the whole establishment in
+    `except BaseException` — the class `CancelledError` actually belongs to, which is why
+    every `except Exception` in the module missed it — unwinds the session, and RE-RAISES.
 
     PRECONDITIONS: no session; the venue's position read is gated so the cancel lands
       strictly between `_connected = True` and `_startup_complete = True`.
@@ -925,47 +1088,114 @@ async def test_t6b_cancelled_connect_leaves_a_deaf_but_accepting_adapter() -> No
         f"_startup_complete={ad._startup_complete}: the adapter accepts orders it can "
         f"never report on. sink.sessions={sink.sessions}"
     )
+    # THE REFUSAL IS OBSERVABLE TO THE CALLER, which is the half that matters. The old
+    # state was not merely wrong — it was silently wrong, and a consumer had no way to ask.
+    with pytest.raises(BrokerNotConnected):
+        ad.place_order(mkt("t6b-buy", qty=1))
+    assert not ib.placed, (
+        f"an order reached the venue after an abandoned connect: {ib.placed}"
+    )
+    # ...and cancellation SEMANTICS survive: the CancelledError was re-raised, not
+    # swallowed. `pytest.raises(asyncio.CancelledError)` above is that assertion; a
+    # handler that swallowed it would have made this a normal return.
+    assert task.cancelled()
 
 
 @pytest.mark.asyncio
 async def test_t6c_cancelled_connect_the_evidence() -> None:
-    """The BEHAVIOURAL half of FINDING T3-01, asserted as observed fact.
+    """The BEHAVIOURAL half of T3-01, now asserting the REPAIRED behaviour.
 
-    T3-01's xfail above states the invariant. This states what actually happens, so the
-    finding is evidenced rather than only claimed, and so the triage in Phase 4 can see
-    the blast radius without re-deriving it. debug.md §7.9: PASS/FAIL/CANNOT-MEASURE must
-    be distinguishable, and "the adapter accepted the order" is a measured PASS of the
-    wrong thing.
+    WHAT THIS MEASURED BEFORE ARC 020, recorded because the blast radius is the reason the
+    repair was not a one-liner: after a cancelled connect the adapter ACCEPTED an order and
+    it REACHED THE VENUE (`len(ib.placed) == 1`) while `sink.acks == []`, `sink.fills ==
+    []`, `_mirror == {}` and no `on_session` had ever been published. The order path was
+    live and mute. debug.md §7.9: "the adapter accepted the order" was a measured PASS of
+    the wrong thing.
 
-    OBSERVABLE: `ib.placed` (the order reached the venue) and `sink.fills`/`sink.acks`
-    (nothing came back), with the loud-drop log as corroboration.
+    WHAT IT ASSERTS NOW: the order never leaves. `_abandon_session` clears `_connected`, so
+    `_require_session` refuses, and the refusal is a raised `BrokerNotConnected` rather than
+    a silently-discarded send.
+
+    THE FIRST-EVER-CONNECT CASE IS DELIBERATELY THE ONE DRIVEN HERE, because it is where
+    the two repairs meet: no `on_session` is published, and that is now CORRECT rather than
+    a gap. §2A defines `on_session` as connectivity TRANSITIONS (D1.28(c)); this adapter
+    never announced a session, so a DOWN would report a change that did not occur. The
+    caller is not left uninformed — the `CancelledError` it receives IS the notification,
+    and `place_order` refuses loudly thereafter. `test_t6d` drives the OTHER case, where a
+    session did exist and the transition is real.
     """
     ad, ib, sink = new_ad()
     gated = GatedIB(ib)
     ad._ib = gated
     task = asyncio.create_task(ad.connect())
     await gated.entered.wait()
+    nonvac(ad._connected is True, "the cancel would land before the window")
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
 
     nonvac(
-        ad._connected is True and ad._startup_complete is False, "window not reached"
-    )
-    nonvac(
-        not sink.sessions, f"a session event was published after all: {sink.sessions}"
+        ad._connected is False and ad._startup_complete is False,
+        f"the session was not unwound: connected={ad._connected} "
+        f"gate={ad._startup_complete}",
     )
 
-    ad._ib = ib  # the transport is fine; only the adapter's state is wrong
-    ad.place_order(mkt("t6c-buy", qty=1))
-    trade = ib.placed[-1][2]
-    ib.push_status(trade, "Submitted")
-    ib.push_exec(trade, "t6c-e1", 1, 7773.50, 1, side="BOT")
+    ad._ib = ib  # the transport is fine; the adapter must refuse on its own state
+    with pytest.raises(BrokerNotConnected):
+        ad.place_order(mkt("t6c-buy", qty=1))
 
-    assert len(ib.placed) == 1, "the order did NOT reach the venue"
-    assert not sink.acks, f"an ack escaped the shut gate: {sink.acks}"
-    assert not sink.fills, f"a fill escaped the shut gate: {sink.fills}"
-    assert ad._mirror == {}, "the mirror moved despite the gate being shut"
+    assert not ib.placed, "an order reached the venue after an abandoned connect"
+    assert not sink.acks and not sink.fills
+    assert ad._mirror == {}
+    assert ad._mirror_stale is True, (
+        "the rebuild's verdict was never computed, so the mirror behind flatten() is "
+        "exactly the 'possibly behind the venue' state that flag names"
+    )
+    # §2A "connectivity transitions": nothing was ever announced, so nothing is retracted.
+    assert not sink.sessions, f"a non-transition DOWN was published: {sink.sessions}"
+
+
+@pytest.mark.asyncio
+async def test_t6d_a_cancelled_RECONNECT_publishes_a_real_DOWN_edge() -> None:
+    """The other half of the D1.23 repair: when a session DID exist, the consumer is told.
+
+    PRECONDITIONS: a first session established (UP published), then a reconnect cancelled
+      inside the rebuild.
+    OBSERVABLE: the session stream, and whether `place_order` is refused afterwards.
+    EXPECTED: a DOWN edge, because this one IS a transition — the consumer was told the
+      session was up and it is not any more. Contrast `test_t6c`, where nothing had ever
+      been announced.
+
+    NON-VACUITY: the UP is asserted BEFORE the cancel, so "a DOWN was published" is an
+    UP -> DOWN transition and not a DOWN over a stream that was already down.
+    """
+    ad, ib, sink = new_ad()
+    await ad.connect()
+    nonvac(sink.sessions[-1][0] is SessionState.UP, f"no UP published: {sink.sessions}")
+    ad.disconnect()
+    nonvac(sink.sessions[-1][0] is SessionState.DOWN, "no DOWN on the clean teardown")
+    await ad.connect()
+    nonvac(sink.sessions[-1][0] is SessionState.UP, "the second session never came up")
+    before = len(sink.sessions)
+
+    gated = GatedIB(ib)
+    ad._ib = gated
+    task = asyncio.create_task(ad.connect())
+    await gated.entered.wait()
+    nonvac(ad._connected is True, "the cancel lands too early")
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    published = sink.sessions[before:]
+    assert [s[0] for s in published] == [SessionState.DOWN], (
+        f"a cancelled reconnect over a previously-UP session published {published}"
+    )
+    assert "abandoned" in (published[0][1] or ""), (
+        f"the reason does not say the connect was abandoned: {published[0][1]!r}"
+    )
+    with pytest.raises(BrokerNotConnected):
+        ad.place_order(mkt("t6d-buy", qty=1))
 
 
 # ===========================================================================
@@ -974,36 +1204,40 @@ async def test_t6c_cancelled_connect_the_evidence() -> None:
 
 
 @pytest.mark.asyncio
-async def test_t7_flatten_during_reconnect_fires_into_a_shut_gate() -> None:
+async def test_t7_flatten_during_reconnect_is_observed_by_the_ownership_gate() -> None:
     """SEQUENCE: a protective `flatten()` is issued while `connect()` awaits the rebuild.
 
     PRECONDITIONS: a first session established and dropped; the mirror still holds the
       previous session's MESU6 +1; a second `connect()` gated inside `_rebuild_mirror`.
     OBSERVABLE: `ib.placed` (did the protective path fire), and the sink (was anything
-      about those orders ever reported).
+      about those orders reported).
 
-    WHAT IS DETERMINED, and asserted: the protective path DOES fire — `_require_session`
-      passes because `_connected` is set before the rebuild — and every ack and fill for
-      the orders it fires is refused by the still-shut startup gate. §14's "The
-      exit/protective path has zero wire/delivery dependency" is honoured in the sense
-      that flatten did not block; it is not honoured in the sense that matters, because
-      the outcome of the protective action is unobservable to the consumer.
+    FINDING T3-05 — RESOLVED IN ARC 020 (A4) BY OPERATOR RULING. ARC 019 measured, and this
+    traversal asserted, that the protective path DID fire during re-establishment and that
+    every ack and fill for the orders it fired was refused by the still-shut startup gate.
+    §14's "the exit/protective path has zero wire/delivery dependency" was honoured in the
+    sense that nothing blocked, and violated in the sense that mattered: the outcome of the
+    protective action was unobservable. The spec did not choose, so ARC 019 recorded the gap
+    and named §4 "Boot / known-state discipline" as the section that would have to say.
 
-    FINDING T3-05 — SPEC GAP. Whether a protective flatten may run during session
-    re-establishment is undetermined. §4 "Boot / known-state discipline" forbids strategy
-    REGISTRATION before reconciliation and says the cold-start query "gates registration";
-    it says nothing about a Limiter-side protective exit fired while a session is being
-    re-established — which is exactly when one is most likely (a stop hit while the
-    session was down). §14 says "execution of any flatten is Limiter-only" and that the
-    exit path has zero wire dependency, which reads as licence to fire; the adapter's
-    startup gate reads as licence to discard the result. Both are defensible and the spec
-    does not choose. NOT INVENTED HERE.
-    THE SECTION THAT WOULD HAVE TO SAY: §4 "Boot / known-state discipline", or §2A's
-    `flatten` bullet. Neither addresses re-establishment.
+    THE RULING, ratified in ARC 020: the startup admission gate discriminates by ORDER
+    OWNERSHIP, not by elapsed time. Events whose id is in the CURRENT session's registry are
+    admitted regardless of startup state; all others are refused. So this traversal's
+    assertions invert, in the same motion as the fix.
+
+    WHY THIS DOES NOT REOPEN THE ARC 017 PHANTOM FILL, asserted below rather than argued:
+    the registry is cleared BEFORE `connectAsync`, and the venue's startup replay is
+    dispatched from INSIDE `connectAsync`. So no replayed id can be in the registry during
+    this window, and every id that IS in it was minted by a `place_order` in this session.
+    The A1 dependency is not optional and is asserted here: a PRE-BOUNDARY id must not be
+    admitted, or the gate has become one that can be fooled.
     """
     ad, ib, sink = new_ad()
     await ad.connect()
     ib.push_position("MESU6", 1, 7773.50)
+    ad.place_order(mkt("t7-stale", qty=1))
+    stale_ib_id = ad._to_ib["t7-stale"]
+    stale_trade = ib.placed[-1][2]
     ad.disconnect()
     nonvac(ad._mirror.get("MESU6") is not None, "the mirror did not survive the drop")
 
@@ -1020,6 +1254,22 @@ async def test_t7_flatten_during_reconnect_fires_into_a_shut_gate() -> None:
     nonvac(ad._startup_complete is False, "the gate is open — this is not the window")
     nonvac(gated.completions == [], "the rebuild already landed")
 
+    # ---- THE A1 DEPENDENCY, asserted BEFORE the admission it makes safe --------------
+    # A pre-boundary vendor id must not be in the registry. If it were, this would no
+    # longer be an ownership gate — it would be a gate that launders a foreign order into
+    # ownership, which is exactly what the ruling says it is sound only in the absence of.
+    nonvac(
+        stale_ib_id not in ad._from_ib,
+        f"a PRE-BOUNDARY vendor id {stale_ib_id} is in the live registry — the ownership "
+        "gate can be fooled and A4 is unsound",
+    )
+    ib.push_exec(stale_trade, "t7-stale-e", 1, 7773.00, 1, side="SLD")
+    assert not sink.fills, (
+        f"an event carrying a PRE-BOUNDARY id was admitted during the startup window: "
+        f"{sink.fills}"
+    )
+
+    # ---- and now the admission the ruling exists for ---------------------------------
     placed_before = len(ib.placed)
     ad._ib = ib  # orders go to the real fake; the rebuild stays gated
     ad.flatten()
@@ -1027,10 +1277,20 @@ async def test_t7_flatten_during_reconnect_fires_into_a_shut_gate() -> None:
     assert len(fired) == 1 and fired[0][1].action == "SELL"
 
     trade = fired[0][2]
+    nonvac(
+        trade.order.orderId in ad._from_ib,
+        "the protective order was not registered — nothing would be owned to admit",
+    )
     ib.push_status(trade, "Submitted")
     ib.push_exec(trade, "t7-e1", 1, 7773.00, 1, side="SLD")
-    assert not sink.acks, f"the shut gate let an ack through: {sink.acks}"
-    assert not sink.fills, f"the shut gate let a fill through: {sink.fills}"
+    assert sink.acks, (
+        "the protective exit's ACK was refused during re-establishment — the outcome of a "
+        "protective action is unobservable, which is what the ruling exists to fix"
+    )
+    assert sink.fills, "the protective exit's FILL was refused during re-establishment"
+    owned_cid = ad._from_ib[trade.order.orderId]
+    assert [c for c, *_ in sink.acks] == [owned_cid]
+    assert [f[0] for f in sink.fills] == [owned_cid]
 
     ad._ib = gated
     gated.release.set()
@@ -1057,16 +1317,23 @@ async def test_t8_client_order_id_is_never_released() -> None:
     fill", and two live orders under one id would make the ack stream ambiguous, which is
     the failure the module docstring's no-retry policy exists to prevent.
 
-    FINDING T3-08 — WORKING AS INTENDED BUT SURPRISING, with a real edge. `connect()`
-    clears `_to_ib`, `_from_ib`, `_acked` and `_cancelled` because "session boundary
-    invalidates every IBKR-side id" — but not `_neutral`, `_orders`, `_trades` or
-    `_seen_execs`. So the NEUTRAL id space is permanently consumed for the life of the
-    process while the VENDOR id space is reset. A Limiter minting deterministic ids
-    (strategy+sequence) is blocked after a Gateway restart even though nothing about that
-    id means anything at the venue any more. The asymmetry is not stated anywhere; the
-    comment at the clear site explains why the vendor ids go and is silent on why the
-    neutral ones stay. Disposition: debt row naming ARC 020 — it needs an id-lifetime
-    decision, not a one-line fix, and it shares a repair with T3-01/T3-02/T3-09.
+    FINDING T3-08 — NARROWED IN ARC 020 (A1). The asymmetry was: `connect()` cleared
+    `_to_ib`/`_from_ib`/`_acked`/`_cancelled` because "session boundary invalidates every
+    IBKR-side id" and left `_neutral`/`_orders`/`_trades`/`_seen_execs` standing, so the
+    NEUTRAL id space was permanently consumed for the life of the process while the VENDOR
+    id space reset. A Limiter minting deterministic ids (strategy+sequence) was blocked
+    after a Gateway restart on an id that meant nothing at the venue.
+
+    WHAT IS TRUE NOW, and it is a partition rather than a reversal:
+      - an id whose order reached a TERMINAL state is RELEASED at the boundary. Its outcome
+        is known and recorded and §4's pending-timeout query has nothing left to resolve, so
+        holding the id costs a Limiter its deterministic id space for nothing. Re-mintable.
+      - an id whose order was IN FLIGHT at the boundary is NOT released. Its venue-side fate
+        is unresolved; two orders under one id — one possibly live at the venue, one
+        certainly live — is the ambiguity §4's pending-timeout resolution exists to remove.
+        Refused, with a message that says WHICH refusal it is (`test_t5b` drives that half).
+    WITHIN a session nothing changed: an id is single-use, and the duplicate guard is the
+    same one.
     """
     ad, ib, sink = new_ad()
     await ad.connect()
@@ -1078,6 +1345,7 @@ async def test_t8_client_order_id_is_never_released() -> None:
     nonvac(len(sink.fills) == 1, "the order never completed")
     nonvac(ad.query_order_status("t8-buy").terminal, "the order is not terminal")
 
+    # WITHIN the session: unchanged. Still single-use.
     with pytest.raises(BrokerSeamError, match="duplicate client_order_id"):
         ad.place_order(mkt("t8-buy", qty=1))
 
@@ -1086,10 +1354,23 @@ async def test_t8_client_order_id_is_never_released() -> None:
     nonvac(ib.connect_count == 2, "no second session")
     nonvac(not ad._from_ib, "the vendor id map survived the boundary")
 
-    # The asymmetry, asserted as a relation rather than a count.
-    assert "t8-buy" in ad._neutral and "t8-buy" in ad._orders and "t8-buy" in ad._trades
-    with pytest.raises(BrokerSeamError, match="duplicate client_order_id"):
-        ad.place_order(mkt("t8-buy", qty=1))
+    # ACROSS the boundary: a TERMINAL order's state is gone, in every map, and its neutral
+    # id is re-mintable. Asserted as a relation over the maps, not a count.
+    assert not any(
+        "t8-buy" in m for m in (ad._neutral, ad._orders, ad._trades, ad._to_ib)
+    ), (
+        "terminal per-order state survived a session boundary: "
+        f"neutral={'t8-buy' in ad._neutral} orders={'t8-buy' in ad._orders} "
+        f"trades={'t8-buy' in ad._trades} to_ib={'t8-buy' in ad._to_ib}"
+    )
+    assert "t8-buy" not in ad._tombstones, (
+        "a TERMINAL order was tombstoned — the tombstone is for orders whose fate is "
+        "unresolved, and this one's is not"
+    )
+    ad.place_order(mkt("t8-buy", qty=1))
+    assert ad._to_ib.get("t8-buy") is not None, (
+        "a terminal order's neutral id was still blocked after a session boundary"
+    )
 
 
 # ===========================================================================
@@ -1165,14 +1446,6 @@ async def test_t9_ack_before_fill_holds_per_order_under_interleaving() -> None:
 # ===========================================================================
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING T3-01b (CODE DEFECT, high): _orders survives connect() while IBKR order "
-        "ids reset, so cancel_order() on a stale id sends a cancel carrying an orderId "
-        "that now belongs to a DIFFERENT live order in the new session."
-    ),
-)
 @pytest.mark.asyncio
 async def test_t10_cancel_across_a_session_boundary_targets_a_foreign_order() -> None:
     """SEQUENCE (ADDED — why: the adapter's own comments make this reachable and say so).
@@ -1197,11 +1470,23 @@ async def test_t10_cancel_across_a_session_boundary_targets_a_foreign_order() ->
     §7.12 for this assertion: it would pass vacuously if the fake did not reset its id
       sequence across connect — then the two orders would never collide. The reset is
       asserted before the comparison.
+
+    FINDING T3-01b — REPAIRED IN ARC 020 (A1, D1.24(a)). The `strict=True` xfail is removed
+    in the same motion as the fix. `_orders` is now released at every session boundary, so
+    the stale `Order` object — the one piece of state that actually reaches the wire — is
+    gone, and a `cancel_order` on a pre-boundary id is REFUSED rather than transmitted.
+
+    WHAT THE REFUSAL LOOKS LIKE TO THE CALLER, and why it is not the generic "unknown":
+    a `BrokerSeamError` naming the session the id belonged to and pointing at
+    `query_order_status`, which now reports the order `indeterminate` (§4's third outcome).
+    The caller learns that the order exists and cannot be addressed, which is a different
+    instruction from "no such order".
     """
     ad, ib, _sink = new_ad()
     await ad.connect()
     ad.place_order(mkt("t10-old", qty=1))
     old_ib_id = ad._to_ib["t10-old"]
+    cancels_before = len(ib.cancelled)
 
     ad.disconnect()
     await ad.connect()
@@ -1209,19 +1494,30 @@ async def test_t10_cancel_across_a_session_boundary_targets_a_foreign_order() ->
     new_ib_id = ad._to_ib["t10-new"]
 
     # NON-VACUITY: the session really turned over, and the venue really recycled the id.
+    # Without the recycling there is no collision to protect against and this traversal
+    # would be asserting a refusal that costs nothing.
     nonvac(ib.connect_count == 2, "there was no second session")
     nonvac(
         old_ib_id == new_ib_id,
         f"the fake did not recycle the id ({old_ib_id} vs {new_ib_id})",
     )
-    nonvac("t10-old" in ad._orders, "the stale order object was cleared after all")
-
-    ad.cancel_order("t10-old")
-    sent = ib.cancelled[-1]
-    assert getattr(sent, "orderId", None) != new_ib_id, (
-        f"cancel_order('t10-old') put orderId {getattr(sent, 'orderId', None)} on the "
-        f"wire, which is the live venue id of 't10-new' in this session"
+    nonvac(
+        "t10-new" in ad._orders,
+        "the NEW order is not addressable either — this would refuse for the wrong reason",
     )
+
+    # THE REFUSAL. Nothing reaches the wire.
+    with pytest.raises(BrokerSeamError, match="has ended"):
+        ad.cancel_order("t10-old")
+    assert len(ib.cancelled) == cancels_before, (
+        f"a cancel reached the wire despite the refusal: {ib.cancelled[cancels_before:]}"
+    )
+
+    # NON-VACUITY the other way: the verb still WORKS. A refusal that refuses everything
+    # would pass the assertion above and be useless.
+    ad.cancel_order("t10-new")
+    sent = ib.cancelled[-1]
+    assert getattr(sent, "orderId", None) == new_ib_id
 
 
 # ===========================================================================
@@ -1229,14 +1525,6 @@ async def test_t10_cancel_across_a_session_boundary_targets_a_foreign_order() ->
 # ===========================================================================
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING T3-02b (CODE DEFECT, high): the 1101 reconcile task publishes an "
-        "UP-class session state after disconnect() has already published DOWN, so "
-        "state.is_up reads True over a session the adapter knows is closed."
-    ),
-)
 @pytest.mark.asyncio
 async def test_t11_data_loss_reconcile_publishes_up_after_a_disconnect() -> None:
     """SEQUENCE (ADDED — why: ARC 017 made session state the thing a consumer acts on, so
@@ -1261,7 +1549,16 @@ async def test_t11_data_loss_reconcile_publishes_up_after_a_disconnect() -> None
       the `reason` STRING and never gates the publish. The sink's last session event is
       therefore UP_DATA_LOSS, with `is_up` True, over `_connected is False`.
     §7.12 for this assertion: it would pass vacuously if the reconcile task never ran, so
-      the traversal asserts DOWN was published first and that the task then completed.
+      the traversal asserts DOWN was published first and that the task then RAN TO
+      COMPLETION. "Published nothing" is only a finding about the gate if the thing that
+      would have published genuinely executed.
+
+    FINDING T3-02b — REPAIRED IN ARC 020 (A3, D1.25). The `strict=True` xfail is removed in
+    the same motion as the fix. Two mechanisms now stand between this task and the sink,
+    and both are asserted: the deferred publish re-checks the SESSION EPOCH it was
+    scheduled in (not merely `_connected`, which cannot tell "my session" from "a different
+    session that is also up"), and `_publish_session` — the single emission point every
+    session event now goes through — refuses any UP-class state while `_connected` is False.
     """
     ad, ib, sink = new_ad()
     await ad.connect()
@@ -1276,13 +1573,122 @@ async def test_t11_data_loss_reconcile_publishes_up_after_a_disconnect() -> None
     down_at = len(sink.sessions) - 1
 
     await spin()
+    # NON-VACUITY, and it is the load-bearing one here: the task RAN. A gate asserted over
+    # a task that never executed is measuring nothing at all (§7.12 answer V1).
     nonvac(not ad._reconcile_tasks, "the reconcile task never ran")
-    nonvac(len(sink.sessions) > down_at + 1, "the reconcile published nothing")
 
+    assert len(sink.sessions) == down_at + 1, (
+        f"the deferred reconcile published over a torn-down session: "
+        f"{sink.sessions[down_at:]}"
+    )
     last_state, last_reason = sink.sessions[-1]
     assert not (last_state.is_up and ad._connected is False), (
         f"published {last_state.value!r} (is_up={last_state.is_up}, "
         f"reason={last_reason!r}) while _connected={ad._connected}"
+    )
+    assert last_state is SessionState.DOWN
+
+    # NON-VACUITY the other way: the SAME path DOES publish when the session survives. A
+    # gate that refuses everything passes the assertion above and has broken the 1101
+    # reconciliation entirely.
+    await ad.connect()
+    before = len(sink.sessions)
+    ib.push_error(-1, 1101, "Connectivity restored - data lost")
+    await spin()
+    published = sink.sessions[before:]
+    assert [s[0] for s in published] == [SessionState.UP_DATA_LOSS], (
+        f"the reconcile no longer publishes over a LIVE session: {published}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_t11b_a_dead_sessions_reconcile_cannot_publish_over_a_NEW_session() -> (
+    None
+):
+    """SEQUENCE (ADDED IN ARC 020 — why: §7.12 applied to A3's own repair, and it found a
+    gap in the instrument before it found one in the code).
+
+    THE PLANT THAT DID NOT PERTURB. The A3 can-fail removed the epoch check from
+    `_revalidate_then_publish` and the suite STAYED GREEN — because `test_t11` above drives
+    the DISCONNECTED case, and the choke point `_publish_session` catches that one on its
+    own by refusing UP-class states while `_connected` is False. Two mechanisms, one
+    observable, and the weaker one was sufficient for every sequence being driven. That is
+    debug.md failure mode #1 (same verdict for plant and control) about a brand-new gate,
+    and §7.12's point exactly: a gate can be right and still be measuring nothing.
+
+    THE SEQUENCE ONLY THE EPOCH CHECK CAN SURVIVE. The reconcile is scheduled in session N,
+    session N ends, session N+1 is established — and N+1 is UP, so `_connected` is True and
+    the choke point has nothing to object to. The dead session's task then completes and
+    would publish `UP_DATA_LOSS` over a session that has just done its own §4 cold-start
+    re-read and published a clean `UP`. A consumer would be told to reconcile because of a
+    gap in a session it never traded in — and, worse, the state would read as data loss
+    over a mirror that IS venue-backed, which is the fail-toward-resuming direction
+    inverted into a fail-toward-noise.
+
+    A BARE `if self._connected` CANNOT EXPRESS THIS, which is why `_session_seq` exists and
+    is incremented on every boundary in BOTH directions: liveness is not identity.
+
+    PRECONDITIONS: session N up; 1101 raised; the reconcile blocked INSIDE the venue read;
+      session N torn down and session N+1 established while it is blocked.
+    OBSERVABLE: the session stream after the blocked read is released.
+    """
+    ad, ib, sink = new_ad()
+    await ad.connect()
+    gated = GatedIB(ib)
+    ad._ib = gated
+
+    ib.push_error(-1, 1101, "Connectivity restored - data lost")
+    nonvac(len(ad._reconcile_tasks) == 1, "no reconcile task was scheduled")
+    await gated.entered.wait()
+
+    # NON-VACUITY: the dead session's read is genuinely IN FLIGHT, not finished.
+    nonvac(gated.completions == [], "the reconcile read already completed")
+    scheduled_epoch = ad._session_seq
+
+    ad._ib = ib  # the new session uses the ungated fake; the blocked read keeps `gated`
+    ad.disconnect()
+    await ad.connect()
+
+    # NON-VACUITY: this is the case the choke point CANNOT see. The adapter is UP, so
+    # `_publish_session` would accept an UP-class state; only identity distinguishes them.
+    nonvac(ad._connected is True, "the new session is not up — this is test_t11's case")
+    nonvac(
+        ad._session_seq != scheduled_epoch,
+        f"the session epoch did not move ({scheduled_epoch} -> {ad._session_seq}), so "
+        "there is nothing for the identity check to discriminate",
+    )
+    nonvac(
+        sink.sessions[-1][0] is SessionState.UP,
+        f"the new session did not publish a clean UP: {sink.sessions[-1]}",
+    )
+    before = len(sink.sessions)
+    mirror_before = dict(ad._mirror)
+
+    gated.snapshots = [[ib.position_row("ZZZZ", 9, 1.0)]]
+    gated.release.set()  # the DEAD session's read finally answers
+    await spin()
+    # Derived, not a literal: `GatedIB` inherits `reqpos_calls` from the fake it wraps and
+    # connect()'s own rebuild already consumed one, so the call NUMBER is not 1 (§7.4 —
+    # never anchor to a number that describes the current state of the world).
+    nonvac(
+        len(gated.completions) == 1,
+        f"the dead session's read never completed: {gated.completions}",
+    )
+
+    assert len(sink.sessions) == before, (
+        f"a reconcile scheduled in session {scheduled_epoch} published over session "
+        f"{ad._session_seq}: {sink.sessions[before:]}"
+    )
+    assert sink.sessions[-1][0] is SessionState.UP, (
+        "the clean UP of the new session was superseded by a dead session's verdict"
+    )
+    assert ad._mirror_stale is False, (
+        "a dead session's rebuild verdict was written onto the LIVE session's flag"
+    )
+    # And A5's ordering guard holds across the same sequence: the dead session's snapshot
+    # was issued FIRST and resolved LAST, so it must not have reached the mirror either.
+    assert "ZZZZ" not in ad._mirror and dict(ad._mirror) == mirror_before, (
+        f"the dead session's position snapshot reached the live mirror: {ad._mirror}"
     )
 
 
@@ -1291,14 +1697,6 @@ async def test_t11_data_loss_reconcile_publishes_up_after_a_disconnect() -> None
 # ===========================================================================
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING T3-10 (CODE DEFECT): query_positions assigns self._mirror wholesale "
-        "with no ordering guard, so two overlapping reads leave the mirror holding the "
-        "EARLIER-completed snapshot — a lost update on the protective path's only input."
-    ),
-)
 @pytest.mark.asyncio
 async def test_t12_overlapping_position_reads_lose_the_newer_snapshot() -> None:
     """SEQUENCE (ADDED — why: the adapter creates a second, concurrent `query_positions`
@@ -1320,6 +1718,15 @@ async def test_t12_overlapping_position_reads_lose_the_newer_snapshot() -> None:
       the two reads' end states are otherwise indistinguishable).
     §7.12 for this assertion: it would pass vacuously if the reads did not actually
       overlap, so entry and completion order are both asserted from the fake's own record.
+
+    FINDING T3-10 — REPAIRED IN ARC 020 (A5, D1.26). The `strict=True` xfail is removed in
+    the same motion as the fix. Every `query_positions` takes a monotonic sequence number
+    BEFORE it awaits; on resolution it writes `_mirror` only if its number is the highest
+    that has yet resolved. Serialising the reads behind a lock was rejected: it would make
+    one read WAIT for another, and `_rebuild_mirror`'s completion is what clears
+    `_mirror_stale`, which is what `flatten` sizes against (§2A: `flatten` must not block).
+    The returned LIST is deliberately not guarded — a caller gets the snapshot it asked
+    for; the guard protects the SHARED field two readers can corrupt for each other.
     """
     ad, ib, _sink = new_ad()
     await ad.connect()
@@ -1350,7 +1757,7 @@ async def test_t12_overlapping_position_reads_lose_the_newer_snapshot() -> None:
     gate2.set()  # the NEWER read answers first
     await second
     gate1.set()  # the OLDER read answers second
-    await first
+    stale_result = await first
 
     nonvac(
         completed == [2, 1], f"completion order was not the one under test: {completed}"
@@ -1360,6 +1767,12 @@ async def test_t12_overlapping_position_reads_lose_the_newer_snapshot() -> None:
     assert held is not None and held.net_qty == 3, (
         f"mirror={ad._mirror} — the later-completed read (FLAT, issued FIRST) overwrote "
         f"the +3 the venue had already confirmed. flatten() reads this."
+    )
+    # The stale caller still gets ITS OWN answer, unaltered. The guard protects the shared
+    # field, not the return value — conflating the two would silently hand a caller
+    # somebody else's snapshot, which is a different defect in the same place.
+    assert stale_result == [], (
+        f"the discarded read's own return value was rewritten: {stale_result}"
     )
 
 
@@ -1416,7 +1829,7 @@ async def test_t13_flatten_bounds_empty_absent_and_zero() -> None:
 
 
 @pytest.mark.asyncio
-async def test_t14_teardown_is_not_idempotent() -> None:
+async def test_t14_teardown_publishes_one_edge_per_transition() -> None:
     """CORNER CASE (debug.md §5.5): "the operation performed twice — idempotence is a
     property, and it must be proven, not hoped for."
 
@@ -1424,15 +1837,20 @@ async def test_t14_teardown_is_not_idempotent() -> None:
     OBSERVABLE: the session event stream across two `disconnect()` calls, and across a
       `disconnect()` on an adapter that was never connected.
 
-    FINDING T3-12 — WORKING AS INTENDED BUT SURPRISING. `disconnect()` is unconditional:
-    it emits `on_session(DOWN)` every time it is called, including when there was never a
-    session. A consumer counting transitions, or acting on the DOWN edge (§4's cold-start
-    is driven by `on_session`), sees an event that reports no change. It fails toward
-    halted, which is the safe direction, so this is characterisation rather than an alarm.
-    §2A defines `on_session(up|down, reason?)` as "connectivity TRANSITIONS" — a repeat
-    DOWN is not a transition, so the wording is at least in tension with the behaviour.
-    Disposition: debt row naming ARC 020, low priority; it pairs with the edge-vs-level
-    distinction already recorded for `_mirror_stale`.
+    FINDING T3-12 — REPAIRED IN ARC 020 (A6, D1.28(c)). What this traversal previously
+    recorded: `disconnect()` emitted `on_session(DOWN)` on EVERY call including when there
+    had never been a session, while §2A defines `on_session(up|down, reason?)` as
+    "connectivity **transitions**". A consumer counting edges — and §4's cold-start is
+    driven by this edge — saw events reporting no change. The direction was safe (fails
+    toward halted), which is why it was characterisation rather than an alarm, and why the
+    repair waited for a decision rather than being taken as obvious.
+
+    WHAT IS TRUE NOW: the TEARDOWN is still unconditional and still best-effort — the
+    vendor call is attempted every time, the local state is dropped every time. Only the
+    EMISSION is edge-correct, and it is enforced at the single choke point
+    (`_publish_session`) rather than in this verb, so no future emission site can reopen
+    it. UP-class states are deliberately NOT collapsed the same way: a repeated
+    `UP_DATA_LOSS` carries a fresh reconciliation obligation each time.
     """
     ad, _ib, sink = new_ad()
     await ad.connect()
@@ -1441,11 +1859,26 @@ async def test_t14_teardown_is_not_idempotent() -> None:
     ad.disconnect()
     ad.disconnect()
     downs = [s for s in sink.sessions if s[0] is SessionState.DOWN]
-    assert len(downs) == 2, f"expected one DOWN per call, got {downs}"
+    assert len(downs) == 1, f"expected one DOWN per TRANSITION, got {downs}"
 
+    # NON-VACUITY: the teardown itself still ran both times. This is a claim about the
+    # EVENT stream, not about the verb becoming a no-op.
+    assert ad._connected is False and ad._startup_complete is False
+
+    # ...and the edge re-arms: a genuine UP -> DOWN transition still publishes.
+    await ad.connect()
+    nonvac(sink.sessions[-1][0] is SessionState.UP, "the session did not come back up")
+    ad.disconnect()
+    assert len([s for s in sink.sessions if s[0] is SessionState.DOWN]) == 2, (
+        f"the DOWN edge did not re-arm after a new session: {sink.sessions}"
+    )
+
+    # A teardown with no session before it is not a transition at all.
     fresh, _ib2, sink2 = new_ad()
     fresh.disconnect()
-    assert [s[0] for s in sink2.sessions] == [SessionState.DOWN]
+    assert sink2.sessions == [], (
+        f"a DOWN was published for a session that never existed: {sink2.sessions}"
+    )
     with pytest.raises(BrokerNotConnected):
         fresh.flatten()
 
@@ -1468,15 +1901,26 @@ async def test_t15_per_order_state_is_never_released() -> None:
       can never be referenced again should not grow without bound.
     OBSERVABLE: the sizes of the six per-order maps, asserted as a RELATION to N (§7.4 —
       never a literal, and never a ceiling copied from a previous run).
-    ACTUAL, and FINDING T3-13 — CODE DEFECT (scale). All six grow linearly with the number
-    of orders ever placed, and none is ever pruned. `_seen_execs` grows with executions,
-    so a partially-filling instrument grows it faster. Nothing here is a fast leak — a
-    per-order tuple is small — but nothing bounds it either, and `_orders` retaining
-    terminal orders is the specific retention that makes T3-01b (test_t10) reachable, so
-    the repair is shared and is not purely hygienic.
-    Disposition: debt row naming ARC 020 — it needs a retention policy (how long must a
-    terminal order stay queryable through `query_order_status`?), which is a §4
-    pending-timeout question, not a free deletion.
+    FINDING T3-13 — REPAIRED IN ARC 020 (A1(ii), D1.24). Before this arc all seven maps
+    grew linearly with the number of orders EVER placed and none was ever pruned, and
+    `_orders` retaining terminal orders is the specific retention that made T3-01b
+    (test_t10) reachable — so the repair was shared and was never purely hygienic.
+
+    THE RETENTION POLICY, which the debt row is explicit is "a §4 question, not a free
+    deletion". Per-order state for a TERMINAL order is released after
+    `terminal_order_retention_ms` (config; DERIVED from §12A:830's `PENDING_ACK_TIMEOUT_MS`
+    and `FILL_TIMEOUT`, and boot-validated to exceed both). It cannot be zero for two
+    independent reasons: §4 resolves a pending timeout by QUERYING order status, so the
+    order must outlive the interval before the Limiter asks; and §4 "Partial fill"
+    anticipates an execution arriving AFTER a terminal transition ("if the cancel loses
+    the race and the remainder fills").
+
+    WHAT THIS TRAVERSAL ASSERTS, in two halves, because either alone is satisfiable by a
+    defect: that the window genuinely HOLDS the state (a release policy that dropped
+    everything immediately would break §4's query), and that the state is genuinely
+    RELEASED once the window passes (the growth bound). The clock is MOVED rather than
+    waited on — debug.md failure mode #6 — so this has no wall-clock dependency and cannot
+    go stale if the configured retention changes.
     """
     ad, ib, sink = new_ad()
     await ad.connect()
@@ -1496,20 +1940,49 @@ async def test_t15_per_order_state_is_never_released() -> None:
         all(ad.query_order_status(f"t15-{i}").terminal for i in range(n)),
         "not every order reached a terminal state",
     )
-    # The mirror DOES net out — alternating sides close each other. So the growth below
-    # is not "positions are open"; it is per-order bookkeeping with no release.
+    # The mirror DOES net out — alternating sides close each other. So what is measured
+    # below is per-order bookkeeping, not "positions are open".
     nonvac(ad._mirror == {}, f"the positions did not net flat: {ad._mirror}")
 
-    sizes = {
-        "_neutral": len(ad._neutral),
-        "_orders": len(ad._orders),
-        "_trades": len(ad._trades),
-        "_to_ib": len(ad._to_ib),
-        "_from_ib": len(ad._from_ib),
-        "_acked": len(ad._acked),
-        "_seen_execs": len(ad._seen_execs),
-    }
-    assert all(v == n for v in sizes.values()), (
-        f"per-order state after {n} CLOSED lifecycles, all flat: {sizes} — every map "
-        "retains one entry per order ever placed, with no release path"
+    def sizes() -> dict[str, int]:
+        return {
+            "_neutral": len(ad._neutral),
+            "_orders": len(ad._orders),
+            "_trades": len(ad._trades),
+            "_to_ib": len(ad._to_ib),
+            "_from_ib": len(ad._from_ib),
+            "_acked": len(ad._acked),
+            "_seen_execs": len(ad._seen_execs),
+        }
+
+    # HALF ONE — inside the window the state is RETAINED, and is retained BECAUSE §4 needs
+    # it, not by accident. All n orders are terminal and all n are still queryable.
+    within = sizes()
+    assert all(v == n for v in within.values()), (
+        f"per-order state inside the retention window: {within} — expected {n} of each. "
+        "A release before the window closes breaks §4's pending-timeout query"
     )
+    assert len(ad._retire_queue) == n, (
+        f"only {len(ad._retire_queue)} of {n} terminal orders were SCHEDULED for release "
+        "— the rest would never be released at all"
+    )
+
+    # HALF TWO — age every scheduled release past the window and let the next order-path
+    # call sweep. The sweep point is `place_order`: no timer, no task.
+    aged = deque(
+        (ts - (ad._cfg.terminal_order_retention_ms / 1000.0) - 1.0, cid)
+        for ts, cid in ad._retire_queue
+    )
+    ad._retire_queue = aged
+    ad.place_order(mkt("t15-sweep", qty=1))
+
+    after = sizes()
+    assert all(v <= 1 for v in after.values()), (
+        f"per-order state after the retention window expired: {after} — expected at most "
+        "the one sweeping order in each map"
+    )
+    assert not ad._retire_queue, f"the retire queue did not drain: {ad._retire_queue}"
+    # And the released orders now answer `unknown` — no record at all — which is the
+    # correct answer once retention has expired and is distinguishable from the
+    # `indeterminate` a session boundary produces (test_t5b).
+    assert ad.query_order_status("t15-0").state == "unknown"

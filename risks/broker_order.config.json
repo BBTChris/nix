@@ -1,0 +1,32 @@
+{
+  "_meta": {
+    "role": "config",
+    "module": "broker-order (scripts/broker/broker_order_ibkr.py)",
+    "authority": "nics_risk_subsystem_spec_v1.3.md §12A is the SEMANTIC authority for every knob below (name, default, meaning, cross-knob boot validation). This file is the PHYSICAL layout only, per CLAUDE.md 'Per-module JSON configs only'. Where the two ever disagree, §12A wins and this file is wrong.",
+    "role_separation": "CONFIG-ROLE ONLY (CLAUDE.md: 'config-role and data-role JSON stay separate'). risks/ also holds the data-role expression of the rule manifest; this file carries no rule, no manifest and no execution map, and nothing here is a second behavioural authority.",
+    "lifecycle": "§12A/§12.11 — values load at BOOT and take effect only through restart. Nothing in this tree hot-edits them.",
+    "landed_by": "ARC 020 sub-agent A (A6). First per-module config file in the tree.",
+    "obligation_when_R2_lands": "pending_ack_timeout_ms and fill_timeout_ms are §12A knobs the LIMITER owns semantically. They are mirrored here because this module derives its own two knobs from them and boot validation must be able to see both in one place. When the Limiter exists, the physical home of those two moves to the Limiter's own config and this file must READ them rather than restate them — otherwise it becomes the second authority its own _meta forbids."
+  },
+
+  "pending_ack_timeout_ms": 2000,
+  "fill_timeout_ms": 10000,
+  "flatten_idempotency_window_ms": 2000,
+  "terminal_order_retention_ms": 20000,
+  "flatten_attempt_log_depth": 64,
+
+  "_derivations": {
+    "pending_ack_timeout_ms": "§12A:830 `PENDING_ACK_TIMEOUT_MS` (~1-2s) — 'status query, never resend'. The spec gives a RANGE, not a value; the upper end is taken because the failure of a too-short ack timeout is a spurious status query on every marketable order, and §4 makes the query the resolution path rather than an exception. CC-calibrate.",
+    "fill_timeout_ms": "§12A:830 `FILL_TIMEOUT` — 'order-type-dependent'. CC-calibrate; this is a placeholder, and it exists here only so terminal_order_retention_ms can be boot-validated against it rather than against nothing.",
+    "flatten_idempotency_window_ms": "DERIVED = pending_ack_timeout_ms. The window suppresses a repeat protective flatten for exactly as long as the Limiter is still waiting for the FIRST flatten's ack. At pending_ack_timeout_ms the Limiter's own §4 pending-timeout machinery takes the question over (query_order_status, never a resend), so the adapter must stop suppressing at precisely that instant — suppressing past it would let the adapter refuse to protect while nothing else was protecting either, which is the failure D1.22 shows is real (a flatten can return normally and never reach the venue).",
+    "terminal_order_retention_ms": "DERIVED = 10 x pending_ack_timeout_ms. A terminal order must stay queryable through query_order_status for at least as long as the Limiter can still be waiting before it asks (§4 'Failure resolution'), and must also outlive a late execution racing a terminal transition (§4 'Partial fill': 'if the cancel loses the race and the remainder fills'). One order of magnitude of headroom over the longest such interval, chosen because the cost of being too long is bounded memory and the cost of being too short is an unanswerable §4 query.",
+    "flatten_attempt_log_depth": "Bounded ring for the flatten attempt record (D1.28). Not a §12A knob — it is an observability bound, and it exists so the record cannot become the unbounded growth D1.24 was opened for (§12 non-stop operation; §13 objective 22 soak asserts memory stability)."
+  },
+
+  "_boot_validation": [
+    "every value > 0",
+    "flatten_idempotency_window_ms <= pending_ack_timeout_ms  (the handoff to the Limiter's pending-timeout machinery must not be preceded by the adapter still suppressing)",
+    "terminal_order_retention_ms > pending_ack_timeout_ms     (a terminal order must outlive the interval after which the Limiter asks about it)",
+    "terminal_order_retention_ms > fill_timeout_ms            (and must outlive the fill timeout for the same reason)"
+  ]
+}
