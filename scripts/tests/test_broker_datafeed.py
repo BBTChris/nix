@@ -873,6 +873,63 @@ def test_granted_mode_writer_3_disconnect_means_the_grant_died_with_the_session(
     assert ad._symbols[SYM].granted_mode is MarketDataMode.UNKNOWN
 
 
+def test_resubscribe_rearms_the_sentinel_rather_than_inheriting_the_old_grant():
+    """A SECOND `subscribe()` for a symbol that already holds a grant must re-arm the
+    sentinel BEFORE the new request, so the new subscription's grant is measured rather
+    than inherited from the previous one.
+
+    WHY THIS TEST EXISTS, and it is not hypothetical: `_SymbolFeedState.granted_mode`
+    already DEFAULTS to `UNKNOWN`, so on a first subscribe the explicit sentinel write in
+    `subscribe()` changes nothing and deleting it is invisible. `setdefault` returns the
+    EXISTING state on a re-subscribe, so without that write a symbol re-subscribed against
+    a venue that grants nothing keeps reporting the mode a previous subscription was
+    granted — a grant that never happened for this subscription, which is D1.13's defect
+    reached by a different road.
+
+    MEASURED IN ARC 021 PHASE 4, not theorised. Deleting the sentinel write from
+    `subscribe()` was planted against the real adapter and BOTH the D1.13 gate and all 49
+    tests passed. This test and its sibling below are what that plant now fails."""
+    ad, _, fake = make_adapter(grant_map={3: 3})
+    ad.subscribe(SYM)
+    assert ad._symbols[SYM].granted_mode is MarketDataMode.DELAYED
+
+    # Same symbol, but the venue now returns NO grant callback (ARC 013 measured exactly
+    # this for mode 1: error 354, zero ticks, no callback).
+    fake.grant_map = {3: None}
+    ad.subscribe(SYM)
+    assert ad._symbols[SYM].granted_mode is MarketDataMode.UNKNOWN, (
+        "a re-subscribe inherited the previous subscription's grant — the sentinel was "
+        "not re-armed, so an ungranted subscription reports a mode it was never given"
+    )
+    assert "NO GRANT CALLBACK" in ad.granted_mode_divergence(SYM)
+
+
+def test_adapter_wide_granted_mode_reports_the_grant_never_the_request():
+    """`granted_mode()` with no symbol must report what was GRANTED across the
+    subscriptions, never what was requested — including when the venue silently
+    downgrades, which is the ARC 013 measurement D1.13 exists to catch.
+
+    The per-symbol branch is asserted by the WRITER 2 test above; this asserts the
+    ADAPTER-WIDE branch, which is a separate code path and was separately unprotected.
+    MEASURED IN ARC 021 PHASE 4: substituting `requested_mode` for `granted_mode` in that
+    branch was planted against the real adapter and both the gate and all 49 tests
+    passed."""
+    ad, _, _ = make_adapter(
+        grant_map={4: 3}, requested_mode=MarketDataMode.DELAYED_FROZEN
+    )
+    ad.subscribe(SYM)
+    assert ad.granted_mode() is MarketDataMode.DELAYED, (
+        "adapter-wide granted_mode did not report the GRANTED mode"
+    )
+    assert ad.granted_mode() is not MarketDataMode.DELAYED_FROZEN, (
+        "adapter-wide granted_mode reported the REQUESTED mode — that the request was "
+        "made is not evidence of what was granted"
+    )
+    # Non-vacuity: the two modes must actually differ, or the assertion above is
+    # satisfied by them being the same value rather than by the adapter being correct.
+    assert MarketDataMode.DELAYED is not MarketDataMode.DELAYED_FROZEN
+
+
 def test_feed_state_writer_1_connect_speaks_only_about_the_session():
     """WRITER 1 — `connect()`. MEANING: a session exists. NOT a claim that data is fresh."""
     ad, sink, _ = make_adapter()
