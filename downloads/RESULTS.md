@@ -384,3 +384,15 @@ because two mechanisms guarded one observable; C3 refused a canary partly becaus
 is a rubric of *believed* tool behaviour; and D1.12's mechanism passed its ARC 019 demonstration
 because the demonstration drove the half that worked. Three instances, one shape.
 
+**ARMED, and the arming was validated rather than assumed.** The operator elected to arm now and
+reboot later. `/etc/systemd/system/nix-reboot-capture.service` is installed and `enabled`. It was
+then started once by hand to prove it executes under systemd — `Result=success`,
+`ExecMainStatus=0`, venv interpreter resolved, capture written, and **trust still refused**,
+naming three `loginctl` sessions and a 771853.7 s uptime against the 300 s ceiling. The whole
+mechanism driven end to end as `bbt`, with only the untouched-console precondition unmet, and
+unmet for the correct reason. The validation capture was then deleted: **the directory is empty,
+so after the next boot an empty directory is itself the finding.**
+
+**What is still owed:** the reboot, and the IB Key tap after it. The operator declined the tap
+this session, so `verify.py` remains exit 1 with the cause named, and R1-A stays RED.
+
