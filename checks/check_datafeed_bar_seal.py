@@ -233,6 +233,30 @@ from nixverify.contract import CheckResult, Context, Mode, Status
 # R0801: the §4.2 `__main__` block and the crash handler are mandated to be the
 # same text in every check; the only deduplication is the helper §4.2 forbids.
 # pylint: disable=duplicate-code
+# C0302 (too-many-lines) disabled in ARC 021 PHASE 4, when the B.4 repair below took
+# this module from 967 lines to 1039.
+#
+# THIS RATIONALE IS DELIBERATELY NOT THE ONE IN `check_datafeed_granted_mode.py`, and the
+# difference is measured, not assumed. That module's disable says trimming prose CANNOT
+# fix the count because it exceeds 1000 with every module-docstring line removed. Here
+# that is FALSE — derive it, do not read it:
+#   .venv/bin/python -c "import ast,pathlib;s=pathlib.Path(
+#     'checks/check_datafeed_bar_seal.py').read_text();d=ast.get_docstring(
+#     ast.parse(s),clean=False);print(len(s.splitlines()),
+#     len(d.splitlines())+2)"
+# which reports 1039 total against a 219-line docstring, i.e. 820 without it. Deleting
+# prose WOULD mechanically satisfy pylint. Copying the sibling's wording would therefore
+# have asserted something untrue about this file — the same defect this arc removed from
+# `broker_datafeed_ibkr.py`'s dead `import-outside-toplevel` suppression, committed in
+# the act of citing doctrine.
+#
+# So the argument is the narrower and honest one: the prose that would have to go is the
+# §7.12 seven-condition answer, which `debug.md` §7.12 requires IN WRITING BESIDE THE
+# GATE, and the B.4 repair record, which is the evidence that arm 2 once reddened a
+# correct seal and why it no longer does. Both are load-bearing for a reader deciding
+# whether to trust this gate. `nix_check_contract.md` §5.5 independently forbids the
+# other escape — splitting into a second instrument over the same property.
+# pylint: disable=too-many-lines
 PRIVILEGE = "user"
 INTERACTIVE = False
 DISRUPTIVE = False
@@ -534,15 +558,77 @@ def _arm1(
 # --------------------------------------------------------------------------
 # ARMS 2 and 3 — the series stores
 # --------------------------------------------------------------------------
-def _guard_keys(test: ast.expr) -> frozenset[tuple[str, str]]:
-    """(key, container) pairs a membership test in `test` compares."""
+# ARC 021 PHASE 4 REPAIR — doctrine B.4, measured not theorised.
+#
+# THE SEAL HAS TWO IDIOMATIC SPELLINGS IN PYTHON AND THIS GATE ONLY KNEW ONE.
+#
+#   membership form          lookup-then-sentinel form
+#   ---------------          -------------------------
+#   if key not in store:     found = store.get(key)
+#       store[key] = value   if found is None:
+#                                store[key] = value
+#
+# They prove the SAME property. The second is the more common of the two in real code
+# because it hashes the key once instead of twice, and it is what the first real
+# broker-datafeed adapter used. Arm 2 recognised only `In`/`NotIn`, so it reported
+# `unguarded store into self._sealed` about a store that is guarded — reddening the
+# correct implementation of its own subject on the first adapter it ever bound to.
+# `VERIFY-AND-CHECKS.md` doctrine B.4: that gate is BROKEN, not strict.
+#
+# The repair teaches the gate the second spelling rather than asking the code to adopt
+# the first. Requiring one spelling would have been a style rule wearing a correctness
+# gate's exit code, and the property — a published entry is never overwritten — is
+# indifferent to which is used.
+#
+# WHY THIS IS NOT A WEAKENING: a lookup binds `name -> (key, container)` ONLY through a
+# literal `container.get(key)` call, and the binding is consumed ONLY by an `is None` /
+# `is not None` test against that same name. An unguarded store still has no dominating
+# test of either spelling and still fails — PLANT P4 below proves it after this repair,
+# not before it.
+#
+# THE RESIDUAL, NAMED (CHECK-DEBT D2.21): polarity is still not checked, exactly as it
+# was not checked for the membership form (§7.12 condition 5) — `if found is not None:`
+# guarding a store reads the same as `if found is None:`. Arm 4's behavioural drive is
+# the compensating control, and the residual is unchanged in size by this repair rather
+# than introduced by it.
+def _lookup_binding(node: ast.stmt) -> tuple[str, tuple[str, str]] | None:
+    """`name = <container>.get(<key>)` -> (name, (key, container)). Else None."""
+    if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+        return None
+    tgt = node.targets[0]
+    val = node.value
+    if not isinstance(tgt, ast.Name) or not isinstance(val, ast.Call):
+        return None
+    fn = val.func
+    if not isinstance(fn, ast.Attribute) or fn.attr != "get" or not val.args:
+        return None
+    return tgt.id, (ast.unparse(val.args[0]), ast.unparse(fn.value))
+
+
+def _guard_keys(
+    test: ast.expr, lookups: dict[str, tuple[str, str]] | None = None
+) -> frozenset[tuple[str, str]]:
+    """(key, container) pairs `test` establishes, in EITHER spelling.
+
+    `lookups` carries the `name -> (key, container)` bindings a preceding
+    `container.get(key)` created, so an `is None` test on that name proves the same
+    guard a membership test would."""
     out: set[tuple[str, str]] = set()
+    binds = lookups or {}
     for node in ast.walk(test):
         if not isinstance(node, ast.Compare):
             continue
         for op, cmp_ in zip(node.ops, node.comparators):
             if isinstance(op, (ast.In, ast.NotIn)):
                 out.add((ast.unparse(node.left), ast.unparse(cmp_)))
+            elif (
+                isinstance(op, (ast.Is, ast.IsNot))
+                and isinstance(node.left, ast.Name)
+                and node.left.id in binds
+                and isinstance(cmp_, ast.Constant)
+                and cmp_.value is None
+            ):
+                out.add(binds[node.left.id])
     return frozenset(out)
 
 
@@ -598,22 +684,32 @@ def _local_published_names(
 
 
 def _guarded_assigns(
-    nodes: list[ast.stmt], guards: frozenset[tuple[str, str]]
+    nodes: list[ast.stmt],
+    guards: frozenset[tuple[str, str]],
+    lookups: dict[str, tuple[str, str]] | None = None,
 ) -> list[tuple[ast.Assign, frozenset[tuple[str, str]]]]:
-    """Every `Assign` under `nodes`, paired with the membership tests that
-    dominate it. `If` is the only construct that adds a guard; everything else
-    is descended into carrying whatever guards were already active."""
+    """Every `Assign` under `nodes`, paired with the guards that dominate it.
+    `If` is the only construct that adds a guard; everything else is descended
+    into carrying whatever guards were already active.
+
+    `lookups` accumulates SEQUENTIALLY as the statement list is walked, because
+    the lookup-then-sentinel spelling is two statements: the `container.get(key)`
+    binding must already have been seen when the `is None` test is reached."""
     out: list[tuple[ast.Assign, frozenset[tuple[str, str]]]] = []
+    binds = dict(lookups or {})
     for node in nodes:
         if isinstance(node, ast.If):
-            inner = guards | _guard_keys(node.test)
-            out += _guarded_assigns(node.body, inner)
-            out += _guarded_assigns(node.orelse, inner)
+            inner = guards | _guard_keys(node.test, binds)
+            out += _guarded_assigns(node.body, inner, binds)
+            out += _guarded_assigns(node.orelse, inner, binds)
             continue
         if isinstance(node, ast.Assign):
             out.append((node, guards))
+        bound = _lookup_binding(node)
+        if bound is not None:
+            binds[bound[0]] = bound[1]
         kids = [k for k in ast.iter_child_nodes(node) if isinstance(k, ast.stmt)]
-        out += _guarded_assigns(kids, guards)
+        out += _guarded_assigns(kids, guards, binds)
     return out
 
 

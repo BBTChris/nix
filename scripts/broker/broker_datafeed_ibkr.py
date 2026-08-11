@@ -207,15 +207,17 @@ from __future__ import annotations
 #   too-many-arguments / too-many-positional-arguments
 #       §2A fixes on_tick's shape; the constructor's knobs are the §12A tunables
 #       this module owns. The metric is measuring the contract.
-#   import-outside-toplevel
-#       ib_async is imported lazily and BY NAME inside the one method that needs
-#       it, so a missing or renamed vendor symbol fails loudly at the call site
-#       rather than making this module unimportable in offline tests. Same
-#       construction the order adapter uses, arrived at independently — see the
-#       invariant 3 block above on why that is deliberate.
+# ARC 021 PHASE 4: `import-outside-toplevel` was suppressed here with a rationale
+# describing a lazy `ib_async` import "inside the one method that needs it". THERE IS NO
+# SUCH IMPORT — this module imports only `broker_seam` and stdlib, and the vendor client
+# is INJECTED (`connect()` refuses to construct one, see its BrokerNotConnected message).
+# The suppression covered code that does not exist and its comment asserted something
+# untrue about the module it sat in, which is `debug.md` §7.4's stale-anchor class banked
+# on day one. Both are removed rather than reworded; the injection design is documented
+# at `connect()`, which is where a reader meets it.
 # pylint: disable=invalid-name,broad-exception-caught,unused-argument
 # pylint: disable=too-many-instance-attributes,too-many-arguments
-# pylint: disable=too-many-positional-arguments,import-outside-toplevel
+# pylint: disable=too-many-positional-arguments
 # pylint: disable=missing-function-docstring,disallowed-name
 import logging
 import time
@@ -245,6 +247,46 @@ log = logging.getLogger("nix.broker_datafeed.ibkr")
 # ---------------------------------------------------------------------------
 DATAFEED_CLIENT_ID = 2
 """Production broker-datafeed clientId. The argument is in the module docstring."""
+
+
+def resolve_granted_mode(mode_value: int) -> MarketDataMode:
+    """Map a RAW VENDOR mode integer to the neutral enum. The whole of D1.13's rule,
+    in one pure function.
+
+    LIFTED TO MODULE LEVEL IN ARC 021 PHASE 4 (CHECK-DEBT D1.32). This logic lived
+    inline inside `_on_ib_market_data_type`, where it was correct but unreachable:
+    `check_datafeed_granted_mode`'s arm B1 proves the three-way distinction by
+    EXECUTING the observer over vendor values 0/1/3, and an observer reachable only
+    through a bound method that wants a `Symbol` cannot be executed with a vendor
+    integer. The gate reported CANNOT_MEASURE naming the site — honest, and it left
+    D1.13's gate unbound to the only adapter it exists to check.
+
+    Nothing here is weakened to satisfy a gate: the mapping is byte-for-byte the one
+    that was inline and behaviour on every input is unchanged. What changed is that the
+    property is now OBSERVABLE — CLAUDE.md directive 1, prove properties not proxies.
+
+    THE THREE LEGS THIS EXISTS TO MAKE DRIVABLE, and why each matters:
+      0 -> UNKNOWN   the SENTINEL. `subscribe()` writes 0 before the request, so a
+                     grant callback that never arrives stays readable as absent. ARC 013
+                     measured `ib_async`'s `Ticker.marketDataType` DEFAULTING to 1, so
+                     an unsentinelled field reports a real-time grant that never happened.
+      1 -> REALTIME  a GENUINE grant of real-time, which must be distinguishable from
+                     the sentinel above. Collapsing these two reproduces the defect.
+      3 -> DELAYED   what Stage 0 actually gets, including when 4 was requested — ARC 013
+                     measured the silent 4->3 downgrade with no error raised.
+
+    An unrecognised value is UNKNOWN, never coerced to the requested mode and never to
+    REALTIME: an unknown that reads as a known is the failure the floor exists to prevent
+    (AMENDMENT 3, the absence principle).
+
+    DELIBERATELY PURE — it does not log. The caller holds the `symbol` that makes a
+    warning worth reading, and a gate driving this over three legs should not emit
+    warnings as a side effect of being measured."""
+    try:
+        return MarketDataMode(mode_value)
+    except ValueError:
+        return MarketDataMode.UNKNOWN
+
 
 RESERVED_CLIENT_IDS: dict[int, str] = {
     0: (
@@ -780,14 +822,19 @@ class IBKRBrokerDatafeed:
         state = self._symbols.get(symbol)
         if state is None:
             return
-        try:
-            granted = MarketDataMode(mode_value)
-        except ValueError:
+        # The mapping is `resolve_granted_mode` (module level, D1.32) rather than inline,
+        # so the three-way rule this writer depends on is drivable by a gate instead of
+        # being sealed inside a vendor callback. Behaviour is unchanged.
+        granted = resolve_granted_mode(mode_value)
+        if (
+            granted is MarketDataMode.UNKNOWN
+            and mode_value != MarketDataMode.UNKNOWN.value
+        ):
             # An unrecognised mode is NOT coerced to the requested one, nor to REALTIME. It is
             # an unknown, and an unknown that reads as a known is the failure the floor exists
-            # to prevent.
+            # to prevent. Logged here, not in the pure resolver, because `symbol` is what
+            # makes the line worth reading.
             log.warning("unrecognised marketDataType %r for %s", mode_value, symbol)
-            granted = MarketDataMode.UNKNOWN
         state.granted_mode = granted
 
     def _on_ib_error(self, reqId, errorCode, errorString, contract=None) -> None:

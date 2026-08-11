@@ -564,8 +564,40 @@ def _sentinel_writes(tree: ast.Module, sentinel: int) -> int:
     return count
 
 
+# ARC 021 PHASE 4 REPAIR — doctrine B.4, measured not theorised.
+#
+# `self` and `cls` are BINDING names, not value sources. Arm B3 asks whether the
+# value handed to the vendor's request call is the same value reported as granted.
+# It answers that by intersecting two name sets, which is a name-identity
+# approximation of dataflow — and every method call on an object contributes the
+# receiver's name to both sets. So a correct adapter that writes
+#
+#     self._ib.reqMarketDataType(self._requested_mode.value)   # requested: {self, ...}
+#     ... granted_mode=self.granted_mode(symbol)               # granted:   {self, ...}
+#
+# intersects to `{'self'}` and is reported as deriving the grant from the request —
+# which is the OPPOSITE of what that code does: `granted_mode()` floors at UNKNOWN and
+# never reads `_requested_mode`. This gate reddened the correct implementation of its
+# own subject on the first real adapter it ever bound to, which `VERIFY-AND-CHECKS.md`
+# doctrine B.4 calls BROKEN, not strict.
+#
+# Excluding the two binding names is the minimum repair that removes the false
+# positive without weakening the arm: a genuine `granted_mode=requested_mode` still
+# shares a real value name, and PLANT P3 (below) still fails as it must. It is NOT a
+# suppression — nothing is added to a reviewed-exception list, and the arm still runs
+# over every subject.
+#
+# THE RESIDUAL, NAMED (CHECK-DEBT D2.20): this remains name-identity, not dataflow. A
+# grant laundered through a rename (`m = self._requested_mode; ... granted_mode=m`)
+# shares the name `m` and IS caught; one laundered through an unrelated-looking
+# attribute is not. Arm B1's three-way behavioural drive is the compensating control,
+# because it executes the observer rather than reading it.
+BINDING_NAMES: frozenset[str] = frozenset({"self", "cls"})
+
+
 def _requested_names(tree: ast.Module) -> set[str]:
-    """Names handed to the vendor's mode-REQUEST call."""
+    """Names handed to the vendor's mode-REQUEST call. Binding names excluded —
+    see BINDING_NAMES."""
     out: set[str] = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -577,7 +609,7 @@ def _requested_names(tree: ast.Module) -> set[str]:
         for arg in list(node.args) + [k.value for k in node.keywords]:
             out |= {n.id for n in ast.walk(arg) if isinstance(n, ast.Name)}
             out |= {n.attr for n in ast.walk(arg) if isinstance(n, ast.Attribute)}
-    return out
+    return out - BINDING_NAMES
 
 
 def _granted_names(tree: ast.Module) -> set[str]:
@@ -591,7 +623,7 @@ def _granted_names(tree: ast.Module) -> set[str]:
                 continue
             out |= {n.id for n in ast.walk(kw.value) if isinstance(n, ast.Name)}
             out |= {n.attr for n in ast.walk(kw.value) if isinstance(n, ast.Attribute)}
-    return out
+    return out - BINDING_NAMES
 
 
 def _arm_b23(
