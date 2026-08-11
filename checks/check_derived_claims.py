@@ -86,7 +86,7 @@ while measuring nothing?
     RE-CONFIRMED ARC 018 (named gap 5), and deliberately NOT repaired. The
     statement above is still accurate and still where it was. ARC 018 tested it
     the only way it can be tested — by adding three registered numbers
-    (`order_path_scope_files`, `broker_order_percent_sec2a_element_v1`, and the
+    (`order_path_scope_files`, `broker_order_element_coverage_v1`, and the
     scheme's canonical-form restatement scan) and observing that nothing in this
     gate asked for them, noticed they were missing, or would have gone red had
     they never been added. The gap is therefore not shrinking as the registry
@@ -101,6 +101,23 @@ while measuring nothing?
     restatement has been deleted, so this is not repaired by making zero a
     failure; it is repaired by the pattern being reviewed at the point it is
     added, and by the `note` recording what it was written against.
+
+ 9. ADDED ARC 020, for the `broker_order_open_debt_rows` claim specifically.
+    That claim selects ledger rows with a VOCABULARY — order-path module
+    basenames plus the broker-order roster. An empty vocabulary selects nothing,
+    and a count of nothing agrees with a count of nothing: 0 == 0 is a PASS that
+    measured no row at all. Three ways the vocabulary can empty out: the order
+    path holds no `.py` modules; the frozen spec's broker-order bullet block
+    stops yielding identifiers; the seam's roster tuples go empty.
+    GUARDED: each of the three raises `ProbeError` rather than returning an
+    empty list, so the claim goes CANNOT_MEASURE naming the side that collapsed.
+    An empty OPEN-row set raises too, for the same reason.
+    NOT GUARDED, DELIBERATELY: a *selection* of zero with a healthy vocabulary.
+    Zero open broker-order debt rows is the intended end state of the module and
+    making it a failure would make the instrument fight its own purpose. What is
+    done instead is that every selected row id is printed in the detail line on
+    every run, so a selection that collapses from twelve to zero in one arc is
+    readable rather than inferred — the same treatment condition 8 gets.
 """
 
 from __future__ import annotations
@@ -422,17 +439,44 @@ def _p_order_path_anchor_files(home: Path) -> tuple[int, str]:
 
 
 # --------------------------------------------------------------------------
-# C4 — THE BROKER-ORDER PERCENT SCHEME, `sec2a-element-v1`.
+# BROKER-ORDER ELEMENT COVERAGE — scheme `sec2a-element-v1`.
 # --------------------------------------------------------------------------
+# RENAMED ARC 020 (operator ruling) from `broker_order_percent_sec2a_element_v1`
+# to `broker_order_element_coverage_v1`. THE RENAME IS A FRAMING CORRECTION, NOT
+# A NEW MEASUREMENT: the scheme identifier is unchanged, both probes below
+# compute exactly what they computed before, and the claim's cross-derivation —
+# a denominator read out of the frozen spec against a denominator read out of
+# the seam code — survives intact. What changed is the NAME, which now carries
+# the limitation instead of hiding it.
+#
 # Definition, so the series is reproducible and a scheme change is visible:
 #
-#   percent(level) = 100 * |roster elements graded CLEAN| / |roster|
-#   roster         = the §2A broker-order element set, BY IDENTIFIER
-#   grades         = ARC 014's FINDINGS, re-derived over that roster
+#   coverage(level) = 100 * |roster elements graded CLEAN| / |roster|
+#   roster          = the broker-order element set of the frozen spec's
+#                     section 2A, BY IDENTIFIER
+#   grades          = ARC 014's FINDINGS, re-derived over that roster
 #
-# and an arc's "percent moved" is the CHANGE in that level, in percentage
-# points, over the same denominator. Both terms are re-derived on every run;
-# neither is stored anywhere.
+# Both terms are re-derived on every run; neither is stored anywhere.
+#
+# THIS IS BREADTH AND IT IS BLIND TO DEPTH. It answers one question — how many
+# of the specified broker-order elements has anybody graded CLEAN — and no
+# other. It does not move when a defect inside an already-CLEAN element is
+# found, and it does not move when one is fixed. ARC 019 is the measured
+# instance: an arc that closed four defects, discovered five more, corrected a
+# banked performance figure fivefold and produced the module's first Tier-3
+# traversal registered as ZERO MOVEMENT under this scheme — correctly, because
+# it added no elements. A number that cannot see the best arc the module has had
+# is not a progress number, and the old name said it was one.
+#
+# "PERCENT MOVED" IS RETIRED AS A FRAMING FOR THIS SCHEME. A change in this
+# level is a change in ELEMENT COVERAGE, is named as such, and is never
+# presented as how far the module moved. The companion depth figure is the claim
+# `broker_order_open_debt_rows` below, which is DELIBERATELY NOT A PERCENT.
+#
+# NO CONFIDENCE DIMENSION IS INVENTED HERE, and that is a decision rather than
+# an omission. A per-element confidence score would be a hand-maintained rubric,
+# which is the stale literal anchor this whole harness exists to remove; adding
+# one would put the defect back inside the instrument built to catch it.
 _SCHEME_ID = "sec2a-element-v1"
 
 
@@ -444,17 +488,18 @@ def _clean_fraction(roster: list[str], grades: dict[str, str]) -> tuple[int, int
     return clean, len(roster), 100 * clean // len(roster)
 
 
-def _p_broker_order_percent_spec(home: Path) -> tuple[int, str]:
+def _p_broker_order_coverage_spec(home: Path) -> tuple[int, str]:
     """Scheme `sec2a-element-v1`, denominator from the FROZEN SPEC."""
     roster = _spec_identifiers(home, "### broker-order")
     clean, total, pct = _clean_fraction(roster, _arc014_roster_grades(home))
     return pct, (
-        f"scheme {_SCHEME_ID}, spec denominator: CLEAN {clean} of {total} "
-        f"§2A broker-order identifiers = {pct}% (level, not a per-arc delta)"
+        f"scheme {_SCHEME_ID}, spec denominator: ELEMENT COVERAGE — CLEAN "
+        f"{clean} of {total} section 2A broker-order identifiers = {pct}% "
+        "(breadth, blind to depth; a level, not a per-arc delta)"
     )
 
 
-def _p_broker_order_percent_seam(home: Path) -> tuple[int, str]:
+def _p_broker_order_coverage_seam(home: Path) -> tuple[int, str]:
     """Scheme `sec2a-element-v1`, denominator from the CODE's restatement."""
     tuples = _module_tuples(
         home, "scripts/broker/broker_seam.py", ("ORDER_PORT_VERBS", "ORDER_EVENTS")
@@ -467,9 +512,136 @@ def _p_broker_order_percent_seam(home: Path) -> tuple[int, str]:
                 grades[name] = grade
     clean, total, pct = _clean_fraction(roster, grades)
     return pct, (
-        f"scheme {_SCHEME_ID}, seam denominator: CLEAN {clean} of {total} "
-        f"broker_seam.py ORDER_PORT_VERBS+ORDER_EVENTS = {pct}%"
+        f"scheme {_SCHEME_ID}, seam denominator: ELEMENT COVERAGE — CLEAN "
+        f"{clean} of {total} broker_seam.py ORDER_PORT_VERBS+ORDER_EVENTS "
+        f"= {pct}% (breadth, blind to depth)"
     )
+
+
+# --------------------------------------------------------------------------
+# BROKER-ORDER OPEN DEBT ROWS — the depth companion, and NOT a percent.
+# --------------------------------------------------------------------------
+# ARC 020 C2. Element coverage above is breadth. This is the other axis: how
+# many OPEN debts in the ledger are about the broker-order module. It rises when
+# a traversal finds defects and falls when they are paid, which is exactly the
+# movement the coverage figure cannot see.
+#
+# IT IS A COUNT AND IT MUST NEVER BE EXPRESSED AS A PERCENT. To make a percent
+# of it one would have to divide by a total, and the only honest total is "how
+# many outstanding obligations does this module have" — which is the same
+# quantity as "how much do we trust this module", and is unknowable. That is
+# named gap 5 verbatim: the standing question's condition 7 above says this
+# instrument cannot prove the registry covers the numbers that matter, so the
+# denominator would be the size of a set nobody can enumerate. A percent over an
+# unknowable denominator is a confidence score wearing arithmetic, and inventing
+# one here would rebuild the rubric the rename in the block above just removed.
+# Twelve open rows is twelve open rows. It is a FLOOR on outstanding broker-order
+# obligations, never a fraction of them.
+#
+# THE MODULE-SCOPING RULE, stated so it can be argued with rather than inferred:
+#
+#   A row is BROKER-ORDER SCOPED iff it is OPEN — by the ledger's own bold-span
+#   rule, `_DISCHARGED` above — AND its row text names at least one order-path
+#   artefact, being either
+#     (i)  the basename of a Python module that exists under the order path, or
+#     (ii) a broker-order roster identifier, matched on word boundaries.
+#
+# NOTHING IN THAT RULE IS TYPED. The order path is read by AST out of
+# `check_order_path_bans.py`'s own `ORDER_PATH_DIRS` anchor — the same
+# non-restating technique `_p_order_path_anchor_files` uses — and the basenames
+# come off the disk. The roster comes from the frozen spec on one side of the
+# claim and from the seam's declared tuples on the other, which is where the two
+# sources get their independence.
+#
+# WHAT IS AMBIGUOUS, named rather than papered over — the rule attributes rows
+# to a module MECHANICALLY, and mechanical attribution is not the same as
+# correct attribution:
+#
+#  a. APPARATUS-ABOUT-THE-MODULE versus DEFECT-IN-THE-MODULE. Two selected rows
+#     are not defects in the order path at all. One is a residual in the gate
+#     that scans the order path; the other is a test instrument that happens to
+#     live in a seam module. Both are genuine outstanding broker-order
+#     obligations and both are counted. Whether "scoped to broker-order" means
+#     defects IN the code or obligations ABOUT it is a judgment, and this rule
+#     does not make it — it counts both, and this paragraph is why.
+#  b. IT UNDER-COUNTS ROWS THAT TALK ABOUT THE MODULE WITHOUT NAMING ANYTHING IN
+#     IT. A row deferred until "broker-order code exists" names no artefact and
+#     is not selected, correctly by the rule and arguably wrongly in substance.
+#  c. THE RULE READS PROSE, so the ledger's wording is load-bearing. Rewording a
+#     row to drop the verb name silently removes it from the count. That is
+#     failure mode #14 one level down — a scope set by text a person edits — and
+#     the mitigation is that every selected id is printed on every run.
+#  d. A ROW IS NOT A DEFECT. One selected row lists five observed symptoms of a
+#     single repair; another holds two separate specification gaps. The claim
+#     counts the ledger's unit of account, which is the row, and the number is
+#     therefore a floor and not a census.
+#  e. THE TWO ROSTERS CAN LEGITIMATELY DIVERGE. If the seam declares a
+#     broker-order element the spec does not — a flagged Nix addition, the
+#     `feed_lag()` precedent — the seam-side vocabulary gains a word the
+#     spec-side one lacks and the sources can disagree. That is the same
+#     derive-never-restate pair the coverage claim already carries, one level up,
+#     and a disagreement is the instrument working rather than a defect in it.
+
+
+def _order_path_basenames(home: Path) -> list[str]:
+    """`.py` basenames under the order path, anchor read by AST (never typed)."""
+    rel = "checks/check_order_path_bans.py"
+    dirs = _module_tuples(home, rel, ("ORDER_PATH_DIRS",))["ORDER_PATH_DIRS"]
+    if not dirs:
+        raise ProbeError(f"{rel}: ORDER_PATH_DIRS is empty")
+    names = sorted(
+        {p.name for d in dirs for p in (home / d).rglob("*.py") if p.is_file()}
+    )
+    if not names:
+        raise ProbeError(f"order path {list(dirs)} holds no .py module to name")
+    return names
+
+
+def _open_debt_rows(home: Path) -> list[tuple[str, str]]:
+    """(id, row text) for every row the ledger's bold-span rule leaves OPEN."""
+    rows = _debt_rows(home)
+    if not rows:
+        raise ProbeError("docs/CHECK-DEBT.md: no D1./D2./D3. rows matched")
+    out = [
+        (re.match(r"^\|\s*(D[123]\.\d+)", ln).group(1), ln)  # type: ignore[union-attr]
+        for ln in rows
+        if not _DISCHARGED.search(ln)
+    ]
+    if not out:
+        raise ProbeError("docs/CHECK-DEBT.md: every row reads discharged")
+    return out
+
+
+def _broker_order_scoped(home: Path, roster: list[str]) -> tuple[int, str]:
+    """Apply the module-scoping rule with one supplied roster vocabulary."""
+    if not roster:
+        raise ProbeError("empty roster — the scope vocabulary would select nothing")
+    files = _order_path_basenames(home)
+    verbs = [re.compile(r"\b" + re.escape(name) + r"\b") for name in roster]
+    picked = [
+        rid
+        for rid, line in _open_debt_rows(home)
+        if any(f in line for f in files) or any(p.search(line) for p in verbs)
+    ]
+    return len(picked), (
+        f"NOT A PERCENT — open ledger rows naming an order-path artefact; "
+        f"vocabulary {len(files)} module(s) {files} + {len(roster)} roster "
+        f"identifier(s); selected: {', '.join(picked) or 'NONE'}"
+    )
+
+
+def _p_broker_order_debt_rows_spec(home: Path) -> tuple[int, str]:
+    """Scoping vocabulary's roster half read from the FROZEN SPEC."""
+    return _broker_order_scoped(home, _spec_identifiers(home, "### broker-order"))
+
+
+def _p_broker_order_debt_rows_seam(home: Path) -> tuple[int, str]:
+    """Scoping vocabulary's roster half read from the SEAM CODE's restatement."""
+    tuples = _module_tuples(
+        home, "scripts/broker/broker_seam.py", ("ORDER_PORT_VERBS", "ORDER_EVENTS")
+    )
+    roster = list(tuples["ORDER_PORT_VERBS"]) + list(tuples["ORDER_EVENTS"])
+    return _broker_order_scoped(home, roster)
 
 
 _SEAM_TUPLES = (
@@ -534,8 +706,10 @@ PROBES = {
     "seam_declared_total": _p_seam_declared_total,
     "spec_plus_flagged_additions": _p_spec_plus_flagged_additions,
     "order_path_anchor_files": _p_order_path_anchor_files,
-    "broker_order_percent_spec": _p_broker_order_percent_spec,
-    "broker_order_percent_seam": _p_broker_order_percent_seam,
+    "broker_order_coverage_spec": _p_broker_order_coverage_spec,
+    "broker_order_coverage_seam": _p_broker_order_coverage_seam,
+    "broker_order_debt_rows_spec": _p_broker_order_debt_rows_spec,
+    "broker_order_debt_rows_seam": _p_broker_order_debt_rows_seam,
 }
 
 
