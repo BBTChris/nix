@@ -262,6 +262,54 @@ PRIVILEGE = "user"
 INTERACTIVE = False
 DISRUPTIVE = False
 
+# --- ARC 025 orchestration declarations (read statically, never imported) ---
+#: Nothing must run before this gate. It reads source and imports the published
+#: types under the SYSTEM interpreter — it never touches `.venv`, so unlike its
+#: sibling it does not depend on `check_venv`. Verified rather than assumed:
+#: this module contains no `.venv` path and no venv subprocess.
+DEPENDS_ON: tuple[str, ...] = ()
+#: ARM 4 IS WHY THIS IS NOT EMPTY, and the claim is about the ENGINE's process,
+#: not about a file. `engine._run_block` runs a parallel block's members in a
+#: `ThreadPoolExecutor` — one interpreter, shared globals — and `_arm4` appends
+#: to `sys.path` and `importlib.import_module`s every datafeed module into that
+#: interpreter, where the modules stay resident for every check that runs
+#: afterwards. Two checks importing subject modules concurrently race on
+#: `sys.modules` and on each other's `sys.path` view, and `loader.py`'s own
+#: docstring records that its `sys.path` entry is never removed for exactly this
+#: reason. A gate that says "I read files only" while mutating the interpreter
+#: every other gate is running in would be a false declaration, which is the
+#: D2.27 residual — disjointness is proven over declarations — one level down.
+RESOURCES: tuple[str, ...] = ("interpreter:sys.modules", "interpreter:sys.path")
+#: No subprocess, no socket, no sleep, no timeout constant anywhere in this
+#: module: the runtime is dominated by an AST walk over the scan roots, i.e. by
+#: WORK. There is therefore no bound to derive `EXPECTED_S` from, and inventing
+#: one from an observed run is what §4.4 forbids — so it is not declared.
+TIME_BOUND = False
+CORRECTABLE = False
+NON_CORRECTABLE_REASON = (
+    "the subject is broker-datafeed SOURCE on the §2A capture path. Every "
+    "defect this gate reports is closed by a code change carrying a design "
+    "decision the engine cannot make — which guard polarity is correct, which "
+    "datafeed event a revision should be declared as, whether a published type "
+    "should be frozen or redesigned. An engine that wrote the seal guard would "
+    "then be grading code it authored, which is a vacuous pass by construction "
+    "(§4.3), and it would be writing on the broker path §4.3's non-correctable "
+    "class names"
+)
+#: The artifacts this gate DRIVES, not merely reads. Held as a literal because
+#: `declarations.py` reads it by AST and cannot evaluate a computed expression —
+#: which makes it a restatement of a scope this module goes to some length never
+#: to type. That restatement is closed MECHANICALLY rather than by discipline:
+#: `_subjects_defect` below compares this tuple against the scope actually
+#: derived on every run and FAILS on divergence, so a datafeed module written
+#: tomorrow reddens this gate until it is declared. Doctrine B.7's pattern —
+#: two statements of one fact, with a machine reading both.
+SUBJECTS: tuple[str, ...] = (
+    "scripts/broker/broker_seam.py",
+    "scripts/broker/broker_datafeed_ibkr.py",
+    "scripts/broker/ibkr_mapping.py",
+)
+
 NAME = "check_datafeed_bar_seal"
 
 SCAN_ROOTS: tuple[str, ...] = ("scripts",)
@@ -1246,6 +1294,53 @@ def _surface(home: Path, roster: Roster) -> Surface:
     )
 
 
+def _subjects_defect(mods: list[str]) -> list[tuple[str, str]]:
+    """`SUBJECTS` must equal the scope this run actually derived.
+
+    `SUBJECTS` feeds `check_artifact_gate_coverage`, whose own docstring bounds
+    what it can prove: that a check NAMES an artifact, which is strictly weaker
+    than that a check DRIVES it. Here the two are made the same statement. The
+    declaration is a literal because the AST reader cannot evaluate anything
+    else (`nix_check_contract.md` §4.4), and a literal file list inside THIS
+    gate is precisely the typed
+    scope `debug.md` §8 failure mode #14 is about — so it is not left to be
+    right, it is compared against the derived scope on every run.
+
+    Both directions are defects and they are different defects. A derived module
+    missing from `SUBJECTS` is coverage this gate is credited with and does not
+    have; a `SUBJECTS` entry the derivation no longer returns is coverage
+    claimed over a file that has left the gate's scope.
+    """
+    declared, derived = set(SUBJECTS), set(mods)
+    site = "checks/check_datafeed_bar_seal.py:SUBJECTS"
+    out: list[tuple[str, str]] = []
+    undeclared = sorted(derived - declared)
+    if undeclared:
+        out.append(
+            (
+                site,
+                (
+                    f"the derived datafeed scope contains {undeclared}, which "
+                    f"SUBJECTS does not declare — check_artifact_gate_coverage "
+                    f"would report these as uncovered while this gate drives them"
+                ),
+            )
+        )
+    stale = sorted(declared - derived)
+    if stale:
+        out.append(
+            (
+                site,
+                (
+                    f"SUBJECTS declares {stale}, which this run's derivation "
+                    f"did not return — coverage is claimed over a file no "
+                    f"longer in this gate's scope"
+                ),
+            )
+        )
+    return out
+
+
 def _evidence(roster: Roster, surface: Surface, a4_notes: list[str]) -> str:
     """Everything the run actually measured, printed whether it passed or not."""
     lines = [
@@ -1270,9 +1365,15 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
         return _cannot(f"{roster.rel} declares no {EVENTS_CONST} (§7.12 cond. 5)")
 
     surface = _surface(home, roster)
-    classes = _declared_classes(home, _datafeed_modules(home, roster)[0])
+    mods = _datafeed_modules(home, roster)[0]
+    classes = _declared_classes(home, mods)
     a4_defects, a4_notes = _arm4(home, surface.published, classes)
-    defects = _arm1(surface.published, classes) + _arm23(surface.stores) + a4_defects
+    defects = (
+        _arm1(surface.published, classes)
+        + _arm23(surface.stores)
+        + a4_defects
+        + _subjects_defect(mods)
+    )
     evidence = _evidence(roster, surface, a4_notes)
 
     if defects:
@@ -1294,12 +1395,20 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
     return CheckResult(name=NAME, status=Status.PASS, evidence=evidence)
 
 
+# Deliberately duplicated across every checks/check_*.py: the check
+# contract (§4.2) requires each module be independently runnable, so this
+# block cannot be factored into a shared helper without breaking that.
 # pylint: disable=duplicate-code
 if __name__ == "__main__":
     import sys as _sys
 
-    from nixverify.contract import exit_code_for, validate_result
-
+    # `--print-scope-count` is NOT an actuation verb and predates the flag
+    # surface: it is the source `derived_claims.json:datafeed_scope_files`
+    # reads, and it is what keeps this gate's scope derivation and its
+    # sibling's from drifting apart. It is intercepted before
+    # `parse_actuation` because an argparse surface that did not know it
+    # would reject it, and silently losing this entry point would blind the
+    # one cross-check that pairs the two datafeed gates.
     if len(_sys.argv) > 1 and _sys.argv[1] == "--print-scope-count":
         _HOME = (
             Path(_sys.argv[2])
@@ -1310,15 +1419,12 @@ if __name__ == "__main__":
         print(len(_datafeed_modules(_HOME, _R)[0]) - 1 if _R else 0)
         _sys.exit(0)
 
-    HOME = (
-        Path(_sys.argv[1])
-        if len(_sys.argv) > 1
-        else Path(__file__).resolve().parent.parent
+    from nixverify.actuation import standalone_main
+
+    _sys.exit(
+        standalone_main(
+            Path(__file__).resolve(),
+            run,
+            NAME,
+        )
     )
-    OUTCOME = validate_result(
-        run(Mode.VERIFY, Context(nix_home=HOME, mode=Mode.VERIFY))
-    )
-    print(f"{OUTCOME.status.value}: {OUTCOME.evidence or OUTCOME.detail}")
-    if OUTCOME.detail and OUTCOME.evidence:
-        print(f"  detail: {OUTCOME.detail}")
-    _sys.exit(exit_code_for(OUTCOME.status))

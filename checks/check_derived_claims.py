@@ -164,6 +164,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import os
 import re
 import subprocess  # nosec B404 - fixed argv, shell=False, registry is a repo file
 import sys
@@ -203,9 +204,56 @@ DISRUPTIVE = False
 
 NAME = "check_derived_claims"
 
+# --- ARC 025 orchestration declarations (read statically, never imported) ---
+#: DEPENDS ON THE VENV and cannot repair it: the `pytest_collector` source shells
+#: to `{venv_python} -m pytest --collect-only`, and with no venv that claim's
+#: only externally-implemented source disappears and the claim degrades to NOT
+#: MEASURED. That degradation is a coverage defect, and ARC 025 measured its
+#: cousin (the FORCE_COLOR defect below) doing exactly this, so an instrument
+#: whose coverage is set by the box's state rather than by its subject is
+#: something this gate must be ordered out of, not shrug at.
+DEPENDS_ON: tuple[str, ...] = ("check_venv",)
+#: Every measurement is a SUBPROCESS — probes re-enter this file, sources shell
+#: out, demonstrations re-execute other checks — so nothing is imported into the
+#: engine's interpreter and there is no `interpreter:*` claim. `venv` is claimed
+#: because the pytest collector runs the venv's own interpreter; the collection
+#: is read-only (`-p no:cacheprovider` writes no cache) but a check MUTATING the
+#: venv concurrently would change what this gate collects mid-run, which is
+#: exactly the disjointness question `check_python_deps` claims `venv` for.
+RESOURCES: tuple[str, ...] = ("venv",)
+#: NOT time-bound, and EXPECTED_S is deliberately NOT declared. The honest bound
+#: is `_TIMEOUT` multiplied by the number of sources and demonstrations, and that
+#: number lives in `derived_claims.json`, which this gate reads at RUN time — so
+#: no literal can state it and `declarations.py` cannot evaluate the expression
+#: that could (`nix_check_contract.md` §4.4's named weakness). A literal here
+#: would be right on the day
+#: it was typed and silently wrong on every later edit of the registry, which is
+#: `debug.md` §7.4's moving anchor pointed at a declaration. An absent EXPECTED_S
+#: is read as `None`, never as zero.
+TIME_BOUND = False
+CORRECTABLE = False
+NON_CORRECTABLE_REASON = (
+    "every defect this gate reports is two sources disagreeing about one "
+    "number, and the gate cannot know which side is right — that is the whole "
+    "reason a claim carries two independently-derived sources. The only "
+    "'repair' available is to overwrite one of them, and the stated side is "
+    "usually a figure banked in `docs/CHECK-DEBT.md` or in an arc record, "
+    "which `CLAUDE.md` directive 6 forbids rewriting. An engine that silenced "
+    "a disagreement by editing the document under measurement would destroy "
+    "the evidence at the moment the evidence matters (doctrine A.2)"
+)
+#: The registry this gate re-derives. Every defect it reports is sited at
+#: `derived_claims.json:<claim id>`, so this is the artifact it measures rather
+#: than merely reads. The files each claim names are data inside that registry
+#: and cannot be a literal here.
+SUBJECTS: tuple[str, ...] = ("checks/derived_claims.json",)
+
 REGISTRY = "derived_claims.json"
 _INT_ONLY = re.compile(r"^\s*(-?\d+)\s*$")
 _TIMEOUT = 300
+
+#: SGR/CSI escape sequences. See `_child_env` for why this exists as well.
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 
 class ProbeError(RuntimeError):
@@ -742,23 +790,129 @@ def _open_debt_rows(home: Path) -> list[tuple[str, str]]:
     return out
 
 
+#: A roster identifier immediately preceded by `<name>.` is an ATTRIBUTE of
+#: `<name>`, not the port verb. See `_roster_hit`.
+_QUALIFIER = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\.$")
+
+
+def _order_path_owners(home: Path) -> set[str]:
+    """Receiver names a roster verb may legitimately hang off: order-path module
+    basenames (without `.py`) and the classes those modules declare."""
+    rel = "checks/check_order_path_bans.py"
+    dirs = _module_tuples(home, rel, ("ORDER_PATH_DIRS",))["ORDER_PATH_DIRS"]
+    owners: set[str] = set()
+    for directory in dirs:
+        for path in (home / directory).rglob("*.py"):
+            if not path.is_file() or "__pycache__" in path.parts:
+                continue
+            owners.add(path.stem)
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except OSError, SyntaxError:
+                continue
+            owners |= {
+                node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)
+            }
+    return owners
+
+
+def _roster_hit(text: str, roster: list[str], owners: set[str]) -> bool:
+    """True when `text` names an order roster identifier AS AN ORDER VERB.
+
+    ARC 025 / C4, THE QUALIFIED-IDENTIFIER SUBTRACTION, and it is the D2.19
+    principle applied to the roster half instead of to the basename half: a name
+    attributes to a library only when it is DISTINCTIVE to that library, and a
+    name qualified by a receiver that owns no order-path code is not.
+
+    MEASURED INSTANCE, which is why this exists rather than being reasoned into
+    place: D1.41's entire subject is two Gateway gates dialling one endpoint. It
+    names no order artefact and no order verb — it was selected on the single
+    word `connect` inside the phrase `socket.connect`, the name of the spy that
+    took the measurement. `\\bconnect\\b` matches there because `.` is a word
+    boundary. `socket` owns no order-path module and no order-path class, so the
+    hit is discarded; `IBKRBrokerOrder.disconnect()` and `broker_order_ibkr.flatten`
+    survive, because those receivers do.
+    """
+    for name in roster:
+        for match in re.finditer(r"\b" + re.escape(name) + r"\b", text):
+            qualifier = _QUALIFIER.search(text[: match.start()])
+            if qualifier is None or qualifier.group(1) in owners:
+                return True
+    return False
+
+
+def _row_cells(line: str) -> list[str]:
+    """A ledger row's cells. `[0]` is the id, `[1]` is the row's own subject."""
+    return [cell.strip() for cell in line.split("|")][1:]
+
+
+def _owned_by_its_instrument(
+    rid: str, line: str, on_path: list[str], roster: list[str], owners: set[str]
+) -> bool:
+    """Is this row's OWNING artefact an order-path one?
+
+    ARC 025 / C4. Applied to D3 rows only, and the restriction is read out of the
+    ledger's OWN column headers rather than chosen: D3 is titled *"Instruments
+    whose can-fail has never been demonstrated"* and its header row is
+    `# | instrument | status | owner`, so **a D3 row's subject is declared by the
+    ledger to be an INSTRUMENT**. Its `status` cell is evidence ABOUT that
+    instrument, and the artefacts a piece of can-fail evidence recites are the
+    instrument's test material, not the row's owner.
+
+    D1 (`# | subject | changed in | owner`) and D2 (`# | doctrine | gap | owner`)
+    are deliberately NOT restricted this way, and the difference is structural
+    rather than convenient: a D1 subject is a DEFECT DESCRIPTION and a D2
+    doctrine cell is a CITATION, so in both tables the module attribution
+    legitimately lives in the body. Measured: restricting D1/D2 to their first
+    cell drops seven rows that are genuinely order-side (D1.19, D1.22, D1.28,
+    D1.29, D1.30, D1.31, D1.38 among them), which is doctrine B.4's forbidden
+    direction — narrowing a rule's scope until the number looks better.
+
+    MEASURED INSTANCE: D3.20's subject is *"the ten checks NOT retrofitted in ARC
+    024..."*. It was selected as broker-order depth because its status cell
+    recites another gate's plant — *"`import tenacity` planted into the real
+    `broker_order_ibkr.py`"*. The row is owed against a CHECK. D3.8 survives:
+    its instrument cell is *"`RecordingSink.sequence` — the cross-stream ordering
+    observable in `scripts/broker/broker_seam.py`"*, which names a module on the
+    order path.
+
+    `on_path` is the RAW order-path module set, before D2.19's
+    datafeed-distinctiveness subtraction, and that is deliberate: this test asks
+    *"is the row's instrument a broker-path artefact at all"*, not *"which §2A
+    library does this basename attribute to"*. D3.8's instrument is in
+    `broker_seam.py`, which the distinctiveness rule excludes from the ATTRIBUTION
+    vocabulary and which is unarguably on the order path.
+    """
+    if not rid.startswith("D3"):
+        return True
+    cells = _row_cells(line)
+    subject = cells[1] if len(cells) > 1 else ""
+    return any(name in subject for name in on_path) or _roster_hit(
+        subject, roster, owners
+    )
+
+
 def _broker_order_scoped(home: Path, roster: list[str]) -> tuple[int, str]:
     """Apply the module-scoping rule with one supplied roster vocabulary."""
     if not roster:
         raise ProbeError("empty roster — the scope vocabulary would select nothing")
     files, excluded = _order_path_basenames(home)
-    verbs = [re.compile(r"\b" + re.escape(name) + r"\b") for name in roster]
+    owners = _order_path_owners(home)
+    on_path = sorted(set(files) | set(excluded))
     picked = [
         rid
         for rid, line in _open_debt_rows(home)
-        if any(f in line for f in files) or any(p.search(line) for p in verbs)
+        if (any(f in line for f in files) or _roster_hit(line, roster, owners))
+        and _owned_by_its_instrument(rid, line, on_path, roster, owners)
     ]
     return len(picked), (
-        f"NOT A PERCENT — open ledger rows naming an order-path artefact; "
+        f"NOT A PERCENT — open ledger rows OWNED BY an order-path artefact; "
         f"vocabulary {len(files)} order-distinctive module(s) {files} "
         f"(D2.19: {len(excluded)} datafeed-implementing module(s) {excluded or '[]'} "
         f"on the order path are NOT vocabulary) + {len(roster)} roster "
-        f"identifier(s); selected: {', '.join(picked) or 'NONE'}"
+        f"identifier(s), qualified hits subtracted against {len(owners)} "
+        f"order-path owner name(s) (C4); D3 rows attributed by their INSTRUMENT "
+        f"cell; selected: {', '.join(picked) or 'NONE'}"
     )
 
 
@@ -1020,7 +1174,50 @@ def _argv_for(source: dict, home: Path) -> list[str]:
     return out
 
 
+def _child_env() -> dict[str, str]:
+    """The environment every source subprocess runs in — colour NEUTRALISED.
+
+    ARC 025 / C4b. MEASURED DEFECT, not a hypothetical, and it had been live for
+    an arc: `pytest_collected_tests`'s collector source anchors its extraction at
+    `(?m)^(\\d+) tests? collected`, and pytest emits SGR sequences into a
+    CAPTURED pipe whenever `FORCE_COLOR` is set in the ambient environment. The
+    Claude Code harness exports `FORCE_COLOR=3`, so the summary line arrives as
+    `ESC[32mESC[32m441 tests collected...` — no digit at column 0 — the
+    extraction fails, and the claim silently degrades to NOT MEASURED. Measured
+    verdict either side of one environment variable, nothing else changed:
+    `13/13 claim(s) compared` exit 0 with it unset, `12/13` and CANNOT_MEASURE
+    with it set. `docs/CHECK-CONTRACT-AMENDMENTS.md` item 8 records the
+    discovery and owes the repair to this arc.
+
+    **AN INSTRUMENT WHOSE COVERAGE IS A FUNCTION OF THE INVOKING SHELL IS NOT
+    MEASURING ITS SUBJECT.** It failed in the safe direction — cannot-measure,
+    never a wrong number — which makes it a coverage defect rather than a
+    correctness one, and coverage defects are the ones that go unnoticed.
+
+    The repair is HERE, at the source runner, and not in the one regex that
+    happened to break. Widening that regex would have fixed one claim and left
+    the next source someone registers exposed to the same ambient state; every
+    source in this registry produces a NUMBER, so colour is contamination in all
+    of them. `NO_COLOR` and `TERM=dumb` are the two conventions tools honour;
+    `FORCE_COLOR` and `CLICOLOR_FORCE` are removed rather than overridden
+    because both are truthy for any value including `"0"` in some tools.
+
+    `_extract` additionally strips ANSI from what it reads, which is the second
+    half rather than a duplicate of the first: this half stops the environment
+    causing colour, that half survives a tool that colours for its own reasons
+    (a config file, a `--color=always` someone registers in an argv). Neither
+    alone closes the defect for a source nobody has written yet.
+    """
+    env = dict(os.environ)
+    env.pop("FORCE_COLOR", None)
+    env.pop("CLICOLOR_FORCE", None)
+    env["NO_COLOR"] = "1"
+    env["TERM"] = "dumb"
+    return env
+
+
 def _extract(source: dict, stdout: str) -> int:
+    stdout = _ANSI.sub("", stdout)
     if source.get("count_lines"):
         return len([ln for ln in stdout.splitlines() if ln.strip()])
     pattern = source.get("extract")
@@ -1041,6 +1238,7 @@ def _run_source(source: dict, home: Path) -> tuple[int | None, str]:
             timeout=_TIMEOUT,
             check=False,
             cwd=str(home),
+            env=_child_env(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return None, f"did not run: {exc!r}"
@@ -1161,6 +1359,7 @@ def _demo_output(demo: dict, home: Path) -> tuple[str | None, str]:
             timeout=_TIMEOUT,
             check=False,
             cwd=str(home),
+            env=_child_env(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return None, f"re-execution did not run: {exc!r}"
@@ -1170,7 +1369,11 @@ def _demo_output(demo: dict, home: Path) -> tuple[str | None, str]:
             None,
             f"re-execution exited {proc.returncode}, outside accept_exit {accept}",
         )
-    return proc.stdout + proc.stderr, ""
+    # ANSI stripped for the same reason `_extract` strips it: the `observe`
+    # patterns are anchored to the re-executed check's own words, and a colour
+    # sequence landing inside one turns a two-state observation into
+    # INDETERMINATE — a cannot-measure caused by the shell, not the subject.
+    return _ANSI.sub("", proc.stdout + proc.stderr), ""
 
 
 def _demo_observed(demo: dict, output: str) -> tuple[str | None, str]:
@@ -1363,16 +1566,28 @@ def _probe_main(argv: list[str]) -> int:
 # trailing disable comment here (verified empirically, pylint v4.0.6).
 # pylint: disable=duplicate-code
 if __name__ == "__main__":
+    # `--probe NAME --nix-home PATH` is this gate re-entering itself as one
+    # source's runner ({self} in derived_claims.json). Not an actuation verb,
+    # and intercepted before `parse_actuation`, which would reject it.
     if "--probe" in sys.argv[1:]:
         sys.exit(_probe_main(sys.argv[1:]))
 
-    from nixverify.contract import exit_code_for, validate_result
+    from nixverify.actuation import standalone_main
 
-    HOME = Path(__file__).resolve().parent.parent
-    OUTCOME = validate_result(
-        run(Mode.VERIFY, Context(nix_home=HOME, mode=Mode.VERIFY))
+    # THIS ALSO DISCHARGES CHECK-DEBT D2.23, and it is worth naming because the
+    # row is the reason this gate's own can-fail nearly measured the wrong tree.
+    # The previous block resolved `HOME` from `__file__` and read `sys.argv` only
+    # for `--probe`, so any other argument was discarded WITHOUT A WORD: running
+    # `check_derived_claims.py <scratch>` from this worktree reported a serene
+    # green over a defect planted in the scratch tree, because it had measured
+    # this one. `standalone_main` takes the home as a positional like every
+    # sibling gate, and `parse_actuation` REFUSES an argument it does not
+    # recognise instead of ignoring it — which is the stricter of the two
+    # discharges D2.23 offers, and the one doctrine C.7 asks for.
+    sys.exit(
+        standalone_main(
+            Path(__file__).resolve(),
+            run,
+            NAME,
+        )
     )
-    print(f"{OUTCOME.status.value}: {OUTCOME.evidence or OUTCOME.detail}")
-    if OUTCOME.detail and OUTCOME.evidence:
-        print(f"  detail: {OUTCOME.detail}")
-    sys.exit(exit_code_for(OUTCOME.status))

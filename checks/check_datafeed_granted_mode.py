@@ -350,6 +350,55 @@ PRIVILEGE = "user"
 INTERACTIVE = False
 DISRUPTIVE = False
 
+# --- ARC 025 orchestration declarations (read statically, never imported) ---
+#: DEPENDS ON THE VENV, and unlike `check_python_deps` this gate cannot repair
+#: it. `_drive` refuses to run without `.venv/bin/python3` and every behavioural
+#: arm — A2's vendor-wheel read and the whole subscribe/grant/re-subscribe
+#: lifecycle — is inside that subprocess, so an absent venv silently reduces
+#: this gate to its two representational arms. `check_python_deps` declares no
+#: dependency because the venv is ITS subject and it repairs what it needs; here
+#: the venv is the INSTRUMENT, and an instrument this gate cannot fix must be
+#: established before it runs or its coverage is set by the box's state.
+DEPENDS_ON: tuple[str, ...] = ("check_venv",)
+#: Reads the venv interpreter (never writes it) and imports the adapter only in
+#: a SUBPROCESS — deliberately, so vendor imports do not stay resident in the
+#: engine's interpreter for every later check. That is why this gate makes no
+#: `interpreter:*` claim and its sibling does. `sys.settrace` is likewise set
+#: inside the probe process, not in the engine's, so it is not a claim on the
+#: shared interpreter either.
+RESOURCES: tuple[str, ...] = ("venv",)
+#: Not time-bound: the runtime is dominated by constructing and driving the
+#: subjects, not by waiting. `EXPECTED_S` is declared anyway and is derived from
+#: this module's OWN bound rather than from a stopwatch (§4.4 forbids the
+#: stopwatch): `_drive`'s `subprocess.run(..., timeout=120)`, and `run()` reaches
+#: `_drive` twice on the worst path — once for `_vendor_default`, once for the
+#: lifecycle — so the bound this gate can take is 240 s. It is a CEILING, and a
+#: ceiling that cannot move under load is the point; the observed 0.47 s is a
+#: moving anchor and is not what is declared here.
+TIME_BOUND = False
+EXPECTED_S = 240.0
+CORRECTABLE = False
+NON_CORRECTABLE_REASON = (
+    "the subject is the broker-datafeed adapter's SOURCE and the mode it "
+    "reports. A repair here is a code change on the §2A datafeed path, and the "
+    "one repair an engine could plausibly automate — writing the sentinel back "
+    "into subscribe() — is the exact line whose deletion is this gate's own "
+    "banked plant, so the engine would be authoring the code it then grades "
+    "(§4.3, a vacuous pass by construction). Arm A2 additionally reads the "
+    "PINNED vendor wheel; 'correcting' a vendor default would mean mutating an "
+    "installed distribution to satisfy an assertion about it"
+)
+#: The artifacts this gate DRIVES. A literal because `declarations.py` reads it
+#: by AST (§4.4) — and a literal file list in a gate whose docstring insists
+#: there is no datafeed file list in this module is a restatement, so it is
+#: closed mechanically: `_subjects_defect` compares it against the scope this
+#: run derived and FAILS on divergence (doctrine B.7).
+SUBJECTS: tuple[str, ...] = (
+    "scripts/broker/broker_seam.py",
+    "scripts/broker/broker_datafeed_ibkr.py",
+    "scripts/broker/ibkr_mapping.py",
+)
+
 NAME = "check_datafeed_granted_mode"
 
 # --------------------------------------------------------------------------
@@ -1144,6 +1193,47 @@ def _verdict(
     return CheckResult(name=NAME, status=Status.PASS, evidence=evidence)
 
 
+def _subjects_defect(roster_rel: str, subs: set[str]) -> list[tuple[str, str]]:
+    """`SUBJECTS` must equal the scope this run actually derived.
+
+    The derived set is the roster-declaring module — arm A1 reads
+    `MarketDataMode` out of it and reddens if the sentinel is aliased away, so
+    it is measured, not merely opened — plus every module holding a subject
+    class. Divergence in either direction is a defect and they are different
+    defects: an underclaim credits `check_artifact_gate_coverage` with nothing
+    for a file this gate drives; an overclaim credits it with coverage over a
+    file this gate no longer reaches.
+    """
+    declared, derived = set(SUBJECTS), {roster_rel} | subs
+    site = "checks/check_datafeed_granted_mode.py:SUBJECTS"
+    out: list[tuple[str, str]] = []
+    undeclared = sorted(derived - declared)
+    if undeclared:
+        out.append(
+            (
+                site,
+                (
+                    f"the derived scope contains {undeclared}, which SUBJECTS "
+                    f"does not declare — check_artifact_gate_coverage would "
+                    f"report these as uncovered while this gate drives them"
+                ),
+            )
+        )
+    stale = sorted(declared - derived)
+    if stale:
+        out.append(
+            (
+                site,
+                (
+                    f"SUBJECTS declares {stale}, which this run's derivation "
+                    f"did not return — coverage is claimed over a file no "
+                    f"longer in this gate's scope"
+                ),
+            )
+        )
+    return out
+
+
 def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argument
     """Verdict. PASS requires the port's mode verb to have been DRIVEN through a
     full subscribe/grant/re-subscribe lifecycle on a real subject, and the
@@ -1183,7 +1273,11 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
     drive = _behavioural(
         home, subjects, members, (mode_verb, _datafeed_events(home, roster))
     )
-    defects += static_defects + drive.defects
+    defects += (
+        static_defects
+        + drive.defects
+        + _subjects_defect(roster.rel, {s.rel for s in subjects})
+    )
     notes += static_notes + drive.notes
     notes.append(
         "NON-VACUITY: driven "
@@ -1801,10 +1895,19 @@ def _probe_main(raw: str) -> int:
     return 0
 
 
+# Deliberately duplicated across every checks/check_*.py: the check
+# contract (§4.2) requires each module be independently runnable, so this
+# block cannot be factored into a shared helper without breaking that.
 # pylint: disable=duplicate-code
 if __name__ == "__main__":
-    from nixverify.contract import exit_code_for, validate_result
-
+    # Both of these predate the flag surface, neither is an actuation verb, and
+    # both are intercepted BEFORE `parse_actuation` because an argparse surface
+    # that did not know them would reject them. `--drive` is this gate's own
+    # probe re-entry (the subprocess that owns every behavioural arm);
+    # `--print-scope-count` is one source of `derived_claims.json`'s
+    # `datafeed_scope_files`, the cross-check that keeps this gate's scope
+    # derivation and `check_datafeed_bar_seal`'s from drifting apart. Losing
+    # either to the retrofit would blind a live instrument silently.
     if len(sys.argv) > 2 and sys.argv[1] == "--drive":
         sys.exit(_probe_main(sys.argv[2]))
 
@@ -1822,15 +1925,12 @@ if __name__ == "__main__":
         print(len({s.rel for s in _scope(_HOME, _R)[0]}) if _R else 0)
         sys.exit(0)
 
-    HOME = (
-        Path(sys.argv[1])
-        if len(sys.argv) > 1
-        else Path(__file__).resolve().parent.parent
+    from nixverify.actuation import standalone_main
+
+    sys.exit(
+        standalone_main(
+            Path(__file__).resolve(),
+            run,
+            NAME,
+        )
     )
-    OUTCOME = validate_result(
-        run(Mode.VERIFY, Context(nix_home=HOME, mode=Mode.VERIFY))
-    )
-    print(f"{OUTCOME.status.value}: {OUTCOME.evidence or OUTCOME.detail}")
-    if OUTCOME.detail and OUTCOME.evidence:
-        print(f"  detail: {OUTCOME.detail}")
-    sys.exit(exit_code_for(OUTCOME.status))
