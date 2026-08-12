@@ -19,7 +19,7 @@ Nix is BlackBox Trading LLC's autonomous **futures** trading platform. Greenfiel
 
 **Derivation invariant (holds once rules exist):** when a source spec version-bumps, the derived rule is regenerated in the same arc. A derived rule may narrow or operationalize its spec; it may never contradict it.
 
-Every arc, on completion, MUST: (1) append its summary to the end of `~/nix/sessions/SESSION.md`, (2) overwrite (not append) `~/nix/downloads/RESULTS.md` with that arc's full results. Do not report "**** ARC completed ****" until both are verified done — cat both files as the last action before reporting completion, and paste confirmation of their state into the chat response.
+Every arc, on completion, MUST: (1) append its summary to the end of `~/nix/sessions/SESSION.md`, (2) overwrite (not append) `~/nix/downloads/RESULTS.md` with that arc's full results, (3) **prove the arc is durable: `HEAD` advanced, `HEAD`'s tree contains the arc's paths (`git ls-tree -r HEAD --name-only`), and `git status --short` is empty for them.** Do not report "**** ARC completed ****" until all three are verified done — cat both files and paste the git evidence as the last action before reporting completion, and paste confirmation of their state into the chat response. **(1) and (2) are satisfiable by files that exist only in a working tree; an mtime proves a file was written, not that the work survives a `git checkout` — ARC 024 passed this gate with all 30 of its paths staged and never committed.** Mechanics, the exemption, and the ceiling: `docs/nix_check_contract.md` §16 (AMENDMENT 4).
 
 ## Specs — read on demand (`~/nix/docs/`)
 
@@ -33,7 +33,7 @@ Not auto-loaded. Read the ones an arc touches; they cost nothing until opened. F
 | `directory_structure.md` | canonical topology (v1.3.0) | adding artifacts or regenerating `directory-layout.md` |
 | `elements_v2.md` | **non-authoritative ops input** (v2.1) | provisioning, `install.sh`, credential encryption, `verify.py`, versioning, backup/DR. Risk spec wins wherever they meet |
 | `VERIFY-AND-CHECKS.md` | **doctrine — external, inherited; outranks `nix_check_contract.md`** | any work on a check or gate. Parts C and D are binding rules; Part A/B *inventory* describes the predecessor system's tree, not Nix's — inherit the lessons, never the inventory (see `nix_check_contract.md` §15.4) |
-| `nix_check_contract.md` | **derived implementation spec** (v1.2.0) — subordinate to `VERIFY-AND-CHECKS.md` | any work on `install.sh`, `bootstrap.sh`, `scripts/verify.py`, or `checks/check_*.py`. §15 is the doctrine conformance map: read it first when the two appear to disagree. Was itself named `VERIFY-AND-CHECKS.md` until ARC 010 |
+| `nix_check_contract.md` | **derived implementation spec** (v1.3.0) — subordinate to `VERIFY-AND-CHECKS.md` | any work on `install.sh`, `bootstrap.sh`, `scripts/verify.py`, or `checks/check_*.py`. §15 is the doctrine conformance map: read it first when the two appear to disagree. Was itself named `VERIFY-AND-CHECKS.md` until ARC 010 |
 | `CHECK-CONTRACT-AMENDMENTS.md` | **amendment ledger for the check contract — a RECORD, not an authority** | any change to check status, actuation, or the coverage trigger. `VERIFY-AND-CHECKS.md` is unversioned, external, and has no amendment mechanism: amendments land in `nix_check_contract.md` and are recorded here. Numbered independently of `SPEC-AMENDMENTS.md`, which amends the frozen *risk* spec |
 | `CHECK-DEBT.md` | ledger of owed-but-unwritten checks (doctrine A.4) | every arc that changes the environment: record the debt rather than blocking on it |
 | `dev_and_services_plan.md` | staging plan | vendor/account/stage questions: Stage 0–4 sequence, dev box, QuantVPS |
@@ -77,7 +77,7 @@ Not auto-loaded. Read the ones an arc touches; they cost nothing until opened. F
 
 ## Check contract (v2 — actuation)
 
-Amendments recorded in `docs/CHECK-CONTRACT-AMENDMENTS.md`; mechanics in `docs/nix_check_contract.md` v1.2.0.
+Amendments recorded in `docs/CHECK-CONTRACT-AMENDMENTS.md`; mechanics in `docs/nix_check_contract.md` v1.3.0.
 
 1. Every check verifies, corrects, installs, selected by flags — on the runner **and on the check's own CLI**. Default = measure-only; a flagless check never mutates.
 2. Correct/install is followed by an **independent** re-measurement: fresh process, verify-only, real effective state. A return value from the correcting path is not a verification. The verdict after a mutation is the re-verify's.

@@ -7,7 +7,7 @@ behaviour Nix implements that `VERIFY-AND-CHECKS.md` does not describe, or descr
 audience line names *Luna*, not Nix — it carries **no version number** and **no amendment
 mechanism**. There is nowhere inside it to put a Nix amendment, and editing another system's
 doctrine to make Nix's implementation look conformant is the inverse of measuring. Amendments are
-therefore **implemented in the derived spec `nix_check_contract.md`** (v1.2.0) and **recorded
+therefore **implemented in the derived spec `nix_check_contract.md`** (v1.3.0) and **recorded
 here**. The doctrine keeps its authority over everything it does say.
 
 ## Why this file exists rather than `SPEC-AMENDMENTS.md`
@@ -272,6 +272,79 @@ subject, and a gate binds **per subject, not once**. Binding this one is a named
 
 ---
 
+## AMENDMENT 4 — the close-out gate proves durability, not authorship
+
+| field | value |
+|---|---|
+| origin | **Operator finding, issued in ARC 025 close-out of ARC 024** |
+| implemented by | ARC 025, recorded in `nix_check_contract.md` §16 |
+| supersedes | nothing. `CLAUDE.md`'s write-back rule stands; this adds a third obligation to it |
+| status | rule recorded; the enforcing check is **owed** (see below) |
+
+### The counter-example is measured, and it is this project's own
+
+`CLAUDE.md` requires every arc to append `sessions/SESSION.md`, overwrite `downloads/RESULTS.md`,
+and `cat` both before reporting completion. **ARC 024 satisfied that gate completely and its entire
+output was outside history.**
+
+| | ARC 024 at self-reported completion |
+|---|---|
+| `SESSION.md` written, `RESULTS.md` written, both `cat`-ed | **yes — gate passed** |
+| `HEAD` | `2871bc6`, the **ARC 023** merge |
+| the arc's work | 30 paths, 5,019 insertions, **staged in the index, never committed** |
+| gate figures reported (`verify.py`, pytest, pre-commit, claims harness) | all taken against a tree that was **not history** |
+
+A `git reset` would have destroyed the arc and every measurement in its report would still have read
+as green. **The gate could not see this because nothing it checks is a property of the repository.**
+An mtime proves a file was written; it does not prove the work is durable.
+
+### What changed
+
+| | close-out obligation |
+|---|---|
+| old (`CLAUDE.md`) | append `SESSION.md`; overwrite `RESULTS.md`; `cat` both as the last action |
+| new (**+** `nix_check_contract.md` §16) | **and** show that `HEAD` advanced, that `HEAD`'s tree contains the arc's paths, and that `git status --short` is empty for them |
+
+**Shown, not asserted** — `git rev-parse HEAD` either side, `git ls-tree -r HEAD --name-only`, and
+`git status --short`. `ls` is not evidence: the index is not history and the working tree is not
+history. An arc that legitimately wrote nothing to the repository is exempt and **says so out loud**;
+a silent exemption is the defect wearing the exemption's name.
+
+### §16.2 — the figures are re-taken against the merged tree
+
+An arc's gate figures are evidence about a tree. If that tree never became history the figures
+describe nothing durable. After the merge the four harnesses re-run and the results are compared
+against what the arc reported. **A delta is a finding even when its cause is environmental** — *"the
+number moved and here is why"* is a result; *"the number did not move"* was the claim under test.
+
+Demonstrated on this very close-out: re-running `verify.py` against merged ARC 024 gave
+`10 passed | 1 failed | 2 cannot measure | 0 skipped | 1 guarded` against the arc's reported
+`11 passed | 1 failed | 1 cannot measure`. The extra cannot-measure was `check_derived_claims`
+dropping to 12/13 claims because its `pytest_collector` source extracts `(?m)^(\d+) tests? collected`
+and the harness shell exports `FORCE_COLOR=3`, so pytest prefixed the summary line with ANSI and the
+anchored `^` stopped matching. With `FORCE_COLOR` unset the merged tree reproduces the arc's figures
+exactly. **Environmental, not a merge regression — and worth having: the claim silently stops being
+compared in any colourised environment, and no arc would have learned that without §16.2.**
+
+### The ceiling on what this gate can prove — stated, not implied
+
+It proves the arc's paths are **in** history. It does not prove their **content** is what was
+measured: a path committed after a post-measurement edit satisfies all three obligations and carries
+different bytes. §16.2 is the compensating control and is weaker than it looks — it re-derives the
+figures, it does not prove byte identity with the measured tree. Nor does the gate prove the history
+is reachable by anyone else; a local commit satisfies §16.1 and dies with the disk, so where the
+target is a shared branch, durability means pushed and merged and the merge commit is the evidence.
+
+### The enforcing check is owed
+
+Every clause of §16.1 is mechanically checkable from `git` alone, which makes this rule owed a check
+under §1 as broadened by AMENDMENT 3. **None was written in this close-out** — the close-out's write
+scope was ARC 024's history and this amendment, and a gate on arc completion is arc-boundary
+machinery Nix does not have (§15.4 records that Nix has no `bank.sh`). Recorded rather than blocking,
+per §1.
+
+---
+
 ## Standing note for the architect
 
 Open items this ledger records and does not resolve (ARC 024 returned them to the operator):
@@ -283,3 +356,20 @@ Open items this ledger records and does not resolve (ARC 024 returned them to th
 3. **The non-correctable class** — ratify or narrow the three proposed members.
 4. **The safety interlock** — ratify.
 5. **`--optimize`** — propose-then-commit is implemented; overwrite-in-place was the alternative.
+
+Added by the ARC 025 close-out:
+
+6. **§16.1's three obligations** — ratify. The exemption clause in particular: an arc that wrote
+   nothing to the repository declares that and passes, and an exemption granted on an arc's own
+   say-so is a hole an arc can walk through by claiming it wrote nothing.
+7. **The §16 enforcing check is owed and unwritten**, and it is arc-boundary machinery Nix does not
+   have (§15.4: no `bank.sh`). Where should it live — a `checks/check_*.py` that reads `git`, a
+   pre-commit hook, or the runner?
+8. **`check_derived_claims`'s `pytest_collector` source is environment-fragile** — found by §16.2's
+   re-measurement, not by an arc. Its extract is anchored `(?m)^(\d+) tests? collected` and pytest
+   emits ANSI before the digits whenever `FORCE_COLOR` is set, so the claim degrades to
+   `NOT MEASURED` in any colourised shell. It fails in the safe direction — CANNOT_MEASURE naming
+   itself, never a wrong number — so this is a **coverage** defect, not a correctness one. Not
+   repaired in this close-out: the fix is a one-line source change, but a `CHECK-DEBT.md` row for it
+   moves `check_debt_open_items` 66 → 67 and that number is compared by the very gate in question.
+   Owed to ARC 025 proper as a paired change.

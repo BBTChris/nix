@@ -122,3 +122,27 @@ than relying on memory.
   Phase 0.6 claim that CLAUDE.md cites `debug.md` v1.1.0 in two places is **false
   against the file**. The only occurrences of "v1.1.0" in that row are the historical
   note ARC 018 added recording that it *used* to say v1.1.0.
+
+## 2026-08-12 — ARC 024 close-out — the write-back gate must prove durability
+
+- **The finding this entry exists for:** ARC 024 reported every gate green — `verify.py`, the
+  pytest suite, the pre-commit suite, the claims harness — wrote `SESSION.md` and `RESULTS.md`,
+  cat-ed both, and passed the write-back gate **with `HEAD` still on the ARC 023 merge**. All 30
+  paths, 5,019 insertions, were staged in the index and never committed. Every measurement in that
+  report was taken against a tree that was not history and would not have survived a `git reset`.
+- Amended the arc-completion rule above with a **third obligation**: `HEAD` advanced, `HEAD`'s tree
+  contains the arc's paths, and `git status --short` empty for them — shown with
+  `git rev-parse` / `git ls-tree` / `git status`, not with `ls`. The index is not history and the
+  working tree is not history.
+- Substance lives in `docs/nix_check_contract.md` **§16 (new), AMENDMENT 4**, recorded in
+  `docs/CHECK-CONTRACT-AMENDMENTS.md`; contract bumped **v1.2.0 → v1.3.0**. §16.2 requires the
+  arc's figures to be **re-taken against the merged tree** and any delta reported as a finding.
+  §16.3 states the ceiling out loud: it proves the paths are *in* history, never that their bytes
+  are the bytes that were measured, and a local commit satisfies it and dies with the disk.
+- **Why the rule went into CLAUDE.md and not only into the spec:** the write-back gate lives here.
+  Adding the durability clause to the derived spec while this file still said *"cat both files"*
+  would have left the weaker rule standing in the higher-authority document — the derivation
+  invariant two lines above, inverted.
+- The §16 gate is mechanically checkable and is therefore **owed a check** under §1 as broadened by
+  AMENDMENT 3. None written; recorded rather than blocking, and returned to the architect as open
+  items 6 and 7 in the amendment ledger's standing note.
