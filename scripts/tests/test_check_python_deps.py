@@ -1,8 +1,47 @@
-"""Pin conformance per nix_check_contract.md §7."""
+"""Pin conformance per nix_check_contract.md §7.
 
+--------------------------------------------------------------------------
+ARC 027 / A4 — THE REAL-SUBJECT PLANT THIS FILE DID NOT HAVE
+--------------------------------------------------------------------------
+Everything above the PLANT section below drives `evaluate()` on hand-built
+dictionaries, or drives `run()` against a `tmp_path` home holding a fake
+interpreter. Those are good tests of a pure function and of one CANNOT_MEASURE
+path, and they are not a can-fail of the gate: **not one of them ever changed
+`checks/pinned_deps.json`, the artifact `SUBJECTS` names.** `binding_census.py`
+measured the consequence over the whole committed suite on commit `2ef4585`:
+
+    check_python_deps                EXERCISED-NEVER-RED      CANNOT_MEASURE:1,PASS:8  |  -
+
+Eight PASSes and one CANNOT_MEASURE, and no red at all. The single
+CANNOT_MEASURE is `test_query_failure_is_cannot_measure_not_absent`, which
+proves the gate notices an ABSENT subject — check contract §10 is explicit that
+a property proven while its subject is unavailable is not proven, so that is not
+a can-fail either.
+
+CHECK-DEBT's ARC 022 census records this gate BOUND on a plant into the real
+pins file. That plant was taken **by hand** and banked in a results document;
+§0e requires a committed, runnable artifact and D2.30 is the row for the class.
+The PLANT section below is that artifact.
+
+**The venue is a scratch copy of the tree (doctrine C.8); the measured side is
+the REAL venv**, reached through a symlink, so the comparison the gate performs
+is between a planted declaration and this machine's actual installed set.
+
+RESIDUAL, stated rather than implied and unchanged since ARC 022: the plant
+moves the DECLARED half. The INSTALLED half has never been perturbed and cannot
+be here — `.venv` is shared with the canonical tree and with every sibling
+worktree, so uninstalling a package to prove a point would break whatever else
+is running. That is the same ownership problem CHECK-DEBT D3.12 records for
+`check_venv`. **CHECK-DEBT D3.28.**
+"""
+
+import hashlib
 import json
+import os
+import shutil
 import subprocess
 import sys
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest  # pylint: disable=import-error
@@ -182,3 +221,182 @@ def test_declares_disruptive_because_repair_swaps_the_order_placing_client() -> 
     check) is what keeps it inspectable at boot despite this (§8)."""
     loaded = load_check(CHECKS, "check_python_deps")
     assert loaded.disruptive is True
+
+
+# ===========================================================================
+# THE PLANT — ARC 027 / A4. See the module docstring for why it is here.
+#
+# §7.12, asked of this section: what would have to be true for it to pass while
+# measuring nothing?
+#
+#   1. The gate could be reading THIS worktree's pins file while wearing the
+#      scratch tree's name. `run()` resolves `checks_dir` from its own
+#      `__file__` and ignores `ctx.nix_home` — the trap CHECK-DEBT D2.23 records
+#      for `check_derived_claims`. CLOSED by driving the SCRATCH TREE'S OWN copy
+#      of the gate as a program, and by
+#      `test_the_real_pins_file_is_untouched_by_every_plant_here`.
+#   2. The gate could be failing for an unrelated reason and reaching exit 1
+#      through the same shared namespace. CLOSED: every plant asserts the
+#      package name and the version arithmetic in the message, never the code.
+#   3. A plant could silently trigger a repair, which would make the test a
+#      `pip install` rather than a measurement. CLOSED by
+#      `test_verify_mode_never_mutates_the_shared_venv`, which reads the real
+#      venv's installed set either side of the whole plant sequence.
+# ===========================================================================
+
+VENV_PYTHON = REPO / ".venv" / "bin" / "python"
+PINS = "checks/pinned_deps.json"
+
+
+@pytest.fixture(name="scratch", scope="module")
+def _scratch(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A copy of the tree with `.venv` SYMLINKED, so the measured side is real.
+
+    `state/` is excluded deliberately: it is a symlink back to the canonical
+    tree and `copytree` would follow it into live operational data.
+    """
+    home = tmp_path_factory.mktemp("python_deps") / "nix"
+    shutil.copytree(
+        REPO,
+        home,
+        ignore=shutil.ignore_patterns(
+            ".git", "__pycache__", ".venv", "*.pyc", "state", "graphify-out"
+        ),
+    )
+    (home / ".venv").symlink_to(REPO / ".venv")
+    return home
+
+
+def _sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _drive(home: Path) -> tuple[int, str]:
+    """Run the scratch tree's own copy of the gate, in VERIFY mode (flagless).
+
+    Flagless is measure-only by the check contract's first rule, and it is the
+    only mode this file ever uses: `--correct` would `pip install` into a venv
+    three agents share.
+
+    `PYTHONPATH` is PREPENDED rather than replaced — `checks/_preamble.py`
+    APPENDS its `scripts/`, so a real one already on the path would shadow the
+    scratch tree, and `binding_census.py` installs its tracer through
+    `PYTHONPATH`, so replacing it would hide this verdict from the instrument
+    that has to confirm the binding.
+    """
+    env = dict(os.environ)
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(home / "scripts")] + ([existing] if existing else [])
+    )
+    proc = subprocess.run(  # nosec B603 - fixed argv, shell=False, scratch tree
+        [str(VENV_PYTHON), str(home / "checks" / "check_python_deps.py")],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=str(home),
+        env=env,
+    )
+    return proc.returncode, (proc.stdout or proc.stderr).strip()
+
+
+@pytest.fixture(name="plant")
+def _plant(scratch: Path) -> Iterator[Callable[[Callable[[dict], None]], None]]:
+    """Mutate the scratch pins file, then restore it byte-identically.
+
+    Both halves of doctrine C.2 in one fixture: the caller measures with the
+    plant in, and the teardown asserts the sha256 came back unchanged.
+    """
+    target = scratch / PINS
+    before = target.read_text(encoding="utf-8")
+    before_sha = _sha(target)
+
+    def _apply(mutate: Callable[[dict], None]) -> None:
+        payload = json.loads(before)
+        mutate(payload)
+        target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        assert _sha(target) != before_sha, "the plant changed nothing"
+
+    yield _apply
+    target.write_text(before, encoding="utf-8")
+    assert _sha(target) == before_sha, "the control was not restored byte-identically"
+
+
+def _installed_now() -> dict:
+    """What the REAL venv holds, asked of the real venv, not of the pins file."""
+    import check_python_deps as mod  # type: ignore[import-not-found]  # pylint: disable=import-outside-toplevel
+
+    present = mod.installed_versions(REPO / ".venv" / "bin" / "python3")
+    assert present is not None, "the real venv could not answer"
+    return present
+
+
+def test_the_scratch_control_passes_against_the_real_venv(scratch: Path) -> None:
+    """CONTROL (doctrine C.3), asserted before any plant.
+
+    The evidence must name the pins that were satisfied — a bare `pass` would be
+    satisfied by a run that compared an empty pin set against anything.
+    """
+    code, out = _drive(scratch)
+    assert code == 0, out
+    assert out.startswith("pass: pins satisfied:"), out
+    for package in json.loads((CHECKS / "pinned_deps.json").read_text())["packages"]:
+        assert package.lower() in out, out
+
+
+def test_a_drifted_pin_reddens_the_gate_and_names_both_versions(
+    scratch: Path, plant: Callable[[Callable[[dict], None]], None]
+) -> None:
+    """CAN-FAIL against the REAL subject — `checks/pinned_deps.json`.
+
+    ARC 022's hand-taken cycle, made reproducible. The installed version is the
+    real venv's; only the declaration moves. Both numbers are asserted, so a
+    gate that merely noticed *something* differed would not satisfy this.
+    """
+    plant(lambda p: p["packages"].update({"ib_async": "2.0.1"}))
+    code, out = _drive(scratch)
+    assert code == 1, out
+    assert out.startswith("fail_repairable:"), out
+    assert "ib_async" in out, out
+    assert "2.1.0 (want 2.0.1)" in out, out
+
+
+def test_a_pin_with_no_installed_package_is_named_absent_not_drifted(
+    scratch: Path, plant: Callable[[Callable[[dict], None]], None]
+) -> None:
+    """CAN-FAIL, the OTHER branch of `evaluate` — and the distinction matters.
+
+    `absent` and `wrong version` take different repairs and the gate must not
+    collapse them. Driven end-to-end here rather than on a hand-built dict,
+    because the dict form was already present above and never touched the
+    subject.
+    """
+    plant(lambda p: p["packages"].update({"nix_absent_probe_pkg": "9.9.9"}))
+    code, out = _drive(scratch)
+    assert code == 1, out
+    assert "nix_absent_probe_pkg: absent (want 9.9.9)" in out, out
+
+
+def test_the_real_pins_file_is_untouched_by_every_plant_here(scratch: Path) -> None:
+    """The plant landed in the scratch tree and nowhere else.
+
+    Doctrine C.8 is that the scratch copy is the venue and never the subject; a
+    plant that reached `~/nix/checks/pinned_deps.json` would have made this
+    suite an environment change rather than a measurement.
+    """
+    assert _sha(scratch / PINS) == _sha(REPO / PINS)
+    code, out = _drive(scratch)
+    assert code == 0, out
+
+
+def test_verify_mode_never_mutates_the_shared_venv(scratch: Path) -> None:
+    """§1 of the check contract: a flagless check never mutates.
+
+    Asserted over the REAL venv's installed set, not over the gate's return
+    value — the plants above drive a `FAIL_REPAIRABLE`, and a `repair()` reached
+    by accident would `pip install` into a venv that the canonical tree and every
+    sibling worktree share.
+    """
+    before = _installed_now()
+    _drive(scratch)
+    assert _installed_now() == before

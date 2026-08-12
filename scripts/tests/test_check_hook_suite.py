@@ -19,8 +19,10 @@ project:
 
 from __future__ import annotations
 
+import hashlib
 import subprocess  # nosec B404 - fixed argv, shell=False, repo-local
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 import pytest  # pylint: disable=import-error
@@ -357,3 +359,252 @@ def test_a_missing_config_is_cannot_measure(tmp_path: Path) -> None:
     result = _run(tmp_path)
     assert result.status is Status.CANNOT_MEASURE
     assert gate.CONFIG_FILE in (result.detail or "")
+
+
+# ===========================================================================
+# ARC 027 / A2 — CHECK-DEBT D3.14, ARM BY ARM, AGAINST THE REAL REPOSITORY.
+#
+# D3.14 says arms 1 and 2 were bound against the real repository in ARC 023 and
+# that arms 3 and 4 stay owed. **Everything ARC 023 measured was banked in a
+# results document and committed nowhere** — §0e requires a committed, runnable
+# artifact and CHECK-DEBT D2.30 is the row for that class. The first test below
+# is that artifact. The rest of this section reports, per arm, what could and
+# could not be planted, with the measurement behind each answer.
+#
+# NOTHING SHARED IS WRITTEN. The technique is ARC 023's: a scratch `HOME`
+# carrying a `[core] hooksPath` that redirects git's own hook resolution for
+# THIS repository, which perturbs the gate's real subject while
+# `/home/bbt/nix/.git` is only ever read. `PRE_COMMIT_HOME` is pinned to the
+# real store throughout so arms 3 and 4 keep measuring the real environments,
+# and the real hook file's sha256 is asserted unchanged either side.
+#
+# §7.12, asked of this section: what would have to be true for it to pass while
+# measuring nothing?
+#   1. The scratch HOME could be moving the verdict by itself, in which case the
+#      plants prove nothing. CLOSED by the second control, which runs in the
+#      scratch HOME with `core.hooksPath` pointed BACK at the real directory and
+#      requires PASS — the environment override alone does not move the verdict.
+#   2. The gate could be failing because the store went missing along with HOME.
+#      CLOSED: `PRE_COMMIT_HOME` is set explicitly and the evidence is asserted
+#      to still name eight hooks over the real tracked-file count.
+#   3. A plant could leak into the shared repository. CLOSED: the real hook's
+#      sha256 is compared before and after, and repository-scope
+#      `core.hooksPath` is asserted to remain unset.
+# ===========================================================================
+
+
+#: The store the real hooks resolve into. Read from pre-commit itself rather
+#: than written down, so a moved cache does not turn into a stale literal
+#: anchor (`debug.md` §8 failure mode #4).
+def _real_store_dir() -> str:
+    # pylint: disable=import-outside-toplevel,import-error
+    # `import-error`: pylint runs under the hook environment, where `pre_commit`
+    # is not importable; the interpreter this suite runs under is the venv, where
+    # it is. Same pragma, same reason, as `checks/check_hook_suite.py` carries.
+    from pre_commit.store import Store
+
+    return Store().directory
+
+
+def _real_hook_sha() -> str:
+    hook = gate.git_layout(REPO).hooks_dir / gate.HOOK_TYPE
+    return hashlib.sha256(hook.read_bytes()).hexdigest()
+
+
+def test_arms_1_and_2_can_fail_against_the_real_repository(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CAN-FAIL, arms 1 and 2, AGAINST THE REAL REPOSITORY. Discharges D2.30's third.
+
+    Four measurements in order, and the order is the point:
+
+      NON-VACUITY — the ambient run resolves the real hooks directory and passes.
+      CONTROL     — the same run under a scratch HOME whose `core.hooksPath`
+                    points back at the real directory: still PASS, with the
+                    override visible in the evidence. This is what excludes the
+                    confound that the environment change alone reddens the gate.
+      PLANT 1     — `core.hooksPath` at an EMPTY directory. Arm 1: the hook git
+                    would run is not there.
+      PLANT 2     — THE REAL HOOK FILE, copied byte-for-byte and differing only
+                    in its `ARGS` line. Arm 2, and it is the strongest of the
+                    set because the subject is genuine `pre-commit` output that
+                    is installed, executable, and pre-commit's own — and reads a
+                    different config.
+      UNPLANT     — the scratch gitconfig removed; PASS returns.
+    """
+    monkeypatch.setenv("PRE_COMMIT_HOME", _real_store_dir())
+    before_sha = _real_hook_sha()
+    real_hooks = gate.git_layout(REPO).hooks_dir
+    assert real_hooks is not None
+
+    # NON-VACUITY, before anything is perturbed.
+    ambient = _run(REPO)
+    assert ambient.status is Status.PASS, ambient.detail
+    assert "8 hook(s)" in (ambient.evidence or "")
+
+    scratch_home = tmp_path / "home"
+    scratch_home.mkdir()
+    gitconfig = scratch_home / ".gitconfig"
+    monkeypatch.setenv("HOME", str(scratch_home))
+
+    # CONTROL — scratch HOME, hooksPath pointed BACK at the real directory.
+    gitconfig.write_text(f"[core]\n\thooksPath = {real_hooks}\n", encoding="utf-8")
+    control = _run(REPO)
+    assert control.status is Status.PASS, control.detail
+    assert f"core.hooksPath={real_hooks}" in (control.evidence or "")
+
+    # PLANT 1 — arm 1.
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    gitconfig.write_text(f"[core]\n\thooksPath = {empty}\n", encoding="utf-8")
+    plant1 = _run(REPO)
+    assert plant1.status is Status.FAIL_NEEDS_OPERATOR
+    assert "no pre-commit hook installed at the path git resolves" in (
+        plant1.detail or ""
+    )
+    assert str(empty) in (plant1.site or "")
+
+    # PLANT 2 — arm 2. The real hook, re-pointed at another config.
+    other = tmp_path / "other"
+    other.mkdir()
+    copied = other / gate.HOOK_TYPE
+    copied.write_text(
+        (real_hooks / gate.HOOK_TYPE)
+        .read_text(encoding="utf-8")
+        .replace(f"--config={gate.CONFIG_FILE}", "--config=other-config.yaml"),
+        encoding="utf-8",
+    )
+    copied.chmod(0o755)
+    gitconfig.write_text(f"[core]\n\thooksPath = {other}\n", encoding="utf-8")
+    plant2 = _run(REPO)
+    assert plant2.status is Status.FAIL_NEEDS_OPERATOR
+    assert f"installed hook does not name {gate.CONFIG_FILE}" in (plant2.detail or "")
+    assert "--config=other-config.yaml" in (plant2.detail or "")
+    assert "is_our_script=True" in (plant2.evidence or ""), (
+        "the plant stopped being pre-commit's own script, which would make it "
+        "an arm-1 plant wearing arm 2's name"
+    )
+
+    # UNPLANT.
+    gitconfig.unlink()
+    assert _run(REPO).status is Status.PASS
+
+    # NOTHING SHARED WAS WRITTEN — shown, not asserted in prose.
+    assert _real_hook_sha() == before_sha
+    assert gate._git(REPO, "config", "--get", "core.hooksPath") is None  # pylint: disable=protected-access
+
+
+def test_arm_4s_missing_store_row_branch_cannot_be_reached_by_any_plant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MEASURED IMPOSSIBILITY, arm 4 — found by attempting the plant, not by reading.
+
+    Arm 4's primary defect is *"no environment installed for the pinned rev"*.
+    The plant is a store with no rows, and it is taken here against the REAL
+    repository and the REAL config by redirecting `PRE_COMMIT_HOME` at an empty
+    directory — a real operational state, and one that writes nothing shared.
+
+    **The gate returns CANNOT_MEASURE, never FAIL.** `_probe_payload` consults
+    `_environments_all_present` BEFORE calling `all_hooks` — deliberately, so a
+    gate that runs at boot cannot be tricked into cloning — so a missing row
+    yields zero hooks, and `_vacuity_complaint` turns zero hooks into
+    CANNOT_MEASURE one layer up. The defect branch in `hook_set_defects` is
+    shadowed by the gate's own vacuity guard and no plant can reach it.
+
+    This is not a false green: CANNOT_MEASURE withholds certification. It is a
+    reachability defect — the operator is told *"resolved to ZERO hooks"* when
+    the gate in fact knows which pinned rev has no environment, and doctrine C.2
+    asks a gate to name the site. **CHECK-DEBT D3.29**, and arm 4 stays UNBOUND
+    with this as the reason rather than with a policy as the reason.
+    """
+    monkeypatch.setenv("PRE_COMMIT_HOME", str(tmp_path / "empty-store"))
+    payload = gate.probe(REPO).payload
+    assert payload["all_files"] > 0, "the tree lost its tracked files; wrong subject"
+    assert all(
+        row["store_path"] is None for row in payload["repos"] if not row["local"]
+    ), payload["repos"]
+    assert payload["hooks"] == []
+
+    result = _run(REPO)
+    assert result.status is Status.CANNOT_MEASURE
+    assert "resolved to ZERO hooks" in (result.detail or "")
+    assert "no environment installed for the pinned rev" not in (result.detail or "")
+
+
+def test_arms_3_and_4_decide_correctly_over_the_real_resolved_hook_set() -> None:
+    """PREDICATE-LEVEL, AND LABELLED AS SUCH — this does NOT bind arms 3 or 4.
+
+    `hook_set_defects` is driven over the payload the REAL probe produced for
+    the REAL repository, with one field moved per case. That is stronger than a
+    hand-built dictionary — the hook keys, prefixes, revs and store rows are all
+    genuine — and it is weaker than a plant, because nothing made the real
+    system enter these states. Under the CHECK-DEBT rule of record a drive that
+    does not land in the subject does not bind, so this is recorded as what it
+    is and D3.14 stays open on arms 3 and 4.
+
+    It earns its place by covering the three branches no other test reaches:
+    the hook-environment-missing branch of arm 3 and both branches of arm 4.
+    """
+    real = gate.probe(REPO).payload
+    assert real["hooks"] and real["repos"], "no real payload to mutate"
+
+    dropped = deepcopy(real)
+    dropped["hooks"][0].update({"prefix_exists": False, "always_run": False})
+    defects, _ = gate.hook_set_defects(dropped)
+    assert any("was never installed" in why for _, why in defects), defects
+
+    zero = deepcopy(real)
+    zero["hooks"][0].update({"selected": 0, "always_run": False})
+    defects, _ = gate.hook_set_defects(zero)
+    assert any("selects ZERO files" in why for _, why in defects), defects
+
+    norow = deepcopy(real)
+    next(row for row in norow["repos"] if not row["local"])["store_path"] = None
+    defects, _ = gate.hook_set_defects(norow)
+    assert any("has no row for it" in why for _, why in defects), defects
+
+    mismatch = deepcopy(real)
+    next(row for row in mismatch["repos"] if not row["local"])["store_path"] = (
+        "/nonexistent/store/row"
+    )
+    defects, _ = gate.hook_set_defects(mismatch)
+    assert any(
+        "will not run in the environment the pin names" in why for _, why in defects
+    ), defects
+
+
+def test_the_real_subject_route_for_arm_3_collapses_and_the_collapse_is_pinned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """WHY ARM 3 STAYS UNBOUND, measured rather than asserted.
+
+    Arm 3's subject is the hook set `.pre-commit-config.yaml` resolves and the
+    files each hook selects over `git ls-files`. Planting it means changing that
+    config, and the config is only read from the root the gate is pointed at —
+    so the two available venues are:
+
+      * a **copy of the tree**, which is what this test drives. It carries the
+        REAL config, and it is not a git repository, so `git.get_all_files()`
+        cannot answer and the gate reports CANNOT_MEASURE. Arm 3 has no subject
+        there, which is the collapse D3.14 predicted and this pins.
+      * **this worktree's own `.pre-commit-config.yaml`**, edited in place. That
+        file is the live commit gate of the tree the suite is running inside,
+        and the suite runs inside `pre-commit` itself via the `pytest-affected`
+        hook. A crash between plant and restore would leave the repository's
+        commit gate holding a deliberately broken hook set. REFUSED, and
+        recorded as a refusal rather than performed carefully.
+
+    The throwaway-repository plant that DOES exist above
+    (`test_a_hook_that_selects_zero_files_fails`) is what the rule of record
+    calls a purpose-built fake: it binds the predicate, not the subject.
+    **CHECK-DEBT D3.30.**
+    """
+    monkeypatch.setenv("PRE_COMMIT_HOME", _real_store_dir())
+    home = tmp_path / "nix"
+    home.mkdir()
+    (home / gate.CONFIG_FILE).write_text(
+        CONFIG.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    result = _run(home)
+    assert result.status is Status.CANNOT_MEASURE
+    assert "not a git repository" in (result.detail or ""), result.detail
