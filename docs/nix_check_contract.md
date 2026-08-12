@@ -1,13 +1,13 @@
-# nix_check_contract — Nix provisioning engine and check contract — v1.2.0
+# nix_check_contract — Nix provisioning engine and check contract — v1.3.0
 
 **Status: derived implementation spec, subordinate to `VERIFY-AND-CHECKS.md`.** Governs
 `bootstrap.sh`, `install.sh`, `scripts/verify.py`, and every `checks/check_*.py`.
 
 **Amendments.** `VERIFY-AND-CHECKS.md` is external, inherited, **unversioned, and has no amendment
 mechanism**; it is never edited in place. Where Nix extends or diverges from it, the change is
-implemented **here** and recorded in `docs/CHECK-CONTRACT-AMENDMENTS.md`. Three amendments are live
-as of v1.2.0: **1 — `GUARDED`** (§4.1, §4.2), **2 — actuation** (§4.3), **3 — the broadened coverage
-trigger** (§1). That ledger is numbered independently of `docs/SPEC-AMENDMENTS.md`, which amends the
+implemented **here** and recorded in `docs/CHECK-CONTRACT-AMENDMENTS.md`. Four amendments are live
+as of v1.3.0: **1 — `GUARDED`** (§4.1, §4.2), **2 — actuation** (§4.3), **3 — the broadened coverage
+trigger** (§1), **4 — the close-out durability gate** (§16). That ledger is numbered independently of `docs/SPEC-AMENDMENTS.md`, which amends the
 frozen risk spec and is a different document with a different authority.
 
 **Authority order.** `VERIFY-AND-CHECKS.md` (verification doctrine, external, inherited) →
@@ -836,7 +836,74 @@ than restate it is what §4.4 exists to satisfy, one level deeper.
 
 ---
 
+## 16. Arc close-out — the write-back gate proves DURABILITY, not authorship (AMENDMENT 4, ARC 025)
+
+`CLAUDE.md` requires every arc, on completion, to append its summary to `sessions/SESSION.md` and
+overwrite `downloads/RESULTS.md`, and to `cat` both before reporting completion. **That gate is
+satisfiable by a file that exists only in a working tree.** `cat` proves a path is readable now; it
+proves nothing about whether the work survives the next `git checkout`, the next machine, or the
+next reader. **An mtime proves a file was written. It does not prove the work is durable.**
+
+**The measured counter-example is ARC 024's own close-out** and it is why this section exists. That
+arc built the actuation layer, the AST declaration mechanism, `--optimize` and Plane 2; ran
+`verify.py`, the full pytest suite, the pre-commit suite and the claims harness; reported every
+figure; wrote `SESSION.md` and `RESULTS.md`; `cat`-ed both; and passed its write-back gate. **`HEAD`
+was still the ARC 023 merge.** All 30 paths were staged in the index and had never been committed —
+5,019 insertions of engine, checks, tests and doctrine, every gate measurement in the report taken
+against a tree that was not history and would not have survived a `git reset`. The gate as written
+could not see this, because nothing it checks is a property of the repository.
+
+### §16.1 The three obligations [ARCHITECT RULING — revocable]
+
+An arc may not report completion until all three are **shown**, not asserted:
+
+1. **`HEAD` ADVANCED.** `HEAD` at close-out is not `HEAD` at arc start. Record both SHAs. An arc
+   that legitimately wrote nothing to the repository states that as its finding and is exempt —
+   exemption is a claim made out loud, never a silent pass.
+2. **`HEAD` CONTAINS THE ARC'S PATHS.** Every path the arc created or modified resolves in
+   `HEAD`'s tree — `git ls-tree -r HEAD --name-only`, not `ls`. The index is not history and the
+   working tree is not history.
+3. **NOTHING OF THE ARC IS LEFT OUTSIDE HISTORY.** `git status --short` is empty for the arc's
+   paths: no staged residue, no unstaged residue, no untracked artifact the report describes.
+
+### §16.2 The measurements are re-taken against the merged tree
+
+An arc's gate figures are evidence about a tree. If the tree they were taken against never became
+history, the figures describe nothing durable. **After the merge, `verify.py`, the test suite, the
+pre-commit suite and `check_derived_claims` are re-run against the merged working tree and the
+results compared against the figures the arc reported.** Any delta is a finding and is reported as
+one — including a delta whose cause turns out to be environmental, because *"the number moved and
+here is why"* is a result and *"the number did not move"* was the claim being tested.
+
+### §16.3 What this gate CANNOT prove — stated, not implied
+
+It proves the arc's paths are **in** history. It does not prove their **content** is the content the
+arc measured: a path committed after a post-measurement edit satisfies all three obligations and
+carries different bytes. §16.2's re-measurement is the compensating control and it is a weaker one
+than it looks — it re-derives the figures rather than proving byte identity with what was measured.
+
+Nor does it prove the history is **reachable by anyone else**. A local commit satisfies §16.1 and
+dies with the disk. Where an arc's target is a shared branch, durability means pushed and merged,
+and the merge commit is the evidence.
+
+**This gate is mechanically checkable and is therefore owed a check** under §1 as broadened by
+AMENDMENT 3. None exists; the debt is recorded rather than blocking, per the same section.
+
+---
+
 ## Changelog
+
+**v1.3.0 (ARC 025)** — **AMENDMENT 4:** §16 (new) — the arc close-out gate must prove **durability**,
+not authorship. `CLAUDE.md`'s write-back rule is satisfiable by a file that exists only in a working
+tree; `cat` proves readability now, not survival. Three obligations, shown rather than asserted:
+`HEAD` advanced, `HEAD`'s tree contains the arc's paths, nothing of the arc left outside history.
+§16.2 requires the arc's gate figures to be **re-taken against the merged tree** and any delta
+reported as a finding. §16.3 states the ceiling: it proves the paths are in history, never that
+their bytes are the bytes that were measured. The counter-example is measured, not hypothetical —
+ARC 024 passed its own write-back gate with all 30 paths and 5,019 insertions staged and never
+committed, `HEAD` still on the ARC 023 merge. Amendment recorded in
+`docs/CHECK-CONTRACT-AMENDMENTS.md`; the gate is mechanically checkable and is owed a check under
+§1, recorded rather than blocking.
 
 **v1.2.0 (ARC 024)** — three amendments to the check contract, recorded in
 `docs/CHECK-CONTRACT-AMENDMENTS.md` (a new ledger, separate from `SPEC-AMENDMENTS.md`, which amends
