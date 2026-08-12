@@ -37,16 +37,16 @@ from nixverify.engine import (  # pylint: disable=wrong-import-position
     aggregate_exit,
     run_blocks,
 )
-from nixverify.manifest import (  # pylint: disable=wrong-import-position
-    ManifestError,
-    load_manifest,
-)
 from nixverify.optimize import (  # pylint: disable=wrong-import-position
     OptimizeError,
     derive_plan,
     plan_to_payload,
 )
 from nixverify.plane2 import Plane2  # pylint: disable=wrong-import-position
+from nixverify.registry import (  # pylint: disable=wrong-import-position
+    RegistryError,
+    load_registry,
+)
 from nixverify.render import (  # pylint: disable=wrong-import-position
     LiveProgress,
     render_results,
@@ -121,38 +121,38 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument(
-        "--manifest", default=str(NIX_HOME / "checks" / "registry.json")
+        "--registry", default=str(NIX_HOME / "checks" / "registry.json")
     )
     parser.add_argument(
         "--optimize",
         action="store_true",
-        help="derive the execution plan from checks/ and write <manifest>.proposed",
+        help="derive the execution plan from checks/ and write <registry>.proposed",
     )
     parser.add_argument(
         "--commit",
         action="store_true",
-        help="with --optimize: install the derived plan over the live manifest",
+        help="with --optimize: install the derived plan over the live registry",
     )
     return parser.parse_args(argv)
 
 
-def _run_optimize(manifest_path: Path, commit: bool) -> int:
+def _run_optimize(registry_path: Path, commit: bool) -> int:
     """`--optimize`: derive the plan, report, and propose rather than overwrite.
 
     **[ARCHITECT RULING — revocable, and flagged.]** The operator ruling says
-    `--optimize` overwrites the existing manifest. It does not, by default: it
-    writes `<manifest>.proposed`, prints a diff, and requires `--commit` to
-    install. The manifest is the master execution plan for eventually hundreds of
+    `--optimize` overwrites the existing registry. It does not, by default: it
+    writes `<registry>.proposed`, prints a diff, and requires `--commit` to
+    install. The registry is the master execution plan for eventually hundreds of
     checks; one bad derivation that silently overwrote it would destroy the
     ordering with no recovery point and no diff to review, and would surface
     later as checks running in the wrong order — which reads as a product bug,
     not a tooling bug. `--commit` is one keystroke and restores the ruling
     exactly. **Operator's call; say the word and the default flips.**
     """
-    checks_dir = manifest_path.parent
+    checks_dir = registry_path.parent
     declarations = read_all(checks_dir)
     try:
-        plan = derive_plan(checks_dir, manifest_path)
+        plan = derive_plan(checks_dir, registry_path)
     except OptimizeError as exc:
         print(f"  verify.py --optimize: cannot derive — {exc}", file=sys.stderr)
         return 2
@@ -171,21 +171,21 @@ def _run_optimize(manifest_path: Path, commit: bool) -> int:
         return 1
     payload = plan_to_payload(plan, declarations)
     rendered = json.dumps(payload, indent=2) + "\n"
-    target = manifest_path if commit else manifest_path.with_suffix(".json.proposed")
+    target = registry_path if commit else registry_path.with_suffix(".json.proposed")
     current = (
-        manifest_path.read_text(encoding="utf-8") if manifest_path.is_file() else ""
+        registry_path.read_text(encoding="utf-8") if registry_path.is_file() else ""
     )
     diff = list(
         difflib.unified_diff(
             current.splitlines(keepends=True),
             rendered.splitlines(keepends=True),
-            fromfile=str(manifest_path),
+            fromfile=str(registry_path),
             tofile=str(target),
         )
     )
     target.write_text(rendered, encoding="utf-8")
     print(
-        "".join(diff) if diff else "  (derived plan is identical to the live manifest)"
+        "".join(diff) if diff else "  (derived plan is identical to the live registry)"
     )
     verb = "INSTALLED" if commit else "proposed"
     print(f"  verify.py --optimize: {verb} {target}")
@@ -195,12 +195,12 @@ def _run_optimize(manifest_path: Path, commit: bool) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Load the manifest, run its blocks, render, and return the exit code."""
+    """Load the registry, run its blocks, render, and return the exit code."""
     args = _parse_args(argv)
     theme = theme_for(sys.stdout, os.environ)
-    manifest_path = Path(args.manifest)
+    registry_path = Path(args.registry)
     if args.optimize:
-        return _run_optimize(manifest_path, args.commit)
+        return _run_optimize(registry_path, args.commit)
     plane2 = Plane2()
     plane2.emit(
         "run_start",
@@ -208,13 +208,13 @@ def main(argv: list[str] | None = None) -> int:
         privilege=args.privilege,
         maintenance=args.maintenance,
         allow_interactive=args.allow_interactive,
-        manifest=str(manifest_path),
+        registry=str(registry_path),
         transport=plane2.transport,
     )
     try:
-        blocks = load_manifest(manifest_path)
-    except ManifestError as exc:
-        # Unreadable manifest is unmeasurable, not a failed check (§4.1).
+        blocks = load_registry(registry_path)
+    except RegistryError as exc:
+        # Unreadable registry is unmeasurable, not a failed check (§4.1).
         plane2.emit("run_end", outcome="cannot_measure", reason=str(exc), exit=2)
         print(f"  verify.py: cannot measure — {exc}", file=sys.stderr)
         return 2
@@ -230,7 +230,7 @@ def main(argv: list[str] | None = None) -> int:
     observer = _RunObserver(plane2, progress)
     progress.start()
     try:
-        results = run_blocks(blocks, manifest_path.parent, ctx, observer)
+        results = run_blocks(blocks, registry_path.parent, ctx, observer)
     finally:
         # Unconditional: a check that kills the run must not leave the terminal
         # holding a half-painted spinner line and a hidden cursor.

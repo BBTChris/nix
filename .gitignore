@@ -82,7 +82,7 @@ scripts/cl.sh
 downloads/*.py
 
 # ARC 025: `verify.py --optimize` writes its DERIVED plan to
-# `checks/<manifest>.json.proposed` on every run, as a proposal that `--commit`
+# `checks/<registry>.json.proposed` on every run, as a proposal that `--commit`
 # then installs. It is a transient derivation artifact, never an input to
 # anything — the plan of record is `checks/registry.json`, and the proposal is
 # reproducible from the checks folder at any time.

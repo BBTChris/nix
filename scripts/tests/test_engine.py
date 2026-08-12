@@ -4,7 +4,7 @@ from pathlib import Path
 
 from nixverify.contract import CheckResult, Context, Mode, Status
 from nixverify.engine import aggregate_exit, run_blocks
-from nixverify.manifest import Block
+from nixverify.registry import Block
 
 PASSING = (
     "def run(mode, ctx):\n"
@@ -89,11 +89,11 @@ def _sleeping_check(seconds: float) -> str:
     )
 
 
-def test_parallel_block_reports_in_manifest_order(tmp_path: Path) -> None:
+def test_parallel_block_reports_in_registry_order(tmp_path: Path) -> None:
     """§6: completion order must never leak into output — runs must diff.
 
     Durations are staggered so that completion order is the exact reverse of
-    manifest order (check_a finishes last, check_c finishes first). A version
+    registry order (check_a finishes last, check_c finishes first). A version
     that reads results via as_completed() instead of submission order would
     report [check_c, check_b, check_a] here and fail.
     """

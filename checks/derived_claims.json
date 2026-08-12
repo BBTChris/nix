@@ -1,895 +1,758 @@
 {
-  "schema_version": "1.0.0",
-  "comment": [
-    "THE DERIVED-CLAIMS REGISTRY — discharges CHECK-DEBT D2.8 (doctrine B.7).",
-    "",
-    "B.7: 'One harness parses a constant out of the bible and asserts the running module's",
-    "constants equal what the specification says. Changing the specification without changing",
-    "the code is RED, and changing the code without changing the specification is also RED.'",
-    "",
-    "THIS FILE STORES NO EXPECTED VALUES. There is not one integer in it. A claim is a set of",
-    "SOURCES that must agree; each source is a command that prints an integer it computed from",
-    "the tree at run time. Storing the number here would reproduce, inside the instrument built",
-    "to catch it, the exact defect the instrument exists to catch (arc_017 s0a records that",
-    "happening in the arc brief itself).",
-    "",
-    "ROLES. 'derived' = computed from ground truth (the frozen spec, the registry, the real",
-    "collector). 'stated' = a number a document, config, or code file asserts. A claim needs at",
-    "least two sources; a lone number is unchecked by construction.",
-    "",
-    "restatement_scans: OPTIONAL patterns naming places where this number has historically been",
-    "written down in prose. EVERY match must equal the agreed value; ZERO matches is the better",
-    "outcome and is reported as such — deleting a restatement is the doctrine-correct repair,",
-    "syncing it is only the second-best one.",
-    "",
-    "SCOPE, v1: numeric claims only. Prose facts are out of scope and must not be smuggled in as",
-    "a count of words that happen to match.",
-    "",
-    "EVIDENCE BASE — TEN measured instances of derive-never-restate failing in THIS project:",
-    " 1. CHECK-DEBT series hand-counted wrong (ARC 010 row).",
-    " 2. CHECK-DEBT series hand-counted wrong AGAIN (ARC 011 row) — same author, same table.",
-    " 3. The 10-minute feed delay sat uncomputed inside ARC 010's own banked output.",
-    " 4. avg_price unit mismatch: per-unit vs notional, both spellings live, last writer won.",
-    " 5. The ARC 016 brief cited D2.8 as the vacuous-pass class; D2.8 is the restatement class.",
-    " 6. The CHECK-DEBT series table silently skipped ARC 014 and ARC 015 entirely.",
-    " 7. '19 verbs/events' survived three arcs because TWO unrelated derivations both land on 19",
-    "    — 19 markdown BULLETS across both libraries, and 8+7+4 = 19 ARC 014 findings. By",
-    "    IDENTIFIER broker-order is 16. A coincidence is what made a wrong number look checked.",
-    " 8. The ARC 017 brief's own s7 anchored the expected check count while s6 asked for it to be",
-    "    derived; caught before execution and recorded in s0a.",
-    " 9. The s7 derivation command itself: re.findall('check_[a-z0-9_]+') over verify.py. The path",
-    "    was wrong, and against the corrected path it returns 1 — verify.py holds no check names",
-    "    at all. A derivation that cannot express the number it claims to derive.",
-    "10. .pre-commit-config.yaml restated '126 tests' in TWO comments while the real collected",
-    "    count was 159 — the first instance found inside a GATE'S OWN CONFIGURATION rather than a",
-    "    document. ARC 017 removed the restatements rather than syncing them, which is why the",
-    "    pytest claim below carries restatement_scans that should now match ZERO times.",
-    "",
-    "NOT REGISTERED, DELIBERATELY: the string '19 verbs/events - 8 CLEAN, 7 FRICTION, 4 GAP'.",
-    "It is not a literal anywhere in this tree; it is what summarise() PRINTS from FINDINGS, and",
-    "its defect is a mislabel (19 findings presented as 19 verbs/events), not a stale integer.",
-    "Registering the string would pin the gate to a number ARC 017 has established is wrong.",
-    "Claim arc014_broker_order_classification registers the RE-DERIVED total instead."
-  ],
-  "placeholders": {
-    "{nix_home}": "repo root",
-    "{checks_dir}": "{nix_home}/checks",
-    "{system_python}": "the interpreter running verify.py (stdlib-only floor)",
-    "{venv_python}": "{nix_home}/.venv/bin/python3",
-    "{self}": "checks/check_derived_claims.py, re-entered as a probe runner"
+ "schema_version": "1.0.0",
+ "comment": [
+  "THE DERIVED-CLAIMS REGISTRY — discharges CHECK-DEBT D2.8 (doctrine B.7).",
+  "",
+  "B.7: 'One harness parses a constant out of the bible and asserts the running module's",
+  "constants equal what the specification says. Changing the specification without changing",
+  "the code is RED, and changing the code without changing the specification is also RED.'",
+  "",
+  "THIS FILE STORES NO EXPECTED VALUES. There is not one integer in it. A claim is a set of",
+  "SOURCES that must agree; each source is a command that prints an integer it computed from",
+  "the tree at run time. Storing the number here would reproduce, inside the instrument built",
+  "to catch it, the exact defect the instrument exists to catch (arc_017 s0a records that",
+  "happening in the arc brief itself).",
+  "",
+  "ROLES. 'derived' = computed from ground truth (the frozen spec, the registry, the real",
+  "collector). 'stated' = a number a document, config, or code file asserts. A claim needs at",
+  "least two sources; a lone number is unchecked by construction.",
+  "",
+  "restatement_scans: OPTIONAL patterns naming places where this number has historically been",
+  "written down in prose. EVERY match must equal the agreed value; ZERO matches is the better",
+  "outcome and is reported as such — deleting a restatement is the doctrine-correct repair,",
+  "syncing it is only the second-best one.",
+  "",
+  "SCOPE, v1: numeric claims only. Prose facts are out of scope and must not be smuggled in as",
+  "a count of words that happen to match.",
+  "",
+  "EVIDENCE BASE — TEN measured instances of derive-never-restate failing in THIS project:",
+  " 1. CHECK-DEBT series hand-counted wrong (ARC 010 row).",
+  " 2. CHECK-DEBT series hand-counted wrong AGAIN (ARC 011 row) — same author, same table.",
+  " 3. The 10-minute feed delay sat uncomputed inside ARC 010's own banked output.",
+  " 4. avg_price unit mismatch: per-unit vs notional, both spellings live, last writer won.",
+  " 5. The ARC 016 brief cited D2.8 as the vacuous-pass class; D2.8 is the restatement class.",
+  " 6. The CHECK-DEBT series table silently skipped ARC 014 and ARC 015 entirely.",
+  " 7. '19 verbs/events' survived three arcs because TWO unrelated derivations both land on 19",
+  "    — 19 markdown BULLETS across both libraries, and 8+7+4 = 19 ARC 014 findings. By",
+  "    IDENTIFIER broker-order is 16. A coincidence is what made a wrong number look checked.",
+  " 8. The ARC 017 brief's own s7 anchored the expected check count while s6 asked for it to be",
+  "    derived; caught before execution and recorded in s0a.",
+  " 9. The s7 derivation command itself: re.findall('check_[a-z0-9_]+') over verify.py. The path",
+  "    was wrong, and against the corrected path it returns 1 — verify.py holds no check names",
+  "    at all. A derivation that cannot express the number it claims to derive.",
+  "10. .pre-commit-config.yaml restated '126 tests' in TWO comments while the real collected",
+  "    count was 159 — the first instance found inside a GATE'S OWN CONFIGURATION rather than a",
+  "    document. ARC 017 removed the restatements rather than syncing them, which is why the",
+  "    pytest claim below carries restatement_scans that should now match ZERO times.",
+  "",
+  "NOT REGISTERED, DELIBERATELY: the string '19 verbs/events - 8 CLEAN, 7 FRICTION, 4 GAP'.",
+  "It is not a literal anywhere in this tree; it is what summarise() PRINTS from FINDINGS, and",
+  "its defect is a mislabel (19 findings presented as 19 verbs/events), not a stale integer.",
+  "Registering the string would pin the gate to a number ARC 017 has established is wrong.",
+  "Claim arc014_broker_order_classification registers the RE-DERIVED total instead."
+ ],
+ "placeholders": {
+  "{nix_home}": "repo root",
+  "{checks_dir}": "{nix_home}/checks",
+  "{system_python}": "the interpreter running verify.py (stdlib-only floor)",
+  "{venv_python}": "{nix_home}/.venv/bin/python3",
+  "{self}": "checks/check_derived_claims.py, re-entered as a probe runner"
+ },
+ "claims": [
+  {
+   "id": "registered_check_count",
+   "property": "how many checks are registered, counted two ways that cannot share a bug",
+   "sources": [
+    {
+     "name": "registry_json",
+     "role": "derived",
+     "files": [
+      "checks/registry.json"
+     ],
+     "probe": "registry_check_count"
+    },
+    {
+     "name": "checks_glob",
+     "role": "derived",
+     "files": [
+      "checks"
+     ],
+     "probe": "checks_glob_count"
+    }
+   ],
+   "note": [
+    "The two answers are independent: registry.json is what verify.py RUNS, the glob is what",
+    "is on DISK. They diverge exactly when a check is written and never registered (invisible",
+    "to every runner) or registered and deleted (CANNOT_MEASURE at run time). Either is a real",
+    "defect and neither is visible from one side alone.",
+    "DO NOT reintroduce the naive derivation re.findall('check_[a-z0-9_]+') over verify.py:",
+    "verify.py contains no check names — it loads a registry — and that expression returns 1."
+   ]
   },
-  "claims": [
+  {
+   "id": "pytest_collected_tests",
+   "property": "how many tests the suite really collects",
+   "sources": [
     {
-      "id": "registered_check_count",
-      "property": "how many checks are registered, counted two ways that cannot share a bug",
-      "sources": [
-        {
-          "name": "registry_json",
-          "role": "derived",
-          "files": [
-            "checks/registry.json"
-          ],
-          "probe": "registry_check_count"
-        },
-        {
-          "name": "checks_glob",
-          "role": "derived",
-          "files": [
-            "checks"
-          ],
-          "probe": "checks_glob_count"
-        }
-      ],
-      "note": [
-        "The two answers are independent: registry.json is what verify.py RUNS, the glob is what",
-        "is on DISK. They diverge exactly when a check is written and never registered (invisible",
-        "to every runner) or registered and deleted (CANNOT_MEASURE at run time). Either is a real",
-        "defect and neither is visible from one side alone.",
-        "DO NOT reintroduce the naive derivation re.findall('check_[a-z0-9_]+') over verify.py:",
-        "verify.py contains no check names — it loads a manifest — and that expression returns 1."
-      ]
+     "name": "pytest_collector",
+     "role": "derived",
+     "files": [
+      "scripts/tests",
+      "pyproject.toml"
+     ],
+     "argv": [
+      "{venv_python}",
+      "-m",
+      "pytest",
+      "{nix_home}/scripts/tests",
+      "-q",
+      "--collect-only",
+      "-p",
+      "no:cacheprovider"
+     ],
+     "extract": "(?m)^(\\d+) tests? collected"
     },
     {
-      "id": "pytest_collected_tests",
-      "property": "how many tests the suite really collects",
-      "sources": [
-        {
-          "name": "pytest_collector",
-          "role": "derived",
-          "files": [
-            "scripts/tests",
-            "pyproject.toml"
-          ],
-          "argv": [
-            "{venv_python}",
-            "-m",
-            "pytest",
-            "{nix_home}/scripts/tests",
-            "-q",
-            "--collect-only",
-            "-p",
-            "no:cacheprovider"
-          ],
-          "extract": "(?m)^(\\d+) tests? collected"
-        },
-        {
-          "name": "source_ast",
-          "role": "derived",
-          "files": [
-            "scripts/tests"
-          ],
-          "probe": "pytest_ast_count"
-        }
-      ],
-      "restatement_scans": [
-        {
-          "file": ".pre-commit-config.yaml",
-          "pattern": "there are now (\\d+)",
-          "note": "the pytest-affected hook's live claim; removed by ARC 017"
-        },
-        {
-          "file": ".pre-commit-config.yaml",
-          "pattern": "(\\d+)\\s*\\n\\s*#\\s*tests,",
-          "note": "the B101 comment's wrapped '126\\n tests, ~100 sites'; removed by ARC 017"
-        }
-      ],
-      "note": [
-        "source_ast counts `def test_*` and multiplies by each parametrize case list, so it is a",
-        "genuinely different mechanism from pytest's collector rather than the same walk twice.",
-        "They diverge when the collector stops seeing files it should see — a testpaths change, a",
-        "conftest that deselects, a module that fails to import. That is CHECK-DEBT D2.12's",
-        "property ('a suite that silently skips a gate reports GREEN') measured from outside the",
-        "suite. A dated historical measurement in prose ('ARC 017 derived 159 tests') is NOT",
-        "matched by the scans above and is deliberately out of scope: history is append-only.",
-        "MEASURED ARC 017: both scans now match ZERO times. ARC 017 DELETED the two live '126'",
-        "restatements rather than syncing them to 159, which is the doctrine-correct repair, so",
-        "these patterns are now a tripwire against reintroduction rather than a live comparison.",
-        "KNOWN FRAGILITY, stated so it is not discovered as a surprise: .pre-commit-config.yaml",
-        "still QUOTES the removed text as history ('It used to read \"126 tests\"', 'are now 126').",
-        "Those quotations are line-wrapped and the patterns do not reach them. Re-wrapping that",
-        "comment onto one line would make the first pattern match a historical quotation and turn",
-        "this claim red for the wrong reason. If that happens the repair is to the pattern."
-      ]
-    },
-    {
-      "id": "pinned_dependency_count",
-      "property": "how many venv pins exist, per the file and per its only validated reader",
-      "sources": [
-        {
-          "name": "pins_json",
-          "role": "derived",
-          "files": [
-            "checks/pinned_deps.json"
-          ],
-          "probe": "pinned_deps_count"
-        },
-        {
-          "name": "print_pins_cli",
-          "role": "derived",
-          "files": [
-            "checks/check_python_deps.py",
-            "checks/pinned_deps.json"
-          ],
-          "argv": [
-            "{system_python}",
-            "{checks_dir}/check_python_deps.py",
-            "--print-pins"
-          ],
-          "count_lines": true
-        }
-      ],
-      "note": [
-        "install.sh consumes `--print-pins`, not the JSON. If load_pins ever drops a pin on the",
-        "floor — a token-guard rejection, a key collision after lower-casing — the file and the",
-        "shell-visible list disagree and install.sh silently installs fewer packages than pinned."
-      ]
-    },
-    {
-      "id": "check_debt_open_items",
-      "property": "how many debts are open, counted from the rows vs what the series table says",
-      "sources": [
-        {
-          "name": "ledger_rows",
-          "role": "derived",
-          "files": [
-            "docs/CHECK-DEBT.md"
-          ],
-          "probe": "check_debt_open_count"
-        },
-        {
-          "name": "series_table_latest_row",
-          "role": "stated",
-          "files": [
-            "docs/CHECK-DEBT.md"
-          ],
-          "probe": "check_debt_series_latest"
-        }
-      ],
-      "note": [
-        "Evidence instances 1, 2 and 6. The stated source reads the LAST series row by position,",
-        "never by arc name — anchoring to 'ARC 016' would be the stale literal anchor this gate",
-        "exists to remove, and would go stale the next time a row is appended. A row that is never",
-        "appended still fails: the previous row's number will not match the new count."
-      ]
-    },
-    {
-      "id": "spec_2a_broker_order_elements",
-      "property": "how many broker-order verbs+events section 2A defines, spec vs seam code",
-      "sources": [
-        {
-          "name": "frozen_spec_identifiers",
-          "role": "derived",
-          "files": [
-            "docs/nics_risk_subsystem_spec_v1.3.md"
-          ],
-          "probe": "spec_order_identifier_count"
-        },
-        {
-          "name": "seam_roster",
-          "role": "stated",
-          "files": [
-            "scripts/broker/broker_seam.py"
-          ],
-          "probe": "seam_order_roster_count"
-        }
-      ],
-      "note": [
-        "THE B.7 PAIR. The frozen spec is the authority and may never be edited; broker_seam.py's",
-        "ORDER_PORT_VERBS + ORDER_EVENTS is the code restating it. Adding a verb to the seam",
-        "without the spec is RED; the spec growing one the seam has not implemented is RED.",
-        "COUNTED BY IDENTIFIER, NOT BY BULLET. 'connect() / disconnect()' is ONE markdown bullet",
-        "and TWO verbs. Counting bullets gives 15 here and 19 across both libraries, which is",
-        "evidence instance 7 — the number that survived three arcs."
-      ]
-    },
-    {
-      "id": "arc014_broker_order_classification",
-      "property": "ARC 014's CLEAN/FRICTION/GAP mapping re-derived against the real 16-element roster",
-      "sources": [
-        {
-          "name": "spec_roster_size",
-          "role": "derived",
-          "files": [
-            "docs/nics_risk_subsystem_spec_v1.3.md"
-          ],
-          "probe": "spec_order_identifier_count"
-        },
-        {
-          "name": "findings_covering_roster",
-          "role": "derived",
-          "files": [
-            "docs/nics_risk_subsystem_spec_v1.3.md",
-            "scripts/broker/ibkr_mapping.py"
-          ],
-          "probe": "arc014_roster_covered"
-        },
-        {
-          "name": "grade_tally_sum",
-          "role": "derived",
-          "files": [
-            "docs/nics_risk_subsystem_spec_v1.3.md",
-            "scripts/broker/ibkr_mapping.py"
-          ],
-          "probe": "arc014_grade_tally_sum"
-        }
-      ],
-      "note": [
-        "THREE derivations, not two, and that is the point. Evidence instance 7 survived because",
-        "TWO unrelated derivations coincided on 19; a third breaks a coincidence that a second",
-        "cannot. Sources 2 and 3 also make a real assertion beyond arithmetic: source 2 says every",
-        "section 2A broker-order element is graded by ARC 014, so a NEW seam element with no",
-        "finding reddens this claim rather than passing unnoticed.",
-        "The grade breakdown itself is derived and printed to stderr by both probes on every run;",
-        "it is NOT stored here, because storing it would anchor the gate to today's grades."
-      ]
-    },
-    {
-      "id": "seam_declared_elements",
-      "property": "every element the seam declares is either in section 2A or a FLAGGED Nix addition",
-      "sources": [
-        {
-          "name": "seam_code_total",
-          "role": "stated",
-          "files": [
-            "scripts/broker/broker_seam.py"
-          ],
-          "probe": "seam_declared_total"
-        },
-        {
-          "name": "spec_plus_flagged_additions",
-          "role": "derived",
-          "files": [
-            "docs/nics_risk_subsystem_spec_v1.3.md",
-            "scripts/broker/broker_seam.py"
-          ],
-          "probe": "spec_plus_flagged_additions"
-        }
-      ],
-      "note": [
-        "The frozen spec cannot be edited, so the seam legitimately declares more than section 2A",
-        "does — feed_lag() is the precedent, flagged 'Nix addition' in its own docstring. This",
-        "claim makes the FLAG load-bearing rather than decorative: an element the seam declares",
-        "that section 2A does not define and whose docstring does not name it as an addition is",
-        "counted by the code side and not by the spec side, and the two disagree. That is the",
-        "difference between an extension and a drift, made mechanical."
-      ]
-    },
-    {
-      "id": "order_path_scope_files",
-      "property": "how many .py files the ban gate believes it covers, derived from the tree vs from its stated anchor",
-      "sources": [
-        {
-          "name": "gate_derived_scope",
-          "role": "derived",
-          "files": [
-            "checks/check_order_path_bans.py",
-            "scripts/broker"
-          ],
-          "argv": [
-            "{system_python}",
-            "{checks_dir}/check_order_path_bans.py",
-            "--print-scope-count",
-            "{nix_home}"
-          ]
-        },
-        {
-          "name": "stated_anchor_dirs",
-          "role": "stated",
-          "files": [
-            "checks/check_order_path_bans.py"
-          ],
-          "probe": "order_path_anchor_files"
-        }
-      ],
-      "note": [
-        "ARC 018, CHECK-DEBT D2.15. The file set a gate believes it covers is exactly the kind of",
-        "number that goes stale silently — debug.md §8 failure mode #14, the scope set by a list a",
-        "person edits.",
-        "THE TWO SOURCES ARE INDEPENDENT IN MECHANISM. `gate_derived_scope` asks the gate itself for",
-        "the scope it will actually read, and that scope is derived FROM FILE CONTENT: a directory",
-        "is in scope because some module in it declares ORDER_PORT_VERBS or defines a class carrying",
-        "at least PORT_QUORUM roster verbs as methods. `stated_anchor_dirs` globs the PATH the gate's",
-        "ORDER_PATH_DIRS constant names — read out of the gate by AST rather than retyped here, so",
-        "this probe is not itself a restatement.",
-        "WHAT A DISAGREEMENT MEANS, and it is not a bug in either side: the order path has acquired a",
-        "second home, or has moved. The gate SELF-HEALS — the new home joins its scan the moment the",
-        "file is written, which is D2.15's actual requirement — and this claim makes that change",
-        "VISIBLE rather than silent, so a human confirms the new home and updates the anchor. A gate",
-        "whose scope grows without anyone noticing is the same defect one direction over.",
-        "MEASURED ARC 018: the second-home case was planted (an adapter at scripts/limiter/ defining",
-        "four roster verbs) and the gate's scope went 4 files / 1 dir -> 5 files / 2 dirs, naming a",
-        "retry shape inside the plant. Restored, the scope returned to 4 / 1.",
-        "RESIDUAL, stated so it is not discovered as a surprise: a module that CALLS the order port",
-        "without DECLARING it — the future Limiter — is in neither source. §7.12 condition 4 beside",
-        "the gate carries the full statement."
-      ]
-    },
-    {
-      "id": "broker_order_element_coverage_v1",
-      "property": "broker-order ELEMENT COVERAGE (breadth) under scheme `sec2a-element-v1`, both terms re-derived",
-      "sources": [
-        {
-          "name": "spec_denominator",
-          "role": "derived",
-          "files": [
-            "docs/nics_risk_subsystem_spec_v1.3.md",
-            "scripts/broker/ibkr_mapping.py"
-          ],
-          "probe": "broker_order_coverage_spec"
-        },
-        {
-          "name": "seam_denominator",
-          "role": "stated",
-          "files": [
-            "scripts/broker/broker_seam.py",
-            "scripts/broker/ibkr_mapping.py"
-          ],
-          "probe": "broker_order_coverage_seam"
-        }
-      ],
-      "restatement_scans": [
-        {
-          "file": "downloads/RESULTS.md",
-          "pattern": "broker-order element coverage = (\\d+)% \\[scheme sec2a-element-v1\\]",
-          "note": "the CANONICAL written form of this scheme's level AFTER the ARC 020 rename. Zero matches is the preferred outcome; the pattern is a tripwire that goes live the moment anyone writes the level down in prose. It deliberately does NOT match a per-arc DELTA — a delta and a level are different quantities over the same denominator, and matching both would redden this claim for the wrong reason. Only downloads/RESULTS.md is scanned, because it is overwritten every arc and is therefore always current; sessions/SESSION.md and the CHECK-DEBT series table are APPEND-ONLY history, and a dated historical figure there is correct forever and must never be compared against today's derivation."
-        },
-        {
-          "file": "downloads/RESULTS.md",
-          "pattern": "broker-order level = (\\d+)% \\[scheme sec2a-element-v1\\]",
-          "note": "THE PRE-RENAME CANONICAL FORM, kept as a tripwire rather than deleted. ARC 020 renamed the claim but did NOT change the scheme or the derivation, so a document still written in the old form is stating this same quantity and must still state it correctly. Measured ARC 018 and again ARC 020: zero matches. If a future arc confirms the old spelling is gone from every live document, deleting this pattern is the doctrine-correct repair; syncing it would be the second-best one."
-        }
-      ],
-      "note": [
-        "RENAMED ARC 020 (C1, operator ruling) from `broker_order_percent_sec2a_element_v1`. THE",
-        "RENAME IS A FRAMING CORRECTION, NOT A NEW MEASUREMENT — the scheme identifier, both probes",
-        "and the cross-derivation are unchanged, and the value is continuous across the rename.",
-        "WHY IT WAS RENAMED. The old name said 'percent' and the number read as completeness. It is",
-        "not completeness; it is BREADTH, and it is blind to depth. ARC 019 is the measured instance:",
-        "an arc that closed four defects, discovered five more, corrected a banked performance figure",
-        "fivefold and produced the module's first Tier-3 traversal registered as ZERO MOVEMENT under",
-        "this scheme — correctly, because it added no elements. The name now carries the limitation.",
-        "'PERCENT MOVED' IS RETIRED AS A FRAMING FOR THIS SCHEME. A change in this level is a change",
-        "in ELEMENT COVERAGE and is named as such; it is never presented as how far the module moved.",
-        "The depth companion is the separate claim `broker_order_open_debt_rows`, which is a COUNT and",
-        "is deliberately not a percent.",
-        "NO CONFIDENCE DIMENSION WAS INVENTED, and that is a decision rather than an omission. A",
-        "per-element confidence score is a hand-maintained rubric, which is the stale-anchor class",
-        "this whole registry exists to remove.",
-        "THE SCHEME. `sec2a-element-v1`. coverage(level) = 100 * |broker-order elements graded",
-        "CLEAN| / |broker-order roster|, the roster being the frozen spec's section 2A set BY",
-        "IDENTIFIER. The identifier is registered ALONGSIDE the",
-        "value — it is carried in this claim's id and it is printed by both probes on every run — so a",
-        "future change of scheme appears as a new claim id rather than as a silent discontinuity in a",
-        "series that kept its name.",
-        "THE OTHER NUMBER. A prior architect estimate used a readiness-weighted decomposition and",
-        "produced ~42% for the same module. It is NOT comparable to this scheme and both called",
-        "themselves 'broker-order percent' — the 19-vs-16 shape recurring inside the progress number.",
-        "MEASURED ARC 018: `grep -rIn '42%'` over the whole tree, `git log --all -S'42%'` over the",
-        "whole history, and an XML extraction over both .docx files return NOTHING except this note.",
-        "The ~42% figure appears in exactly ONE place in this project: the ARC 018 brief itself,",
-        "downloads/arc_018_runtime_gate_truth.md, which is a task document and not a banked",
-        "artifact. It has never been in the repository, in any banked result, or in any commit. So",
-        "there was no restatement to delete; the retirement is a RULE, not a repair, and the rule",
-        "is: readiness commentary continues as",
-        "PROSE and is never expressed as a percent, so two incomparable numbers cannot both claim the",
-        "name again. This note is the only place the string exists, and it exists here as a record",
-        "that the search was run rather than as a value anyone should reuse.",
-        "HOW THE SOURCES ARE INDEPENDENT, AND WHERE THEY ARE NOT — stated because §7.12 condition 3",
-        "requires it and because overstating it would be the defect this file exists to catch. The",
-        "DENOMINATORS are genuinely independent: one is a markdown parse of the frozen spec's §2A",
-        "bullets by identifier, the other is a Python AST read of broker_seam.py's ORDER_PORT_VERBS +",
-        "ORDER_EVENTS. They diverge whenever the seam drifts from the spec. The NUMERATORS share a",
-        "mechanism — both read ARC 014's FINDINGS out of ibkr_mapping.py — so a defect in FINDINGS",
-        "itself would move both sides together. That residual is why this claim is a THIRD assertion",
-        "on top of spec_2a_broker_order_elements and arc014_broker_order_classification rather than a",
-        "replacement for either: those two already pin the roster and the grade tally from three",
-        "directions.",
-        "WHAT THIS CLAIM DOES NOT FIX, and ARC 018 found it rather than reconciling toward the brief:",
-        "ARC 017 reported broker-order at ~13%, and that number is 2/16 where 16 is the machine-",
-        "derived roster size and 2 is an ARC-LOCAL HAND COUNT of defects closed. The DENOMINATOR was",
-        "derivable; the NUMERATOR was not, and no gate can make an arc's own count of what it closed",
-        "machine-derivable. What is registered here is the reproducible part — the denominator and",
-        "the level — so a future delta is at least stated over a denominator that cannot drift.",
-        "ARC 020 ADDS THE OTHER HALF OF THAT SENTENCE. A delta over a denominator that cannot drift",
-        "is still a delta in BREADTH. It was never the module's progress, and the ARC 019 measurement",
-        "above is the proof. That is what the rename fixes and what `broker_order_open_debt_rows`",
-        "exists to stand beside."
-      ]
-    },
-    {
-      "id": "broker_order_open_debt_rows",
-      "property": "how many OPEN ledger rows are scoped to broker-order — A COUNT, NEVER A PERCENT",
-      "sources": [
-        {
-          "name": "spec_roster_vocabulary",
-          "role": "derived",
-          "files": [
-            "docs/CHECK-DEBT.md",
-            "docs/nics_risk_subsystem_spec_v1.3.md",
-            "checks/check_order_path_bans.py",
-            "scripts/broker"
-          ],
-          "probe": "broker_order_debt_rows_spec"
-        },
-        {
-          "name": "seam_roster_vocabulary",
-          "role": "stated",
-          "files": [
-            "docs/CHECK-DEBT.md",
-            "scripts/broker/broker_seam.py",
-            "checks/check_order_path_bans.py",
-            "scripts/broker"
-          ],
-          "probe": "broker_order_debt_rows_seam"
-        }
-      ],
-      "note": [
-        "ARC 020 / C2 — THE DEPTH COMPANION TO `broker_order_element_coverage_v1`.",
-        "",
-        "WHY IT EXISTS. Element coverage is breadth and cannot see the work. It does not move when a",
-        "defect inside an already-CLEAN element is found and it does not move when one is fixed, so",
-        "ARC 019 — four defects closed, five discovered, the module's first Tier-3 traversal — scored",
-        "zero. This number moves in both of those directions: it RISES when a traversal finds defects",
-        "and FALLS when they are paid. It is fully derivable from the ledger and it needs no rubric,",
-        "which is precisely why it was chosen over a confidence score.",
-        "",
-        "IT MUST NEVER BE EXPRESSED AS A PERCENT. THIS IS THE REASON, REGISTERED BESIDE THE CLAIM SO",
-        "A FUTURE READER CANNOT RE-DERIVE ONE. Making a percent of it requires a denominator, and the",
-        "only honest denominator is the total number of outstanding obligations this module has —",
-        "which is the same quantity as 'how much do we trust this module', and is unknowable. That is",
-        "NAMED GAP 5 exactly: condition 7 of the standing question in check_derived_claims.py states",
-        "that this instrument proves every REGISTERED number right and cannot prove the registry",
-        "covers the numbers that matter, so the denominator would be the size of a set nobody can",
-        "enumerate. A percent over an unknowable denominator is a confidence score wearing arithmetic",
-        "— the very rubric the C1 rename removed — and it would read as completeness for the second",
-        "time in the same module. The count is a FLOOR on outstanding broker-order obligations. It is",
-        "never a fraction of them.",
-        "",
-        "THE MODULE-SCOPING RULE, stated so it can be argued with rather than inferred:",
-        "  A row is BROKER-ORDER SCOPED iff it is OPEN — by the ledger's own bold-span rule, the same",
-        "  regex `check_debt_open_items` uses — AND its row text names at least one order-path",
-        "  artefact, being either (i) the basename of a Python module that exists under the order",
-        "  path AND does not implement the broker-datafeed port, or (ii) a broker-order roster",
-        "  identifier, matched on word boundaries.",
-        "NOTHING IN THE RULE IS TYPED. The order path is read by AST out of check_order_path_bans.py's",
-        "ORDER_PATH_DIRS anchor — the same non-restating technique order_path_scope_files uses — and",
-        "the basenames come off the disk. The datafeed subtraction in (i) is read out of the seam's",
-        "own DATAFEED_PORT_VERBS, so a module joins or leaves the vocabulary by being written.",
-        "",
-        "ARC 022 (C3) ADDED THE DATAFEED SUBTRACTION AND IT IS THE REPAIR OF D2.19, A MEASURED",
-        "CONTAMINATION. Before it, the basename half was the raw directory glob, so every .py under",
-        "scripts/broker was an order vocabulary term whichever §2A library it belonged to. Measured on",
-        "the ARC 022 tree, old rule versus new rule over the identical 53-row ledger: 16 versus 13. The",
-        "three rows the old rule counted and the new one does not — D1.13, D3.9, D3.10 — contain no",
-        "broker-order roster identifier at all; they were selected purely because they name",
-        "broker_datafeed_ibkr.py (which lives under scripts/broker because that is where §2A code",
-        "lives) or ibkr_mapping.py (which hosts BOTH §2A adapters). RE-DERIVED AT THE ARC 020 ANCHOR:",
-        "the corrected rule returns 11 on the ARC 020 tree with the identical eleven-row selection, so",
-        "the repair does not retroactively rewrite banked history — it removes exactly the ARC 021",
-        "contamination. The corrected series is 11 -> 13, not 11 -> 16.",
-        "",
-        "HOW THE SOURCES ARE INDEPENDENT, AND WHERE THEY ARE NOT — stated because condition 3 of the",
-        "standing question requires it and because overstating it is the defect this file exists to",
-        "catch. INDEPENDENT: the roster half of the vocabulary. One side parses the frozen spec's",
-        "broker-order bullets by identifier; the other AST-reads broker_seam.py's ORDER_PORT_VERBS +",
-        "ORDER_EVENTS. That is the derive-never-restate pair, and the sources diverge exactly when the",
-        "seam drifts from the spec by NAME — which is a stronger assertion than",
-        "spec_2a_broker_order_elements makes, since that claim compares COUNTS and two rosters can",
-        "agree on 16 while disagreeing on which 16.",
-        "",
-        "ARC 025 (C4) — THE THIRD CONTAMINATION, AND THE RULE NOW ATTRIBUTES BY OWNERSHIP RATHER THAN BY",
-        "MENTION. The value moved 13 -> 15 across ARC 024 while nothing touched broker-order, which is the",
-        "D2.19 class for the third time in five arcs. The two rows are D1.41, whose whole subject is two",
-        "Gateway gates dialling one endpoint and which was selected on the single word `connect` inside the",
-        "phrase `socket.connect` (the spy that took the measurement), and D3.20, whose whole subject is which",
-        "ARC 024 retrofits kept their bindings and which was selected because its evidence recites the file",
-        "another gate's plant landed in. Neither row is owed against broker-order code.",
-        "TWO CLAUSES, EACH DERIVED, EACH MEASURED, AND EACH THE D2.19 PRINCIPLE ONE STEP FURTHER:",
-        "  (1) QUALIFIED-IDENTIFIER SUBTRACTION. A roster identifier preceded by `<name>.` is an attribute of",
-        "      <name>, not the port verb, unless <name> owns order-path code -- the owner set being the",
-        "      basenames and the AST-read class names of every module under `ORDER_PATH_DIRS`, so nothing is",
-        "      typed. `socket.connect` is discarded; `IBKRBrokerOrder.disconnect()` is not.",
-        "  (2) A D3 ROW IS ATTRIBUTED BY ITS INSTRUMENT CELL. Read out of the ledger's own column headers,",
-        "      not chosen: D3 is titled `Instruments whose can-fail has never been demonstrated` and its",
-        "      header is `# | instrument | status | owner`, so the ledger itself declares a D3 row's subject",
-        "      to be an INSTRUMENT and its status cell to be evidence about that instrument. D1 and D2 are",
-        "      NOT restricted this way, and the difference is structural rather than convenient: a D1 subject",
-        "      is a defect description and a D2 doctrine cell is a citation, so in both the module",
-        "      attribution legitimately lives in the body. MEASURED: restricting D1/D2 the same way drops",
-        "      seven genuinely order-side rows (D1.19, D1.22, D1.28, D1.29, D1.30, D1.31, D1.38), which is",
-        "      doctrine B.4's forbidden direction -- narrowing scope until the number looks better.",
-        "THE OLD AND CORRECTED SERIES ARE PRINTED SIDE BY SIDE RATHER THAN THE HISTORY BEING RESTATED, and",
-        "the corrected rule was RE-DERIVED AT EVERY ANCHOR by materialising each merge commit with",
-        "`git archive` and running both rules over it:",
-        "  anchor      ARC 020   ARC 021   ARC 022   ARC 023   ARC 024",
-        "  old rule       11        13        13        13        15",
-        "  corrected      11        13        13        13        13",
-        "The corrected rule is IDENTICAL at every anchor before ARC 024 and removes exactly {D1.41, D3.20}",
-        "at ARC 024 -- so, exactly as the ARC 022 repair did, it removes this arc's contamination without",
-        "retroactively rewriting a banked figure. The corrected series is 11 -> 13 -> 13 -> 13 -> 13, i.e.",
-        "the ARC 024 movement was 0 and not +2.",
-        "WHAT CLAUSE (2) DOES NOT DO, named because C4 is the third repair of this metric and the residual is",
-        "what will produce the fourth: it is an OWNERSHIP test only where the ledger declares ownership. D1",
-        "and D2 rows are still selected on prose anywhere in the row, so a future D1 row that recites an",
-        "order artefact while being owed against something else will contaminate this number again. The",
-        "ledger has no owning-module column; adding one is the only repair that closes the class rather than",
-        "its instances, and it is a CHECK-DEBT.md change this claim cannot make for itself.",
-        "NOT INDEPENDENT, AND SAID PLAINLY: the ledger walk, the open-row rule and the module-basename",
-        "half of the vocabulary are SHARED by both sources. A defect in any of those three moves both",
-        "sides together and this claim would not see it. Two of the three are already asserted",
-        "elsewhere — the open-row rule by check_debt_open_items against the series table, the module",
-        "set by order_path_scope_files against the gate's content-derived scope — so this claim is a",
-        "third assertion layered on those, not a replacement for either.",
-        "",
-        "WHAT IS AMBIGUOUS. Mechanical attribution is not the same as correct attribution, and the",
-        "rule's misses are named here rather than discovered later:",
-        " a. APPARATUS-ABOUT-THE-MODULE versus DEFECT-IN-THE-MODULE. Two of the selected rows are not",
-        "    defects in the order path at all: D2.14 is a residual in the GATE that scans the order",
-        "    path, and D3.8 is a test instrument that happens to live in a seam module. Both are",
-        "    genuine outstanding broker-order obligations and both are counted. Whether 'scoped to",
-        "    broker-order' means defects IN the code or obligations ABOUT it is a judgment; the rule",
-        "    does not make it, it counts both, and this paragraph is the disclosure.",
-        " b. IT UNDER-COUNTS ROWS THAT TALK ABOUT THE MODULE WITHOUT NAMING ANYTHING IN IT. D1.11 is",
-        "    deferred until 'broker-order code exists and can host the probe' and names no artefact, so",
-        "    it is not selected — correct by the rule, arguably wrong in substance.",
-        " c. THE RULE READS PROSE. Rewording a row to drop the verb name silently removes it from the",
-        "    count. That is failure mode #14 one level down — a scope set by text a person edits — and",
-        "    the only mitigation is that every selected row id is printed on every run.",
-        " d. A ROW IS NOT A DEFECT. D1.24 lists five observed symptoms of one repair; D1.27 holds two",
-        "    separate specification gaps. The claim counts the ledger's unit of account, which is the",
-        "    row. Hence FLOOR, not census.",
-        " e. THE TWO ROSTERS CAN LEGITIMATELY DIVERGE. If the seam declares a broker-order element the",
-        "    spec does not — a flagged Nix addition, the feed_lag() precedent — the seam-side",
-        "    vocabulary gains a word the spec-side one lacks and the two sources can disagree. That is",
-        "    the instrument working, not a defect in it, and it is the shape a future arc should expect",
-        "    the first time an addition is declared on the order port.",
-        " f. THE ROSTER HALF IS STILL NOT DISTINCTIVE, AND ARC 022 DELIBERATELY LEFT IT THAT WAY.",
-        "    connect and disconnect are in BOTH §2A rosters. The datafeed claim subtracts them; this",
-        "    one does not, because they are genuinely broker-order verbs and an order row about",
-        "    connect() is real order debt. MEASURED CONSEQUENCE: D1.38, whose entire subject is",
-        "    BrokerDatafeedPort's sync/async split, is selected here on the single word connect. Both",
-        "    mechanical repairs are worse than the disease — dropping the shared verbs blinds this",
-        "    claim to every real connect/disconnect row, and demanding two roster hits blinds it to",
-        "    single-verb rows — so the false positive is disclosed and left. D2.19 stays open on it.",
-        " g. A SHARED HOST NOW NEEDS CORROBORATION FROM THE ROSTER HALF, WHICH IS PROSE. A row",
-        "    genuinely about ibkr_mapping.py's ORDER half that names no order roster identifier is now",
-        "    invisible here. That is disclosure (c) aimed at the shared host, and it is the price of",
-        "    not counting the datafeed half of the same file.",
-        "",
-        "NO restatement_scans ARE REGISTERED, DELIBERATELY. This number has never been written into a",
-        "document, and registering a pattern for a canonical prose form would invite one to be written",
-        "— in percent form, by the next person who wants a progress figure. If it is ever banked, the",
-        "form must be a bare count with the word 'rows' in it and a scan may be added then."
-      ]
-    },
-    {
-      "id": "spec_2a_broker_datafeed_elements",
-      "property": "how many broker-datafeed verbs+events section 2A defines, spec vs seam code",
-      "sources": [
-        {
-          "name": "frozen_spec_plus_flagged",
-          "role": "derived",
-          "files": [
-            "docs/nics_risk_subsystem_spec_v1.3.md",
-            "scripts/broker/broker_seam.py"
-          ],
-          "probe": "spec_datafeed_plus_flagged"
-        },
-        {
-          "name": "seam_datafeed_roster",
-          "role": "stated",
-          "files": [
-            "scripts/broker/broker_seam.py"
-          ],
-          "probe": "seam_datafeed_roster_count"
-        }
-      ],
-      "note": [
-        "ARC 021 / B3 — THE B.7 PAIR FOR THE SECOND §2A LIBRARY, and the datafeed counterpart of",
-        "spec_2a_broker_order_elements. The frozen spec is the authority and may never be edited;",
-        "broker_seam.py's DATAFEED_PORT_VERBS + DATAFEED_EVENTS is the code restating it. Adding a",
-        "datafeed verb to the seam without the spec is RED; the spec growing one the seam has not",
-        "implemented is RED.",
-        "WHY THE SPEC SIDE IS 'PLUS FLAGGED' AND THE ORDER-SIDE CLAIM IS NOT. §2A declares six",
-        "datafeed identifiers and the seam declares seven, and the extra one is feed_lag() — a Nix",
-        "addition the seam flags as such in its own docstring. A bare count comparison would be RED",
-        "on day one for a difference that is legitimate and already governed by seam_declared_elements.",
-        "This claim reuses that same mechanism narrowed to ONE library, so the datafeed's own drift is",
-        "visible instead of being averaged into a both-libraries total: an UNFLAGGED datafeed element",
-        "is counted by the seam side and not by the spec side, and the two disagree.",
-        "COUNTED BY IDENTIFIER, NOT BY BULLET. §2A's datafeed commands are two bullets and four verbs",
-        "('connect() / disconnect()', 'subscribe(symbol) / unsubscribe(symbol)'). Counting bullets",
-        "gives 4 where the identifier count is 6, which is evidence instance 7 in its datafeed form —",
-        "and it is a WORSE trap here than on the order side, because both datafeed command bullets are",
-        "doubled, so the bullet count is exactly two-thirds of the truth rather than one short."
-      ]
-    },
-    {
-      "id": "broker_datafeed_open_debt_rows",
-      "property": "how many OPEN ledger rows are scoped to broker-datafeed — A COUNT, NEVER A PERCENT",
-      "sources": [
-        {
-          "name": "spec_roster_vocabulary",
-          "role": "derived",
-          "files": [
-            "docs/CHECK-DEBT.md",
-            "docs/nics_risk_subsystem_spec_v1.3.md",
-            "scripts/broker",
-            "scripts/broker/broker_seam.py"
-          ],
-          "probe": "datafeed_debt_rows_spec"
-        },
-        {
-          "name": "seam_roster_vocabulary",
-          "role": "stated",
-          "files": [
-            "docs/CHECK-DEBT.md",
-            "scripts/broker/broker_seam.py",
-            "scripts/broker"
-          ],
-          "probe": "datafeed_debt_rows_seam"
-        }
-      ],
-      "note": [
-        "ARC 021 / B3 — THE DEPTH COMPANION FOR BROKER-DATAFEED, built to ARC 020's C2 framing.",
-        "",
-        "IT MUST NEVER BE EXPRESSED AS A PERCENT, and the reason is identical to the order-side claim's",
-        "so it is not re-argued here, only re-stated so nobody has to go and find it: a percent needs a",
-        "denominator, the only honest denominator is the total number of outstanding obligations this",
-        "module has, and that quantity is the same as 'how much do we trust this module' — unknowable.",
-        "A percent over an unknowable denominator is a confidence score wearing arithmetic. THE COUNT IS",
-        "A FLOOR ON OUTSTANDING BROKER-DATAFEED OBLIGATIONS. IT IS NEVER A FRACTION OF THEM.",
-        "",
-        "THE MODULE-SCOPING RULE, and it is NOT a copy of the order-side rule — one term is different:",
-        "  A row is BROKER-DATAFEED SCOPED iff it is OPEN — by the ledger's own bold-span rule, the same",
-        "  regex check_debt_open_items uses — AND its row text names at least one DISTINCTIVE datafeed",
-        "  artefact on a word boundary, being either (i) the basename of a module that implements the",
-        "  datafeed port and NOT the order port, or (ii) a datafeed roster identifier that is not also an",
-        "  order roster identifier.",
-        "WHY 'DISTINCTIVE'. The two §2A rosters SHARE connect and disconnect. A vocabulary built from the",
-        "raw datafeed roster would select every open order row that mentions connecting — D1.23 and D1.25",
-        "among them — and this claim would report the order path's depth under the datafeed's name. The",
-        "subtraction is derived from the same two sources as the roster itself, so it cannot go stale.",
-        "",
-        "THE MODULE-BASENAME HALF IS EMPTY TODAY, AND THAT IS THE HONEST ANSWER RATHER THAN A DEFECT.",
-        "The only class implementing the datafeed port outside the seam is IBKRDatafeedAdapter in",
-        "ibkr_mapping.py, and that module implements the order port too, so counting its basename would",
-        "select order rows as datafeed debt. A module that implements the datafeed port and not the order",
-        "port joins the vocabulary by being written, with no edit here — which is what makes this claim",
-        "self-healing when the dedicated adapter lands.",
-        "",
-        "HOW THE SOURCES ARE INDEPENDENT, AND WHERE THEY ARE NOT — stated because condition 3 of the",
-        "standing question requires it and because overstating it is the defect this file exists to catch.",
-        "INDEPENDENT: the roster half. One side parses the frozen spec's broker-datafeed bullets by",
-        "identifier and adds the seam's FLAGGED additions; the other AST-reads DATAFEED_PORT_VERBS +",
-        "DATAFEED_EVENTS. They diverge exactly when the seam drifts from the spec BY NAME.",
-        "NOT INDEPENDENT, AND SAID PLAINLY: the ledger walk, the open-row rule, the order-roster",
-        "subtraction and the module-basename half are SHARED by both sources. A defect in any of those",
-        "moves both sides together and this claim would not see it. The open-row rule is already asserted",
-        "by check_debt_open_items against the series table, so this is a third assertion layered on that,",
-        "not a replacement for it.",
-        "",
-        "WHAT IS AMBIGUOUS — the order-side claim's disclosures (a)-(e) all apply verbatim and are not",
-        "restated. ONE IS NEW AND IS SHARPER HERE: (f) THE RULE READS PROSE, AND THIS MODULE'S ROWS ARE",
-        "YOUNG. ARC 020 opened D1.30 and D1.31 and both were INVISIBLE to the order-side depth claim",
-        "because neither row named a module basename on a word boundary. A datafeed row that says",
-        "'the feed' and never says feed_lag, subscribe, on_tick or on_feed_status is invisible here for",
-        "exactly the same reason. The mitigation is the same and it is weak: every selected row id is",
-        "printed on every run, so the way to check a new row is to RUN THIS CLAIM, never to read the row.",
-        "",
-        "NO restatement_scans ARE REGISTERED, DELIBERATELY, for the same reason the order-side claim",
-        "registers none: this number has never been written into a document, and registering a pattern",
-        "for a canonical prose form would invite one to be written, in percent form, by the next person",
-        "who wants a progress figure."
-      ]
-    },
-    {
-      "id": "datafeed_scope_files",
-      "property": "how many modules each datafeed gate believes it covers, one gate against the other",
-      "sources": [
-        {
-          "name": "granted_mode_gate_scope",
-          "role": "derived",
-          "files": [
-            "checks/check_datafeed_granted_mode.py",
-            "scripts/broker"
-          ],
-          "argv": [
-            "{system_python}",
-            "{checks_dir}/check_datafeed_granted_mode.py",
-            "--print-scope-count",
-            "{nix_home}"
-          ]
-        },
-        {
-          "name": "bar_seal_gate_scope",
-          "role": "stated",
-          "files": [
-            "checks/check_datafeed_bar_seal.py",
-            "scripts/broker"
-          ],
-          "argv": [
-            "{system_python}",
-            "{checks_dir}/check_datafeed_bar_seal.py",
-            "--print-scope-count",
-            "{nix_home}"
-          ]
-        }
-      ],
-      "note": [
-        "ARC 021 / B3. THIS CLAIM EXISTS TO PAY A DOCTRINE C.9 DEBT MECHANICALLY RATHER THAN BY",
-        "DISCIPLINE, and it is the reason ARC 021 was able to build TWO datafeed gates instead of one.",
-        "",
-        "nix_check_contract.md §5.5 permits a second instrument when it owns a different property, and",
-        "requires the split be stated in both docstrings. check_datafeed_granted_mode owns the feed's",
-        "MODE OBSERVATION; check_datafeed_bar_seal owns the LIFECYCLE OF PUBLISHED SERIES DATA. Different",
-        "properties — but ONE SCOPE, and §4.2 forbids the shared helper that would keep the two",
-        "derivations identical, because every checks/check_*.py must be independently runnable. So the",
-        "two gates each carry their own walk of the tree, and two derivations of one scope is exactly the",
-        "drift C.9 warns about.",
-        "",
-        "WHAT A DISAGREEMENT MEANS. Not that either gate is wrong about ITS property — that the two no",
-        "longer agree about WHAT THE DATAFEED IS. One of them has stopped seeing a module the other sees,",
-        "so one of them is measuring a subject the other is not, and neither gate's own verdict can tell",
-        "you that. It is invisible from either side alone, which is the same shape as",
-        "registered_check_count's registry-versus-glob pair.",
-        "",
-        "BOTH SOURCES ARE THE GATES THEMSELVES, ASKED FOR THE SCOPE THEY WILL ACTUALLY READ — not a",
-        "re-derivation of what they ought to read. A probe that recomputed the scope here would be a third",
-        "implementation and would drift from both.",
-        "NOT INDEPENDENT, AND SAID PLAINLY: the two derivations are deliberately SIMILAR — both walk",
-        "scripts/, both apply a method quorum against DATAFEED_PORT_VERBS read out of the seam. A defect",
-        "in that shared idea moves both sides together and this claim will not see it. It is a DRIFT",
-        "detector, not an independent measurement, and calling it anything more would be the overstatement",
-        "this registry exists to catch.",
-        "THEY COUNT MODULES, NOT CLASSES, and that is load-bearing: the mode gate's subject is a CLASS and",
-        "the seal gate's is a MODULE, so the mode gate's CLI deliberately reports the number of distinct",
-        "modules its subjects live in. Two derivations that coincide on a number while counting different",
-        "things is evidence instance 7, and it was avoided here on purpose.",
-        "MEASURED ARC 021: 1 and 1 on the ARC 021 base tree — ibkr_mapping.py, whose IBKRDatafeedAdapter",
-        "is a refusing skeleton. In a scratch copy carrying a planted adapter and a planted bar builder",
-        "both sources moved to 2 and 3 respectively as each file was added, and agreed at every step."
-      ]
+     "name": "source_ast",
+     "role": "derived",
+     "files": [
+      "scripts/tests"
+     ],
+     "probe": "pytest_ast_count"
     }
-  ],
-  "demonstrations": [
+   ],
+   "restatement_scans": [
     {
-      "id": "bar_seal_arm4_drives_FeedLag",
-      "property": "a claim that a property was DEMONSTRATED is re-executed, never read",
-      "assertion": "docs/CHECK-DEBT.md D1.14 banks FeedLag as constructed twice from synthesised values differing in one field and proven to refuse a field write — check_datafeed_bar_seal arm 4 is the thing that would be doing it.",
-      "currently": "performs",
-      "banked": {
-        "file": "docs/CHECK-DEBT.md",
-        "pattern": "is constructed twice from synthesised values differing in one field"
-      },
-      "reexecute": {
-        "argv": ["{system_python}", "{checks_dir}/check_datafeed_bar_seal.py", "{nix_home}"],
-        "accept_exit": [0, 1, 2]
-      },
-      "observe": {
-        "performs": "arm4 [^;]*:FeedLag: revision representable",
-        "does-not-perform": "arm4 [^;]*:FeedLag: not (?:synthesisable|importable|constructible)"
-      },
-      "note": [
-        "THE EXEMPLAR, AND IT IS REGISTERED IN THE STATE IT IS ACTUALLY IN. D1.14's sentence was true",
-        "on the branch that wrote it and stopped being true at the ARC 021 merge; D3.15 measured the",
-        "root cause (a `float | None` annotation `_synth_value` cannot resolve, so the whole type is",
-        "skipped). Two arcs of 13/13 passed over it because nothing here re-executed the demonstration.",
-        "IT IS REGISTERED AS `does-not-perform` RATHER THAN LEFT UNREGISTERED, AND THAT IS THE POINT.",
-        "Registering it as `performs` would redden this gate over a defect ARC 023 sub-agent B is",
-        "forbidden to repair — arm 4's module is moving under a sibling agent, which is the D3.10 trap.",
-        "Leaving it unregistered restores the silence. Registered as owed, the arm goes RED IN BOTH",
-        "DIRECTIONS: red if the demonstration degrades further and stops being observable at all, and",
-        "red the moment arm 4 is repaired and FeedLag starts being driven, because then D3.15 is paid",
-        "and this entry must be flipped to `performs` in the same motion. `owed_row` is checked against",
-        "the ledger's own bold-span rule, so discharging D3.15 without touching this entry is also RED.",
-        "THE OBSERVATION IS TYPE-SPECIFIC ON PURPOSE. `arm4 ...: not synthesisable` is emitted for all",
-        "five published types today; keying the pattern on FeedLag alone means a repair that fixes",
-        "`Bar` and not `FeedLag` cannot half-satisfy this entry, and it matches D1.14's own wording,",
-        "which names FeedLag and nothing else.",
-        "",
-        "FLIPPED TO `performs` IN ARC 023 STAGE 2, AND THE COUPLING FIRED FIRST — MEASURED, NOT",
-        "PREDICTED. With arm 4 repaired and this entry still reading `does-not-perform`, this gate",
-        "returned exit 1 naming `derived_claims.json:demonstrations/bar_seal_arm4_drives_FeedLag:",
-        "registered as 'does-not-perform'; the re-execution observed 'performs'`. That is the entry",
-        "doing exactly what sub-agent B built it to do: it announced its own repair. `owed_row` is",
-        "REMOVED in the same edit because D3.15 is discharged in the same edit, and an `owed_row`",
-        "pointing at a discharged row is the ORPHANED DEMOTION defect this arm checks for — which",
-        "is why the two edits cannot be taken separately in either order.",
-        "THE TYPE-SPECIFIC KEYING EARNED ITS KEEP: the union repair alone made `Bar` drive and left",
-        "`FeedLag` reporting `not constructible - ValueError`, because FeedLag's __post_init__ refuses",
-        "the one assignment the old synthesiser drew. Had the pattern been keyed on any type, the",
-        "half-repair would have read as a full one."
-      ]
+     "file": ".pre-commit-config.yaml",
+     "pattern": "there are now (\\d+)",
+     "note": "the pytest-affected hook's live claim; removed by ARC 017"
     },
     {
-      "id": "bar_seal_arm2_has_a_series_store_subject",
-      "property": "the seal gate's structural arm still has a subject to examine",
-      "assertion": "docs/CHECK-DEBT.md D1.14 banks that the gate proves the SOURCE cannot overwrite a sealed entry without a membership guard. That arm has already once returned PASS over an EMPTY store set — it examined its subject and saw nothing — and the row records it.",
-      "currently": "performs",
-      "banked": {
-        "file": "docs/CHECK-DEBT.md",
-        "pattern": "the gate returned PASS with an empty store set"
-      },
-      "reexecute": {
-        "argv": ["{system_python}", "{checks_dir}/check_datafeed_bar_seal.py", "{nix_home}"],
-        "accept_exit": [0, 1, 2]
-      },
-      "observe": {
-        "performs": "series stores: \\['",
-        "does-not-perform": "series stores: \\[\\]"
-      },
-      "note": [
-        "THE COMPANION THAT IS CURRENTLY TRUE, so this arm is not only guarding a broken thing. D1.14",
-        "records the vacuity hole this gate fell into once already: the store detector required a",
-        "literal construction, the correct builder written to prove the gate could say no assigned",
-        "through a local first, and the gate returned PASS having examined its subject and seen",
-        "nothing. Nothing asserts that it still has one. This does — the store list is printed on",
-        "every run and was, until now, produced and discarded, which is §7.12 evidence instance 3.",
-        "SCOPE, STATED SO IT IS NOT OVER-READ: this proves arm 2 has a SUBJECT, not that arm 2 is",
-        "RIGHT about it. The polarity property is D2.21's and the binding question is D3.9/D3.10's.",
-        "Neither is claimed here."
-      ]
+     "file": ".pre-commit-config.yaml",
+     "pattern": "(\\d+)\\s*\\n\\s*#\\s*tests,",
+     "note": "the B101 comment's wrapped '126\\n tests, ~100 sites'; removed by ARC 017"
     }
-  ]
+   ],
+   "note": [
+    "source_ast counts `def test_*` and multiplies by each parametrize case list, so it is a",
+    "genuinely different mechanism from pytest's collector rather than the same walk twice.",
+    "They diverge when the collector stops seeing files it should see — a testpaths change, a",
+    "conftest that deselects, a module that fails to import. That is CHECK-DEBT D2.12's",
+    "property ('a suite that silently skips a gate reports GREEN') measured from outside the",
+    "suite. A dated historical measurement in prose ('ARC 017 derived 159 tests') is NOT",
+    "matched by the scans above and is deliberately out of scope: history is append-only.",
+    "MEASURED ARC 017: both scans now match ZERO times. ARC 017 DELETED the two live '126'",
+    "restatements rather than syncing them to 159, which is the doctrine-correct repair, so",
+    "these patterns are now a tripwire against reintroduction rather than a live comparison.",
+    "KNOWN FRAGILITY, stated so it is not discovered as a surprise: .pre-commit-config.yaml",
+    "still QUOTES the removed text as history ('It used to read \"126 tests\"', 'are now 126').",
+    "Those quotations are line-wrapped and the patterns do not reach them. Re-wrapping that",
+    "comment onto one line would make the first pattern match a historical quotation and turn",
+    "this claim red for the wrong reason. If that happens the repair is to the pattern."
+   ]
+  },
+  {
+   "id": "pinned_dependency_count",
+   "property": "how many venv pins exist, per the file and per its only validated reader",
+   "sources": [
+    {
+     "name": "pins_json",
+     "role": "derived",
+     "files": [
+      "checks/pinned_deps.json"
+     ],
+     "probe": "pinned_deps_count"
+    },
+    {
+     "name": "print_pins_cli",
+     "role": "derived",
+     "files": [
+      "checks/check_python_deps.py",
+      "checks/pinned_deps.json"
+     ],
+     "argv": [
+      "{system_python}",
+      "{checks_dir}/check_python_deps.py",
+      "--print-pins"
+     ],
+     "count_lines": true
+    }
+   ],
+   "note": [
+    "install.sh consumes `--print-pins`, not the JSON. If load_pins ever drops a pin on the",
+    "floor — a token-guard rejection, a key collision after lower-casing — the file and the",
+    "shell-visible list disagree and install.sh silently installs fewer packages than pinned."
+   ]
+  },
+  {
+   "id": "check_debt_open_items",
+   "property": "how many debts are open, counted from the rows vs what the series table says",
+   "sources": [
+    {
+     "name": "ledger_rows",
+     "role": "derived",
+     "files": [
+      "docs/CHECK-DEBT.md"
+     ],
+     "probe": "check_debt_open_count"
+    },
+    {
+     "name": "series_table_latest_row",
+     "role": "stated",
+     "files": [
+      "docs/CHECK-DEBT.md"
+     ],
+     "probe": "check_debt_series_latest"
+    }
+   ],
+   "note": [
+    "Evidence instances 1, 2 and 6. The stated source reads the LAST series row by position,",
+    "never by arc name — anchoring to 'ARC 016' would be the stale literal anchor this gate",
+    "exists to remove, and would go stale the next time a row is appended. A row that is never",
+    "appended still fails: the previous row's number will not match the new count."
+   ]
+  },
+  {
+   "id": "spec_2a_broker_order_elements",
+   "property": "how many broker-order verbs+events section 2A defines, spec vs seam code",
+   "sources": [
+    {
+     "name": "frozen_spec_identifiers",
+     "role": "derived",
+     "files": [
+      "docs/nics_risk_subsystem_spec_v1.3.md"
+     ],
+     "probe": "spec_order_identifier_count"
+    },
+    {
+     "name": "seam_roster",
+     "role": "stated",
+     "files": [
+      "scripts/broker/broker_seam.py"
+     ],
+     "probe": "seam_order_roster_count"
+    }
+   ],
+   "note": [
+    "THE B.7 PAIR. The frozen spec is the authority and may never be edited; broker_seam.py's",
+    "ORDER_PORT_VERBS + ORDER_EVENTS is the code restating it. Adding a verb to the seam",
+    "without the spec is RED; the spec growing one the seam has not implemented is RED.",
+    "COUNTED BY IDENTIFIER, NOT BY BULLET. 'connect() / disconnect()' is ONE markdown bullet",
+    "and TWO verbs. Counting bullets gives 15 here and 19 across both libraries, which is",
+    "evidence instance 7 — the number that survived three arcs."
+   ]
+  },
+  {
+   "id": "arc014_broker_order_classification",
+   "property": "ARC 014's CLEAN/FRICTION/GAP mapping re-derived against the real 16-element roster",
+   "sources": [
+    {
+     "name": "spec_roster_size",
+     "role": "derived",
+     "files": [
+      "docs/nics_risk_subsystem_spec_v1.3.md"
+     ],
+     "probe": "spec_order_identifier_count"
+    },
+    {
+     "name": "findings_covering_roster",
+     "role": "derived",
+     "files": [
+      "docs/nics_risk_subsystem_spec_v1.3.md",
+      "scripts/broker/ibkr_mapping.py"
+     ],
+     "probe": "arc014_roster_covered"
+    },
+    {
+     "name": "grade_tally_sum",
+     "role": "derived",
+     "files": [
+      "docs/nics_risk_subsystem_spec_v1.3.md",
+      "scripts/broker/ibkr_mapping.py"
+     ],
+     "probe": "arc014_grade_tally_sum"
+    }
+   ],
+   "note": [
+    "THREE derivations, not two, and that is the point. Evidence instance 7 survived because",
+    "TWO unrelated derivations coincided on 19; a third breaks a coincidence that a second",
+    "cannot. Sources 2 and 3 also make a real assertion beyond arithmetic: source 2 says every",
+    "section 2A broker-order element is graded by ARC 014, so a NEW seam element with no",
+    "finding reddens this claim rather than passing unnoticed.",
+    "The grade breakdown itself is derived and printed to stderr by both probes on every run;",
+    "it is NOT stored here, because storing it would anchor the gate to today's grades."
+   ]
+  },
+  {
+   "id": "seam_declared_elements",
+   "property": "every element the seam declares is either in section 2A or a FLAGGED Nix addition",
+   "sources": [
+    {
+     "name": "seam_code_total",
+     "role": "stated",
+     "files": [
+      "scripts/broker/broker_seam.py"
+     ],
+     "probe": "seam_declared_total"
+    },
+    {
+     "name": "spec_plus_flagged_additions",
+     "role": "derived",
+     "files": [
+      "docs/nics_risk_subsystem_spec_v1.3.md",
+      "scripts/broker/broker_seam.py"
+     ],
+     "probe": "spec_plus_flagged_additions"
+    }
+   ],
+   "note": [
+    "The frozen spec cannot be edited, so the seam legitimately declares more than section 2A",
+    "does — feed_lag() is the precedent, flagged 'Nix addition' in its own docstring. This",
+    "claim makes the FLAG load-bearing rather than decorative: an element the seam declares",
+    "that section 2A does not define and whose docstring does not name it as an addition is",
+    "counted by the code side and not by the spec side, and the two disagree. That is the",
+    "difference between an extension and a drift, made mechanical."
+   ]
+  },
+  {
+   "id": "order_path_scope_files",
+   "property": "how many .py files the ban gate believes it covers, derived from the tree vs from its stated anchor",
+   "sources": [
+    {
+     "name": "gate_derived_scope",
+     "role": "derived",
+     "files": [
+      "checks/check_order_path_bans.py",
+      "scripts/broker"
+     ],
+     "argv": [
+      "{system_python}",
+      "{checks_dir}/check_order_path_bans.py",
+      "--print-scope-count",
+      "{nix_home}"
+     ]
+    },
+    {
+     "name": "stated_anchor_dirs",
+     "role": "stated",
+     "files": [
+      "checks/check_order_path_bans.py"
+     ],
+     "probe": "order_path_anchor_files"
+    }
+   ],
+   "note": [
+    "ARC 018, CHECK-DEBT D2.15. The file set a gate believes it covers is exactly the kind of",
+    "number that goes stale silently — debug.md §8 failure mode #14, the scope set by a list a",
+    "person edits.",
+    "THE TWO SOURCES ARE INDEPENDENT IN MECHANISM. `gate_derived_scope` asks the gate itself for",
+    "the scope it will actually read, and that scope is derived FROM FILE CONTENT: a directory",
+    "is in scope because some module in it declares ORDER_PORT_VERBS or defines a class carrying",
+    "at least PORT_QUORUM roster verbs as methods. `stated_anchor_dirs` globs the PATH the gate's",
+    "ORDER_PATH_DIRS constant names — read out of the gate by AST rather than retyped here, so",
+    "this probe is not itself a restatement.",
+    "WHAT A DISAGREEMENT MEANS, and it is not a bug in either side: the order path has acquired a",
+    "second home, or has moved. The gate SELF-HEALS — the new home joins its scan the moment the",
+    "file is written, which is D2.15's actual requirement — and this claim makes that change",
+    "VISIBLE rather than silent, so a human confirms the new home and updates the anchor. A gate",
+    "whose scope grows without anyone noticing is the same defect one direction over.",
+    "MEASURED ARC 018: the second-home case was planted (an adapter at scripts/limiter/ defining",
+    "four roster verbs) and the gate's scope went 4 files / 1 dir -> 5 files / 2 dirs, naming a",
+    "retry shape inside the plant. Restored, the scope returned to 4 / 1.",
+    "RESIDUAL, stated so it is not discovered as a surprise: a module that CALLS the order port",
+    "without DECLARING it — the future Limiter — is in neither source. §7.12 condition 4 beside",
+    "the gate carries the full statement."
+   ]
+  },
+  {
+   "id": "broker_order_element_coverage_v1",
+   "property": "broker-order ELEMENT COVERAGE (breadth) under scheme `sec2a-element-v1`, both terms re-derived",
+   "sources": [
+    {
+     "name": "spec_denominator",
+     "role": "derived",
+     "files": [
+      "docs/nics_risk_subsystem_spec_v1.3.md",
+      "scripts/broker/ibkr_mapping.py"
+     ],
+     "probe": "broker_order_coverage_spec"
+    },
+    {
+     "name": "seam_denominator",
+     "role": "stated",
+     "files": [
+      "scripts/broker/broker_seam.py",
+      "scripts/broker/ibkr_mapping.py"
+     ],
+     "probe": "broker_order_coverage_seam"
+    }
+   ],
+   "restatement_scans": [
+    {
+     "file": "downloads/RESULTS.md",
+     "pattern": "broker-order element coverage = (\\d+)% \\[scheme sec2a-element-v1\\]",
+     "note": "the CANONICAL written form of this scheme's level AFTER the ARC 020 rename. Zero matches is the preferred outcome; the pattern is a tripwire that goes live the moment anyone writes the level down in prose. It deliberately does NOT match a per-arc DELTA — a delta and a level are different quantities over the same denominator, and matching both would redden this claim for the wrong reason. Only downloads/RESULTS.md is scanned, because it is overwritten every arc and is therefore always current; sessions/SESSION.md and the CHECK-DEBT series table are APPEND-ONLY history, and a dated historical figure there is correct forever and must never be compared against today's derivation."
+    },
+    {
+     "file": "downloads/RESULTS.md",
+     "pattern": "broker-order level = (\\d+)% \\[scheme sec2a-element-v1\\]",
+     "note": "THE PRE-RENAME CANONICAL FORM, kept as a tripwire rather than deleted. ARC 020 renamed the claim but did NOT change the scheme or the derivation, so a document still written in the old form is stating this same quantity and must still state it correctly. Measured ARC 018 and again ARC 020: zero matches. If a future arc confirms the old spelling is gone from every live document, deleting this pattern is the doctrine-correct repair; syncing it would be the second-best one."
+    }
+   ],
+   "note": [
+    "RENAMED ARC 020 (C1, operator ruling) from `broker_order_percent_sec2a_element_v1`. THE",
+    "RENAME IS A FRAMING CORRECTION, NOT A NEW MEASUREMENT — the scheme identifier, both probes",
+    "and the cross-derivation are unchanged, and the value is continuous across the rename.",
+    "WHY IT WAS RENAMED. The old name said 'percent' and the number read as completeness. It is",
+    "not completeness; it is BREADTH, and it is blind to depth. ARC 019 is the measured instance:",
+    "an arc that closed four defects, discovered five more, corrected a banked performance figure",
+    "fivefold and produced the module's first Tier-3 traversal registered as ZERO MOVEMENT under",
+    "this scheme — correctly, because it added no elements. The name now carries the limitation.",
+    "'PERCENT MOVED' IS RETIRED AS A FRAMING FOR THIS SCHEME. A change in this level is a change",
+    "in ELEMENT COVERAGE and is named as such; it is never presented as how far the module moved.",
+    "The depth companion is the separate claim `broker_order_open_debt_rows`, which is a COUNT and",
+    "is deliberately not a percent.",
+    "NO CONFIDENCE DIMENSION WAS INVENTED, and that is a decision rather than an omission. A",
+    "per-element confidence score is a hand-maintained rubric, which is the stale-anchor class",
+    "this whole registry exists to remove.",
+    "THE SCHEME. `sec2a-element-v1`. coverage(level) = 100 * |broker-order elements graded",
+    "CLEAN| / |broker-order roster|, the roster being the frozen spec's section 2A set BY",
+    "IDENTIFIER. The identifier is registered ALONGSIDE the",
+    "value — it is carried in this claim's id and it is printed by both probes on every run — so a",
+    "future change of scheme appears as a new claim id rather than as a silent discontinuity in a",
+    "series that kept its name.",
+    "THE OTHER NUMBER. A prior architect estimate used a readiness-weighted decomposition and",
+    "produced ~42% for the same module. It is NOT comparable to this scheme and both called",
+    "themselves 'broker-order percent' — the 19-vs-16 shape recurring inside the progress number.",
+    "MEASURED ARC 018: `grep -rIn '42%'` over the whole tree, `git log --all -S'42%'` over the",
+    "whole history, and an XML extraction over both .docx files return NOTHING except this note.",
+    "The ~42% figure appears in exactly ONE place in this project: the ARC 018 brief itself,",
+    "downloads/arc_018_runtime_gate_truth.md, which is a task document and not a banked",
+    "artifact. It has never been in the repository, in any banked result, or in any commit. So",
+    "there was no restatement to delete; the retirement is a RULE, not a repair, and the rule",
+    "is: readiness commentary continues as",
+    "PROSE and is never expressed as a percent, so two incomparable numbers cannot both claim the",
+    "name again. This note is the only place the string exists, and it exists here as a record",
+    "that the search was run rather than as a value anyone should reuse.",
+    "HOW THE SOURCES ARE INDEPENDENT, AND WHERE THEY ARE NOT — stated because §7.12 condition 3",
+    "requires it and because overstating it would be the defect this file exists to catch. The",
+    "DENOMINATORS are genuinely independent: one is a markdown parse of the frozen spec's §2A",
+    "bullets by identifier, the other is a Python AST read of broker_seam.py's ORDER_PORT_VERBS +",
+    "ORDER_EVENTS. They diverge whenever the seam drifts from the spec. The NUMERATORS share a",
+    "mechanism — both read ARC 014's FINDINGS out of ibkr_mapping.py — so a defect in FINDINGS",
+    "itself would move both sides together. That residual is why this claim is a THIRD assertion",
+    "on top of spec_2a_broker_order_elements and arc014_broker_order_classification rather than a",
+    "replacement for either: those two already pin the roster and the grade tally from three",
+    "directions.",
+    "WHAT THIS CLAIM DOES NOT FIX, and ARC 018 found it rather than reconciling toward the brief:",
+    "ARC 017 reported broker-order at ~13%, and that number is 2/16 where 16 is the machine-",
+    "derived roster size and 2 is an ARC-LOCAL HAND COUNT of defects closed. The DENOMINATOR was",
+    "derivable; the NUMERATOR was not, and no gate can make an arc's own count of what it closed",
+    "machine-derivable. What is registered here is the reproducible part — the denominator and",
+    "the level — so a future delta is at least stated over a denominator that cannot drift.",
+    "ARC 020 ADDS THE OTHER HALF OF THAT SENTENCE. A delta over a denominator that cannot drift",
+    "is still a delta in BREADTH. It was never the module's progress, and the ARC 019 measurement",
+    "above is the proof. That is what the rename fixes and what `broker_order_open_debt_rows`",
+    "exists to stand beside."
+   ]
+  },
+  {
+   "id": "broker_order_open_debt_rows",
+   "property": "how many OPEN ledger rows the AUTHORED `owning module` column attributes to broker-order — A COUNT, NEVER A PERCENT",
+   "sources": [
+    {
+     "name": "ledger_column",
+     "role": "derived",
+     "files": [
+      "docs/CHECK-DEBT.md"
+     ],
+     "probe": "broker_order_debt_rows_ledger"
+    },
+    {
+     "name": "stated_module_tally",
+     "role": "stated",
+     "files": [
+      "docs/CHECK-DEBT.md"
+     ],
+     "probe": "broker_order_debt_rows_tally"
+    }
+   ],
+   "note": [
+    "ARC 026 (B3). Selection is by the ledger's AUTHORED `owning module` column and by nothing",
+    "else. It replaces a prose scan that had been contaminated four times — most sharply in ARC",
+    "025, when D1.41 entered the broker-order metric because `socket.connect` contains the word",
+    "`connect`: the spy that took ARC 024's measurement contaminated the metric measuring it.",
+    "Every prior repair narrowed the VOCABULARY and left the MECHANISM intact, so a fifth",
+    "contamination was one wording away. Reword a row now and the count does not move.",
+    "",
+    "THE TWO SOURCES CHANGED, AND THAT WAS FORCED. They used to be the frozen spec's roster and",
+    "the seam's roster — two independent restatements of one vocabulary. Selecting on an authored",
+    "column removes that independence: two sources reading the same column would agree ALWAYS,",
+    "and the claim would be vacuous. That would have been a defect introduced by the repair. So",
+    "the pair is restated in the shape `check_debt_open_items` already uses — the ROW SCAN is",
+    "derived, the ledger's per-module tally table is STATED, and this harness compares them",
+    "(doctrine B.7). Add a row, forget the tally, and the claim goes RED naming both numbers.",
+    "",
+    "NOTHING WAS LOST. The spec-roster-versus-seam-roster property still has an owner: claim",
+    "`spec_2a_broker_order_elements` / `spec_2a_broker_datafeed_elements` compares exactly those",
+    "two sources, and doctrine C.9 says one property, one instrument — not two.",
+    "",
+    "IT IS A COUNT AND NEVER A PERCENT: the only honest denominator would be 'how many",
+    "obligations does this module have', which is unknowable, and a percent over an unknowable",
+    "denominator is a confidence score wearing arithmetic."
+   ]
+  },
+  {
+   "id": "spec_2a_broker_datafeed_elements",
+   "property": "how many broker-datafeed verbs+events section 2A defines, spec vs seam code",
+   "sources": [
+    {
+     "name": "frozen_spec_plus_flagged",
+     "role": "derived",
+     "files": [
+      "docs/nics_risk_subsystem_spec_v1.3.md",
+      "scripts/broker/broker_seam.py"
+     ],
+     "probe": "spec_datafeed_plus_flagged"
+    },
+    {
+     "name": "seam_datafeed_roster",
+     "role": "stated",
+     "files": [
+      "scripts/broker/broker_seam.py"
+     ],
+     "probe": "seam_datafeed_roster_count"
+    }
+   ],
+   "note": [
+    "ARC 021 / B3 — THE B.7 PAIR FOR THE SECOND §2A LIBRARY, and the datafeed counterpart of",
+    "spec_2a_broker_order_elements. The frozen spec is the authority and may never be edited;",
+    "broker_seam.py's DATAFEED_PORT_VERBS + DATAFEED_EVENTS is the code restating it. Adding a",
+    "datafeed verb to the seam without the spec is RED; the spec growing one the seam has not",
+    "implemented is RED.",
+    "WHY THE SPEC SIDE IS 'PLUS FLAGGED' AND THE ORDER-SIDE CLAIM IS NOT. §2A declares six",
+    "datafeed identifiers and the seam declares seven, and the extra one is feed_lag() — a Nix",
+    "addition the seam flags as such in its own docstring. A bare count comparison would be RED",
+    "on day one for a difference that is legitimate and already governed by seam_declared_elements.",
+    "This claim reuses that same mechanism narrowed to ONE library, so the datafeed's own drift is",
+    "visible instead of being averaged into a both-libraries total: an UNFLAGGED datafeed element",
+    "is counted by the seam side and not by the spec side, and the two disagree.",
+    "COUNTED BY IDENTIFIER, NOT BY BULLET. §2A's datafeed commands are two bullets and four verbs",
+    "('connect() / disconnect()', 'subscribe(symbol) / unsubscribe(symbol)'). Counting bullets",
+    "gives 4 where the identifier count is 6, which is evidence instance 7 in its datafeed form —",
+    "and it is a WORSE trap here than on the order side, because both datafeed command bullets are",
+    "doubled, so the bullet count is exactly two-thirds of the truth rather than one short."
+   ]
+  },
+  {
+   "id": "broker_datafeed_open_debt_rows",
+   "property": "how many OPEN ledger rows the AUTHORED `owning module` column attributes to broker-datafeed — A COUNT, NEVER A PERCENT",
+   "sources": [
+    {
+     "name": "ledger_column",
+     "role": "derived",
+     "files": [
+      "docs/CHECK-DEBT.md"
+     ],
+     "probe": "datafeed_debt_rows_ledger"
+    },
+    {
+     "name": "stated_module_tally",
+     "role": "stated",
+     "files": [
+      "docs/CHECK-DEBT.md"
+     ],
+     "probe": "datafeed_debt_rows_tally"
+    }
+   ],
+   "note": [
+    "ARC 026 (B3). Selection is by the ledger's AUTHORED `owning module` column and by nothing",
+    "else. It replaces a prose scan that had been contaminated four times — most sharply in ARC",
+    "025, when D1.41 entered the broker-order metric because `socket.connect` contains the word",
+    "`connect`: the spy that took ARC 024's measurement contaminated the metric measuring it.",
+    "Every prior repair narrowed the VOCABULARY and left the MECHANISM intact, so a fifth",
+    "contamination was one wording away. Reword a row now and the count does not move.",
+    "",
+    "THE TWO SOURCES CHANGED, AND THAT WAS FORCED. They used to be the frozen spec's roster and",
+    "the seam's roster — two independent restatements of one vocabulary. Selecting on an authored",
+    "column removes that independence: two sources reading the same column would agree ALWAYS,",
+    "and the claim would be vacuous. That would have been a defect introduced by the repair. So",
+    "the pair is restated in the shape `check_debt_open_items` already uses — the ROW SCAN is",
+    "derived, the ledger's per-module tally table is STATED, and this harness compares them",
+    "(doctrine B.7). Add a row, forget the tally, and the claim goes RED naming both numbers.",
+    "",
+    "NOTHING WAS LOST. The spec-roster-versus-seam-roster property still has an owner: claim",
+    "`spec_2a_broker_order_elements` / `spec_2a_broker_datafeed_elements` compares exactly those",
+    "two sources, and doctrine C.9 says one property, one instrument — not two.",
+    "",
+    "IT IS A COUNT AND NEVER A PERCENT: the only honest denominator would be 'how many",
+    "obligations does this module have', which is unknowable, and a percent over an unknowable",
+    "denominator is a confidence score wearing arithmetic."
+   ]
+  },
+  {
+   "id": "datafeed_scope_files",
+   "property": "how many modules each datafeed gate believes it covers, one gate against the other",
+   "sources": [
+    {
+     "name": "granted_mode_gate_scope",
+     "role": "derived",
+     "files": [
+      "checks/check_datafeed_granted_mode.py",
+      "scripts/broker"
+     ],
+     "argv": [
+      "{system_python}",
+      "{checks_dir}/check_datafeed_granted_mode.py",
+      "--print-scope-count",
+      "{nix_home}"
+     ]
+    },
+    {
+     "name": "bar_seal_gate_scope",
+     "role": "stated",
+     "files": [
+      "checks/check_datafeed_bar_seal.py",
+      "scripts/broker"
+     ],
+     "argv": [
+      "{system_python}",
+      "{checks_dir}/check_datafeed_bar_seal.py",
+      "--print-scope-count",
+      "{nix_home}"
+     ]
+    }
+   ],
+   "note": [
+    "ARC 021 / B3. THIS CLAIM EXISTS TO PAY A DOCTRINE C.9 DEBT MECHANICALLY RATHER THAN BY",
+    "DISCIPLINE, and it is the reason ARC 021 was able to build TWO datafeed gates instead of one.",
+    "",
+    "nix_check_contract.md §5.5 permits a second instrument when it owns a different property, and",
+    "requires the split be stated in both docstrings. check_datafeed_granted_mode owns the feed's",
+    "MODE OBSERVATION; check_datafeed_bar_seal owns the LIFECYCLE OF PUBLISHED SERIES DATA. Different",
+    "properties — but ONE SCOPE, and §4.2 forbids the shared helper that would keep the two",
+    "derivations identical, because every checks/check_*.py must be independently runnable. So the",
+    "two gates each carry their own walk of the tree, and two derivations of one scope is exactly the",
+    "drift C.9 warns about.",
+    "",
+    "WHAT A DISAGREEMENT MEANS. Not that either gate is wrong about ITS property — that the two no",
+    "longer agree about WHAT THE DATAFEED IS. One of them has stopped seeing a module the other sees,",
+    "so one of them is measuring a subject the other is not, and neither gate's own verdict can tell",
+    "you that. It is invisible from either side alone, which is the same shape as",
+    "registered_check_count's registry-versus-glob pair.",
+    "",
+    "BOTH SOURCES ARE THE GATES THEMSELVES, ASKED FOR THE SCOPE THEY WILL ACTUALLY READ — not a",
+    "re-derivation of what they ought to read. A probe that recomputed the scope here would be a third",
+    "implementation and would drift from both.",
+    "NOT INDEPENDENT, AND SAID PLAINLY: the two derivations are deliberately SIMILAR — both walk",
+    "scripts/, both apply a method quorum against DATAFEED_PORT_VERBS read out of the seam. A defect",
+    "in that shared idea moves both sides together and this claim will not see it. It is a DRIFT",
+    "detector, not an independent measurement, and calling it anything more would be the overstatement",
+    "this registry exists to catch.",
+    "THEY COUNT MODULES, NOT CLASSES, and that is load-bearing: the mode gate's subject is a CLASS and",
+    "the seal gate's is a MODULE, so the mode gate's CLI deliberately reports the number of distinct",
+    "modules its subjects live in. Two derivations that coincide on a number while counting different",
+    "things is evidence instance 7, and it was avoided here on purpose.",
+    "MEASURED ARC 021: 1 and 1 on the ARC 021 base tree — ibkr_mapping.py, whose IBKRDatafeedAdapter",
+    "is a refusing skeleton. In a scratch copy carrying a planted adapter and a planted bar builder",
+    "both sources moved to 2 and 3 respectively as each file was added, and agreed at every step."
+   ]
+  }
+ ],
+ "demonstrations": [
+  {
+   "id": "bar_seal_arm4_drives_FeedLag",
+   "property": "a claim that a property was DEMONSTRATED is re-executed, never read",
+   "assertion": "docs/CHECK-DEBT.md D1.14 banks FeedLag as constructed twice from synthesised values differing in one field and proven to refuse a field write — check_datafeed_bar_seal arm 4 is the thing that would be doing it.",
+   "currently": "performs",
+   "banked": {
+    "file": "docs/CHECK-DEBT.md",
+    "pattern": "is constructed twice from synthesised values differing in one field"
+   },
+   "reexecute": {
+    "argv": [
+     "{system_python}",
+     "{checks_dir}/check_datafeed_bar_seal.py",
+     "{nix_home}"
+    ],
+    "accept_exit": [
+     0,
+     1,
+     2
+    ]
+   },
+   "observe": {
+    "performs": "arm4 [^;]*:FeedLag: revision representable",
+    "does-not-perform": "arm4 [^;]*:FeedLag: not (?:synthesisable|importable|constructible)"
+   },
+   "note": [
+    "THE EXEMPLAR, AND IT IS REGISTERED IN THE STATE IT IS ACTUALLY IN. D1.14's sentence was true",
+    "on the branch that wrote it and stopped being true at the ARC 021 merge; D3.15 measured the",
+    "root cause (a `float | None` annotation `_synth_value` cannot resolve, so the whole type is",
+    "skipped). Two arcs of 13/13 passed over it because nothing here re-executed the demonstration.",
+    "IT IS REGISTERED AS `does-not-perform` RATHER THAN LEFT UNREGISTERED, AND THAT IS THE POINT.",
+    "Registering it as `performs` would redden this gate over a defect ARC 023 sub-agent B is",
+    "forbidden to repair — arm 4's module is moving under a sibling agent, which is the D3.10 trap.",
+    "Leaving it unregistered restores the silence. Registered as owed, the arm goes RED IN BOTH",
+    "DIRECTIONS: red if the demonstration degrades further and stops being observable at all, and",
+    "red the moment arm 4 is repaired and FeedLag starts being driven, because then D3.15 is paid",
+    "and this entry must be flipped to `performs` in the same motion. `owed_row` is checked against",
+    "the ledger's own bold-span rule, so discharging D3.15 without touching this entry is also RED.",
+    "THE OBSERVATION IS TYPE-SPECIFIC ON PURPOSE. `arm4 ...: not synthesisable` is emitted for all",
+    "five published types today; keying the pattern on FeedLag alone means a repair that fixes",
+    "`Bar` and not `FeedLag` cannot half-satisfy this entry, and it matches D1.14's own wording,",
+    "which names FeedLag and nothing else.",
+    "",
+    "FLIPPED TO `performs` IN ARC 023 STAGE 2, AND THE COUPLING FIRED FIRST — MEASURED, NOT",
+    "PREDICTED. With arm 4 repaired and this entry still reading `does-not-perform`, this gate",
+    "returned exit 1 naming `derived_claims.json:demonstrations/bar_seal_arm4_drives_FeedLag:",
+    "registered as 'does-not-perform'; the re-execution observed 'performs'`. That is the entry",
+    "doing exactly what sub-agent B built it to do: it announced its own repair. `owed_row` is",
+    "REMOVED in the same edit because D3.15 is discharged in the same edit, and an `owed_row`",
+    "pointing at a discharged row is the ORPHANED DEMOTION defect this arm checks for — which",
+    "is why the two edits cannot be taken separately in either order.",
+    "THE TYPE-SPECIFIC KEYING EARNED ITS KEEP: the union repair alone made `Bar` drive and left",
+    "`FeedLag` reporting `not constructible - ValueError`, because FeedLag's __post_init__ refuses",
+    "the one assignment the old synthesiser drew. Had the pattern been keyed on any type, the",
+    "half-repair would have read as a full one."
+   ]
+  },
+  {
+   "id": "bar_seal_arm2_has_a_series_store_subject",
+   "property": "the seal gate's structural arm still has a subject to examine",
+   "assertion": "docs/CHECK-DEBT.md D1.14 banks that the gate proves the SOURCE cannot overwrite a sealed entry without a membership guard. That arm has already once returned PASS over an EMPTY store set — it examined its subject and saw nothing — and the row records it.",
+   "currently": "performs",
+   "banked": {
+    "file": "docs/CHECK-DEBT.md",
+    "pattern": "the gate returned PASS with an empty store set"
+   },
+   "reexecute": {
+    "argv": [
+     "{system_python}",
+     "{checks_dir}/check_datafeed_bar_seal.py",
+     "{nix_home}"
+    ],
+    "accept_exit": [
+     0,
+     1,
+     2
+    ]
+   },
+   "observe": {
+    "performs": "series stores: \\['",
+    "does-not-perform": "series stores: \\[\\]"
+   },
+   "note": [
+    "THE COMPANION THAT IS CURRENTLY TRUE, so this arm is not only guarding a broken thing. D1.14",
+    "records the vacuity hole this gate fell into once already: the store detector required a",
+    "literal construction, the correct builder written to prove the gate could say no assigned",
+    "through a local first, and the gate returned PASS having examined its subject and seen",
+    "nothing. Nothing asserts that it still has one. This does — the store list is printed on",
+    "every run and was, until now, produced and discarded, which is §7.12 evidence instance 3.",
+    "SCOPE, STATED SO IT IS NOT OVER-READ: this proves arm 2 has a SUBJECT, not that arm 2 is",
+    "RIGHT about it. The polarity property is D2.21's and the binding question is D3.9/D3.10's.",
+    "Neither is claimed here."
+   ]
+  }
+ ]
 }

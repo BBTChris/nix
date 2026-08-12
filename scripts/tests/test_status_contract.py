@@ -303,3 +303,201 @@ def test_timed_returns_the_same_result_object_it_was_given() -> None:
     assert result is original
     assert result.status is Status.GUARDED
     assert result.guard_owner == "ARC 025"
+
+
+# -- ARC 026 (B2): a guard must name an arc that can still discharge it -----
+#
+# THE THIRD ITERATION OF ONE FLAW, and the tests are written against the flaw
+# rather than against the code:
+#   ARC 024 required a non-empty owner. `"ARC 025+"` passed it.
+#   ARC 025 required exactly one arc. `"ARC 025"` passed it — and ARC 025 then
+#     completed with that guard still standing on the tree.
+#   ARC 026 requires the arc to be able to PAY. Shape was never the property;
+#     doctrine B.3 asks for the arc that CAN ACTUALLY DISCHARGE the marker.
+
+
+def test_completed_arcs_reads_the_real_completion_record() -> None:
+    """NON-VACUITY, on the real tree, before any plant.
+
+    Asserted as INVARIANTS, never as values: a count or a maximum written here
+    would be a literal anchor that goes stale at the close of every arc — which
+    is exactly the cadence this predicate operates on (`debug.md` §8 failure
+    mode #4). What is asserted is that the record parses, that it is not empty,
+    and that it agrees with the ledger's independent per-arc series.
+    """
+    from pathlib import Path
+
+    from nixverify.contract import completed_arcs
+
+    home = Path(__file__).resolve().parents[2]
+    arcs, error = completed_arcs(home)
+    assert not error, error
+    assert arcs, "the completion record parsed to the empty set"
+    assert max(arcs) >= 20, sorted(arcs)  # a floor, not the current value
+
+
+def test_a_guard_naming_a_COMPLETED_arc_is_downgraded(tmp_path) -> None:
+    """THE DEFECT ITSELF. `ARC 001` has closed; it can discharge nothing."""
+    from nixverify.contract import completed_arcs
+
+    home = _completion_tree(tmp_path, closed=(1, 2, 3), series_max=3)
+    _, error = completed_arcs(home)
+    assert not error, error
+
+    validated = validate_result(_guarded(guard_owner="ARC 001"), home)
+
+    assert validated.status is Status.CANNOT_MEASURE, validated.detail
+    assert "ALREADY COMPLETED" in validated.detail, validated.detail
+    assert "ARC 001" in validated.detail, validated.detail
+
+
+def test_a_guard_naming_a_LIVE_arc_survives(tmp_path) -> None:
+    """THE OTHER HALF. Without it the rule above could simply always fire."""
+    home = _completion_tree(tmp_path, closed=(1, 2, 3), series_max=3)
+    validated = validate_result(_guarded(guard_owner="ARC 004"), home)
+    assert validated.status is Status.GUARDED, validated.detail
+    assert validated.detail == "", validated.detail
+
+
+def test_an_unreadable_completion_record_FAILS_CLOSED(tmp_path) -> None:
+    """No record, no verdict. The fail-open reading would switch the arm off."""
+    validated = validate_result(_guarded(guard_owner="ARC 999"), tmp_path)
+    assert validated.status is Status.CANNOT_MEASURE, validated.detail
+    assert "completion record" in validated.detail, validated.detail
+    assert "SESSION.md" in validated.detail, validated.detail
+
+
+def test_a_completion_record_BEHIND_the_ledger_is_CANNOT_MEASURE(tmp_path) -> None:
+    """The cross-derivation, and it is TENSE-AWARE rather than a simple floor.
+
+    A session log that under-reports is the failure that would silently let a
+    guard point at history. The ledger's series table is the second record that
+    catches it — but a series row is written DURING its arc while a session
+    summary is appended AT CLOSE, so the newest series row is exempt and every
+    older one must be closed. Here rows 5 and 6 are unmatched and 7 is the
+    newest, so 5 and 6 are the complaint and 7 is not.
+    """
+    from nixverify.contract import completed_arcs
+
+    home = _completion_tree(tmp_path, closed=(1, 2), series=(5, 6, 7))
+    arcs, error = completed_arcs(home)
+    assert not arcs
+    assert "UNDER-REPORTING" in error, error
+    assert "005, 006" in error, error
+    assert "007" not in error, error
+
+    validated = validate_result(_guarded(guard_owner="ARC 009"), home)
+    assert validated.status is Status.CANNOT_MEASURE, validated.detail
+
+
+def test_the_NEWEST_series_row_may_be_the_arc_IN_FLIGHT(tmp_path) -> None:
+    """The control for the rule above, and the case that broke its first spelling.
+
+    An arc writes its series row while it is running and appends its session
+    summary when it closes, so `series ahead by exactly the newest row` is the
+    NORMAL state of every arc in progress. The first spelling of this rule
+    treated it as a broken session log and reddened the whole predicate — caught
+    by this suite inside the arc that wrote it.
+    """
+    from nixverify.contract import completed_arcs
+
+    home = _completion_tree(tmp_path, closed=(1, 2, 3), series=(1, 2, 3, 4))
+    arcs, error = completed_arcs(home)
+    assert not error, error
+    assert arcs == frozenset({1, 2, 3}), sorted(arcs)
+    assert (
+        validate_result(_guarded(guard_owner="ARC 004"), home).status is Status.GUARDED
+    )
+
+
+def test_only_HEADINGS_count_as_a_close_out(tmp_path) -> None:
+    """A citation is not a completion.
+
+    Arc summaries cite other arcs constantly. If body prose counted, an arc
+    would be marked complete because somebody mentioned it — and the marker on
+    a live arc would go red for a reason nobody could see.
+    """
+    from nixverify.contract import completed_arcs
+
+    home = _completion_tree(tmp_path, closed=(1,), series_max=1)
+    (home / "sessions" / "SESSION.md").write_text(
+        "## 2026-01-01 — ARC 001: closed\n\nBody prose citing ARC 002 and ARC 003.\n",
+        encoding="utf-8",
+    )
+    arcs, error = completed_arcs(home)
+    assert not error, error
+    assert arcs == frozenset({1}), sorted(arcs)
+
+
+def test_the_admitting_arc_keeps_SHAPE_ONLY_validation() -> None:
+    """Two tenses, one grammar (ARC 026 B2).
+
+    `guard_owner` is a PROMISE — a completed arc disqualifies it. An `admitted`
+    entry in `check_artifact_gate_coverage`'s baseline is a RECEIPT — the arc
+    that already admitted a path — and a completed arc is the normal value there
+    for every entry once its arc closes. The same call with and without
+    `completed` must therefore give different answers, or the distinction is not
+    implemented.
+    """
+    from nixverify.contract import guard_owner_defect
+
+    assert guard_owner_defect("ARC 025") == ""
+    assert "ALREADY COMPLETED" in guard_owner_defect("ARC 025", frozenset({25}))
+
+
+def test_the_ENGINE_path_has_the_dischargeability_arm_switched_on(tmp_path) -> None:
+    """An arm live only when a caller remembers an argument is an arm that is off.
+
+    This drives the real engine — `run_blocks` over a real check module on disk —
+    rather than calling `validate_result` directly, because every assertion above
+    would pass unchanged against an engine that never passes `home`. That is the
+    §7.12 question aimed at this arm: it could be perfectly correct and never run.
+    """
+    from pathlib import Path
+
+    from nixverify.contract import Context, Mode
+    from nixverify.engine import run_blocks
+    from nixverify.registry import Block
+
+    home = _completion_tree(tmp_path, closed=(1, 2, 3), series_max=3)
+    checks = home / "checks"
+    checks.mkdir()
+    (checks / "check_stale_guard.py").write_text(
+        "from nixverify.contract import CheckResult, Status\n"
+        "PRIVILEGE = 'user'\n"
+        "INTERACTIVE = False\n"
+        "DISRUPTIVE = False\n"
+        "def run(mode, ctx):\n"
+        "    return CheckResult(name='check_stale_guard', status=Status.GUARDED,\n"
+        "                       evidence='measured', guard_owner='ARC 002')\n",
+        encoding="utf-8",
+    )
+    ctx = Context(nix_home=home, mode=Mode.VERIFY)
+    results = run_blocks((Block(name="b", checks=("check_stale_guard",)),), checks, ctx)
+    assert len(results) == 1
+    assert results[0].status is Status.CANNOT_MEASURE, results[0].detail
+    assert "ALREADY COMPLETED" in results[0].detail, results[0].detail
+    assert isinstance(Path(home), Path)
+
+
+def _completion_tree(tmp_path, closed, series_max=None, series=None):
+    """A throwaway tree carrying a session log and a ledger series table.
+
+    Never the real tree: a plant that edited `sessions/SESSION.md` would be
+    rewriting banked evidence (`CLAUDE.md` directive 6) and doctrine C.8's
+    permanent-synthetic-row incident is what that costs.
+    """
+    home = tmp_path / "home"
+    (home / "sessions").mkdir(parents=True)
+    (home / "docs").mkdir()
+    (home / "sessions" / "SESSION.md").write_text(
+        "".join(f"## 2026-01-01 — ARC {n:03d}: closed\n\n" for n in closed),
+        encoding="utf-8",
+    )
+    rows = series if series is not None else (series_max,)
+    (home / "docs" / "CHECK-DEBT.md").write_text(
+        "| date | arc | open | note |\n|---|---|---|---|\n"
+        + "".join(f"| 2026-01-01 | ARC {n:03d} | 5 | fixture |\n" for n in rows),
+        encoding="utf-8",
+    )
+    return home

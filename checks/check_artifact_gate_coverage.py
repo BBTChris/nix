@@ -62,7 +62,6 @@ from __future__ import annotations
 
 import dataclasses
 import json
-import os
 import subprocess  # nosec B404 - git ls-files/log/show, fixed argv, no shell
 import sys
 from pathlib import Path
@@ -73,9 +72,11 @@ from nixverify.contract import (
     Context,
     Mode,
     Status,
+    completed_arcs,
     guard_owner_defect,
 )
 from nixverify.declarations import read_all
+from nixverify.gitenv import SELECTORS, scrubbed_env
 
 PRIVILEGE = "user"
 INTERACTIVE = False
@@ -194,17 +195,12 @@ def _load_baseline(home: Path) -> Baseline:
 #: constant lives here rather than in the test harness. It is the project's
 #: recurring defect class (an ambient tracking state silently setting a gate's
 #: scope) arriving through the environment instead of through a config file.
-_GIT_ENV_BLOCKED = (
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_INDEX_FILE",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_COMMON_DIR",
-    "GIT_NAMESPACE",
-    "GIT_CEILING_DIRECTORIES",
-    "GIT_PREFIX",
-)
+#:
+#: **ARC 026 (B4): this is now an ALIAS of `nixverify.gitenv.SELECTORS`.** The
+#: names above are the ones that were measured doing damage; the rule applied is
+#: the broader `GIT_*` prefix. Kept as a name because the committed suite asserts
+#: on it, and two spellings of one list is the defect this arc is purging.
+_GIT_ENV_BLOCKED = SELECTORS
 
 
 def git_env() -> dict[str, str]:
@@ -213,10 +209,15 @@ def git_env() -> dict[str, str]:
     Exported so the test harness runs git the same way the gate does — a harness
     that could redirect itself while the gate could not would be measuring a
     different program from the one that ships.
+
+    **ARC 026 (B4): the rule moved to `nixverify.gitenv` and got STRICTER.** This
+    used to strip a nine-name list; it now strips every `GIT_`-prefixed variable,
+    because a list does not inherit the repository-selecting variables future git
+    releases add and a prefix rule does. `_GIT_ENV_BLOCKED` is kept as an alias of
+    the shared `SELECTORS` tuple so the committed assertions that name it keep
+    naming one thing.
     """
-    return {
-        key: value for key, value in os.environ.items() if key not in _GIT_ENV_BLOCKED
-    }
+    return scrubbed_env()
 
 
 def _git(home: Path, *args: str) -> tuple[str, str]:
@@ -314,6 +315,11 @@ def _ratchet_defects(
     """
     defects: list[tuple[str, str]] = []
     for path in sorted(baseline.uncovered - mark):
+        # SHAPE ONLY — no `completed` argument, deliberately (ARC 026 B2).
+        # `admitted` records the arc that ALREADY admitted this path. That arc
+        # completes, and the record stays true; passing the completion set here
+        # would redden every honest `admitted` entry at the next arc boundary.
+        # A guard owner is a promise, an admitting arc is a receipt.
         defect = guard_owner_defect(baseline.admitted.get(path, ""))
         if defect:
             defects.append(
@@ -418,7 +424,19 @@ def run(  # pylint: disable=unused-argument,too-many-locals,too-many-return-stat
         # the owner is validated HERE as well as in `validate_result`, so an
         # operator reading this gate is told the baseline's `owner` field is the
         # offender rather than being handed the engine's generic downgrade.
-        owner_defect = guard_owner_defect(baseline.owner)
+        completed, completion_error = completed_arcs(home)
+        if completion_error:
+            # ARC 026 (B2). FAIL CLOSED. Without the completion record this gate
+            # cannot tell a live owner from a dead one, and "probably still open"
+            # is the assumption that let `ARC 025` stand as an owner through the
+            # whole of ARC 026's predecessor.
+            return CheckResult(
+                name=NAME,
+                status=Status.CANNOT_MEASURE,
+                evidence=evidence,
+                detail=(f"{BASELINE}:owner cannot be judged — {completion_error}"),
+            )
+        owner_defect = guard_owner_defect(baseline.owner, completed)
         if owner_defect:
             return CheckResult(
                 name=NAME,

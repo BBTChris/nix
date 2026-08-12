@@ -492,3 +492,64 @@ it protects sources nobody has written yet rather than the one that broke; ANSI 
 4. **Wave C's can-fail binding is still owed to the tap session** — see `CHECK-DEBT.md`. ARC 025
    declared both Gateway gates and gave them the actuation surface; it did **not** re-bind them,
    because that needs a live authenticated Gateway.
+
+---
+
+## AMENDMENT 6 — the execution plan gets ONE name (ARC 026, B1)
+
+**Amends `nix_check_contract.md` §6. Does not amend `VERIFY-AND-CHECKS.md`**, which names
+`registry.json` at A.4 and D.5 and says nothing about the identifiers — the doctrine was never the
+source of the disagreement.
+
+### What was wrong
+
+ARC 010 renamed the FILE (`verify_manifest.json` → `checks/registry.json`, per doctrine A.4/D.5) and
+stopped. Every identifier one layer down kept the old word, so a single artifact had two live names:
+
+| layer | name before this amendment | name now |
+|---|---|---|
+| the file | `checks/registry.json` | `checks/registry.json` (**unchanged — the filename ruling is still open**) |
+| the module | `scripts/nixverify/manifest.py` | `scripts/nixverify/registry.py` |
+| the exception | `ManifestError` | `RegistryError` |
+| the loader | `load_manifest()` | `load_registry()` |
+| the CLI flag | `--manifest` | `--registry` |
+| the JSON key | `manifest_version` | `registry_version` |
+| the Plane-2 `run_start` field | `manifest=` | `registry=` |
+
+**This is not cosmetic and it is not a filename ruling.** Two live spellings of one thing, edited by
+different hands at different times, is the failure class this project has already paid for twice
+under the names `ORDERS_OPEN` and `avg_price`: nothing keeps them in step, and the last writer wins
+silently. It is a defect **whichever way the operator eventually rules on the filename**, because
+under either ruling one of the two spellings has to go. Purging it now means a future ruling is one
+mechanical pass instead of a rename plus an archaeology exercise.
+
+### What is deliberately NOT changed
+
+* **`checks/registry.json` is not renamed, in either direction.** The ARC 024 operator ruling calls
+  the artifact `manifest.json`; the file on disk is `registry.json`. **Still unruled, still not
+  resolved silently.** ARC 026 took no position: this amendment would have been written the same way
+  with the names swapped.
+* **`nics_risk_subsystem_spec_v1.3.md` §5 "Rule Manifest"** is untouched and out of scope. It names
+  a *different* concept — the Limiter's two-phase rule set — and `risks/broker_order.config.json`
+  refers to it correctly. A purge that reddened the frozen spec's own vocabulary would be doctrine
+  B.4's forbidden direction dressed as tidiness.
+
+### The gate
+
+`checks/check_name_coherence.py`, with `scripts/tests/test_check_name_coherence.py`. It scans the
+git-tracked tree for a declared list of identifier spellings — never the English word, for the reason
+above — and FAILS naming `path:line` and the token. Can-fail is parametrised over the gate's own
+`BANNED` tuple, so a spelling added to the rule cannot ship without a demonstration.
+
+**Exempt, and the exemption is the gate's own soft spot:** `CHECK-CONTRACT-AMENDMENTS.md` (this
+file — the table above is the record), `CHECK-DEBT.md`, `sessions/SESSION.md`, `CLAUDE-CHANGELOG.md`,
+`downloads/` (the architect's briefs, not ours to edit), `docs/superpowers/plans/` (dated plan
+records from ARC 008–009), and the gate and its test, which must name what they ban. Every one of
+those is a record whose function is to say what the vocabulary USED to be, and `CLAUDE.md`
+directive 6 forbids rewriting banked evidence. **A future arc that widens that tuple to turn a red
+green is doing the thing the doctrine names at B.4.**
+
+### Residual, recorded rather than argued away
+
+The gate cannot see an occurrence hidden inside its own source or its own test, because both are
+exempt by name. `CHECK-DEBT.md` D3.23.

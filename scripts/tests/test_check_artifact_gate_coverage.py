@@ -57,9 +57,34 @@ def _git(home: Path, *args: str) -> None:
     )
 
 
+#: The synthetic tree's completion record. ARC 026 (B2): the gate now asks
+#: whether the baseline's `owner` names an arc that can still discharge the
+#: guard, and it derives "which arcs have completed" from `sessions/SESSION.md`.
+#: A fixture without one measures the CANNOT_MEASURE path forever, so the
+#: throwaway repo carries a real record — and the owner below names an arc that
+#: record does NOT close, which is what makes the positive control positive.
+_FIXTURE_CLOSED = tuple(range(1, 21))
+_FIXTURE_LIVE_ARC = "ARC 021"
+
+
+def _write_completion_record(home: Path) -> None:
+    """A session log and a ledger series table for the throwaway tree."""
+    (home / "sessions").mkdir(parents=True, exist_ok=True)
+    (home / "docs").mkdir(parents=True, exist_ok=True)
+    (home / "sessions" / "SESSION.md").write_text(
+        "".join(f"## 2026-01-01 — ARC {n:03d}: closed\n\n" for n in _FIXTURE_CLOSED),
+        encoding="utf-8",
+    )
+    (home / "docs" / "CHECK-DEBT.md").write_text(
+        "| date | arc | open | note |\n|---|---|---|---|\n"
+        f"| 2026-01-01 | ARC {max(_FIXTURE_CLOSED):03d} | 5 | fixture |\n",
+        encoding="utf-8",
+    )
+
+
 def _write_baseline(home: Path, uncovered: list[str], **extra: object) -> None:
     payload: dict[str, object] = {
-        "owner": "ARC 025",
+        "owner": _FIXTURE_LIVE_ARC,
         "uncovered": sorted(uncovered),
         "admitted": {},
     }
@@ -84,6 +109,7 @@ def _build(home: Path, *, commit_baseline: bool = True) -> Path:
         f'SUBJECTS = ("scripts/module_00.py", "{gate.BASELINE}")\n',
         encoding="utf-8",
     )
+    _write_completion_record(home)
     _write_baseline(home, artifacts[1:])
     _git(home, "init", "-q")
     _git(home, "config", "user.email", "t@example.com")
@@ -161,7 +187,7 @@ def test_CONTROL_the_clean_synthetic_repo_is_GUARDED_with_a_single_arc_owner(
     """Step 1 and step 6 of §5.1: the state every plant below is measured against."""
     result = _run(repo)
     assert result.status is Status.GUARDED, result
-    assert result.guard_owner == "ARC 025"
+    assert result.guard_owner == _FIXTURE_LIVE_ARC
     assert "high-water mark" in result.evidence
     assert exit_code_for(result.status) == 3
 
@@ -324,7 +350,7 @@ def test_a_baseline_owner_that_names_a_RANGE_is_CANNOT_MEASURE_naming_the_field(
 ) -> None:
     """The gate reports its own baseline as the offender, not the engine generically."""
     baseline = json.loads((repo / gate.BASELINE).read_text(encoding="utf-8"))
-    baseline["owner"] = "the bulk check retrofit arc (ARC 025+), sized in ARC 024"
+    baseline["owner"] = "the bulk check retrofit arc (ARC 021+), sized in ARC 020"
     (repo / gate.BASELINE).write_text(json.dumps(baseline), encoding="utf-8")
 
     result = _run(repo)
@@ -333,14 +359,69 @@ def test_a_baseline_owner_that_names_a_RANGE_is_CANNOT_MEASURE_naming_the_field(
     assert "RANGE" in result.detail
 
 
-def test_the_REAL_baselines_owner_is_a_single_arc(
+def test_the_REAL_baselines_owner_is_a_single_arc_AND_CAN_STILL_PAY(
     _pytest_needs_no_fixture=None,
 ) -> None:
-    """The production artifact this arc repaired, pinned so it cannot regress."""
-    from nixverify.contract import guard_owner_defect
+    """The production artifact, pinned against BOTH iterations of the flaw.
+
+    ARC 025 pinned the shape. `"ARC 025"` satisfies the shape and ARC 025 has
+    since closed with the guard still standing, so shape alone is now known to be
+    insufficient — the second assertion is the one that would have caught it.
+    Derived from the live completion record, never from a number typed here.
+    """
+    from nixverify.contract import completed_arcs, guard_owner_defect
 
     payload = json.loads((REPO / gate.BASELINE).read_text(encoding="utf-8"))
+    completed, error = completed_arcs(REPO)
+    assert not error, error
     assert guard_owner_defect(payload["owner"]) == "", payload["owner"]
+    assert guard_owner_defect(payload["owner"], completed) == "", payload["owner"]
+
+
+def test_PLANT_a_baseline_owner_that_has_ALREADY_COMPLETED_is_CANNOT_MEASURE(
+    repo: Path,
+) -> None:
+    """THE ARC 026 DEFECT, planted. `ARC 005` is closed in the fixture record.
+
+    The gate must name its own field and say WHY — an operator handed a bare
+    CANNOT_MEASURE cannot tell a dead owner from an unreadable file, and those
+    have opposite repairs.
+    """
+    baseline = json.loads((repo / gate.BASELINE).read_text(encoding="utf-8"))
+    baseline["owner"] = "ARC 005"
+    (repo / gate.BASELINE).write_text(json.dumps(baseline), encoding="utf-8")
+
+    result = _run(repo)
+    assert result.status is Status.CANNOT_MEASURE, result
+    assert f"{gate.BASELINE}:owner" in result.detail, result.detail
+    assert "ALREADY COMPLETED" in result.detail, result.detail
+
+
+def test_a_MISSING_completion_record_is_CANNOT_MEASURE_not_a_pass(
+    repo: Path,
+) -> None:
+    """FAIL CLOSED. Without the record the gate cannot tell a live owner from a
+    dead one, and 'probably still open' is the assumption that let `ARC 025`
+    stand as an owner for a whole arc."""
+    (repo / "sessions" / "SESSION.md").unlink()
+    result = _run(repo)
+    assert result.status is Status.CANNOT_MEASURE, result
+    assert "cannot be judged" in result.detail, result.detail
+    assert "SESSION.md" in result.detail, result.detail
+
+
+def test_an_ADMITTING_arc_that_has_completed_stays_ACCEPTED(repo: Path) -> None:
+    """Two tenses, one grammar. A receipt is not a promise (ARC 026 B2).
+
+    `admitted` names the arc that ALREADY admitted a baseline addition. That arc
+    completes and the record stays true — so the dischargeability rule must NOT
+    reach it, or every honest `admitted` entry reddens at the next arc boundary.
+    `ARC 005` is closed in the fixture's record and must be fine here while being
+    a defect in `owner` (the test above).
+    """
+    _admit(repo, "scripts/module_new.py", arc="ARC 005")
+    result = _run(repo)
+    assert result.status is Status.GUARDED, result.detail
 
 
 # --- THE PRE-EXISTING ARMS, RE-ESTABLISHED AFTER THE RETROFIT ---------------

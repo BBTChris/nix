@@ -15,6 +15,7 @@ is built under `tmp_path`. The one test that reads the real tree only READS it.
 from __future__ import annotations
 
 import json
+import re
 import socket
 import subprocess
 import sys
@@ -119,9 +120,21 @@ def test_NONVACUITY_the_observer_actually_records_claims_on_the_real_tree() -> N
     This is the live half. It asserts the gate's evidence reports a non-zero
     number of runtime claims against the real population, which is the same
     assertion `run()` makes on every invocation before it is allowed to report.
+
+    STRENGTHENED ARC 026, AND THE OLD SPELLING WAS THE DEFECT THIS PROJECT KEEPS
+    FINDING INSIDE ITS OWN INSTRUMENTS. It read
+    `assert "0 runtime resource claim(s)" not in result.evidence` — a SUBSTRING
+    test on a rendered number. It went RED the first time the real population
+    recorded **20** claims, because "20 runtime resource claim(s)" contains
+    "0 runtime resource claim(s)". The assertion was correct for one decade of
+    counts and silently wrong for the next, and it would equally have passed a
+    genuine zero rendered any other way. The number is now PARSED and compared,
+    which is what the assertion always meant.
     """
     result = _run(REPO)
-    assert "0 runtime resource claim(s)" not in result.evidence, result.evidence
+    recorded = re.search(r"(\d+) runtime resource claim\(s\)", result.evidence)
+    assert recorded, result.evidence
+    assert int(recorded.group(1)) > 0, result.evidence
     assert result.status is not Status.PASS or result.evidence
 
 

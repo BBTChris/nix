@@ -7,7 +7,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 VERIFY = REPO / "scripts" / "verify.py"
-MANIFEST = REPO / "checks" / "registry.json"
+REGISTRY = REPO / "checks" / "registry.json"
 
 
 def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -20,9 +20,9 @@ def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_manifest_lists_only_checks_that_exist() -> None:
-    """A manifest naming an absent check would silently CANNOT_MEASURE."""
-    payload = json.loads(MANIFEST.read_text(encoding="utf-8"))
+def test_registry_lists_only_checks_that_exist() -> None:
+    """A registry naming an absent check would silently CANNOT_MEASURE."""
+    payload = json.loads(REGISTRY.read_text(encoding="utf-8"))
     for block in payload["blocks"]:
         for name in block["checks"]:
             assert (REPO / "checks" / f"{name}.py").is_file(), name
@@ -45,10 +45,10 @@ def _reported_order(stdout: str) -> list[str]:
     return _VERDICT.findall(stdout)
 
 
-def test_real_run_reports_every_check_in_manifest_order() -> None:
-    """Results print in manifest order, never completion order (§6).
+def test_real_run_reports_every_check_in_registry_order() -> None:
+    """Results print in registry order, never completion order (§6).
 
-    ARC 025 Stage 2.3: the expected order is DERIVED FROM THE MANIFEST, not
+    ARC 025 Stage 2.3: the expected order is DERIVED FROM THE REGISTRY, not
     restated here. It used to be a hardcoded list of four names reflecting the
     hand-maintained `bootstrap-floor / identity / trading-stack` blocks — and
     `--optimize` then re-derived the plan from the dependency graph, which puts
@@ -63,7 +63,7 @@ def test_real_run_reports_every_check_in_manifest_order() -> None:
     exactly like green.
     """
     proc = _run(["--verbose"])
-    payload = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    payload = json.loads(REGISTRY.read_text(encoding="utf-8"))
     planned = [name for block in payload["blocks"] for name in block["checks"]]
     on_disk = sorted(p.stem for p in (REPO / "checks").glob("check_*.py"))
     reported = _reported_order(proc.stdout)
@@ -73,7 +73,7 @@ def test_real_run_reports_every_check_in_manifest_order() -> None:
     assert len(reported) > 1, proc.stdout
 
     assert reported == planned, (
-        f"reported order {reported} != manifest order {planned}\n{proc.stdout}"
+        f"reported order {reported} != registry order {planned}\n{proc.stdout}"
     )
     # Census, three ways — not two. Two agreeing counts can both omit the same
     # check; the third is what makes an orphan visible.
