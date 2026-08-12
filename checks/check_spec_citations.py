@@ -275,6 +275,38 @@ PRIVILEGE = "user"
 INTERACTIVE = False
 DISRUPTIVE = False
 
+# --- ARC 025 orchestration declarations (read statically, never imported) ---
+#: Nothing must run first. Both sides of this gate are derived from files on
+#: disk; no other check produces them.
+DEPENDS_ON: tuple[str, ...] = ()
+#: Claims NOTHING. This gate only READS: every `*.md` under `docs/`, every
+#: source file under SCAN_ROOTS, and its own suppression registry. It opens no
+#: socket, restarts no service, and writes no byte anywhere. Everything it reads
+#: is version-controlled source that no check mutates, so there is nothing here
+#: for a concurrent check to contend over. `()` is the positive claim, which is
+#: what makes this gate parallel-eligible.
+RESOURCES: tuple[str, ...] = ()
+#: No timeout, no poll, no subprocess. The runtime is the tree walk — work, not
+#: a bound — so there is no constant for EXPECTED_S to be derived from.
+TIME_BOUND = False
+#: NON-CORRECTABLE. See condition 7 of the standing question above.
+CORRECTABLE = False
+NON_CORRECTABLE_REASON = (
+    "rewriting a citation is an editorial act on prose whose meaning this gate "
+    "cannot read: it proves a citation is not DANGLING and cannot prove it is "
+    "APT, and a section number that resolves in four indexed documents is "
+    "decided by an attribution heuristic, not by knowing what the author meant. "
+    "An instrument that could edit the text it measures would be manufacturing "
+    "its own green — the same objection that makes check_artifact_gate_coverage "
+    "non-correctable."
+)
+#: The suppression registry is the one static artifact this gate reads AND
+#: validates (unsigned entries are rejected, unmatched entries are reddened as
+#: stale), so it is genuinely measured here rather than merely named. Everything
+#: else in scope is derived from the tree at run time and is not enumerable as a
+#: fixed list.
+SUBJECTS: tuple[str, ...] = ("checks/citation_reviewed.json",)
+
 NAME = "check_spec_citations"
 
 # --------------------------------------------------------------------------
@@ -817,17 +849,12 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
 if __name__ == "__main__":
     import sys
 
-    from nixverify.contract import exit_code_for, validate_result
+    from nixverify.actuation import standalone_main
 
-    HOME = (
-        Path(sys.argv[1])
-        if len(sys.argv) > 1
-        else Path(__file__).resolve().parent.parent
+    sys.exit(
+        standalone_main(
+            Path(__file__).resolve(),
+            run,
+            NAME,
+        )
     )
-    OUTCOME = validate_result(
-        run(Mode.VERIFY, Context(nix_home=HOME, mode=Mode.VERIFY))
-    )
-    print(f"{OUTCOME.status.value}: {OUTCOME.evidence or OUTCOME.detail}")
-    if OUTCOME.detail and OUTCOME.evidence:
-        print(f"  detail: {OUTCOME.detail}")
-    sys.exit(exit_code_for(OUTCOME.status))
