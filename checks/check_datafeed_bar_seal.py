@@ -1195,7 +1195,15 @@ def _drive_seal(cls: type, plan: Plan, site: str) -> tuple[list, str]:
             )
         ], ""
     defects: list[tuple[str, str]] = []
-    if first != same:
+    # ONE measurement, TWO consumers: the defect below and the note returned on
+    # the write-refused path are both read off this name. ARC 027 (B3), D3.21 —
+    # the note used to assert "value equality holds" unconditionally, so under
+    # the `eq=False` plant the gate shipped a CORRECT verdict beside FALSE
+    # evidence and an operator reading the evidence line concluded the opposite
+    # of the verdict. A narration authored independently of the measurement it
+    # describes is a defect of its own class, distinct from an unread number.
+    equality_holds = first == same
+    if not equality_holds:
         defects.append(
             (
                 site,
@@ -1213,7 +1221,8 @@ def _drive_seal(cls: type, plan: Plan, site: str) -> tuple[list, str]:
         # exception for "the runtime refused the write", not a blind catch.
         return defects, (
             f"arm4 {site}: revision representable (differs in {plan.vary}), "
-            f"field write refused, value equality holds"
+            f"field write refused, value equality "
+            f"{'holds' if equality_holds else 'DOES NOT HOLD'}"
         )
     defects.append(
         (

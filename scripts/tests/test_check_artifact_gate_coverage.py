@@ -504,3 +504,242 @@ def test_this_gates_declarations_are_literals_and_now_name_its_subprocess() -> N
     assert declaration.errors == (), declaration.errors
     assert "subprocess:git" in declaration.resources, declaration.resources
     assert gate.BASELINE in declaration.subjects
+
+
+# --- ARC 027 (B2): THE RE-OWNING CEILING, CHECK-DEBT D2.31 -------------------
+#
+# The fourth iteration of one flaw. ARC 024 required a non-empty owner; ARC 025
+# required exactly one arc; ARC 026 required that arc to be OPEN. Each rule
+# judges the owner value STANDING TODAY, and a marker re-pointed at the next arc
+# at every arc boundary passes all three forever while the debt is never paid.
+# These tests drive the only arm that judges the SEQUENCE.
+
+
+def _reown(repo: Path, arc: str) -> None:
+    """Re-point the guard at `arc` and COMMIT it — a re-owning, as it really happens.
+
+    The commit is the point. A lineage derived from the working tree is length 1
+    by construction, so a fixture that only rewrote the file would exercise a
+    ceiling that could never be reached.
+    """
+    baseline = json.loads((repo / gate.BASELINE).read_text(encoding="utf-8"))
+    baseline["owner"] = arc
+    (repo / gate.BASELINE).write_text(json.dumps(baseline), encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", f"re-own to {arc}")
+
+
+def test_NONVACUITY_the_real_trees_owner_lineage_is_derived_from_COMMITTED_blobs() -> (
+    None
+):
+    """Before any plant: the derivation reads history, and history has >1 owner.
+
+    Doctrine C.3. A ceiling measured against a lineage that is always length 1 is
+    an arm that is off. The real baseline has been re-owned twice, so the real
+    tree is itself the proof that the derivation sees changes the working tree
+    cannot show it.
+    """
+    history = gate._committed_history(REPO)
+    assert not history.error, history.error
+    assert len(history.revisions) > 1, "the ratchet's own file has a history"
+    lineage = gate._owner_lineage(history)
+    assert len(lineage) > 1, (
+        f"the lineage must be read from committed blobs, not from the working "
+        f"tree, which holds exactly one owner: {lineage}"
+    )
+    working = json.loads((REPO / gate.BASELINE).read_text(encoding="utf-8"))["owner"]
+    assert lineage[-1] == working, (lineage, working)
+
+
+def _touch(repo: Path) -> None:
+    """Commit a NEW revision of the baseline that does not change the owner."""
+    baseline = json.loads((repo / gate.BASELINE).read_text(encoding="utf-8"))
+    baseline["comment"] = [f"revision {len(baseline.get('comment', []))}"]
+    (repo / gate.BASELINE).write_text(json.dumps(baseline), encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "touch baseline, same owner")
+
+
+def test_the_lineage_COLLAPSES_consecutive_duplicates_so_a_recommit_is_not_a_reowning(
+    repo: Path,
+) -> None:
+    """Committing the file again without changing the owner is NOT a deferral.
+
+    If it were, the ceiling would be a limit on how often the baseline may be
+    touched, which is a different and useless property.
+    """
+    _touch(repo)  # same owner, new commit, different blob
+    _touch(repo)
+    lineage = gate._owner_lineage(gate._committed_history(repo))
+    assert lineage == (_FIXTURE_LIVE_ARC,), lineage
+
+
+def test_CONTROL_a_guard_reowned_TWICE_is_still_GUARDED_and_says_how_many_are_left(
+    repo: Path,
+) -> None:
+    """Step 1 of §5.1. TWO re-ownings is the ceiling, not past it.
+
+    This is the positive control the plant below is measured against, and it is
+    also the live state of the real tree: `ARC 025+` -> `ARC 025` -> `ARC 027`.
+    """
+    _reown(repo, "ARC 022")
+    _reown(repo, "ARC 023")
+
+    result = _run(repo)
+    assert result.status is Status.GUARDED, result
+    assert result.guard_owner == "ARC 023"
+    assert "2 re-owning(s) of a ceiling of 2" in result.evidence, result.evidence
+    assert exit_code_for(result.status) == 3
+
+
+def test_PLANT_the_THIRD_reowning_escalates_GUARDED_to_FAIL_naming_the_LINEAGE(
+    repo: Path,
+) -> None:
+    """*A guard walked forward forever is an unpaid debt wearing a live owner.*
+
+    The plant is the honest move, which is what makes it the right plant: every
+    owner here is a single, well-formed, currently-OPEN arc, so the non-empty
+    rule, the single-arc rule and the dischargeability rule are all satisfied at
+    every step. Only the ceiling can see it.
+
+    **The REASON is asserted, never the exit code** (contract rule 11): exit 1 is
+    also what a regression, a stale baseline and a silent addition produce.
+    """
+    _reown(repo, "ARC 022")
+    _reown(repo, "ARC 023")
+    _reown(repo, "ARC 024")  # the third re-owning
+
+    result = _run(repo)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert result.site == f"{gate.BASELINE}:owner", result.site
+    assert "RE-OWNED 3 times, exceeding the ceiling of 2" in result.detail, (
+        result.detail
+    )
+    # The lineage itself is in the reason: an operator must be able to see the
+    # sequence, because no single value in it is the offender.
+    for owner in (_FIXTURE_LIVE_ARC, "ARC 022", "ARC 023", "ARC 024"):
+        assert repr(owner) in result.detail, (owner, result.detail)
+    assert "may not be walked forward again" in result.detail
+    assert exit_code_for(result.status) == 1
+
+
+def test_the_CLI_exits_1_on_the_third_reowning_and_prints_the_CEILING_reason(
+    repo: Path,
+) -> None:
+    """§0e: the can-fail is reproduced by a committed, runnable artifact."""
+    _reown(repo, "ARC 022")
+    _reown(repo, "ARC 023")
+    _reown(repo, "ARC 024")
+
+    proc = _cli(repo)
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode == 1, combined
+    assert "RE-OWNED 3 times" in combined, combined
+    assert "CHECK-DEBT D2.31" in combined, combined
+
+
+def test_the_ceiling_CANNOT_be_reset_by_editing_the_WORKING_TREE_baseline(
+    repo: Path,
+) -> None:
+    """The whole design claim, driven: the record is out of the editor's reach.
+
+    An author who has exhausted the ceiling and wants a green has exactly one
+    lever on this file — the file itself. Rewriting `owner`, deleting the
+    `admitted` map, rewriting the whole payload: none of it touches the committed
+    blobs the lineage is read from, and the FAIL survives every one.
+    """
+    _reown(repo, "ARC 022")
+    _reown(repo, "ARC 023")
+    _reown(repo, "ARC 024")
+    assert _run(repo).status is Status.FAIL_NEEDS_OPERATOR
+
+    baseline = json.loads((repo / gate.BASELINE).read_text(encoding="utf-8"))
+    baseline["owner"] = _FIXTURE_LIVE_ARC  # back to the original owner, uncommitted
+    baseline["reownings"] = 0  # the field a naive design would have trusted
+    (repo / gate.BASELINE).write_text(json.dumps(baseline), encoding="utf-8")
+
+    result = _run(repo)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, (
+        "the ceiling must be derived from committed history, not from any field "
+        "in the file being judged"
+    )
+    assert "RE-OWNED 3 times" in result.detail, result.detail
+
+
+def test_an_UNREADABLE_historical_revision_is_an_ERROR_not_a_skipped_reowning(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A skipped revision could be exactly the one that changed the owner.
+
+    Silently dropping it makes the lineage shorter, which makes the ceiling
+    further away — the failure always points the safe-looking direction, which is
+    why it must be an error rather than a `continue`.
+    """
+    _reown(repo, "ARC 022")
+    real_git = gate._git
+
+    def _blind(home: Path, *args: str) -> tuple[str, str]:
+        if args and args[0] == "show":
+            return "", "git show exit 128"
+        return real_git(home, *args)
+
+    monkeypatch.setattr(gate, "_git", _blind)
+    result = _run(repo)
+    assert result.status is Status.CANNOT_MEASURE, result
+    assert "cannot establish the high-water mark" in result.detail, result.detail
+
+
+def test_a_TRUNCATED_history_under_the_ceiling_is_CANNOT_MEASURE_never_GUARDED(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The limit truncates from the OLD end, which is where early owners live.
+
+    A truncated lineage is a LOWER BOUND. Under the ceiling that proves nothing,
+    so it may not stand as a deferral; over the ceiling it is still conclusive,
+    which is why the ceiling arm is tested first. Both directions are driven —
+    this test and the one below.
+    """
+    monkeypatch.setattr(gate, "_HISTORY_LIMIT", 1)
+    result = _run(repo)
+    assert result.status is Status.CANNOT_MEASURE, result
+    assert "LOWER BOUND" in result.detail, result.detail
+    assert "TRUNCATED" in result.evidence, result.evidence
+
+
+def test_a_TRUNCATED_history_ALREADY_over_the_ceiling_still_FAILS(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lower bound that already exceeds the ceiling has exceeded it."""
+    _reown(repo, "ARC 022")
+    _reown(repo, "ARC 023")
+    _reown(repo, "ARC 024")
+    monkeypatch.setattr(gate, "_HISTORY_LIMIT", 4)  # drops the oldest revision
+
+    result = _run(repo)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert "RE-OWNED" in result.detail, result.detail
+
+
+def test_the_LIVE_guard_on_the_real_tree_has_EXHAUSTED_its_ceiling() -> None:
+    """The finding, banked as an assertion so it cannot quietly stop being true.
+
+    This is not a hypothetical limit installed for a future offender. The one
+    live guard in this repository has been re-owned TWICE — `the bulk check
+    retrofit arc (ARC 025+)...` -> `ARC 025` -> `ARC 027` — and is therefore AT
+    the ceiling. ARC 028 cannot re-point it: that move is the third re-owning and
+    this gate now FAILs on it. The guard gets discharged or it goes red.
+    """
+    history = gate._committed_history(REPO)
+    assert not history.error, history.error
+    lineage = gate._owner_lineage(history)
+    from nixverify.contract import GUARD_REOWN_CEILING, reowning_defect
+
+    assert len(lineage) - 1 == GUARD_REOWN_CEILING, (
+        f"the live guard's re-owning count has moved off the ceiling; if it went "
+        f"UP this test is the alarm, and if it went DOWN the history was "
+        f"rewritten (CLAUDE.md directive 6): {lineage}"
+    )
+    assert reowning_defect(lineage) == "", "at the ceiling is not over it"
+    assert reowning_defect((*lineage, "ARC 028")) != "", (
+        "the next re-owning must be a FAIL"
+    )

@@ -48,6 +48,24 @@ arc. Until then its green means *declared*, never *covered*.
    there is no mark. *Closed:* every one of those is `CANNOT_MEASURE` naming the
    reason, and a revision that cannot be read is an ERROR rather than a skip —
    the skipped revision could be exactly the tightest one.
+6. **ARC 027 — the GUARD could be walked forward forever, and rules 1-5 would
+   all stay green.** Every rule above judges the accepted SET; the owner rules
+   judge the owner VALUE standing today. A marker re-pointed at the next arc at
+   every arc boundary satisfies all of them permanently, and the debt is never
+   paid. *Closed by `_owner_lineage` + `contract.reowning_defect`:* the sequence
+   of committed owner values is derived from the SAME git walk the ratchet uses,
+   and more than `GUARD_REOWN_CEILING` re-ownings escalates GUARDED to FAIL.
+   Its own sub-vacuities: a lineage read from the working tree is length 1 by
+   construction (closed — committed blobs only); an unreadable revision could
+   hide an owner change (closed — ERROR, never skip); a TRUNCATED history drops
+   the OLDEST revisions and so under-counts (closed — a lower bound may FAIL but
+   may never PASS, so truncation under the ceiling is CANNOT_MEASURE).
+   **NOT closed, and named rather than implied:** `git log` here does not follow
+   RENAMES, so moving `checks/gate_coverage_baseline.json` restarts the lineage
+   at zero. `--follow` is not the repair — it makes `git show <sha>:<path>` fail
+   for pre-rename revisions, which this gate correctly treats as an ERROR, so it
+   would trade a silent reset for a permanent CANNOT_MEASURE. Recorded as
+   CHECK-DEBT D2.35 rather than half-fixed.
 
 ## Why GUARDED rather than FAIL today
 
@@ -68,12 +86,14 @@ from pathlib import Path
 
 import _preamble  # noqa: F401  pylint: disable=unused-import,wrong-import-order
 from nixverify.contract import (
+    GUARD_REOWN_CEILING,
     CheckResult,
     Context,
     Mode,
     Status,
     completed_arcs,
     guard_owner_defect,
+    reowning_defect,
 )
 from nixverify.declarations import read_all
 from nixverify.gitenv import SELECTORS, scrubbed_env
@@ -240,10 +260,96 @@ def _git(home: Path, *args: str) -> tuple[str, str]:
     return proc.stdout, ""
 
 
+@dataclasses.dataclass(frozen=True)
+class History:
+    """Every COMMITTED revision of the baseline, oldest first.
+
+    ARC 027 (B2). One git walk, two derived facts — the tightest accepted set
+    (`_high_water_mark`, ARC 025) and the owner lineage (`_owner_lineage`, D2.31's
+    ceiling). Doctrine C.9: the property *"a fact about this file that the hand
+    editing it cannot reach"* was already owned by the ratchet's walk, so the
+    ceiling extends that walk instead of opening a second one. Two walks would be
+    two chances to disagree about which revisions exist.
+
+    `truncated` is `True` when the log came back at `_HISTORY_LIMIT` and the
+    OLDEST revisions may therefore be missing. It is not a nicety: the limit
+    truncates from the old end, which is exactly where a lineage's early owners
+    live, so every consumer must say what a lower bound does to its verdict.
+    """
+
+    revisions: tuple[tuple[str, Baseline], ...] = ()
+    truncated: bool = False
+    error: str = ""
+
+
+def _committed_history(home: Path) -> History:
+    """Read every committed revision of the baseline, oldest first.
+
+    **A revision that cannot be read is an ERROR, never a skip.** A silently
+    skipped revision might be exactly the tightest one, or exactly the one that
+    changed the owner, and a mark or a lineage that quietly improves is the
+    vacuous pass this gate exists to refuse.
+    """
+    listing, error = _git(
+        home, "log", f"-{_HISTORY_LIMIT}", "--format=%H", "--", BASELINE
+    )
+    if error:
+        return History(error=error)
+    shas = [line.strip() for line in listing.splitlines() if line.strip()]
+    if not shas:
+        return History(
+            error=(
+                f"{BASELINE} has no commit history — the ratchet has nothing to "
+                "ratchet against, so the accepted set cannot be shown not to have "
+                "grown"
+            )
+        )
+    revisions: list[tuple[str, Baseline]] = []
+    for sha in reversed(shas):  # oldest first, so ties keep the earliest mark
+        blob, blob_error = _git(home, "show", f"{sha}:{BASELINE}")
+        if blob_error:
+            # Suffixes preserved verbatim from ARC 025 (CLAUDE.md directive 6:
+            # never rewrite banked evidence — the committed suite asserts them).
+            return History(error=f"{blob_error} — cannot establish the high-water mark")
+        revision = _parse_baseline(blob, f"{BASELINE}@{sha[:12]}")
+        if revision.error:
+            return History(error=f"{revision.error} — cannot establish the mark")
+        revisions.append((sha, revision))
+    return History(revisions=tuple(revisions), truncated=len(shas) >= _HISTORY_LIMIT)
+
+
+def _owner_lineage(history: History) -> tuple[str, ...]:
+    """The committed `owner` values, oldest first, consecutive duplicates collapsed.
+
+    ARC 027 (B2), D2.31's ceiling. One entry per CHANGE OF OWNER, so
+    `len(lineage) - 1` is the number of re-ownings — the quantity
+    `contract.reowning_defect` bounds.
+
+    Consecutive duplicates are collapsed rather than de-duplicated globally: an
+    owner re-appearing after a different one is a second deferral onto that arc,
+    not a repeat of the first, and a global `set` would let a guard be cycled
+    between two arc numbers at a constant apparent cost forever.
+
+    **Derived from committed blobs, never from the working tree.** The working
+    tree holds exactly one owner value at any moment, so a lineage read from it
+    is length 1 and the ceiling is unreachable by construction — the same reason
+    the high-water mark is not a `previous_count` field in this file.
+    """
+    lineage: list[str] = []
+    for _sha, revision in history.revisions:
+        owner = revision.owner.strip()
+        if not lineage or lineage[-1] != owner:
+            lineage.append(owner)
+    return tuple(lineage)
+
+
 def _high_water_mark(home: Path) -> tuple[frozenset[str], str, str]:
     """The TIGHTEST accepted set this baseline has ever been COMMITTED with.
 
-    Returns `(set, sha, error)`.
+    Returns `(set, sha, error)`. Kept as a named function with this signature
+    because the committed suite drives it directly; ARC 027 moved the git walk
+    beneath it into `_committed_history` so the owner lineage reads the same
+    revisions rather than re-deriving them.
 
     ## Where the high-water mark lives, and why it lives there
 
@@ -269,34 +375,16 @@ def _high_water_mark(home: Path) -> tuple[frozenset[str], str, str]:
     skipped revision might be exactly the tightest one, and a high-water mark that
     quietly rises is the vacuous pass this gate exists to refuse.
     """
-    listing, error = _git(
-        home, "log", f"-{_HISTORY_LIMIT}", "--format=%H", "--", BASELINE
-    )
-    if error:
-        return frozenset(), "", error
-    shas = [line.strip() for line in listing.splitlines() if line.strip()]
-    if not shas:
-        return (
-            frozenset(),
-            "",
-            (
-                f"{BASELINE} has no commit history — the ratchet has nothing to ratchet "
-                "against, so the accepted set cannot be shown not to have grown"
-            ),
-        )
+    return _mark_from(_committed_history(home))
+
+
+def _mark_from(history: History) -> tuple[frozenset[str], str, str]:
+    """The minimum-over-history accepted set. Pure, so the walk is measured once."""
+    if history.error:
+        return frozenset(), "", history.error
     best: frozenset[str] | None = None
     best_sha = ""
-    for sha in reversed(shas):  # oldest first, so ties keep the earliest mark
-        blob, blob_error = _git(home, "show", f"{sha}:{BASELINE}")
-        if blob_error:
-            return (
-                frozenset(),
-                "",
-                f"{blob_error} — cannot establish the high-water mark",
-            )
-        revision = _parse_baseline(blob, f"{BASELINE}@{sha[:12]}")
-        if revision.error:
-            return frozenset(), "", f"{revision.error} — cannot establish the mark"
+    for sha, revision in history.revisions:
         if best is None or len(revision.uncovered) < len(best):
             best, best_sha = revision.uncovered, sha
     return (best or frozenset()), best_sha, ""
@@ -336,6 +424,46 @@ def _ratchet_defects(
     return defects
 
 
+def _ceiling_verdict(
+    lineage: tuple[str, ...], truncated: bool, evidence: str
+) -> CheckResult | None:
+    """The re-owning ceiling arm, or `None` when the guard may still stand.
+
+    ARC 027 (B2), CHECK-DEBT D2.31. Every rule before this one judges the owner
+    VALUE standing today, and a marker walked forward one honest arc at a time
+    passes all of them forever. This is the only arm that judges the SEQUENCE,
+    and so the only one that can see a deferral nobody intends to pay.
+    """
+    defect = reowning_defect(lineage)
+    if defect:
+        # Conclusive even on a TRUNCATED history: truncation drops the OLDEST
+        # revisions, so the lineage is a lower bound, and a lower bound already
+        # over the ceiling is over it. Checked BEFORE the truncation arm for
+        # exactly that reason.
+        return CheckResult(
+            name=NAME,
+            status=Status.FAIL_NEEDS_OPERATOR,
+            site=f"{BASELINE}:owner",
+            evidence=evidence,
+            detail=f"{BASELINE}:owner — {defect}",
+        )
+    if truncated:
+        # Under the ceiling on a lower bound proves nothing: the dropped
+        # revisions are the oldest, which is where the early owners live.
+        return CheckResult(
+            name=NAME,
+            status=Status.CANNOT_MEASURE,
+            evidence=evidence,
+            detail=(
+                f"{BASELINE}:owner — the committed history came back at the "
+                f"{_HISTORY_LIMIT}-revision limit, so the owner lineage is a "
+                "LOWER BOUND and the re-owning ceiling cannot be shown to be "
+                "unexhausted. Raise the limit or discharge the guard"
+            ),
+        )
+    return None
+
+
 def run(  # pylint: disable=unused-argument,too-many-locals,too-many-return-statements
     mode: Mode, ctx: Context
 ) -> CheckResult:
@@ -372,7 +500,10 @@ def run(  # pylint: disable=unused-argument,too-many-locals,too-many-return-stat
             name=NAME, status=Status.CANNOT_MEASURE, detail=baseline.error
         )
 
-    mark, mark_sha, mark_error = _high_water_mark(home)
+    # ONE walk of the baseline's committed history; two facts derived from it
+    # (ARC 027, B2). See `History`.
+    history = _committed_history(home)
+    mark, mark_sha, mark_error = _mark_from(history)
     if mark_error:
         # The ratchet's prior mark is what makes a green mean anything. Without
         # it the gate can still see regressions but cannot see the baseline
@@ -380,11 +511,15 @@ def run(  # pylint: disable=unused-argument,too-many-locals,too-many-return-stat
         # measure rather than passing on the half it could.
         return CheckResult(name=NAME, status=Status.CANNOT_MEASURE, detail=mark_error)
 
+    lineage = _owner_lineage(history)
     evidence = (
         f"{len(artifacts)} tracked artifact(s); {len(declared)} declared subject(s); "
         f"{len(uncovered)} uncovered; baseline accepts {len(baseline.uncovered)}; "
         f"ratchet high-water mark {len(mark)} at committed revision "
-        f"{mark_sha[:12]}. "
+        f"{mark_sha[:12]}; committed owner lineage {len(lineage)} value(s) = "
+        f"{max(len(lineage) - 1, 0)} re-owning(s) of a ceiling of "
+        f"{GUARD_REOWN_CEILING}"
+        f"{' (history TRUNCATED — a lower bound)' if history.truncated else ''}. "
         "UNBOUND (D3.10): proves an artifact is NAMED by a check, never that it is "
         "MEASURED by one — do not read this verdict as coverage."
     )
@@ -444,6 +579,10 @@ def run(  # pylint: disable=unused-argument,too-many-locals,too-many-return-stat
                 evidence=evidence,
                 detail=f"{BASELINE}:owner — {owner_defect}",
             )
+        # -- ARC 027 (B2), D2.31: THE RE-OWNING CEILING. --------------------
+        ceiling = _ceiling_verdict(lineage, history.truncated, evidence)
+        if ceiling is not None:
+            return ceiling
         return CheckResult(
             name=NAME,
             status=Status.GUARDED,
@@ -451,7 +590,9 @@ def run(  # pylint: disable=unused-argument,too-many-locals,too-many-return-stat
             guard_owner=baseline.owner.strip(),
             detail=(
                 f"{len(uncovered)} artifact(s) accepted as uncovered by "
-                f"{BASELINE}, discharged by {baseline.owner.strip()}"
+                f"{BASELINE}, discharged by {baseline.owner.strip()}; "
+                f"{len(lineage) - 1} of {GUARD_REOWN_CEILING} permitted "
+                "re-owning(s) used"
             ),
         )
     return CheckResult(name=NAME, status=Status.PASS, evidence=evidence)

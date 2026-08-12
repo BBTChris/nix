@@ -253,7 +253,14 @@ def _arm_control(
 ) -> None:
     """CONTROL — with the mechanism disabled, the late subscriber gets nothing."""
     site = "scripts/nixbus/statebus.py CONTROL (service() never called)"
-    if control["received"]:
+    # ARC 027 (B3), D3.21's class. The test was on `received` (a MESSAGE count)
+    # and the narration claimed "0 bytes". They can diverge: statebus increments
+    # `bytes_received` BEFORE `_decode` and `received` only after it, so a frame
+    # taken off the socket that fails to decode leaves bytes > 0 and messages 0 —
+    # the control would then report "received 0 bytes" over a socket that had in
+    # fact delivered some. Both counters are now tested, and both are narrated
+    # from the dict rather than asserted.
+    if control["received"] or control["bytes"]:
         defects.append(
             (
                 site,
@@ -266,7 +273,10 @@ def _arm_control(
             )
         )
         return
-    ev.append("CONTROL: service() withheld -> late subscriber received 0 bytes")
+    ev.append(
+        f"CONTROL: service() withheld -> late subscriber received "
+        f"{control['received']} message(s) / {control['bytes']} bytes"
+    )
 
 
 def _arm_ipc(

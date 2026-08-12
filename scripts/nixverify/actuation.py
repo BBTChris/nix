@@ -112,6 +112,74 @@ class SessionState:
         return self.verdict == "inactive"
 
 
+def _unit_fields(unit: str) -> tuple[dict[str, str], str]:
+    """One unit's `Slice`/`ActiveState`. Returns `(fields, why-unmeasured)`.
+
+    ## ARC 027 (B3) — the worst instance of D3.21's class in this tree
+
+    Not by subtlety, by CONSEQUENCE. `session_state`'s loop used to `continue` on
+    a failed per-unit probe, leaving `running` empty, and the function then
+    returned `"inactive"` carrying the words *"(measured, not assumed)"* — a
+    constant parenthetical asserting the very measurement that had just been
+    discarded. `SessionState.permits_mutation` is True only for `"inactive"`, so
+    **an unprobed unit OPENED the trading-session interlock** and let
+    `--correct`/`--install` mutate. Every OTHER failure mode in `session_state`
+    already returned `"unknown"`; the per-unit swallow was the one hole, and the
+    narration is what hid it.
+
+    Three routes to *unmeasured* are distinguished and all three are reported,
+    because the second and third do not raise and were invisible before:
+    the probe raising; the probe exiting non-zero (empty stdout parses to an
+    empty field map, which reads as *not in the trading slice*); and the probe
+    succeeding while answering with neither field.
+    """
+    try:
+        show = subprocess.run(  # nosec B603 - fixed absolute path, no shell
+            [SYSTEMCTL, "show", unit, "-p", "Slice", "-p", "ActiveState"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {}, repr(exc)
+    if show.returncode != 0:
+        return {}, f"systemctl show exit {show.returncode}"
+    fields = dict(
+        line.split("=", 1) for line in show.stdout.splitlines() if "=" in line
+    )
+    if "ActiveState" not in fields or "Slice" not in fields:
+        return {}, "systemctl show returned neither Slice nor ActiveState"
+    return fields, ""
+
+
+def _slice_census(listing: str) -> tuple[list[str], list[str], int]:
+    """Walk `systemctl list-units` output. Returns `(running, unprobed, probed)`.
+
+    `unprobed` is the load-bearing return and it is why this is three values and
+    not one: a unit that could not be probed is neither running nor not-running,
+    and collapsing it into either is the D3.21 defect this arm was repaired for.
+    """
+    running: list[str] = []
+    unprobed: list[str] = []
+    probed = 0
+    for line in listing.splitlines():
+        unit = line.split()[0] if line.split() else ""
+        if not unit.endswith(".service"):
+            continue
+        fields, why = _unit_fields(unit)
+        if why:
+            unprobed.append(f"{unit}: {why}")
+            continue
+        probed += 1
+        if (
+            fields.get("Slice") == TRADING_SLICE
+            and fields.get("ActiveState") == "active"
+        ):
+            running.append(unit)
+    return running, unprobed, probed
+
+
 def session_state() -> SessionState:
     """Measure whether a trading session may be running.
 
@@ -142,35 +210,28 @@ def session_state() -> SessionState:
     if proc.returncode != 0:
         return SessionState("unknown", f"systemctl exit {proc.returncode}")
 
-    running: list[str] = []
-    for line in proc.stdout.splitlines():
-        unit = line.split()[0] if line.split() else ""
-        if not unit.endswith(".service"):
-            continue
-        try:
-            show = subprocess.run(  # nosec B603 - fixed absolute path, no shell
-                [SYSTEMCTL, "show", unit, "-p", "Slice", "-p", "ActiveState"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=False,
-            )
-        except OSError, subprocess.SubprocessError:
-            continue
-        fields = dict(
-            line.split("=", 1) for line in show.stdout.splitlines() if "=" in line
-        )
-        if (
-            fields.get("Slice") == TRADING_SLICE
-            and fields.get("ActiveState") == "active"
-        ):
-            running.append(unit)
+    running, unprobed, probed = _slice_census(proc.stdout)
     if running:
         return SessionState(
             "active", f"units active in {TRADING_SLICE}: {', '.join(sorted(running))}"
         )
+    if unprobed:
+        # FAIL CLOSED. A unit that was not measured cannot be reported as not
+        # active in the trading slice, and "unknown" withholds mutation where
+        # "inactive" grants it.
+        return SessionState(
+            "unknown",
+            (
+                f"{len(unprobed)} of {len(unprobed) + probed} service unit(s) could "
+                f"not be probed for slice membership, so absence from "
+                f"{TRADING_SLICE} is UNMEASURED, not observed: "
+                f"{'; '.join(sorted(unprobed)[:5])}"
+            ),
+        )
     return SessionState(
-        "inactive", f"no unit active in {TRADING_SLICE} (measured, not assumed)"
+        "inactive",
+        f"no unit active in {TRADING_SLICE}; {probed} service unit(s) probed, "
+        f"0 unprobed",
     )
 
 

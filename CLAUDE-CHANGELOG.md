@@ -175,3 +175,25 @@ than relying on memory.
   now *declared* in each check's `DEPENDS_ON`/`RESOURCES`/`ON_FAIL`, which is one source of truth
   instead of two, and the prose survives in git history (directive 6 — history is appended, and a
   file replaced in a commit is not history erased).
+
+## ARC 027 (B) — 2026-08-12
+
+**Specs table: `nics_risk_subsystem_spec_v1.4.md` added as a SECOND row, and v1.3's row
+now says it is STILL THE CITED AUTHORITY.** v1.4 is the ARC 027 mechanical fold of
+`docs/SPEC-AMENDMENTS.md`'s seven entries into frozen v1.3, each inside
+`<!-- BEGIN/END FOLDED -->` markers. `scripts/tests/test_spec_v14_fold.py` proves on
+every run that v1.4 minus those blocks is byte-identical to v1.3 **as committed at
+`aaa6a28`** — the only commit that has ever touched the risk spec — rather than to the
+working copy, which would compare the file to itself.
+
+**v1.4 is deliberately NOT the authority and the table says so.** The fold inserts
+lines, so every `§x:line` coordinate the governed roots cite moves; re-pointing the tree
+is separate serial work (CHECK-DEBT D3.33). Two implied §2A list additions were refused
+as editorial (D3.32). `checks/check_spec_citations.py`'s `REQUIRED_DOCS` is deliberately
+UNCHANGED: that gate's own docstring says a v1.4 landing without the constant moving must
+make it CANNOT_MEASURE loudly, and that is only the correct direction once v1.4 is meant
+to be the subject.
+
+**Nothing was renumbered.** Two rulings were both issued titled "AMENDMENT 5"; the ledger
+records the ARC 023 one as AMENDMENT 6 while keeping its self-reference verbatim, and the
+fold reproduces that exactly. The collision is the architect's to rule on.
