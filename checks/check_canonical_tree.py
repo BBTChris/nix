@@ -71,6 +71,20 @@ from pathlib import Path
 import _preamble  # noqa: F401  pylint: disable=unused-import,wrong-import-order
 from nixverify.contract import CheckResult, Context, Mode, Status
 
+# R0801 (duplicate-code) disabled at module scope, ARC 026 / A2, and it is a
+# BASELINE REPAIR rather than a new suppression. This gate landed in ARC 026
+# Phase 0.5 carrying the pragma only on its `__main__` tail; pylint reports
+# R0801 at line 1, so the tail pragma does not reach it and the hook has been
+# RED on `--all-files` ever since — measured on the pristine base commit
+# (`98106be`), with the pair named as `check_artifact_gate_coverage` vs
+# `check_canonical_tree`. The duplicated text is the preamble/declaration block
+# that `nix_check_contract.md` §4.2 MANDATES be identical in every check, which
+# is the same reason `check_spec_citations`, `check_order_path_bans`,
+# `check_hook_suite` and `check_python_runtime` all carry this pragma at module
+# scope. Doctrine B.6: a lint gate already failing before an arc starts gets
+# that arc's changes blamed on it.
+# pylint: disable=duplicate-code
+
 PRIVILEGE = "user"
 INTERACTIVE = False
 DISRUPTIVE = False
