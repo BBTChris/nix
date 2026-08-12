@@ -1,0 +1,65 @@
+{
+  "_meta": {
+    "role": "config",
+    "module": "allocator",
+    "component": "Allocator — nics_risk_subsystem_spec_v1.3.md §2:40 (`margin-aware sizing off a mirrored full financial-picture table, static caps, performance-weighted + FCFS-fallback contention, correlation caps; proposes`). Separate process, Core 3 (§10:570).",
+    "authority": "nics_risk_subsystem_spec_v1.3.md §12A is the SEMANTIC authority for every knob below. This file is the PHYSICAL layout only. Where the two disagree, §12A wins and this file is wrong.",
+    "role_separation": "CONFIG-ROLE ONLY. Every value is a NUMBER; every word is under a `_`-prefixed documentation key that no loader reads. The sizing arithmetic of §7 lives in the Allocator's code, never here.",
+    "lifecycle": "§12.11 — boot-loaded, restart-only. No reload verb exists on the load path.",
+    "validated_by": "scripts/risk_config.py",
+    "landed_by": "ARC 028 sub-agent D (D1).",
+    "not_implemented_here": "The Allocator does not exist. Nothing in this arc sizes anything; these knobs have a home and no consumer.",
+    "cc_calibrate": "Every value in this file is a §12A CC-calibrate placeholder (§12A:799-800) except where a derivation says otherwise. None of them is a measured figure."
+  },
+
+  "per_trade_risk_usd": 100.0,
+  "symbol_cap": {
+    "ES": 5,
+    "NQ": 5,
+    "CL": 3,
+    "GC": 3,
+    "ZN": 5
+  },
+  "slippage_pad_ticks": {
+    "ES": 2,
+    "NQ": 2,
+    "CL": 2,
+    "GC": 2,
+    "ZN": 2
+  },
+  "micro_full_threshold": 2,
+  "quant_tolerance": 0.25,
+  "bucket_cap_pct": {
+    "equities": 0.01,
+    "energy": 0.01,
+    "metals": 0.01,
+    "rates": 0.01
+  },
+
+  "_derivations": {
+    "per_trade_risk_usd": "§12A:805 `PER_TRADE_RISK_$` — dollars risked per trade, the sizing numerator. CC-calibrate. §7:476 is the rule it feeds: `risk_contracts = floor( per_trade_risk_$ / ((stop_ticks + slippage_pad) × tick_value) )`. 100.00 is a placeholder; the spec gives no figure and none can be derived without a balance, which is venue state and not config.",
+    "symbol_cap": "§12A:807 `SYMBOL_CAP` — per-symbol max contracts. CC-calibrate. §7:478 is the rule: `size = min(risk_contracts, margin_contracts, symbol_cap)`. The KEYS are the §7:495 symbol scope ('up to 5 top-liquid (ES, NQ, CL, GC, ZN)') transcribed rather than invented; the numbers are placeholders, lower for the two thinner books.",
+    "slippage_pad_ticks": "§12A:806 `SLIPPAGE_PAD_TICKS` — per-symbol pad added to stop distance so `risk_$` is honest through spikes (§7:481-482, CC-calibrated per symbol). Same key set as symbol_cap, and boot-validated to stay the same key set: a symbol with a cap but no pad would size against an un-padded stop.",
+    "micro_full_threshold": "§12A:808 `MICRO_FULL_THRESHOLD` — fulls-vs-micros selection. CC-calibrate. §7:488-493 is the rule: compute the ideal size in micro units, and if the risk-ideal quantizes acceptably to fulls (>= threshold fulls, quantization error <= tolerance) use fulls only, else micros only. 2 is a placeholder: one full contract is the smallest quantity for which 'fulls' is even a choice, so the threshold must exceed it to mean anything.",
+    "quant_tolerance": "§12A:808 `QUANT_TOLERANCE` — the other half of the same §7:492 selection rule, the quantization error a fulls-only fill may carry. CC-calibrate; 0.25 is a placeholder meaning a quarter of a full contract.",
+    "bucket_cap_pct": "§12A:816 `BUCKET_CAP_PCT` — spelled there as BUCKET_CAP_PCT[bucket], a per-bucket ceiling as a fraction of balance. §7:511-515 is the rule: `Σ dollar_risk(open + pending in bucket B) + proposed_dollar_risk <= bucket_cap_pct(B) × balance`, size down toward the ceiling then deny at zero. The KEYS are the four buckets §12A:816 names in its own parenthetical (equities/energy/metals/rates), matching §7:498's static membership equities {ES, NQ} / energy {CL} / metals {GC} / rates {ZN}. The numbers are CC-calibrate placeholders."
+  },
+
+  "_boot_validation": [
+    {
+      "id": "positive.scalars",
+      "why": "Every scalar knob must be > 0. §12A:801-802 requires boot validation to reject an invalid set before any strategy registers; a zero risk numerator or a zero symbol cap sizes every proposal to nothing, which is a silent trading stop rather than a loud one.",
+      "spec": "§12A:801"
+    },
+    {
+      "id": "fraction.pct_range",
+      "why": "Every `_pct` knob is a fraction of balance and must lie in (0, 1]. A bucket cap above 1 would permit a single correlated bucket to carry more dollar risk than the account holds.",
+      "spec": "§7:511"
+    },
+    {
+      "id": "sizing.symbol_maps_agree",
+      "why": "slippage_pad_ticks and symbol_cap must cover exactly the same symbols. §7:483 is the posture ('symbol missing from margin cache ⇒ not-tradable'): a half-configured symbol must not be sizeable, and a pad missing for a capped symbol would silently size against an unpadded stop distance, making `risk_$` dishonest in exactly the case §7:481 raised the pad for.",
+      "spec": "§7:483"
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "_meta": {
+    "role": "config",
+    "module": "staleness",
+    "component": "The freshness detectors — the §6.4:369-370 margin and calendar pollers and the §12.3:621-622 skew monitor, all on the shared pool (§10:571). NOT a §2 component, and that is a finding rather than a choice: §6.4:374 assigns detection to 'system' and execution to the Limiter, and 'system' is the only owner the frozen spec names for these six knobs. Recorded in docs/CHECK-DEBT.md rather than resolved by inventing a component.",
+    "authority": "nics_risk_subsystem_spec_v1.3.md §12A is the SEMANTIC authority for every knob below. This file is the PHYSICAL layout only. Where the two disagree, §12A wins and this file is wrong.",
+    "role_separation": "CONFIG-ROLE ONLY. Every value is a NUMBER; every word is under a `_`-prefixed documentation key that no loader reads.",
+    "lifecycle": "§12.11 — boot-loaded, restart-only. No reload verb exists on the load path.",
+    "validated_by": "scripts/risk_config.py",
+    "landed_by": "ARC 028 sub-agent D (D1).",
+    "not_implemented_here": "No poller exists, no freshness stamp is written anywhere, and nothing halts or flattens on staleness. These are homes for numbers, not a stale-detection subsystem.",
+    "cc_calibrate": "Every threshold below is a CC-calibrate placeholder. §13 objective 1 makes the achievable margin poll cadence something to MEASURE on node02, so a threshold set before that measurement is provisional by construction."
+  },
+
+  "margin_stale_ms": 5000,
+  "calendar_stale_ms": 900000,
+  "price_stale_ms": 2000,
+  "balance_stale_ms": 30000,
+  "clock_skew_max_ms": 250,
+  "retry_backoff": {
+    "attempts": 3,
+    "initial_ms": 250,
+    "multiplier": 2.0
+  },
+
+  "_derivations": {
+    "margin_stale_ms": "§12A:825 `MARGIN_STALE_MS` — per-feed stale threshold; stale ⇒ halt+flatten. CC-calibrate. 5000 is a placeholder taken from the cadence the spec itself states for this feed: §6.4:369 calls the margin poller 'fast, seconds'.",
+    "calendar_stale_ms": "§12A:825 `CALENDAR_STALE_MS` — same rule, the slow feed. CC-calibrate. 900000 (15 min) is a placeholder from §6.4:369's 'Calendar poller (slow, minutes)'; the calendar carries sessions, econ events, the roll schedule and holidays, none of which move intraday.",
+    "price_stale_ms": "§12A:825 `PRICE_STALE_MS` — same rule, on the tick feed. CC-calibrate. 2000 is a placeholder and it is the tightest of the four because §6.5:414-417 marks net-liq per tick from the price cache, so a stale price feed silently freezes the survival watch.",
+    "balance_stale_ms": "§12A:825 `BALANCE_STALE_MS` — same rule, on the account feed. CC-calibrate. 30000 is a placeholder: §6.4b:394-397 makes balance event-driven on every money-moving trade event with a slow periodic poll underneath, so the threshold bounds the QUIET path rather than the trading path.",
+    "clock_skew_max_ms": "§12A:826 `CLOCK_SKEW_MAX_MS` — skew that forces a stale-class HALT. CC-calibrate. §12.3:620-622 is the rule: all blackouts are clock-driven, so the clock is safety-critical and skew past the threshold is a HALT. 250 is a placeholder well inside the one-minute granularity every blackout knob in this tree is expressed in.",
+    "retry_backoff": "§12A:827 `RETRY_BACKOFF` — retry policy before declaring stale (§6.4:373, 'after retry/backoff'). The spec names a POLICY and gives no shape, so the three fields are a declared Nix shape carrying no rule: attempts, the first interval, and the growth factor. All placeholders. The ladder's total duration is boot-validated against the tightest stale threshold."
+  },
+
+  "_boot_validation": [
+    {
+      "id": "positive.scalars",
+      "why": "Every scalar knob must be > 0. §12A:801-802 requires boot validation to reject an invalid set; a zero stale threshold declares every feed stale at once and halts trading on the first tick, and a zero skew ceiling does the same for the clock.",
+      "spec": "§12A:801"
+    },
+    {
+      "id": "staleness.retry_ladder_fits_smallest_threshold",
+      "why": "The retry ladder's total duration must be shorter than the tightest stale threshold. §6.4:373 declares a feed stale only 'after retry/backoff', so the ladder sits inside the detection latency; a ladder longer than the threshold means the declared threshold is no longer the quantity that bounds detection, and the halt+flatten §6.4:374 requires would land at a latency nobody configured. Stated honestly: the spec does not say whether the retries run before or after the threshold is crossed, so this rule bounds the SUM either way.",
+      "spec": "§6.4:373"
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "_meta": {
+    "role": "config",
+    "module": "supervision",
+    "component": "Supervision and the crash-loop breaker — nics_risk_subsystem_spec_v1.3.md §12.2:616-618 ('Every process systemd-managed with restart policy. N restarts in M minutes ⇒ HALT + operator alert'). §12.11:777-778 puts the lifecycle verbs (`quarantine-restore`, `config-reload`) at supervision and resets this counter there.",
+    "authority": "nics_risk_subsystem_spec_v1.3.md §12A is the SEMANTIC authority for both knobs below. This file is the PHYSICAL layout only. Where the two disagree, §12A wins and this file is wrong.",
+    "role_separation": "CONFIG-ROLE ONLY. Every value is a NUMBER; every word is under a `_`-prefixed documentation key that no loader reads.",
+    "lifecycle": "§12.11 — boot-loaded, restart-only. Note the recursion and that it is not a problem: `config-reload` IS a supervised restart (§12.11:779), so supervision's own tunables change the same way every other module's do.",
+    "validated_by": "scripts/risk_config.py",
+    "landed_by": "ARC 028 sub-agent D (D1).",
+    "not_implemented_here": "No supervision unit counts restarts today. These are homes for numbers.",
+    "no_cross_knob_rule": "Stated rather than left to be noticed: these two knobs constrain NOTHING about each other that the spec fixes, so this file declares only the shared positivity rule. A cross-knob rule invented to make the file look better validated would be a rule with no authority behind it, which is the second-authority failure this whole directory is gated against."
+  },
+
+  "crash_loop_max": 3,
+  "crash_loop_window_min": 10,
+
+  "_derivations": {
+    "crash_loop_max": "§12A:833 `CRASH_LOOP_MAX` = 3 restarts — stated outright. §4:272 is the rule for a strategy: 'after 3 restarts within a window (window = tunable variable), stop relaunching. The strategy is quarantined — left dead and flat, alert raised — while the rest of the system keeps trading.' §12.2:617 is the same breaker at process level.",
+    "crash_loop_window_min": "§12A:833 `CRASH_LOOP_WINDOW` — 'window over which they count. CC-calibrate.' §4:272 explicitly leaves it a tunable variable and §12.2:617 spells the rule 'N restarts in M minutes', so the unit is minutes. 10 is a placeholder."
+  },
+
+  "_boot_validation": [
+    {
+      "id": "positive.scalars",
+      "why": "Both knobs must be > 0. §12A:801-802 requires boot validation to reject an invalid set; a zero restart cap quarantines a strategy on its first crash, and a zero window means no two restarts ever fall in the same window, so the breaker never trips.",
+      "spec": "§12A:801"
+    }
+  ]
+}

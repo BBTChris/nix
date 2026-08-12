@@ -1,0 +1,33 @@
+{
+  "_meta": {
+    "role": "config",
+    "module": "scoring",
+    "component": "The Scoring process — nics_risk_subsystem_spec_v1.3.md §2:45 ('separate process, shared pool; advisory (sole writer of ranking table)'), §6.6:457-464. Core 4-5 (§10:571).",
+    "authority": "nics_risk_subsystem_spec_v1.3.md §12A is the SEMANTIC authority for the knob below. This file is the PHYSICAL layout only. Where the two disagree, §12A wins and this file is wrong.",
+    "role_separation": "CONFIG-ROLE ONLY. The value is a NUMBER; every word is under a `_`-prefixed documentation key that no loader reads. §6.6:461-463 is emphatic that nobody but the Scoring process computes the score — the EMA arithmetic is not here and could not be, because this file cannot express arithmetic at all.",
+    "lifecycle": "§12.11 — boot-loaded, restart-only. No reload verb exists on the load path.",
+    "validated_by": "scripts/risk_config.py",
+    "landed_by": "ARC 028 sub-agent D (D1).",
+    "not_implemented_here": "No Scoring process exists, no ranking table exists, and the FCFS fallback (§6.6:465-468) has nothing to fall back from.",
+    "one_knob_file": "Stated rather than left to be noticed: §12A gives this module exactly one knob, so this file has one value and no cross-knob rule is possible over it. That is the honest shape; padding it with a neighbouring module's knobs to make the validation look richer would put a knob in the wrong physical home."
+  },
+
+  "score_ema_span_days": 10,
+
+  "_derivations": {
+    "score_ema_span_days": "§12A:836 `SCORE_EMA_SPAN_DAYS` = 10 trading days (~2 weeks), tunable — stated outright. §6.6:442-445 is the rule and it carries its own caution: the span is 'calibrated on the box once real realized data exists; NOT a carved constant', and early realized samples are thin enough that accumulating history matters more than the number. The value here is the spec's stated default, unmodified."
+  },
+
+  "_boot_validation": [
+    {
+      "id": "positive.scalars",
+      "why": "The span must be > 0. §12A:801-802 requires boot validation to reject an invalid set; a zero or negative EMA span is not a smoothing window at all, and §6.6:465-468 makes a broken ranking table fall back to FCFS rather than halt, so a nonsense span would degrade the system silently instead of loudly.",
+      "spec": "§12A:801"
+    },
+    {
+      "id": "scoring.span_is_whole_days",
+      "why": "The span must be a whole number of days. §6.6:438-439 fixes the input as 'Advances per DAY — one realized number per symbol per day', so a fractional span counts a quantity that is never produced.",
+      "spec": "§6.6:438"
+    }
+  ]
+}
