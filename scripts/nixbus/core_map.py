@@ -521,6 +521,117 @@ def _cwd_of(pid: int) -> Path | None:
         return None
 
 
+def _image_of(pid: int) -> Path | None:
+    """`/proc/<pid>/exe` — the binary the KERNEL resolved — or `None`.
+
+    Not a guess about a token: the image the kernel already resolved through
+    `PATH`. `None` when the link cannot be followed (the process exited
+    mid-scan, or it belongs to another user).
+    """
+    try:
+        return Path(os.readlink(f"/proc/{pid}/exe"))
+    except OSError:
+        return None
+
+
+def _image_under(pid: int, nix_home: Path) -> bool:
+    """Is this process's executable image inside `nix_home`?
+
+    `is_relative_to`, never `startswith`, for the same reason `_mentions_home`
+    says: `/home/bbt/nix` is a string prefix of `/home/bbt/nix-wt-arc-027-c`.
+
+    **What this does NOT cover, MEASURED rather than assumed.** It was written
+    for a venv interpreter and does not catch one: `~/nix/.venv/bin/python` is a
+    SYMLINK, so the kernel records `/usr/bin/python3.14` and this predicate is
+    False for every Python process in the tree. It is kept because it covers a
+    different, real population — anything whose binary genuinely lives under
+    `nix_home` — and because the disproof is worth more on the page than the
+    predicate is. `_runs_tree_venv` is what closes the venv case.
+    """
+    image = _image_of(pid)
+    if image is None:
+        return False
+    try:
+        return image.is_relative_to(nix_home)
+    except OSError, ValueError:
+        return False
+
+
+def _environ_of(pid: int) -> dict[str, str]:
+    """`/proc/<pid>/environ` as a mapping. Empty when it cannot be read.
+
+    The INITIAL environment, which is the right one: the question is how the
+    process was STARTED, not what it has re-exported since. Unreadable for
+    another user's processes, which degrades to "not attributed by this
+    predicate" — never to an exception a caller would read as a verdict.
+    """
+    try:
+        raw = Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError:
+        return {}
+    out: dict[str, str] = {}
+    for part in raw.decode("utf-8", "replace").split("\0"):
+        name, sep, value = part.partition("=")
+        if sep:
+            out.setdefault(name, value)
+    return out
+
+
+def _venv_interpreter(nix_home: Path) -> Path | None:
+    """The real binary `nix_home/.venv/bin/python` resolves to, or `None`.
+
+    Resolved from the TREE, so the comparison in `_runs_tree_venv` is against a
+    fact about this repository rather than a hardcoded system path.
+    """
+    link = nix_home / ".venv" / "bin" / "python"
+    try:
+        return link.resolve(strict=True)
+    except OSError:
+        return None
+
+
+def _runs_tree_venv(pid: int, nix_home: Path) -> bool:
+    """Is this process the tree's venv interpreter, started from that venv?
+
+    MEASURED, ARC 028 / 0.1, and this is the predicate the defect actually
+    needed. `_mentions_home` deliberately refuses to resolve BARE WORDS against
+    the cwd — correctly, since that rule is what keeps an operator's shell out of
+    a core census. But an activated venv spells the interpreter `python`, so
+    under `python -m pytest` NO argv token names a path, the census could not see
+    its own author, and `check_reserved_cores` returned CANNOT_MEASURE naming its
+    own pid. The byte-identical run under `./.venv/bin/python -m pytest` passed:
+    **the verdict was a function of the invocation spelling, not of the
+    property.** `nix_processes` had already conceded this miss in prose ("a Nix
+    process re-exec'd with a bare interpreter and no path argument"); a conceded
+    blindness in a §10 safety census is still a blindness.
+
+    TWO kernel facts, both required, because either alone over-attributes:
+
+    * `VIRTUAL_ENV` names a venv inside `nix_home` — but an operator's `bash`
+      inherits that variable the moment they `activate`, and a shell is not a
+      Nix process.
+    * `/proc/<pid>/exe` is the binary that venv's `python` resolves to — which
+      excludes the shell, since `/bin/bash` is not the interpreter.
+
+    The residual over-attribution is a SYSTEM interpreter invoked by hand from an
+    activated shell. That process is running inside this tree's environment, so
+    counting it is the conservative direction for a census whose failure mode is
+    missing a process that occupies a reserved core.
+    """
+    venv = _venv_interpreter(nix_home)
+    if venv is None:
+        return False
+    declared = _environ_of(pid).get("VIRTUAL_ENV")
+    if not declared:
+        return False
+    try:
+        if not Path(declared).is_relative_to(nix_home):
+            return False
+    except OSError, ValueError:
+        return False
+    return _image_of(pid) == venv
+
+
 def _mentions_home(pid: int, cmdline: str, nix_home: Path) -> bool:
     """Does any argv token name a path inside `nix_home`?
 
@@ -558,18 +669,27 @@ def _mentions_home(pid: int, cmdline: str, nix_home: Path) -> bool:
 def nix_processes(nix_home: Path) -> tuple[tuple[ProcessCore, ...], str]:
     """Every live process this node can attribute to Nix, with both core facts.
 
-    Returns `(processes, error)`. TWO independent predicates, unioned, because
-    they cover different populations and each misses what the other catches:
+    Returns `(processes, error)`. FOUR independent predicates, unioned, because
+    they cover different populations and each misses what the others catch:
 
     * **`nix-trading.slice` membership** — the kernel's own answer, and the
       population §10's map is actually about. Misses anything Nix runs outside
       the slice, which today is everything: no unit has ever joined it (D1.42).
     * **an argv token under `nix_home`** — catches an interactively-run
-      `verify.py`, a `pytest`, a spawned `capture.py`. Misses a Nix process
-      re-exec'd with a bare interpreter and no path argument.
+      `verify.py`, a `pytest scripts/tests/...`, a spawned `capture.py`. Misses a
+      process whose every argv token is a bare word.
+    * **an executable image under `nix_home`** (`/proc/exe`) — catches a binary
+      that genuinely lives in the tree. MEASURED not to catch the venv
+      interpreter, which is a symlink out to `/usr/bin`; see `_image_under`.
+    * **the tree's venv interpreter, started from that venv** (ARC 028 / 0.1) —
+      catches `python -m pytest` under an activated venv, which is how this
+      suite is routinely run and which every predicate above loses. See
+      `_runs_tree_venv` for why it takes two kernel facts and not one.
 
-    Together they are still not "every Nix process", and this docstring says so
-    rather than a gate implying it. A process is reported with `error` set when it
+    Together they are still not "every Nix process" — a Nix process running a
+    system interpreter, outside the slice, with no path argument and no
+    `VIRTUAL_ENV` is invisible to all four — and this docstring says so rather
+    than a gate implying otherwise. A process is reported with `error` set when it
     was attributed but could not be read — it exited mid-scan, or it belongs to
     another user — and a caller must not read that as a clean core.
     """
@@ -585,7 +705,15 @@ def nix_processes(nix_home: Path) -> tuple[tuple[ProcessCore, ...], str]:
     for pid in sorted(candidates | in_slice):
         cmdline = _cmdline_of(pid)
         member = pid in in_slice
-        if not member and not _mentions_home(pid, cmdline, nix_home):
+        # Ordered cheapest-first: the argv scan is string work over a string
+        # already read, and only falls through to a second readlink when it
+        # finds nothing. Both are unioned, so the order costs nothing but time.
+        if (
+            not member
+            and not _mentions_home(pid, cmdline, nix_home)
+            and not _image_under(pid, nix_home)
+            and not _runs_tree_venv(pid, nix_home)
+        ):
             continue
         reading = effective_affinity(pid)
         cpu, cpu_error = current_cpu(pid)

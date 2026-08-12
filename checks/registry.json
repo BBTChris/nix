@@ -21,6 +21,7 @@
         "check_datafeed_bar_seal",
         "check_ibgateway_config",
         "check_ibgateway_service",
+        "check_limiter_seam",
         "check_name_coherence",
         "check_node_identity",
         "check_observed_resource_claims",

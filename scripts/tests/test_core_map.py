@@ -291,3 +291,161 @@ def test_slice_cpuset_returns_EITHER_cores_OR_a_reason_never_a_silent_empty() ->
         assert str(core_map.TRADING_SLICE_CPUSET) in error, error
     else:
         assert cores, "an empty cpuset with no error is unreadable"
+
+
+# --- ARC 028 / 0.1: the census must not depend on how it was INVOKED -------
+#
+# The defect these three controls exist for was measured, not reasoned about:
+# `python -m pytest -q -k reserved_cores` gave `4 failed, 12 passed` while
+# `./.venv/bin/python -m pytest -q -k reserved_cores` gave `16 passed` against
+# byte-identical bytes on the same box in the same minute. Every argv token of
+# the first spelling is a bare word, `_mentions_home` refuses to resolve bare
+# words against the cwd, and so the census could not see its own author.
+#
+# NOTHING under `~/nix` is written by any of these. The subject is a short-lived
+# child, killed in a `finally`, and the readers are read-only.
+
+#: Sleeps and holds so the parent has a live `/proc/<pid>` to attribute. Takes
+#: no path argument, deliberately: a path argument is the very thing whose
+#: absence is under test.
+_BARE_CHILD = "import time; time.sleep(float(__import__('sys').argv[1]))"
+
+
+def _venv_python() -> Path:
+    python = REPO / ".venv" / "bin" / "python"
+    if not python.is_file():
+        pytest.skip(f"no venv interpreter at {python}")
+    return python
+
+
+def _await_exec(child: subprocess.Popen[bytes], expected_image: Path) -> None:
+    """Block until the child has actually EXEC'd, or fail naming what it is.
+
+    `Popen` returns between the fork and the exec, and in that window the
+    child's `/proc/<pid>/exe` is still the PARENT's image. A control that read
+    `/proc` in that window would be measuring this test runner and would flip
+    with scheduler noise — the `/bin/bash` control below would intermittently
+    see a Python image and pass for the wrong reason. Waiting on the image
+    itself is the direct measurement; a `sleep` would be the proxy.
+    """
+    deadline = time.monotonic() + CHILD_TIMEOUT_S
+    while time.monotonic() < deadline:
+        # pylint: disable-next=protected-access
+        if core_map._image_of(child.pid) == expected_image:
+            return
+        assert child.poll() is None, f"child exited before exec: rc={child.poll()}"
+        time.sleep(CHILD_POLL_S)
+    # pylint: disable-next=protected-access
+    seen = core_map._image_of(child.pid)
+    raise AssertionError(
+        f"child {child.pid} never exec'd {expected_image} within "
+        f"{CHILD_TIMEOUT_S}s — /proc/<pid>/exe reads {seen}"
+    )
+
+
+def test_a_VENV_CHILD_with_NO_PATH_TOKEN_in_argv_is_STILL_attributed_to_nix() -> None:
+    """The regression control for the invocation-spelling dependence.
+
+    `argv[0]` is the bare word `python` — exactly what an activated venv puts in
+    `/proc/<pid>/cmdline` — so the argv predicate MUST miss it. If the census
+    finds it anyway, it found it on a property of the process rather than on a
+    property of how somebody typed it.
+    """
+    python = _venv_python()
+    expected_image = python.resolve(strict=True)
+    env = dict(os.environ)
+    env["VIRTUAL_ENV"] = str(REPO / ".venv")
+    with subprocess.Popen(  # nosec - literal argv, explicit executable, no shell
+        ["python", "-c", _BARE_CHILD, "30"],
+        executable=str(python),
+        env=env,
+        cwd="/",
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    ) as child:
+        try:
+            _await_exec(child, expected_image)
+            cmdline = core_map._cmdline_of(child.pid)  # pylint: disable=protected-access
+
+            # The premise of the test, asserted rather than assumed: this child
+            # really is invisible to the argv predicate.
+            assert (
+                core_map._mentions_home(  # pylint: disable=protected-access
+                    child.pid, cmdline, REPO
+                )
+                is False
+            ), (
+                f"the argv predicate matched {cmdline!r} — this child was "
+                "supposed to carry no path token, so the control below would "
+                "have passed without the venv predicate existing"
+            )
+
+            found, _ = core_map.nix_processes(REPO)
+            assert child.pid in {process.pid for process in found}, (
+                f"pid {child.pid} runs {python} with cmdline {cmdline!r} and the "
+                "census did not attribute it to Nix — the verdict is a function "
+                "of the invocation spelling, not of the process"
+            )
+        finally:
+            child.kill()
+
+
+def test_the_PROC_EXE_predicate_does_NOT_cover_the_venv_and_that_is_MEASURED() -> None:
+    """Banked disproof: `/proc/exe` was written for this case and misses it.
+
+    `~/nix/.venv/bin/python` is a SYMLINK, so the kernel records the system
+    interpreter and `_image_under` is False for every Python process in the
+    tree. Without this control, a later reader would delete `_runs_tree_venv` as
+    redundant with `_image_under` and re-open the defect silently.
+    """
+    image = core_map._image_of(os.getpid())  # pylint: disable=protected-access
+    assert image is not None, "/proc/self/exe could not be read"
+
+    if not sys.executable.startswith(str(REPO)):
+        pytest.skip(f"this runner is not the tree's venv ({sys.executable})")
+
+    assert image.is_relative_to(REPO) is False, (
+        f"/proc/self/exe is {image}, INSIDE {REPO} — the venv interpreter has "
+        "stopped being a symlink out of the tree, so this disproof no longer "
+        "holds and _runs_tree_venv should be re-examined"
+    )
+    assert core_map._runs_tree_venv(  # pylint: disable=protected-access
+        os.getpid(), REPO
+    ), "the predicate that is supposed to cover this case does not"
+
+
+def test_VIRTUAL_ENV_ALONE_does_NOT_make_a_SHELL_a_nix_process() -> None:
+    """The over-attribution control: both kernel facts are required.
+
+    An operator who runs `activate` exports `VIRTUAL_ENV` into every child,
+    including their shell. A predicate resting on that variable alone would
+    sweep the operator's `bash` into a core census, which is precisely the
+    hazard `_mentions_home`'s bare-word rule exists to prevent.
+    """
+    shell = Path("/bin/bash")
+    if not shell.exists():
+        pytest.skip("no /bin/bash on this node")
+    expected_image = shell.resolve(strict=True)
+    env = dict(os.environ)
+    env["VIRTUAL_ENV"] = str(REPO / ".venv")
+    with subprocess.Popen(  # nosec - literal argv, no shell interpolation
+        [str(shell), "-c", "sleep 30"],
+        env=env,
+        cwd="/",
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    ) as child:
+        try:
+            _await_exec(child, expected_image)
+            assert (
+                core_map._runs_tree_venv(  # pylint: disable=protected-access
+                    child.pid, REPO
+                )
+                is False
+            ), (
+                f"pid {child.pid} is {shell} with VIRTUAL_ENV set and the venv "
+                "predicate claimed it — the predicate has degraded to 'anything "
+                "started from an activated shell'"
+            )
+        finally:
+            child.kill()
