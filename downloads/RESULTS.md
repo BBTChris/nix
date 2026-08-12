@@ -379,9 +379,9 @@ arc (A 111, C 107, D 112, the integrator's Phase-0 107, Stage 2 forbidden to tou
 said in its own cell that it was a branch figure.**
 
 **Discharged, each with its own re-measurement: D3.29, D3.30, D3.39.**
-**Opened: D3.41–D3.47 (A) · D3.51–D3.56 (B) · D3.61–D3.66 (C) · D3.71–D3.78 (D) · D3.81–D3.84
-(Phase 0 and integration) · D3.91–D3.98 (Stage 2) · D3.99 (convergence) · D3.100 (close-out).** Twenty-nine of the
-thirty-six were opened by an instrument, by a plant that failed to plant, or by a sub-agent refuting
+**Opened (37): D3.41–D3.47 (A) · D3.51–D3.56 (B) · D3.61–D3.66 (C) · D3.71–D3.78 (D) · D3.81–D3.84
+(Phase 0 and integration) · D3.91–D3.98 (Stage 2) · D3.99 (convergence) · D3.100 (close-out).** Thirty of the
+thirty-seven were opened by an instrument, by a plant that failed to plant, or by a sub-agent refuting
 a stated premise with a measurement.
 
 ---

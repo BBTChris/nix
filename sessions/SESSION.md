@@ -2848,3 +2848,11 @@ the close-out record must be exercised against a CONSTRUCTED state, not only the
 one is guaranteed to be the wrong state at exactly the moment the instrument is read.**
 
 Final ledger: **CHECK-DEBT 104 → 142**, thirty-seven opened, three discharged, derived == stated.
+
+**One more instance of 0.2's own class, found in this arc's own write-back and corrected.**
+`RESULTS.md` still read *"Twenty-nine of the thirty-six were opened by an instrument"* after D3.100
+moved the ledger 141 → 142; a line-wrapped substitution had missed it. It is corrected to thirty of
+thirty-seven, and it is recorded here rather than fixed silently, because a narrated figure that
+survives its own correction pass is exactly what D3.82 says the auditor cannot see: the numbers carry
+no noun, and the reconciling counts are spelled in words. The arc that opened the finding reproduced
+it, in the document reporting it, twice — once in ARC 027's header and once in its own.
