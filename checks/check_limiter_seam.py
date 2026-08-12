@@ -110,6 +110,36 @@ _FORBIDDEN_IMPORTS = frozenset(
 #: it has measured nothing and says so rather than passing.
 MIN_TERMINAL_PATHS = 3
 MIN_CALLABLES = 5
+#: The seam declares four ports; the floor is below that on purpose (doctrine
+#: C.4 — a floor, not today's count) but non-zero, because a docstring whose
+#: declaration section was renamed would otherwise read as universal agreement.
+MIN_DECLARED_VERBS = 6
+
+#: The three disagreements ARM 3 can report, as constants so the loop that finds
+#: them stays a loop and not a wall of prose.
+_GONE_PORT = (
+    "named in the seam's sync/async declaration and NOT DEFINED in the seam — "
+    "the declaration governs a port that is gone"
+)
+_GONE_VERB = (
+    "declared SYNCHRONOUS in the seam's own docstring and absent from the class "
+    "— the declaration describes a verb nothing has"
+)
+_ASYNC_VERB = (
+    "is `async def` while the seam DECLARES it synchronous — an awaitable gate "
+    "verb is a suspension point inside one authoritative pass, which is the "
+    "fill-vs-tick race §5 eliminates by construction"
+)
+_UNSPECCED_PATH = (
+    "declared but NOT named by §3 — if the implementation really reaches this "
+    "terminal state that is a FINDING ABOUT THE SPEC to be reported, never a "
+    "member added here to make a sweep green"
+)
+_MODULE_ASYNC = (
+    "is `async def` at module scope — the seam declares no asynchronous verb, "
+    "and the one async surface the Limiter owns is declared in the broker seam, "
+    "not restated here"
+)
 
 
 def _cannot_measure(detail: str) -> CheckResult:
@@ -269,6 +299,121 @@ def _gather(home: Path) -> tuple[_Sides | None, CheckResult | None]:
     return _Sides(tree, expected, declared), None
 
 
+#: A `Class.method` named inside the seam's own module docstring.
+_DECLARED_VERB = re.compile(r"`(?P<cls>[A-Z][A-Za-z0-9]*)\.(?P<method>[a-z_]+)`")
+#: A Port class named inside that docstring, with no method attached.
+_DECLARED_PORT = re.compile(r"`(?P<cls>[A-Z][A-Za-z0-9]*Port)`")
+
+
+def _classes(tree: ast.Module) -> dict[str, ast.ClassDef]:
+    return {
+        node.name: node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)
+    }
+
+
+def synchrony_defects(tree: ast.Module) -> tuple[list[tuple[str, str]], int]:
+    """Is the seam's SYNC/ASYNC DECLARATION true of the seam's own code?
+
+    ARM 3, and it exists because ARC 028's sub-agent B REFUTED the claim that
+    this gate guarded it. Measured on `tmp_path` copies through these very bytes:
+    all four `ReservationLedgerPort` verbs rewritten `def` -> `async def` PASSED,
+    with empty detail. The seam's most-argued property — every gate verb is
+    synchronous, because §5's single-threaded loop eliminates fill-vs-tick races
+    by construction and an awaitable `evaluate` is a declared suspension point
+    mid-pass — was guarded by prose alone. Prose is what this gate exists to stop
+    being the guarantee.
+
+    **The reference side is the seam's OWN DOCSTRING, and that is not circular.**
+    The docstring is the DECLARATION and the code is the SUBJECT; they are
+    written by different acts and drift apart in exactly the way that matters. A
+    verb the declaration names and the code has dropped is red; a verb the code
+    has made awaitable is red. What it cannot catch is a declaration and a code
+    change made together and consistently — which is a decision, visible on the
+    diff, not a drift.
+    """
+    doc = ast.get_docstring(tree) or ""
+    classes = _classes(tree)
+    named, missing = _declared_verbs(doc, classes)
+    defects = [(f"{SEAM}:{cls}", _GONE_PORT) for cls in missing]
+    checked = 0
+    for cls, method in sorted(named):
+        node = classes[cls]
+        found = [
+            item
+            for item in node.body
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and item.name == method
+        ]
+        if not found:
+            defects.append((f"{SEAM}:{cls}.{method}", _GONE_VERB))
+            continue
+        checked += 1
+        defects.extend(
+            (f"{SEAM}:{item.lineno} {cls}.{method}", _ASYNC_VERB)
+            for item in found
+            if isinstance(item, ast.AsyncFunctionDef)
+        )
+    defects.extend(_module_scope_async(tree, classes))
+    return defects, checked
+
+
+def _declared_verbs(
+    doc: str, classes: dict[str, ast.ClassDef]
+) -> tuple[set[tuple[str, str]], list[str]]:
+    """`(Class, method)` pairs the declaration governs, and classes it lost.
+
+    A port named BARE contributes every method it defines; a port named as
+    `Class.verb` contributes that verb. Both spellings appear in the seam's
+    declaration and each reaches the code by a different path — which is exactly
+    where the first repair leaked: it handled one and stepped over the other.
+    """
+    named = {(m.group("cls"), m.group("method")) for m in _DECLARED_VERB.finditer(doc)}
+    ports = {m.group("cls") for m in _DECLARED_PORT.finditer(doc)}
+    for cls in ports & set(classes):
+        named.update(
+            (cls, item.name)
+            for item in classes[cls].body
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+        )
+    # Parenthesised deliberately: `-` binds tighter than `|`, and the
+    # unparenthesised spelling reported EVERY declared port as missing.
+    missing = sorted(({cls for cls, _ in named} | ports) - set(classes))
+    return {(cls, method) for cls, method in named if cls in classes}, missing
+
+
+def _module_scope_async(
+    tree: ast.Module, classes: dict[str, ast.ClassDef]
+) -> list[tuple[str, str]]:
+    """`async def` outside any class. The seam declares no asynchronous verb."""
+    inside = {id(item) for cls in classes.values() for item in cls.body}
+    return [
+        (f"{SEAM}:{node.lineno} {node.name}", _MODULE_ASYNC)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and id(node) not in inside
+    ]
+
+
+def terminal_path_defects(
+    expected: frozenset[str], declared: frozenset[str]
+) -> list[tuple[str, str]]:
+    """ARM 1's comparison, both directions, each naming the member."""
+    defects = [
+        (
+            f"{SEAM}:TerminalPath",
+            (
+                f"§3 names a release path {missing} that the seam does not "
+                "declare — a path the spec requires and the ledger cannot report"
+            ),
+        )
+        for missing in sorted(expected - declared)
+    ]
+    defects.extend(
+        (f"{SEAM}:TerminalPath.{extra}", _UNSPECCED_PATH)
+        for extra in sorted(declared - expected)
+    )
+    return defects
+
+
 def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argument
     """Compare the seam against the frozen spec. Never repairs — see the reason."""
     try:
@@ -284,30 +429,7 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
             )
         tree, expected, declared = sides
 
-        defects: list[tuple[str, str]] = []
-        for missing in sorted(expected - declared):
-            defects.append(
-                (
-                    f"{SEAM}:TerminalPath",
-                    (
-                        f"§3 names a release path {missing} that the seam does "
-                        "not declare — a path the spec requires and the ledger "
-                        "cannot report"
-                    ),
-                )
-            )
-        for extra in sorted(declared - expected):
-            defects.append(
-                (
-                    f"{SEAM}:TerminalPath.{extra}",
-                    (
-                        "declared but NOT named by §3 — if the implementation "
-                        "really reaches this terminal state that is a FINDING "
-                        "ABOUT THE SPEC to be reported, never a member added "
-                        "here to make a sweep green"
-                    ),
-                )
-            )
+        defects = terminal_path_defects(expected, declared)
 
         behaviour, classified = behaviour_defects(tree)
         if classified < MIN_CALLABLES:
@@ -318,10 +440,27 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
             )
         defects.extend(behaviour)
 
+        synchrony, verbs = synchrony_defects(tree)
+        defects.extend(synchrony)
+        if verbs < MIN_DECLARED_VERBS and not defects:
+            # The floor fires ONLY when there is nothing positively observed to
+            # report. §17: a positively-observed defect outranks masking -- the
+            # first spelling returned CANNOT_MEASURE here and THREW AWAY defects
+            # arms 1 and 2 had already found, which is a gate discarding its own
+            # measurement to report that it could not measure.
+            return _cannot_measure(
+                f"{SEAM}: the sync/async declaration reached only {verbs} verb(s), "
+                f"below the floor of {MIN_DECLARED_VERBS} — the docstring's "
+                "declaration section was renamed or the ports are gone, and a "
+                "clean sheet would be about an empty reading"
+            )
+
         evidence = (
             f"§3 release paths {len(expected)} == TerminalPath members "
             f"{len(declared)} [{', '.join(sorted(expected))}]; "
             f"{classified} callable(s) classified, {len(behaviour)} carrying behaviour; "
+            f"{verbs} verb(s) held against the seam's own sync/async declaration, "
+            f"{len(synchrony)} disagreeing; "
             f"parsed from {SPEC} at run time, not from a constant in this gate"
         )
         if defects:

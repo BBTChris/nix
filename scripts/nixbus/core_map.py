@@ -607,11 +607,25 @@ def _runs_tree_venv(pid: int, nix_home: Path) -> bool:
 
     TWO kernel facts, both required, because either alone over-attributes:
 
-    * `VIRTUAL_ENV` names a venv inside `nix_home` — but an operator's `bash`
-      inherits that variable the moment they `activate`, and a shell is not a
-      Nix process.
+    * `VIRTUAL_ENV` names the SAME venv `nix_home/.venv` resolves to — but an
+      operator's `bash` inherits that variable the moment they `activate`, and a
+      shell is not a Nix process.
     * `/proc/<pid>/exe` is the binary that venv's `python` resolves to — which
       excludes the shell, since `/bin/bash` is not the interpreter.
+
+    **`VIRTUAL_ENV` is compared by RESOLUTION, not by containment, and the first
+    spelling got that wrong.** It asked `Path(declared).is_relative_to(nix_home)`,
+    which is False in every PROVISIONED WORKTREE this project uses for parallel
+    arcs: `provision_worktree.sh` symlinks `.venv` back to the primary tree, and
+    the `activate` script bakes the PRIMARY path, so a worktree's own venv
+    declares `VIRTUAL_ENV=/home/bbt/nix/.venv` and fails a containment test
+    against `/home/bbt/nix-wt-arc-028-a`. MEASURED: ARC 028's sub-agents A and B
+    independently reported `test_check_reserved_cores`' four controls red in
+    their worktrees, and the repair that removed the invocation-spelling
+    dependence in the canonical tree had simply reintroduced it one directory
+    over. Resolving both sides asks the question that was always meant —
+    *is this process running THE TREE'S venv* — and answers it identically in a
+    worktree and in the primary tree, because they are the same venv.
 
     The residual over-attribution is a SYSTEM interpreter invoked by hand from an
     activated shell. That process is running inside this tree's environment, so
@@ -625,7 +639,7 @@ def _runs_tree_venv(pid: int, nix_home: Path) -> bool:
     if not declared:
         return False
     try:
-        if not Path(declared).is_relative_to(nix_home):
+        if Path(declared).resolve() != (nix_home / ".venv").resolve():
             return False
     except OSError, ValueError:
         return False

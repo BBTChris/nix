@@ -249,3 +249,121 @@ def test_the_GATE_DECLARES_the_seam_as_a_SUBJECT_so_coverage_is_real() -> None:
     assert gate.SEAM in gate.SUBJECTS, gate.SUBJECTS
     assert gate.CORRECTABLE is False, "the frozen spec is never edited into agreement"
     assert gate.NON_CORRECTABLE_REASON, "a refusal must carry its reason"
+
+
+# --------------------------------------------------------------------------
+# ARM 3 — the sync/async DECLARATION, added because it was REFUTED
+#
+# ARC 028's sub-agent B measured these very bytes and found them silent: all
+# four `ReservationLedgerPort` verbs rewritten `def` -> `async def` PASSED with
+# empty detail, and a deleted `ProposedOrder` field PASSED. The seam's
+# most-argued property was guarded by prose. These controls are the repair, and
+# they are written as plants rather than as an assertion about the gate's source.
+# --------------------------------------------------------------------------
+
+
+def test_an_ASYNC_GATE_VERB_fails_and_NAMES_the_verb_and_the_RACE(
+    home: Path,
+) -> None:
+    """The refuted case, verbatim: the ledger's verbs made awaitable."""
+    seam = _seam(home)
+    seam.write_text(
+        seam.read_text(encoding="utf-8").replace(
+            "    def take(self, order: ProposedOrder, now: float) -> Reservation:",
+            "    async def take(self, order: ProposedOrder, now: float) -> Reservation:",
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run(home)
+
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert "ReservationLedgerPort.take" in result.site, result.site
+    assert "`async def` while the seam DECLARES it synchronous" in result.detail, (
+        result.detail
+    )
+    assert "fill-vs-tick race" in result.detail, result.detail
+
+
+def test_a_VERB_THE_DECLARATION_NAMES_AND_THE_CODE_DROPS_fails(home: Path) -> None:
+    """A declaration governing a verb nothing has is a declaration about nothing."""
+    seam = _seam(home)
+    seam.write_text(
+        seam.read_text(encoding="utf-8").replace(
+            "    def publish(self, picture: FinancialPicture) -> None:",
+            "    def emit(self, picture: FinancialPicture) -> None:",
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run(home)
+
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert "FinancialPicturePort.publish" in result.site, result.site
+    assert "absent from the class" in result.detail, result.detail
+
+
+def test_a_PORT_THE_DECLARATION_NAMES_AND_THE_SEAM_DROPS_is_named(home: Path) -> None:
+    """Deleting a whole port must not read as universal agreement."""
+    seam = _seam(home)
+    seam.write_text(
+        seam.read_text(encoding="utf-8").replace(
+            "class Plane1Port(Protocol):", "class _RetiredPlane1Port(Protocol):"
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run(home)
+
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert "Plane1Port" in result.site, result.site
+    assert "NOT DEFINED" in result.detail, result.detail
+
+
+def test_the_DECLARATION_SECTION_GOING_MISSING_is_CANNOT_MEASURE(home: Path) -> None:
+    """§5.3 again: a reference side that vanished is not universal agreement.
+
+    Without this floor, deleting the docstring's declaration section would make
+    every verb unnamed, the comparison empty, and the gate green — the exact
+    shape ARM 1's spec-sentence floor exists to prevent, one layer over.
+    """
+    seam = _seam(home)
+    text = seam.read_text(encoding="utf-8")
+    body = text.split('"""', 2)[2]
+    seam.write_text('"""The seam."""\n' + body, encoding="utf-8")
+
+    result = _run(home)
+
+    assert result.status is Status.CANNOT_MEASURE, result
+    assert "sync/async declaration reached only" in result.detail, result.detail
+    assert result.site == "", (
+        "a CANNOT_MEASURE carrying a site would mean the gate observed a defect "
+        "and reported that it observed nothing"
+    )
+
+
+def test_a_BARE_NAMED_PORT_the_seam_drops_is_ALSO_named_not_just_counted(
+    home: Path,
+) -> None:
+    """The other half of the same hole, and it bit the first repair.
+
+    `ReservationLedgerPort` is named in the declaration WITHOUT a verb, while
+    `Plane1Port` is named only as `Plane1Port.enqueue`. Two spellings, two code
+    paths, and the first repair suppressed this one — deleting the ledger port
+    fell through to a CANNOT_MEASURE about the floor that named no port at all.
+    A gate that knows which port vanished must say which port vanished.
+    """
+    seam = _seam(home)
+    seam.write_text(
+        seam.read_text(encoding="utf-8").replace(
+            "class ReservationLedgerPort(Protocol):",
+            "class _RetiredLedgerPort(Protocol):",
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run(home)
+
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert "ReservationLedgerPort" in result.site, result.site
+    assert "NOT DEFINED" in result.detail, result.detail
