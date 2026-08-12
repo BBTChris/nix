@@ -110,12 +110,18 @@ Every answer below is a committed, named plant in
 
 from __future__ import annotations
 
+import argparse
 import ast
 import dataclasses
-from collections.abc import Iterable
+import subprocess  # nosec B404 - fixed absolute argv, shell=False, history only
+import sys
+import tarfile
+import tempfile
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 from nixverify.declarations import _KNOWN as DECLARATION_SYMBOLS
+from nixverify.gitenv import scrubbed_env
 
 #: The three classifications. `UNDECIDABLE` is never a synonym for
 #: `DECLARATION_ONLY`: `preserves_binding` is False for both it and
@@ -486,3 +492,167 @@ def classify_paths(
         changed_files=changed_files,
         repo=repo,
     )
+
+
+# ===========================================================================
+# THE ARC AUDIT — every check, every arc range (ARC 027 / 0.1)
+# ===========================================================================
+#
+# ARC 026 built the classifier and ran it, by hand, over ONE range. ARC 027's
+# Phase 0.1 has to run it over five, and the §0a hazard named in that brief is
+# precise: **an empty or wrong diff range produces a clean report while
+# measuring nothing.** A range that resolves to zero changed files classifies
+# every check as declaration-only, in silence, and the output is indistinguish-
+# able from an arc that genuinely touched no measurement path.
+#
+# So the range is not a convenience argument, it is the thing most likely to be
+# wrong, and `changed_paths` REFUSES an empty one — `RangeError`, exit 2, no
+# table printed. There is no flag to override it.
+#
+# The second correctness point is subtler. `resolve_imports` decides whether a
+# first-party import resolves by asking whether the file EXISTS, and the obvious
+# spelling passes the live working tree as `repo`. That answers condition 4
+# against *today's* module population rather than the revision's: a helper that
+# existed at ARC 022 and was deleted since would silently stop being an import
+# the classifier can follow, and the cross-file arm would go quiet exactly where
+# history is oldest. Both revisions are therefore EXTRACTED with `git archive`
+# and classified against their own trees.
+
+GIT = "/usr/bin/git"
+
+#: The two roots `resolve_imports` searches. Extracting only these keeps the
+#: per-revision archive small; nothing outside them can be a first-party import.
+_ARCHIVE_PATHS = ("scripts", "checks")
+
+
+class RangeError(RuntimeError):
+    """A diff range that cannot be trusted to have measured anything."""
+
+
+def _git(cwd: Path, *args: str) -> str:
+    """One git command, scrubbed environment (D3.22), stdout or raise."""
+    proc = subprocess.run(  # nosec B603 - fixed absolute path, shell=False
+        [GIT, "-C", str(cwd), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+        env=scrubbed_env(),
+    )
+    if proc.returncode != 0:
+        raise RangeError(f"git {' '.join(args)} exit {proc.returncode}: {proc.stderr}")
+    return proc.stdout
+
+
+def changed_paths(repo: Path, before: str, after: str) -> tuple[str, ...]:
+    """Repo-relative paths the range touched. **An empty range is an error.**"""
+    out = tuple(
+        line for line in _git(repo, "diff", "--name-only", before, after).splitlines()
+    )
+    if not out:
+        raise RangeError(
+            f"{before}..{after} changed no files — an empty range classifies every "
+            "check as declaration-only while measuring nothing (§0a). Refusing."
+        )
+    return out
+
+
+def check_names(repo: Path, rev: str) -> tuple[str, ...]:
+    """`checks/check_*.py` present at one revision, repo-relative, sorted."""
+    listed = _git(repo, "ls-tree", "-r", "--name-only", rev).splitlines()
+    return tuple(
+        sorted(
+            rel
+            for rel in listed
+            if rel.startswith("checks/check_") and rel.endswith(".py")
+        )
+    )
+
+
+def extract_revision(repo: Path, rev: str, dest: Path) -> Path:
+    """`scripts/` and `checks/` of one revision, on disk, for import resolution."""
+    dest.mkdir(parents=True, exist_ok=True)
+    archive = dest.parent / f"{dest.name}.tar"
+    archive.write_bytes(
+        subprocess.run(  # nosec B603 - fixed absolute path, shell=False
+            [GIT, "-C", str(repo), "archive", "--format=tar", rev, *_ARCHIVE_PATHS],
+            capture_output=True,
+            check=True,
+            timeout=300,
+            env=scrubbed_env(),
+        ).stdout
+    )
+    with tarfile.open(archive) as tar:
+        tar.extractall(dest, filter="data")  # nosec B202 - data filter, own history
+    archive.unlink()
+    return dest
+
+
+def audit_range(
+    repo: Path, before: str, after: str, workdir: Path
+) -> tuple[tuple[str, ...], list[Classification]]:
+    """Classify every check across one arc's range. Returns (changed, verdicts)."""
+    changed = changed_paths(repo, before, after)
+    old_tree = extract_revision(repo, before, workdir / "before")
+    new_tree = extract_revision(repo, after, workdir / "after")
+    names = sorted(set(check_names(repo, before)) | set(check_names(repo, after)))
+    return changed, [
+        classify_paths(
+            Path(rel).stem,
+            old_tree / rel,
+            new_tree / rel,
+            changed_files=changed,
+            repo=new_tree,
+        )
+        for rel in names
+    ]
+
+
+def _render(
+    before: str, after: str, changed: Sequence[str], rows: list[Classification]
+) -> None:
+    """Print one range's verdicts.
+
+    `untouched` is separated from `declaration-only` in the presentation and
+    NOWHERE else: both preserve a binding, so the classifier is right to give
+    them one verdict, but a reader auditing §0c needs to know whether the rule
+    was *load-bearing* for a row or whether the file simply never moved.
+    """
+    print(f"\n=== {before}..{after} — {len(changed)} file(s) changed ===")
+    touched = set(changed)
+    preserved = [row.name for row in rows if row.preserves_binding]
+    for row in rows:
+        own = f"checks/{row.name}.py"
+        mark = "" if own in touched else "  (file untouched)"
+        head = f"  {row.name:<34} {row.classification}{mark}"
+        if row.declarations_changed:
+            head += f"  [declarations: {', '.join(row.declarations_changed)}]"
+        print(head)
+        for reason in row.reasons:
+            print(f"      - {reason}")
+    print(
+        f"  -- {len(rows)} check(s); {len(preserved)} preserve a binding: "
+        f"{preserved or 'none'}"
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """`python -m nixverify.measurement_path --before SHA --after SHA`."""
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--repo", default=str(Path(__file__).resolve().parents[2]))
+    parser.add_argument("--before", required=True)
+    parser.add_argument("--after", required=True)
+    args = parser.parse_args(argv)
+    repo = Path(args.repo).resolve()
+    try:
+        with tempfile.TemporaryDirectory(prefix="nix-mpath-") as tmp:
+            changed, rows = audit_range(repo, args.before, args.after, Path(tmp))
+    except RangeError as exc:
+        print(f"REFUSED: {exc}", file=sys.stderr)
+        return 2
+    _render(args.before, args.after, changed, rows)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
