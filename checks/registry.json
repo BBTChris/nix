@@ -28,6 +28,7 @@
         "check_observed_resource_claims",
         "check_price_ring",
         "check_reservation_lifecycle",
+        "check_risks_data_only",
         "check_spec_citations",
         "check_verify_logging"
       ],

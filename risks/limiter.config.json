@@ -1,0 +1,94 @@
+{
+  "_meta": {
+    "role": "config",
+    "module": "limiter",
+    "component": "Risk Engine / Limiter — nics_risk_subsystem_spec_v1.3.md §2:42 (`rule manifest, two-phase gate, margin reservations, synthetic stops, protective flatten, net-liq survival watch, sole event-log writer, canonical position state`)",
+    "authority": "nics_risk_subsystem_spec_v1.3.md §12A is the SEMANTIC authority for every knob below — name, default, meaning, and the cross-knob boot validation that must reject an invalid set 'before any strategy registers' (§12A:801-802). This file is the PHYSICAL layout only, per CLAUDE.md 'Per-module JSON configs only'. Where the two disagree, §12A wins and this file is wrong.",
+    "role_separation": "CONFIG-ROLE ONLY (CLAUDE.md: 'config-role and data-role JSON stay separate'). The data-role expression of the §5 rule set — which rules run, in what order, in which phase — is NOT in this file and is not in this arc. Nothing here is a second behavioural authority: every value is a NUMBER, every word is under a `_`-prefixed documentation key that no loader reads, and the rules that consume these numbers live in the Limiter's own code.",
+    "lifecycle": "§12.11 (`Config lifecycle (locked): boot-loaded, restart-only`) and §12A:801. Values load at BOOT and take effect only through restart. There is no reload verb anywhere on the load path — a mid-session change would let two decisions inside one open trade read different tunables. The config version is stamped into the Plane-1 boot event (§12.11), so every subsequent row is traceable to the exact tunable set it ran under. §6.3's baseline re-acceptance is the sole runtime-adaptive value and is explicitly STATE, not config.",
+    "validated_by": "scripts/risk_config.py",
+    "landed_by": "ARC 028 sub-agent D (D1).",
+    "not_implemented_here": "Landing a knob as DATA is not implementing the rule that reads it. Stop conversion and trailing maintenance, protective-exit wiring, session-close flatten, full HALT semantics and auto-clear, cold-start reconciliation, the Sentinel, Scoring and the Allocator are all OUT of this arc; a value below existing proves only that the value has a home.",
+    "cc_calibrate": "§12A:799-800 marks several of these placeholders until measured on node02 (§13). A CC-calibrate default here is a PLACEHOLDER with a stated direction of error, never a measured figure."
+  },
+
+  "deployable_pct": 0.70,
+  "agg_margin_cap_pct": 0.70,
+  "netliq_safety_pad": 0.25,
+  "ledger_drift_tolerance_usd": 1.0,
+
+  "eod_blackout_min": 20,
+  "session_flatten_lead_min": 10,
+  "session_flatten_lead_pad_min": 5,
+  "eow_blackout_min": 30,
+  "news_blackout_min": 20,
+
+  "pending_ack_timeout_ms": 2000,
+  "fill_timeout_ms": 10000,
+  "go_timeout_s": 10,
+  "heartbeat_interval_s": 1,
+  "heartbeat_miss_grace_cycles": 1,
+
+  "cooldown_min_time_s": {
+    "discretionary": 0,
+    "stop": 60,
+    "uncertainty": 300,
+    "margin_session": 900
+  },
+
+  "_derivations": {
+    "deployable_pct": "§12A:811 `DEPLOYABLE_PCT` = 0.70 — stated outright by the spec, not chosen here. §6.5:411 gives the same number as '30% buffer / 70% deployable — single number'.",
+    "agg_margin_cap_pct": "§12A:811 `AGG_MARGIN_CAP_PCT` = 0.70 of balance — stated outright. §6.5:412-413 is the rule it feeds: `Σ committed intraday margin (open + pending reservations + proposed) < 70% × balance`, hard, 100% of the time.",
+    "netliq_safety_pad": "§12A:812 `NETLIQ_SAFETY_PAD` — the spec gives the FORMULA and no number: force-flatten fires at `net_liq < Σ open margin × (1 + pad)`, ahead of the broker (§6.5:414-418). 0.25 is a CC-calibrate placeholder. Direction of error is stated because the two sides are not symmetric: too SMALL and Tradovate liquidates us first, which §6.5:418 forbids outright ('We never let the broker liquidate us'); too LARGE and we flatten profitable positions early, which costs money but never solvency. The placeholder therefore errs large.",
+    "ledger_drift_tolerance_usd": "§12A:813 `LEDGER_DRIFT_TOLERANCE` — reconcile drift that raises an audit event (§6.5:419, and the §11.7 periodic full-scan audit). CC-calibrate; 1.00 USD is a placeholder chosen so no fill-sized drift can hide under it — the smallest instrument in the §7:495 symbol scope is MES at a 1.25 USD tick value, so a tolerance below one tick cannot absorb a real execution, while cent-level rounding and commission arithmetic stay under it.",
+    "eod_blackout_min": "§12A:819 `EOD_BLACKOUT_MIN` = 20 — stated outright (global default, per-symbol override). §6.1:332-334 is the rule: no new entry from 15-20 min before that symbol's session close through its next session open.",
+    "session_flatten_lead_min": "§12A:820 `SESSION_FLATTEN_LEAD_MIN` = 10 — stated outright. §6.1b:340-342 is the rule: at this lead before each symbol's session close the Limiter force-flattens all open positions in that symbol, `reason=session`.",
+    "session_flatten_lead_pad_min": "NOT a §12A knob, and its absence is a finding rather than an omission here. §6.1b:346 states the boot-validated ordering invariant as `SESSION_FLATTEN_LEAD_MIN < EOD_BLACKOUT_MIN − pad` and §12A:821 repeats it, but §12A names no `pad` knob — so the one invariant §12A:802 singles out by name is UNEXECUTABLE as written. Landed as a declared Nix addition so the rule can run at all; 5 min is a placeholder that keeps 10 < 20 − 5. Recorded in docs/CHECK-DEBT.md.",
+    "eow_blackout_min": "§12A:822 `EOW_BLACKOUT_MIN` = 30 before Friday close — stated outright. §6.2:355-357 is the rule, with window union across overlapping blackouts.",
+    "news_blackout_min": "§12A:822 `NEWS_BLACKOUT_MIN` = 20 before scheduled event — stated outright. §6.3:360 is the leading (predictive, clock-driven) edge; the trailing edge is live margin and is not a clock knob.",
+    "pending_ack_timeout_ms": "§12A:830 `PENDING_ACK_TIMEOUT_MS` (~1-2s) — 'status query, never resend'. The spec gives a RANGE, not a value; the upper end is taken because the failure of a too-short ack timeout is a spurious status query on every marketable order, and §4 makes the query the resolution path rather than an exception. CC-calibrate. THIS FILE IS THE SINGLE PHYSICAL HOME: risks/broker_order.config.json READS this value rather than restating it (ARC 020's `obligation_when_R2_lands`, honoured here).",
+    "fill_timeout_ms": "§12A:830 `FILL_TIMEOUT` — 'order-type-dependent'. CC-calibrate placeholder. Same single-home rule as the knob above: broker-order reads it here.",
+    "go_timeout_s": "§12A:831 `GO_TIMEOUT_T` — 'strategy resets to flat-and-free if no feedback within T'. CC-calibrate per §13 objective 10. The value 10 is not invented: nix_strategy_contract_v1.1.md §4.2 puts `go_timeout_s` in the platform's own REGISTER_ACK payload at 10, so the platform ISSUES this number to every strategy and it must have a physical home on the Nix side. §4:210-212 is the rule it feeds — the deadlock breaker on the one-in-flight lock.",
+    "heartbeat_interval_s": "§12A:832 `HEARTBEAT_INTERVAL` = 1s — stated outright, and matched by nix_strategy_contract_v1.1.md §4.6 ('Every `hb_interval_s` (default 1 s)') which the platform likewise issues at registration.",
+    "heartbeat_miss_grace_cycles": "§12A:832 `HEARTBEAT_MISS_GRACE` = 1 cycle before presumed-dead — stated outright. §4:260-261 is the rule: heartbeat miss ⇒ wait exactly one cycle (1s); a second consecutive miss ⇒ strategy presumed dead.",
+    "cooldown_min_time_s": "§12A:839 `COOLDOWN_MIN_TIME` — 'floor + condition-clear (hybrid), per exit class'. CC-calibrate. The KEYS are the exit classes §4:301 enumerates, transcribed rather than invented: 'Discretionary exit → none. Ordinary stop → short. Feed/uncertainty/stale → longer. Margin/session → longest or until condition clears.' The spec fixes the ORDER and not the seconds, so the ladder is boot-validated (rule `cooldown.ladder_is_ordered`) and the four numbers are placeholders. `discretionary` is 0 because §4:301 says 'none', which is a value and not a missing one."
+  },
+
+  "_boot_validation": [
+    {
+      "id": "positive.scalars",
+      "why": "Every scalar knob outside the cooldown ladder must be > 0. §12A:801-802 requires boot validation to reject an invalid set before any strategy registers, and a zero or negative tunable on this module is a gate that cannot deny, a blackout with no width, or a timeout that expires instantly.",
+      "spec": "§12A:801"
+    },
+    {
+      "id": "fraction.pct_range",
+      "why": "Every `_pct` knob is a fraction of balance and must lie in (0, 1]. A percentage above 1 would let the aggregate margin cap admit more than the whole account.",
+      "spec": "§6.5:411"
+    },
+    {
+      "id": "interlock.margin_cap_within_deployable",
+      "why": "agg_margin_cap_pct must not exceed deployable_pct. §6.5:420 calls the 70% intraday cap and the blackout calendar 'one coupled system'; a margin cap wider than the deployable envelope would admit commitments the 30% buffer was reserved to protect.",
+      "spec": "§6.5:411"
+    },
+    {
+      "id": "ordering.session_flatten_before_eod_blackout",
+      "why": "session_flatten_lead_min < eod_blackout_min − session_flatten_lead_pad_min. This is the ONE invariant §12A:802 names as boot-validated, stated at §6.1b:346-348: the entry blackout must lead the flatten deadline, and config validation REJECTS any per-symbol set violating it. Otherwise the system could open a position after the deadline that force-flattens it.",
+      "spec": "§6.1b:346"
+    },
+    {
+      "id": "liveness.go_timeout_outlasts_pending_ack",
+      "why": "go_timeout_s must outlast pending_ack_timeout_ms. §4:210-212 arms the GO-timeout as a deadlock breaker for a LOST message; if it expires while the Limiter's own §4 pending-ack machinery is still resolving the same GO, the strategy resets to flat-and-free against a live order and the breaker fires on the healthy path.",
+      "spec": "§4:210"
+    },
+    {
+      "id": "liveness.heartbeat_grace_at_least_one_cycle",
+      "why": "heartbeat_miss_grace_cycles >= 1. §4:260-261 pins the grace at exactly one cycle before a second consecutive miss presumes death; a grace of zero makes one dropped beat a strategy death, and death recovery flattens positions.",
+      "spec": "§4:260"
+    },
+    {
+      "id": "cooldown.ladder_is_ordered",
+      "why": "discretionary <= stop <= uncertainty <= margin_session, with every class after discretionary strictly positive. §4:301 fixes the ORDER of the ladder ('none / short / longer / longest') and not the seconds, so the order is the checkable part.",
+      "spec": "§4:300"
+    }
+  ]
+}
