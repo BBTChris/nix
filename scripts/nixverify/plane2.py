@@ -152,14 +152,22 @@ def _render_value(value: Any) -> str:
     return text
 
 
-def format_event(event: str, fields: dict[str, Any]) -> str:
+def format_event(event: str, fields: dict[str, Any], *, process: str = PROCESS) -> str:
     """§12.10 one-line structured event: UTC timestamp, process, event, key=value.
 
     Field order is: timestamp, process, event, then the caller's keys in the
     order given. Insertion order is preserved rather than sorted so an event
     reads in the order the code thought about it.
+
+    `process` is keyword-only and defaults to `verify.py` (ARC 026). §12.10 says
+    *"Each process writes its **own** structured one-line events"*, so `proc=` is
+    per-EMITTER, not a module constant — `capture.py` is the second process to
+    own a Plane-2 stream and it must not report itself as `verify.py`. The
+    parameter was added rather than a second module written, per
+    `nix_check_contract.md` check-rule 8: extend, do not duplicate. Two copies of
+    the §12.10 format would drift, and the format is the contract.
     """
-    parts = [f"ts={_utc_now()}", f"proc={PROCESS}", f"event={event}"]
+    parts = [f"ts={_utc_now()}", f"proc={process}", f"event={event}"]
     parts.extend(f"{key}={_render_value(value)}" for key, value in fields.items())
     return " ".join(parts)
 
@@ -202,8 +210,12 @@ class _CountingSysLogHandler(logging.handlers.SysLogHandler):
         self.last_error = f"{cause} while emitting {record.getMessage()!r}"
 
 
-class Plane2:
+class Plane2:  # pylint: disable=too-many-instance-attributes
     """The process's own Plane-2 event stream.
+
+    Gained an eighth attribute in ARC 026 — `process`, the `proc=` field — when
+    `capture.py` became the second process to own a Plane-2 stream. §12.10 makes
+    that per-EMITTER, so it is state on the emitter and not a module constant.
 
     Construction never raises. A transport that cannot be opened yields an
     instance whose `available` is False and whose `unavailable_reason` names the
@@ -216,10 +228,14 @@ class Plane2:
         socket_path: str = JOURNAL_SOCKET,
         identifier: str = IDENTIFIER,
         env: dict[str, str] | None = None,
+        *,
+        process: str = PROCESS,
     ) -> None:
         environ = os.environ if env is None else env
         self.socket_path = socket_path
         self.identifier = identifier
+        #: The `proc=` field every event from THIS emitter carries (§12.10).
+        self.process = process
         self.disabled = environ.get(DISABLE_ENV, "") not in ("", "0")
         self.available = False
         self.unavailable_reason = ""
@@ -296,7 +312,7 @@ class Plane2:
         still see what *would* have been written; `emitted` is what says whether
         it was.
         """
-        line = format_event(event, fields)
+        line = format_event(event, fields, process=self.process)
         if self._logger is not None:
             self._logger.info(line)
         return line
