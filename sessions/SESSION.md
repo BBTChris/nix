@@ -2324,3 +2324,118 @@ are the standing Gateway-down baseline; `check_observed_resource_claims` cannot-
 masked-hazard clause biting; the single GUARDED is **`check_artifact_gate_coverage`, `guard_owner`
 verbatim `'ARC 025'`** — one arc, mechanically validated by `guard_owner_defect`, where it read
 `"the bulk check retrofit arc (ARC 025+), sized in ARC 024 Stage 6.4"` at arc start.
+
+---
+
+# ARC 026 — Canonical Path, Reflexivity, and R1-C
+
+**Canonical path established: `/home/bbt/nix` (absolute).** Base `0f9c5b9` (ARC 025).
+Branch `arc-026-integration`. Shape: Phase 0 serial and blocking · Stage 1 three parallel
+sub-agents · Stage 2 serial convergence · Phase 3 close-out.
+
+## Phase 0 — the brief's central instruction was refused, with a measurement
+
+`core.bare = true` was written to `/home/bbt/nix/.git/config` at **2026-08-12 01:23:25 UTC**,
+mid-ARC-025 — the only file under `.git/` touched in that window. Mechanism is recorded in this
+file at line 1514: a sub-agent's `git init` running with `GIT_DIR` inherited from the pre-commit
+hook environment. **Accidental, and a recurrence** — ARC 020 §53 records the same conversion
+mid-ARC-019, and briefs 021/022/023/025 all carry `core.bare != true` as a close-out item. **Same
+root cause as D3.22**, the row sub-agent B closed this arc, one layer up in blast radius.
+
+**Nothing created a shadow tree.** `/home/bbt/nix` *is* the original working tree, orphaned in
+place the instant `core.bare` flipped. Proven read-only without writing config: zero tracked files
+differed from HEAD; exactly two untracked.
+
+**0.2 did not clear, and the finding was the arc's own brief.**
+`arc_026_canonical_path_reflexivity_and_r1c.md` existed nowhere else on the machine. **Executing
+0.3 as written would have deleted the only copy of the instructions being executed.**
+
+**0.3 refused** on 0.2's own rule and independently: `smbstatus` showed share `[nix]`
+(`path=/home/bbt/nix`) mounted live from 192.168.1.120 since 2026-08-09, with the operator's
+upload of `arc_026` landing on it at 03:22 that morning. The tree was invisible to git, not unused.
+
+**0.4 — the architect ruling was REFUSED (§0b).** Moving write-back to a per-arc
+`<canonical>/downloads/RESULTS.md` places RESULTS.md *outside* the Samba share: the operator would
+have read **no file** rather than a stale one. Substitution: **repair, do not relocate.**
+`core.bare` unset; local `main` fast-forwarded `509159d → 0f9c5b9` (stale at ARC 024 — the same
+stale-local-main pattern ARC 020 recorded for ARC 019); stale ARC 025 worktree removed after
+proving it fully merged with zero unique content. **Zero standing rules needed rewriting**, because
+the repaired path is the one they already name.
+
+**0.5** — `check_canonical_tree.py`. The brief's spelling (*"no untracked working files beside the
+bare repo"*) is **permanently vacuous under its own fix** and was refused. Invariant implemented
+instead: every tree holding `scripts/verify.py` is accounted for by a REGISTERED worktree, and the
+canonical path is one of them. NON-CORRECTABLE, with this arc as the evidence. Can-fail
+demonstrated live: pass exit 0 → PLANT fail exit 1 naming `/home/bbt/nix-orphan-demo` → unplant
+pass exit 0.
+
+**0.6 — ZERO DELTA** from ARC 025's close on all six figures.
+
+## Stage 1
+
+**A — the §0c AST classifier did not exist.** ARC 025's was ad-hoc and uncommitted: **ten of
+fifteen binding rulings rested on a program nobody can run.** Built as
+`scripts/nixverify/measurement_path.py`; re-run over ARC 025's own diff it classifies **0 of 15**
+as declaration-only against the 10 the ruling was taken on. Reflexivity demonstrated by plants:
+**two of three were invisible** (exit 0, `13/13 compared`) while coverage collapsed 56% → 0%.
+Census corrected to **9 of 13**, not the 10 restated in three places. Three claims marked NOT
+INDEPENDENT rather than implied.
+
+**B — D3.22 named the wrong site.** `check_hook_suite`, the gate the row was filed against, has
+stripped every `GIT_*` since ARC 019 — the **best**-protected caller. The live exposure was
+`scripts/runtime_gate.py`, the program pre-commit runs on every commit, deriving its whole scope
+from `git ls-files` with no scrub at all. **D3.22 discharged.** B3's authored owning-module column
+took broker-order 13 → 9 and broker-datafeed 13 → 7. B2 re-pointed the live guard to **ARC 027**,
+refusing to name an arc that does not discharge the debt.
+
+**C — R1-C, first product movement since ARC 021.** Core map, `ipc://` PUB/SUB state bus with
+snapshot-on-subscribe, SPSC price ring, four gates, per-channel Plane-2 from `capture.py`. §0b
+substitution measured: the publisher is **`XPUB`**, because a `zmq.PUB` socket cannot see
+subscriptions (`pollin=0` vs `pollin=1` against a real SUB peer) and snapshot-on-subscribe is
+impossible without them. Vacuous passes closed with real effective state — kernel affinity mask of
+a spawned PID with a `--no-pin` control, non-zero `bytes_received` preconditions, a shm detector
+that must find its known subject or report CANNOT_MEASURE.
+
+## Stage 2 — convergence
+
+Plan regenerated; 21 checks. **The observer bit, and the finding was about the observer**:
+`check_capture_plane2` failed for `__pycache__` writes against an honest declaration. A `.pyc` write
+is the interpreter caching a module, charged to whichever check imports first on a cold tree — a
+claim that moves between checks when the plan is reordered. Fixed at the cause
+(`sys.dont_write_bytecode` in `checks/_preamble.py`) and proven on a cold cache.
+
+**The canonical path paid a bill and the gate was right**: `check_price_ring` went CANNOT_MEASURE on
+37 macOS AppleDouble sidecars that land in the tree *because* `/home/bbt/nix` is the live share.
+Excluded by filename class stated in source — never by `git check-ignore`, which would have been
+this project's most-repeated defect committed inside the arc that exists to close it.
+
+Two debt-ID collisions between B and C resolved by reading both texts; new vocabulary token
+`capture` added so product debt was not filed under `verify`. One moving anchor removed from A's own
+new control, which had restated `31`/`69` as literals.
+
+## Close-out (cold cache)
+
+```
+verify.py    17 passed | 1 failed | 2 cannot measure | 0 skipped | 1 guarded    exit 1
+pytest       761 passed, 1 skipped, 2 xfailed
+pre-commit   8/8 Passed                                                          exit 0
+claims       13/13 compared, 2/2 demonstrations                                  exit 0
+CHECK-DEBT   77 open (derived:ledger_rows=77 == stated:series_table_latest_row=77)
+census       21 == 21 == 21
+```
+
+Every non-PASS named, and they are exactly the stated baseline: `check_ibgateway_service` FAIL and
+`check_ibgateway_config` cannot-measure are Gateway-down; `check_observed_resource_claims`
+cannot-measure is its own masked-hazard clause biting. The single GUARDED is
+**`check_artifact_gate_coverage`, `guard_owner` verbatim `ARC 027`**.
+
+**§2.4 binding table: 14 BOUND · 3 PARTIAL · 1 GUARDED · 3 UNBOUND**, every non-BOUND row with an
+owner and every BOUND row with a committed artifact. **D3.25 was opened by the table itself**:
+building it from measured evidence rather than from the previous arc's table showed
+`check_verify_logging` has **no can-fail artifact at all** and no row said so — the only occurrence
+of its name under `scripts/tests/` is a docstring line. ARC 026 caught four prose-only bindings ARC
+025 asserted, then found a fifth **nobody had asserted**, which is worse: an unclaimed binding
+attracts no audit.
+
+Ten debt rows opened, one discharged (D3.22). ARC 026 closes at exit 1 and says so; the only FAIL is
+a Gateway that is switched off.
