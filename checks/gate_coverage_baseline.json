@@ -29,13 +29,16 @@
     "suppression list. Removed: checks/citation_reviewed.json (declared by",
     "check_spec_citations, which validates it), checks/derived_claims.json",
     "(check_derived_claims), and broker_seam.py / broker_datafeed_ibkr.py /",
-    "ibkr_mapping.py (both datafeed gates). A SHRINK needs no admitting arc —",
+    "ibkr_mapping.py (both datafeed gates). A SHRINK needs no admitting arc \u2014",
     "only an ADDITION does. This is the ratchet paying for itself in the same",
-    "arc that built it."
+    "arc that built it.",
+    "ARC 026 / A3 admits scripts/nixverify/measurement_path.py \u2014 the \u00a70c declaration-only classifier. It is NOT unbound work: it ships with a 24-case can-fail suite (scripts/tests/test_measurement_path.py) whose plants include a probe reachable only from __main__, the aliasing trap, and a changed shared helper outside the file. What it lacks is a checks/check_*.py that names it as a SUBJECT, which is the only thing THIS gate can see, and registering a new check requires a registry.json edit that ARC 026 holds serial to Stage 2. Admitted rather than suppressed: the entry is in the `admitted` map naming exactly one arc, so the high-water-mark ratchet records who let it in."
   ],
   "owner": "ARC 025",
   "generated_by": "ARC 024",
-  "admitted": {},
+  "admitted": {
+    "scripts/nixverify/measurement_path.py": "ARC 026"
+  },
   "uncovered": [
     "checks/_preamble.py",
     "checks/ibgateway_expected.json",
@@ -52,6 +55,7 @@
     "scripts/nixverify/engine.py",
     "scripts/nixverify/loader.py",
     "scripts/nixverify/manifest.py",
+    "scripts/nixverify/measurement_path.py",
     "scripts/nixverify/optimize.py",
     "scripts/nixverify/render.py",
     "scripts/runtime_gate.py",
