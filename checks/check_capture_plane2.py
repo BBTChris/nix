@@ -245,17 +245,25 @@ def _fields(line: str) -> dict[str, str]:
     return found
 
 
+#: The three moves the driver provokes, in order. ARC 027 (B3): hoisted to module
+#: scope so `_arm_roundtrip`'s journal expectation and `_arm_transitions`' move
+#: expectation are ONE value. The round-trip arm previously carried the literal
+#: `3` inside a sentence, and a literal inside a sentence is where a stale number
+#: is invisible.
+EXPECTED_MOVES: tuple[tuple[str, str], ...] = (
+    ("unobserved", "fresh"),
+    ("fresh", "stale"),
+    ("stale", "cannot_measure"),
+)
+
+
 def _arm_transitions(
     transitions: list[Any], repeat: int, defects: list, ev: list
 ) -> None:
     """Three moves, and the fourth observation moves nothing (CONTROL)."""
     site = "scripts/capture.py:FeedStalenessMonitor.observe"
     moves = [(t.previous, t.current.value) for t in transitions]
-    expected = [
-        ("unobserved", "fresh"),
-        ("fresh", "stale"),
-        ("stale", "cannot_measure"),
-    ]
+    expected = list(EXPECTED_MOVES)  # `moves` is a list; compare like with like
     if moves != expected:
         defects.append((site, f"transitions were {moves}, expected {expected}"))
         return
@@ -275,17 +283,32 @@ def _arm_transitions(
     ev.append(f"transitions {moves}; CONTROL: unchanged re-observation emitted 0")
 
 
-def _arm_roundtrip(lines: list[str], defects: list, ev: list) -> None:
-    """This run's events are in the journal — three of them, not four."""
+def _arm_roundtrip(lines: list[str], defects: list, ev: list, produced: int) -> None:
+    """This run's events are in the journal — three of them, not four.
+
+    ARC 027 (B3), D3.21's class. `produced` is the number of transitions the
+    driver actually got back from the process, and the narration now reports it
+    instead of asserting the constant `3`. Under a Plane-2 delivery failure the
+    process produces fewer, the arm FAILs correctly, and the sentence beside the
+    failure used to tell the operator a number nothing had measured.
+
+    **The COMPARISON stays against `len(EXPECTED_MOVES)`, deliberately.**
+    Comparing the journal count to `produced` would compare the measurement to
+    itself: a process that produced zero transitions would then be satisfied by
+    zero journal entries, which is the vacuous pass this arm exists to refuse.
+    One number is the expectation, the other is the observation, and only the
+    observation belongs in the narration.
+    """
     site = "journal(-t nix-capture)"
     events = [line for line in lines if "event=feed_staleness_transition" in line]
-    if len(events) != 3:
+    if len(events) != len(EXPECTED_MOVES):
         defects.append(
             (
                 site,
                 (
                     f"{len(events)} feed_staleness_transition entr(ies) carrying this "
-                    "run's nonce reached the journal; the process emitted 3"
+                    f"run's nonce reached the journal; {len(EXPECTED_MOVES)} were "
+                    f"expected and the process produced {produced}"
                 ),
             )
         )
@@ -415,7 +438,7 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
     evidence.append(f"emitter delivered={counters.delivered} failed={counters.failed}")
 
     _arm_transitions(transitions, repeat, defects, evidence)
-    _arm_roundtrip(lines, defects, evidence)
+    _arm_roundtrip(lines, defects, evidence, len(transitions))
     _arm_fields(lines, defects, evidence)
     _arm_no_plane1(home, defects, evidence)
     _arm_logs_dir(home, defects, evidence)

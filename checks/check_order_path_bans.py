@@ -424,7 +424,34 @@ NON_CORRECTABLE_REASON = (
 )
 #: Derived at runtime from the tree; the reviewed-suppression registry is the
 #: one static artifact this gate reads and is answerable for.
-SUBJECTS: tuple[str, ...] = ("checks/order_path_retry_reviewed.json",)
+#: ARC 027 (B1). The three order-path modules below are DRIVEN by this gate, not
+#: merely named by it: each is opened, `ast.parse`d, and walked by arms (i) and
+#: (iii) on every run, each is printed by name in the evidence line, and each is
+#: in `REQUIRED_MEMBERS` so a file leaving the derived scope is CANNOT_MEASURE
+#: rather than a silent shrink.
+#:
+#: **The drive was PROVEN, not asserted** (§0e): a banned import was planted in
+#: each of the three in turn; the gate went `pass` (exit 0) -> `fail_needs_operator`
+#: (exit 1) naming `<file>:<line> <module>: banned retry library '<module>'` — the
+#: REASON, not the exit code — and each control was restored byte-identical.
+#: `scripts/tests/test_check_order_path_bans_drive.py` re-runs that plant.
+#:
+#: **What this coverage claim does NOT say.** It says these files are measured
+#: for ONE property — no banned construct, no hand-rolled retry on the order
+#: path. It does not say `broker_order_ibkr.py` places orders correctly. A
+#: SUBJECTS entry is a claim about a property, never a certificate for a module,
+#: and `check_artifact_gate_coverage` cannot tell the two apart (D3.19).
+#:
+#: `broker_seam.py`, `broker_datafeed_ibkr.py` and `ibkr_mapping.py` are scanned
+#: too and are deliberately NOT listed: the two datafeed gates already declare
+#: them, and two gates claiming one artifact is the ownership ambiguity the
+#: coverage ratchet's stale arm would then have to arbitrate.
+SUBJECTS: tuple[str, ...] = (
+    "checks/order_path_retry_reviewed.json",
+    "scripts/broker/broker_order_config.py",
+    "scripts/broker/broker_order_ibkr.py",
+    "scripts/broker/seam_simulate.py",
+)
 
 NAME = "check_order_path_bans"
 
@@ -471,7 +498,20 @@ ROSTER_CONST = "ORDER_PORT_VERBS"
 PORT_QUORUM = 4
 
 # Non-vacuity floor: the scan is only believable if it reached these.
-REQUIRED_MEMBERS: tuple[str, ...] = ("broker_seam.py", "broker_order_ibkr.py")
+#
+# ARC 027 (B1) added the last two. They were ALREADY scanned — the derived scope
+# has held all six `scripts/broker/*.py` since D2.15 — but nothing ASSERTED that
+# they were, so a file could leave the derived scope and the gate would go quiet
+# about it rather than red. That gap does not matter while nobody is relying on
+# the scan of a particular file; it matters the moment this gate is named as the
+# thing that COVERS one. `SUBJECTS` now names them, so their scope membership is
+# a claim this gate makes, and a claim has to be enforced where it is made.
+REQUIRED_MEMBERS: tuple[str, ...] = (
+    "broker_seam.py",
+    "broker_order_ibkr.py",
+    "broker_order_config.py",
+    "seam_simulate.py",
+)
 
 # --------------------------------------------------------------------------
 # ARM (iii) — retry shapes. SEND_PATH_VERBS is DERIVED as

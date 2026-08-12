@@ -199,6 +199,81 @@ def guard_owner_defect(value: str, completed: frozenset[int] | None = None) -> s
     )
 
 
+#: OPERATOR RULING (ARC 027, discharging CHECK-DEBT D2.31). **A guard may be
+#: RE-OWNED at most twice.** Two re-ownings means the debt has been carried by
+#: three arcs; the THIRD re-owning is a FAIL, not a fourth deferral.
+#:
+#: This is the fourth iteration of one flaw and it closes the last route. ARC 024
+#: required a non-empty owner and `"ARC 025+"` passed it. ARC 025 required exactly
+#: one arc and `"ARC 025"` passed it, then ARC 025 closed with the guard standing.
+#: ARC 026 required the named arc to be OPEN — and left the one move that rule
+#: cannot see: re-point the marker at the next arc at every arc boundary, forever.
+#: Every individual move is honest, visible, and single-arc. The SEQUENCE is the
+#: unpaid debt, and no rule that judges one value can see a sequence.
+GUARD_REOWN_CEILING = 2
+
+
+def reowning_defect(
+    lineage: tuple[str, ...], ceiling: int = GUARD_REOWN_CEILING
+) -> str:
+    """Why this guard's owner LINEAGE has exhausted the deferral ceiling, or `''`.
+
+    `lineage` is the ordered sequence of owner values as **committed**, oldest
+    first, with consecutive duplicates already collapsed by the caller — one entry
+    per *change of owner*. `len(lineage) - 1` is therefore the number of
+    RE-OWNINGS, which is the quantity the ruling bounds.
+
+    ## Why transitions and not the size of the distinct SET
+
+    `A -> B -> A` is two deferrals, not one. A set-based count would let a guard
+    be walked around a short cycle of arc numbers indefinitely at a constant
+    apparent cost, which is the same defect wearing a different shape.
+
+    ## debug.md §7.12 — what would have to be true for this to pass while counting nothing
+
+    1. **The lineage could be read from the WORKING TREE**, where it is always one
+       value, so the count would be 0 forever. *Closed at the caller:* the lineage
+       is derived from the declaring file's git history — the one record the hand
+       making the re-owning cannot edit in the same motion (the property
+       `check_artifact_gate_coverage._high_water_mark` already established, and
+       the reason this is an extension of that walk rather than a second one).
+    2. **A revision that will not parse could be SKIPPED**, and the skipped
+       revision could be exactly the one that changed the owner. *Closed at the
+       caller:* an unreadable revision is an ERROR, never a skip.
+    3. **The history could be TRUNCATED** by the caller's own history limit, which
+       drops the OLDEST revisions — precisely where the earliest owners live. A
+       truncated lineage is a LOWER BOUND. *Closed at the caller:* a lower bound
+       that already exceeds the ceiling is still conclusive and still FAILS, but a
+       lower bound at or under the ceiling proves nothing and is CANNOT_MEASURE.
+    4. **The lineage could be EMPTY** — no committed history at all — and
+       `len(()) - 1 == -1` would compare as comfortably under any ceiling.
+       *Closed here:* an empty lineage is a defect in its own right, because a
+       guard whose owner has never been committed has no record to bound.
+
+    This function owns the RULE and nothing else; the caller owns the derivation.
+    Splitting them is what lets the rule be unit-tested without a git repository
+    and lets the derivation be planted without re-stating the arithmetic.
+    """
+    if not lineage:
+        return (
+            "the guard owner has NO committed history — a re-owning ceiling "
+            "cannot be applied to a marker whose lineage is unrecorded, and an "
+            "absent record must never read as a lineage of length zero"
+        )
+    reownings = len(lineage) - 1
+    if reownings <= ceiling:
+        return ""
+    return (
+        f"the guard has been RE-OWNED {reownings} times, exceeding the ceiling of "
+        f"{ceiling} (operator ruling, ARC 027, CHECK-DEBT D2.31). Committed owner "
+        f"lineage, oldest first: {' -> '.join(repr(name) for name in lineage)}. "
+        f"{reownings + 1} arcs have now carried this deferral. Each move was a "
+        "single live arc and passed every per-value rule; the SEQUENCE is the "
+        "unpaid debt. GUARDED escalates to FAIL: discharge the guard, or take "
+        "the red — it may not be walked forward again"
+    )
+
+
 class Mode(StrEnum):
     """install superset-of correct superset-of verify (§4)."""
 
