@@ -199,6 +199,78 @@ def guard_owner_defect(value: str, completed: frozenset[int] | None = None) -> s
     )
 
 
+def in_flight_arc(home: Path) -> tuple[int | None, str]:
+    """The arc that is RUNNING, or `(None, reason)`. ARC 028 (C3/C2), STANDING RULE §0g.
+
+    Derived from the two records `completed_arcs` already reconciles: the debt
+    ledger's series table carries a row for an arc DURING that arc, and the
+    session log gets its `##` heading AT CLOSE. So the newest series row that
+    the session log does not close IS the arc in flight — the same tense
+    asymmetry `completed_arcs` documents, read for what it can positively say
+    rather than only as a consistency check.
+
+    Returns `(None, "")` when the newest series row is already closed, which is
+    the state between arcs and is not an error. A non-empty reason means the
+    question could not be answered and every caller must treat it as
+    CANNOT_MEASURE — an unanswerable "which arc is running" must never read as
+    "none is", because that is the reading that turns the §0g rule off.
+    """
+    completed, error = completed_arcs(home)
+    if error:
+        return None, error
+    try:
+        text = (home / _DEBT_LEDGER).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        return None, f"cannot read {_DEBT_LEDGER}: {exc!r}"
+    rows = _SERIES_ROW.findall(text)
+    if not rows:
+        return None, (
+            f"{_DEBT_LEDGER}'s series table has no dated rows, so the arc in "
+            "flight cannot be derived"
+        )
+    newest = max(int(value) for value in rows)
+    return (None if newest in completed else newest), ""
+
+
+def guard_owner_assignment_defect(
+    value: str, completed: frozenset[int] | None, live: int | None
+) -> str:
+    """Why `value` may not be ASSIGNED as a guard owner right now, or `''`.
+
+    ARC 028 — STANDING RULE §0g: *a guard's owner names an arc that CAN STILL
+    DISCHARGE IT, validated AT ASSIGNMENT, not only at read.*
+
+    `guard_owner_defect` is the READ rule and it is strictly weaker, by exactly
+    one arc. It asks whether the named arc has already closed — and the arc in
+    flight has not closed, so it passes. **CHECK-DEBT D3.40 is the measured
+    consequence:** ARC 026 pointed the coverage guard at `ARC 027`, every
+    per-value rule accepted it, and the instant ARC 027 appended its own
+    close-out summary the guard became dead. No rule that judges a value at
+    READ time can see that, because at read time the value was true.
+
+    The assignment rule adds the missing half: **an owner naming the arc IN
+    FLIGHT is rejected at the moment it is written**, because it is guaranteed
+    to be dead by that arc's own close-out. A guard owner is a promise about the
+    future and the arc making the promise cannot be the future.
+
+    `live` is `in_flight_arc`'s answer. `None` means no arc is running, and then
+    this rule reduces to the read rule — there is no in-flight arc to name.
+    """
+    read_defect = guard_owner_defect(value, completed)
+    if read_defect:
+        return read_defect
+    if live is not None and int(value.strip().split()[1]) == live:
+        return (
+            f"{value.strip()!r} is the arc IN FLIGHT. A guard owner is a promise "
+            f"that some LATER arc will discharge it, and the arc in flight closes "
+            f"by appending its own summary to {_SESSION_LOG} — which makes this "
+            "marker dead at the moment it is written (CHECK-DEBT D3.40, measured). "
+            "Name a future arc, or discharge the guard, or take the red; §0g "
+            "rejects this AT ASSIGNMENT rather than at the next read"
+        )
+    return ""
+
+
 #: OPERATOR RULING (ARC 027, discharging CHECK-DEBT D2.31). **A guard may be
 #: RE-OWNED at most twice.** Two re-ownings means the debt has been carried by
 #: three arcs; the THIRD re-owning is a FAIL, not a fourth deferral.

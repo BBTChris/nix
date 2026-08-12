@@ -88,6 +88,24 @@ is evidence. What this gate reads instead:
       network, and a gate that repairs the thing it measures has destroyed its
       own evidence.
 
+      ARC 028 (C3), CHECK-DEBT D3.29 — **THIS ARM WAS UNREACHABLE AND IS NOT
+      ANY MORE.** The refusal-to-clone above has a consequence the first
+      spelling did not follow through: when an environment is missing,
+      `all_hooks` is not called, so the resolved hook set is EMPTY — and the
+      vacuity guard one layer up turned that empty set into CANNOT_MEASURE
+      *"resolved to ZERO hooks"* before arm 4 ever ran. ARC 027 found it by
+      attempting the plant (`PRE_COMMIT_HOME` at an empty directory against the
+      REAL repository) and measured the gate reporting zero hooks while it held,
+      in the same payload, the exact `(repo, rev)` with no store row. Not a
+      false green — CANNOT_MEASURE withholds certification — but it cost the
+      operator doctrine C.2's naming.
+      **The repair is ordering:** `repo_defects` runs BEFORE `_vacuity_complaint`,
+      so a missing environment is reported as the FAILURE it is, naming
+      `repo@rev`, and only a zero hook set with no environment defect behind it
+      is still CANNOT_MEASURE. The prefix-agreement branch keeps its old
+      position, because it is only meaningful when hooks were actually resolved;
+      `hooks_resolved` in the payload says which world the verdict came from.
+
 ------------------------------------------------------------------------------
 THE CACHED-BANDIT QUESTION — answered, and the answer is "partly"
 ------------------------------------------------------------------------------
@@ -127,6 +145,12 @@ Eight conditions, each stated so it could be planted.
     hook set is empty and a loop over zero hooks reports no problems.
     GUARDED: a missing config is CANNOT_MEASURE naming the path, and an empty
     resolved hook set is CANNOT_MEASURE, never PASS.
+    **NARROWED ARC 028 (C3), and the narrowing is the D3.29 repair.** An empty
+    hook set is no longer answered the same way whatever caused it. When the
+    cause is a pinned rev with no installed environment, that is arm 4's FAIL,
+    named `repo@rev`; CANNOT_MEASURE is reserved for an empty set with no
+    environment defect behind it. A guard that answers "I could not measure"
+    about a state it has fully measured is a guard shadowing a real arm.
 
  2. `git.get_all_files()` returns nothing — an empty repository, a `git` that
     did not run, a wrong cwd — so every hook's selection is legitimately zero and
@@ -481,10 +505,9 @@ def probe(nix_home: Path) -> Probe:
         return Probe({}, f"probe output unparseable — {tail}")
 
 
-def hook_set_defects(payload: dict) -> tuple[list[tuple[str, str]], list[str]]:
-    """Arms 3 and 4 over the resolved hook set. Returns (defects, advisories)."""
+def hook_defects(payload: dict) -> list[tuple[str, str]]:
+    """ARM 3 — every resolved hook is installed and has a subject to read."""
     defects: list[tuple[str, str]] = []
-    advisories: list[str] = []
     for hook in payload["hooks"]:
         key = hook["key"]
         if not hook["prefix_exists"]:
@@ -510,23 +533,55 @@ def hook_set_defects(payload: dict) -> tuple[list[tuple[str, str]], list[str]]:
                     ),
                 )
             )
+    return defects
+
+
+def repo_defects(payload: dict) -> tuple[list[tuple[str, str]], list[str]]:
+    """ARM 4 — the environment each pinned rev names. Returns (defects, advisories).
+
+    ARC 028 (C3), D3.29. Split out of `hook_set_defects` so `run` can ask it
+    BEFORE the vacuity guard: an environment that is not installed is precisely
+    the state that empties the hook set, so an arm that runs after the empty-set
+    check can never see its own subject.
+
+    `hooks_resolved` defaults True for a caller that hands over a payload with
+    no such key — the prefix-agreement branch compares against prefixes
+    `all_hooks` produced, and when `all_hooks` was never called those lists are
+    empty for EVERY repo, which would turn one missing environment into a
+    spurious mismatch for all of them.
+    """
+    resolved = payload.get("hooks_resolved", True)
+    defects: list[tuple[str, str]] = []
+    advisories: list[str] = []
     for repo in payload["repos"]:
         if repo["local"]:
             continue
+        site = f"{CONFIG_FILE}:{repo['repo']}@{repo['rev']}"
         if not repo["store_path"]:
             defects.append(
                 (
-                    f"{CONFIG_FILE}:{repo['repo']}@{repo['rev']}",
+                    site,
                     (
                         "no environment installed for the pinned rev — "
                         "pre-commit's store has no row for it"
                     ),
                 )
             )
-        elif repo["store_path"] not in repo["hook_prefixes"]:
+        elif not repo.get("store_path_exists", True):
             defects.append(
                 (
-                    f"{CONFIG_FILE}:{repo['repo']}@{repo['rev']}",
+                    site,
+                    (
+                        f"the pinned rev's store row names {repo['store_path']}, "
+                        f"which is not a directory — pre-commit's store has a row "
+                        f"for an environment that is no longer on disk"
+                    ),
+                )
+            )
+        elif resolved and repo["store_path"] not in repo["hook_prefixes"]:
+            defects.append(
+                (
+                    site,
                     (
                         f"hooks resolve to {repo['hook_prefixes']} but the pinned "
                         f"rev's store row is {repo['store_path']} — the hook will "
@@ -544,6 +599,18 @@ def hook_set_defects(payload: dict) -> tuple[list[tuple[str, str]], list[str]]:
     return defects, advisories
 
 
+def hook_set_defects(payload: dict) -> tuple[list[tuple[str, str]], list[str]]:
+    """Arms 3 and 4 together. One rule, two callers (doctrine C.9).
+
+    `run` calls the two halves separately and in order; this composition is kept
+    because it is the predicate the committed suite drives field by field over a
+    real payload, and two spellings of one rule would disagree the first time
+    either was edited.
+    """
+    repo_found, advisories = repo_defects(payload)
+    return hook_defects(payload) + repo_found, advisories
+
+
 # ===========================================================================
 # VERDICT
 # ===========================================================================
@@ -554,7 +621,14 @@ def _cannot_measure(detail: str) -> CheckResult:
 
 
 def _vacuity_complaint(payload: dict) -> str:
-    """§7.12 conditions 1, 2 and 5: an empty measurement is never a PASS."""
+    """§7.12 conditions 1, 2 and 5: an empty measurement is never a PASS.
+
+    ARC 028 (C3): reached only AFTER `repo_defects`. A zero hook set caused by an
+    uninstalled environment is now arm 4's FAIL, named `repo@rev`; what survives
+    to here is a zero hook set with no environment defect behind it — an empty
+    `repos:` list, a config that resolves nothing — which is genuinely something
+    this gate could not measure.
+    """
     if not payload.get("hooks"):
         return (
             f"{CONFIG_FILE} resolved to ZERO hooks — a loop over no hooks finds nothing"
@@ -600,9 +674,6 @@ def _preflight(nix_home: Path) -> tuple[Probe, str]:
         return answer, f"{answer.complaint} (one arm is not the gate)"
     if answer.payload.get("error"):
         return answer, f"probe reported: {answer.payload['error']}"
-    complaint = _vacuity_complaint(answer.payload)
-    if complaint:
-        return answer, f"{complaint} (§5.3: an empty scope is never a PASS)"
     return answer, ""
 
 
@@ -618,9 +689,26 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
             return _cannot_measure(complaint)
 
         layout = git_layout(ctx.nix_home)
+        # ARM 4 FIRST (ARC 028 / C3, D3.29). A missing environment is the state
+        # that empties the hook set, so it must be judged before the empty set
+        # is judged — otherwise the cause is reported as an inability to measure
+        # its own effect, and the operator loses the `repo@rev`.
+        env_defects, advisories = repo_defects(answer.payload)
+        if env_defects:
+            return CheckResult(
+                name=NAME,
+                status=Status.FAIL_NEEDS_OPERATOR,
+                site="; ".join(site for site, _ in env_defects),
+                evidence=_evidence(answer.payload, layout, advisories),
+                detail="; ".join(f"{site}: {why}" for site, why in env_defects),
+            )
+
+        vacuity = _vacuity_complaint(answer.payload)
+        if vacuity:
+            return _cannot_measure(f"{vacuity} (§5.3: an empty scope is never a PASS)")
+
         defects = hook_file_defects(layout, answer.payload.get("is_our_script"))
-        set_defects, advisories = hook_set_defects(answer.payload)
-        defects.extend(set_defects)
+        defects.extend(hook_defects(answer.payload))
 
         evidence = _evidence(answer.payload, layout, advisories)
         if defects:
@@ -682,6 +770,17 @@ def _repo_records(config: dict, rows: dict[tuple[str, str], str]) -> list[dict]:
                 "rev": rev,
                 "local": local,
                 "store_path": None if local else rows.get((source, rev)),
+                # ARC 028 (C3): a row whose DIRECTORY is gone is a different
+                # defect from a row that was never written, and the first
+                # spelling of arm 4 could see only the second — while
+                # `_environments_all_present` already treated both as absent,
+                # so the missing directory emptied the hook set and produced a
+                # vacuity complaint with no site in it.
+                "store_path_exists": bool(
+                    not local
+                    and rows.get((source, rev))
+                    and Path(str(rows.get((source, rev)))).is_dir()
+                ),
                 "other_revs": sorted(
                     ref for (repo, ref) in rows if repo == source and ref != rev
                 ),
@@ -752,11 +851,16 @@ def _probe_payload(nix_home: Path) -> dict:
     store = Store()
     records = _repo_records(config, _store_rows(store))
     files: list[str] = git.get_all_files()
-    hooks = all_hooks(config, store) if _environments_all_present(records) else []
+    resolved = _environments_all_present(records)
+    hooks = all_hooks(config, store) if resolved else []
     classifier = Classifier.from_config(files, "", "^$") if files else None
     return {
         "hooks": _resolved_hooks(hooks, records, classifier),
         "repos": records,
+        # ARC 028 (C3): whether `all_hooks` was actually called. Without it a
+        # consumer cannot tell an empty `hook_prefixes` list that MEANS a
+        # mismatch from one that only means the resolver was never run.
+        "hooks_resolved": resolved,
         "all_files": len(files),
         "is_our_script": is_our_script(
             str(Path(_hooks_dir_for_probe(nix_home)) / HOOK_TYPE)

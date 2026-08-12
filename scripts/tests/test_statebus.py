@@ -21,7 +21,9 @@ What each test proves:
 * **`Mirror.table()` is a COPY** — a consumer cannot write the mirror it must not
   write.
 * **XPUB_VERBOSE.** A SECOND subscriber to an ALREADY-subscribed topic is served
-  too, which plain first-subscribe-only delivery would silently skip.
+  too, which plain first-subscribe-only delivery would silently skip — with a
+  CAN-FAIL arm that plants the real defect (the option cleared) on a throwaway
+  socket and requires the control to go red NAMING the unserved subscriber.
 
 Every publisher and subscriber is closed in a fixture `finally`; a leaked socket
 hangs `Context.term()` and the suite with it. All endpoints live under `tmp_path`;
@@ -48,6 +50,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import pytest  # pylint: disable=import-error
+import zmq  # pylint: disable=import-error
 
 REPO = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
@@ -59,14 +62,42 @@ from nixbus.statebus import (  # pylint: disable=wrong-import-position
     StateMessage,
 )
 
-#: Budget the publisher spends answering subscriptions. `service()` always runs
-#: its full timeout, so this is a per-call cost as well as a bound.
+#: Budget the publisher spends answering subscriptions. `service()` spends its
+#: whole timeout only while NOTHING has been served: it returns the instant it
+#: answers a subscription (`statebus.py`, `if served or time.monotonic() >=
+#: deadline`). So this is a per-call cost for an idle publisher and a bound for a
+#: busy one — and it is emphatically NOT "wait `SERVICE_MS` for every pending
+#: subscribe to arrive". See `_serve_until_MIRRORED` for what that cost me.
 SERVICE_MS = 500
 #: Budget a subscriber waits for a message it SHOULD get. `drain()` always
 #: spends its whole budget proving nothing more is coming, so this is a cost.
 POLL_MS = 800
 #: Budget the CONTROL waits for a message it must NOT get.
 CONTROL_MS = 400
+
+#: Ceiling on ONE subscriber's rendezvous with the publisher. ARRIVAL ends that
+#: wait; this number only bounds a bus that is BROKEN rather than slow, which is
+#: why it can afford to be enormous. MEASURED on this node 2026-08-12 — time for
+#: BOTH subscribes to be answered, worst case of each run:
+#:
+#:     at rest                          2.3 ms  (median 2.2, n=40)
+#:     40 spinners / 20 cores          14.5 ms  (median  8.4, n=40)
+#:     80 spinners / 20 cores          30.1 ms  (median 17.9, n=30, load avg 110)
+#:
+#: Quadrupling the load doubled the worst case; ten seconds is 332x the worst
+#: ever observed, so a red here is a defect and never a busy machine.
+RENDEZVOUS_CEILING_MS = 10_000
+#: Ceiling for the PLANTED arm only. A shorter ceiling is honest there because
+#: the planted failure is PERMANENT, not slow: with `XPUB_VERBOSE` cleared the
+#: second subscribe never reaches the application at all, so no snapshot is ever
+#: emitted for it and waiting the full ceiling would only add ten seconds of
+#: certainty to a wait that is already 100x the measured healthy arrival.
+PLANT_CEILING_MS = 2_000
+#: One pump inside a ceiling: answer whatever subscriptions have landed, then
+#: let the subscriber take whatever that produced. Neither slice is a deadline —
+#: they are the granularity at which arrival is re-tested.
+PUMP_SERVICE_MS = 50
+PUMP_DRAIN_MS = 20
 
 TOPIC = "tbl.feed_status"
 
@@ -228,14 +259,80 @@ def test_TRANSPORT_METADATA_rides_the_MESSAGE_and_never_the_TABLE(
     assert dict(subscriber.mirror.table(TOPIC)) == {"MESU6": {"tick": "fresh"}}
 
 
+def _serve_until_MIRRORED(
+    publisher: statebus.StatePublisher,
+    name: str,
+    subscriber: statebus.StateSubscriber,
+    *,
+    ceiling_ms: int = RENDEZVOUS_CEILING_MS,
+) -> tuple[int, float]:
+    """Pump both ends until `name`'s mirror completes. ARRIVAL is the terminator.
+
+    Returns `(snapshots served, seconds waited)`. Raises `AssertionError` NAMING
+    the subscriber that went unserved, how long it waited, and what its mirror is
+    still missing — the reason, never a bare count.
+
+    Why this exists (CHECK-DEBT D3.39). The arm below used to call
+    `publisher.service(SERVICE_MS)` ONCE and assert the return was 2, on the
+    belief that 500 ms was a budget within which both subscribes would arrive. It
+    is not a budget: `service()` returns the instant it answers ANY subscription,
+    so the single call captured only whichever subscribe frames happened to be
+    queued at that microsecond. MEASURED 2026-08-12, 40 rendezvous each:
+
+        at rest               single service(500) returned <2 in   2/40
+        40 spinners/20 cores  single service(500) returned <2 in  26/40
+        80 spinners/20 cores  single service(500) returned <2 in  22/30
+
+    and in EVERY one of those 50 short calls `service()` had returned after
+    0.1–23.6 ms — never near 500 ms. The clock was never the constraint, so
+    raising the number would have fixed nothing; the missing subscribe had simply
+    not landed yet and arrived, in the worst case observed, 30.1 ms in. Polling
+    for arrival removes the race outright rather than out-running it.
+
+    The shipped test failed 10/20 runs under the 40-spinner load, reproducing
+    `1 snapshot(s) for 2 subscribers` exactly as CHECK-DEBT D3.39 reported.
+    """
+    started = time.monotonic()
+    deadline = started + ceiling_ms / 1000.0
+    served = 0
+    while True:
+        served += publisher.service(PUMP_SERVICE_MS)
+        subscriber.drain(PUMP_DRAIN_MS)
+        waited = time.monotonic() - started
+        if subscriber.mirror.complete:
+            return served, waited
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"the {name} subscriber went UNSERVED: it waited "
+                f"{waited * 1000:.0f} ms of a {ceiling_ms} ms ceiling and its "
+                f"mirror is still missing {subscriber.mirror.missing}; it took "
+                f"{subscriber.received} message(s) / {subscriber.bytes_received} "
+                f"wire byte(s), while the publisher saw "
+                f"{publisher.subscribes_seen} subscribe frame(s) and served "
+                f"{publisher.snapshots_served} snapshot(s) in total. A subscribe "
+                f"frame that never reached the application is the signature of "
+                f"XPUB_VERBOSE being unset"
+            )
+
+
 def test_TWO_SUBSCRIBERS_are_BOTH_served_because_XPUB_VERBOSE_is_set(
     tmp_path: Path, closing: list[_Closable]
 ) -> None:
-    """A second subscribe on an already-subscribed topic is still answered.
+    """A second subscribe on an ALREADY-subscribed topic is still answered.
 
     Without `XPUB_VERBOSE` libzmq delivers only the FIRST subscribe for a topic,
     so the second dashboard mirrors an empty table forever — a failure that looks
     exactly like a quiet feed.
+
+    The staging is SEQUENTIAL — `first` is served to completion BEFORE `second`
+    connects — and that is load-bearing, not tidiness. MEASURED 2026-08-12 with
+    the option deliberately cleared: two subscribers connected back-to-back and
+    then serviced BOTH complete their mirrors anyway, because the one snapshot
+    the single delivered subscribe produces is fanned out by PUB/SUB to every
+    peer already connected. Only once the topic is already subscribed AND already
+    answered does the swallowed second subscribe leave a subscriber with nothing:
+    `second.received == 0`, `bytes_received == 0`, mirror missing forever. The
+    can-fail arm below is that measurement, planted.
     """
     endpoint = _endpoint(tmp_path)
     publisher = statebus.StatePublisher(endpoint)
@@ -244,15 +341,73 @@ def test_TWO_SUBSCRIBERS_are_BOTH_served_because_XPUB_VERBOSE_is_set(
 
     first = statebus.StateSubscriber(endpoint, [TOPIC])
     closing.append(first)
+    served_first, _ = _serve_until_MIRRORED(publisher, "first", first)
+
+    # ONLY NOW does the second join. The topic is already subscribed and already
+    # answered, which is the exact state first-subscribe-only delivery swallows.
     second = statebus.StateSubscriber(endpoint, [TOPIC])
     closing.append(second)
-    served = publisher.service(SERVICE_MS)
+    served_second, _ = _serve_until_MIRRORED(publisher, "second", second)
 
+    served = served_first + served_second
     assert served == 2, f"{served} snapshot(s) for 2 subscribers"
     assert publisher.subscribes_seen == 2, publisher.subscribes_seen
     for name, subscriber in (("first", first), ("second", second)):
-        assert subscriber.drain(POLL_MS), f"the {name} subscriber received nothing"
         assert subscriber.mirror.complete, f"{name}: {subscriber.mirror.missing}"
+        assert subscriber.received > 0, f"the {name} subscriber received nothing"
+        assert subscriber.bytes_received > 0, f"{name}: zero wire bytes is vacuous"
+
+
+def test_the_CAN_FAIL_arm_XPUB_VERBOSE_CLEARED_leaves_the_SECOND_UNSERVED(
+    tmp_path: Path, closing: list[_Closable]
+) -> None:
+    """Plant the REAL defect and require the control above to go red, by name.
+
+    Doctrine C.8: the plant never touches the production artifact. `XPUB_VERBOSE`
+    is cleared here on THIS TEST'S OWN throwaway socket — `scripts/nixbus/
+    statebus.py` still sets it, unconditionally, for every publisher anyone else
+    builds. Clearing it on a live bound XPUB is exactly the defect's shape:
+    libzmq forwards a subscribe up to the application only for the first peer to
+    subscribe a given topic.
+
+    Both halves are here. PLANTED, the arm must fail AND name `second`. UNPLANTED
+    — the option restored on the same socket, a third subscriber joining the same
+    already-subscribed topic — it must pass, which is what attributes the red to
+    the plant rather than to the harness, the ceiling, or the machine.
+    """
+    endpoint = _endpoint(tmp_path)
+    publisher = statebus.StatePublisher(endpoint)
+    closing.append(publisher)
+    publisher._socket.setsockopt(zmq.XPUB_VERBOSE, 0)  # THE PLANT
+    publisher.publish(TOPIC, {"MESU6": {"tick": "fresh"}})
+
+    first = statebus.StateSubscriber(endpoint, [TOPIC])
+    closing.append(first)
+    _serve_until_MIRRORED(publisher, "first", first)
+    second = statebus.StateSubscriber(endpoint, [TOPIC])
+    closing.append(second)
+
+    with pytest.raises(AssertionError) as red:
+        _serve_until_MIRRORED(publisher, "second", second, ceiling_ms=PLANT_CEILING_MS)
+
+    # The REASON, not merely that something raised: the arm names the subscriber
+    # that went unserved, what it is missing, and that it took nothing at all.
+    assert "the second subscriber went UNSERVED" in str(red.value), str(red.value)
+    assert TOPIC in str(red.value), str(red.value)
+    assert "0 message(s) / 0 wire byte(s)" in str(red.value), str(red.value)
+    assert publisher.subscribes_seen == 1, "the plant did not swallow a subscribe"
+
+    # UNPLANT, same socket, same already-subscribed topic.
+    publisher._socket.setsockopt(zmq.XPUB_VERBOSE, 1)
+    third = statebus.StateSubscriber(endpoint, [TOPIC])
+    closing.append(third)
+
+    served, _ = _serve_until_MIRRORED(publisher, "third", third)
+
+    assert served == 1, served
+    assert publisher.subscribes_seen == 2, publisher.subscribes_seen
+    assert third.mirror.complete, third.mirror.missing
+    assert third.bytes_received > 0, "zero wire bytes is a vacuous unplant"
 
 
 def test_refresh_all_RESENDS_every_owned_table_as_a_SNAPSHOT(

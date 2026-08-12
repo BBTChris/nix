@@ -630,6 +630,173 @@ def test_a_module_tuple_defect_is_invisible_to_the_datafeed_element_claim(
     assert second.spec_2a_broker_datafeed_elements(scratch) == 11
 
 
+# ===========================================================================
+# ARC 028 (C1) — THE SHIPPED-BYTES BINDING. CHECK-DEBT D3.41.
+#
+# Every plant above substitutes into `checks/check_derived_claims.py` ITSELF.
+# `scripts/tests/binding_census.py` sha256s the module that produced each
+# verdict and compares it against the shipped file, so all four reds this suite
+# produced were attributed to a **modified gate** — a program this repository
+# does not install — and the §2.4 binding table carried
+# `check_derived_claims  BOUND-BY-MODIFIED-GATE  PASS:10 (modified: FAIL:4)`.
+# That is the whole of the row: the gate's own reflexivity was measured and its
+# CAN-FAIL was not.
+#
+# THE BRIEF'S PREMISE WAS THAT SUCH A CONTROL MIGHT NOT BE CONSTRUCTIBLE. IT IS,
+# AND THE REASON IS ONE LINE OF THE GATE: `run()` resolves the registry as
+# `Path(__file__).resolve().parent / REGISTRY`, and every source and probe is
+# resolved against `ctx.nix_home`. So a copy of the tree with the gate left
+# BYTE-IDENTICAL is the shipped program measuring a perturbed subject, which is
+# exactly what §0e asks for and what the plants above could never be.
+#
+# Three perturbations, none of them touching the gate:
+#
+#   * `checks/derived_claims.json` — THE DECLARED SUBJECT. §7.12 condition 5.
+#   * `checks/registry.json`       — a real artifact two sources read
+#                                    independently; the defect is a registered
+#                                    check with no file on disk.
+#   * `docs/CHECK-DEBT.md`         — a document RESTATING a number the ledger
+#                                    also derives. The gate's whole purpose.
+#
+# Each asserts the REASON (§18): the claim id, the site, and the two values —
+# never the exit code alone. Each restores the file byte-identically, and
+# `test_the_control_is_green_again_once_every_plant_is_gone` runs after all of
+# them over the same tree.
+# ===========================================================================
+
+
+@pytest.fixture(name="subject_plant")
+def _subject_plant(scratch: Path) -> Iterator[Callable[[str, str, str], None]]:
+    """Perturb a SUBJECT in the scratch tree; leave the gate byte-identical.
+
+    The gate's own sha256 is captured before and after and asserted UNCHANGED —
+    that assertion is what makes the resulting red a shipped-bytes binding
+    rather than a fifth modified-gate red, and it is checked here rather than
+    left to the census to notice.
+    """
+    gate_sha = _sha(scratch / GATE)
+    touched: list[tuple[Path, str]] = []
+
+    def _apply(rel: str, old: str, new: str) -> None:
+        target = scratch / rel
+        before = target.read_text(encoding="utf-8")
+        assert old in before, f"plant anchor is not in {rel}: {old[:60]!r}"
+        touched.append((target, before))
+        _purge_pycache(scratch)
+        target.write_text(before.replace(old, new, 1), encoding="utf-8")
+        assert _sha(scratch / GATE) == gate_sha, (
+            "the subject plant moved the GATE — this would be a modified-gate red"
+        )
+
+    yield _apply
+    _purge_pycache(scratch)
+    for target, before in reversed(touched):
+        target.write_text(before, encoding="utf-8")
+    assert _sha(scratch / GATE) == gate_sha
+
+
+def test_the_shipped_gate_reddens_when_its_DECLARED_SUBJECT_names_a_missing_file(  # pylint: disable=invalid-name
+    scratch: Path, subject_plant: Callable[[str, str, str], None]
+) -> None:
+    """SHIPPED-BYTES PLANT 1 — `checks/derived_claims.json`, the declared SUBJECT.
+
+    §7.12 condition 5: *a registry entry points at a file that no longer exists
+    and the entry is skipped*. The gate's answer is that a missing file is a
+    FAIL, explicitly — a stale registry is a defect IN the instrument and the
+    instrument must say so. Nothing above ever drove that branch with the
+    shipped program.
+
+    The perturbation is a one-token edit to the registry's own `files` list, so
+    the claim still has two sources and still runs; what changes is that one of
+    them names a path this tree does not hold.
+    """
+    subject_plant(
+        "checks/derived_claims.json",
+        '"checks/registry.json"',
+        '"checks/registry-DELETED-BY-ARC-028.json"',
+    )
+    exit_code, output = run_gate(scratch)
+    assert exit_code == 1, output[:2000]
+    assert "derived_claims.json:registered_check_count/registry_json" in output, output[
+        :2000
+    ]
+    assert "missing file(s): checks/registry-DELETED-BY-ARC-028.json" in output, output[
+        :2000
+    ]
+
+
+def test_the_shipped_gate_reddens_when_two_sources_of_a_claim_DISAGREE(  # pylint: disable=invalid-name
+    scratch: Path, subject_plant: Callable[[str, str, str], None]
+) -> None:
+    """SHIPPED-BYTES PLANT 2 — `checks/registry.json`, the master execution plan.
+
+    The perturbation is a REAL operational defect rather than a synthetic one: a
+    check name registered in the execution plan with no `checks/check_*.py` on
+    disk. `verify.py` would try to run a program that is not there.
+
+    `registered_check_count` is the one claim whose two sources are structurally
+    independent inside the gate — one parses `registry.json`, the other globs
+    the folder — so this is the disagreement arm driven end to end by the
+    shipped bytes, naming the claim, the site and BOTH values.
+    """
+    exit_code, output = run_gate(scratch)
+    assert exit_code == 0, output[:2000]
+    before = claim_value(output, "registered_check_count")
+    assert isinstance(before, int) and before > 0
+
+    subject_plant(
+        "checks/registry.json",
+        '"check_artifact_gate_coverage",',
+        '"check_artifact_gate_coverage",\n        "check_planted_by_arc_028_c",',
+    )
+    exit_code, output = run_gate(scratch)
+    assert exit_code == 1, output[:2000]
+    part = claim_part(output, "registered_check_count")
+    assert "DISAGREEMENT" in part, part
+    assert f"derived:registry_json={before + 1}" in part, part
+    assert f"derived:checks_glob={before}" in part, part
+    assert "derived_claims.json:registered_check_count: sources disagree" in output
+
+
+def test_the_shipped_gate_reddens_when_a_DOCUMENT_RESTATES_A_WRONG_NUMBER(  # pylint: disable=invalid-name
+    scratch: Path, subject_plant: Callable[[str, str, str], None]
+) -> None:
+    """SHIPPED-BYTES PLANT 3 — the derive-never-restate class, on a real document.
+
+    `check_debt_open_items` compares the ledger's OPEN rows, derived row by row,
+    against the number the ledger's own series table RESTATES in its newest row.
+    That is doctrine B.7's exact defect shape, and it is the reason this gate
+    exists. The plant moves the restated figure and leaves the rows alone.
+
+    The stated side is what moves, and the assertion says so: a plant that moved
+    both sides together would be reproducing the reflexivity defect the first
+    half of this file measures, and would prove nothing about the gate.
+    """
+    exit_code, output = run_gate(scratch)
+    assert exit_code == 0, output[:2000]
+    derived = claim_value(output, "check_debt_open_items")
+    assert isinstance(derived, int) and derived > 0
+
+    row = re.search(
+        rf"^\|\s*\d{{4}}-\d{{2}}-\d{{2}}\s*\|\s*ARC \d+\s*\|\s*{derived}\s*\|",
+        (scratch / "docs" / "CHECK-DEBT.md").read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    assert row is not None, "no series row states the derived open count"
+    subject_plant(
+        "docs/CHECK-DEBT.md",
+        row.group(0),
+        row.group(0).replace(f"| {derived} |", "| 4242 |"),
+    )
+
+    exit_code, output = run_gate(scratch)
+    assert exit_code == 1, output[:2000]
+    part = claim_part(output, "check_debt_open_items")
+    assert "DISAGREEMENT" in part, part
+    assert f"derived:ledger_rows={derived}" in part, part
+    assert "stated:series_table_latest_row=4242" in part, part
+
+
 def test_the_control_is_green_again_once_every_plant_is_gone(scratch: Path) -> None:
     """Doctrine C.2's other half, on the tree every plant above ran against.
 

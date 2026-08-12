@@ -10,6 +10,10 @@ same population passing.
 throwaway git repository under `tmp_path`. The two tests that touch the real tree
 only READ it.
 """
+# C0302: over the line ceiling since ARC 028 (C2) added the decomposition's own
+# arms. Splitting a can-fail suite across files is how a plant loses sight of
+# the control it is measured against (§5.1 requires both in one place).
+# pylint: disable=too-many-lines
 # pylint: disable=invalid-name,protected-access,redefined-outer-name
 # pylint: disable=import-outside-toplevel,duplicate-code
 # Test names SHOUT the property under test; the ratchet's helpers are private and
@@ -82,14 +86,50 @@ def _write_completion_record(home: Path) -> None:
     )
 
 
+def _row(owner: str = _FIXTURE_LIVE_ARC, **extra: object) -> dict[str, object]:
+    """One per-artifact row in the SHIPPED schema (ARC 028 C2)."""
+    row: dict[str, object] = {
+        "owner": owner,
+        # `none` is the true value here: the fixture tree has no scripts/tests/,
+        # so nothing names anything, and a row claiming `tests` would be the
+        # false claim `_coverage_defects` exists to catch.
+        "measured_by": "none",
+        "reason": "fixture row",
+    }
+    row.update(extra)
+    return row
+
+
 def _write_baseline(home: Path, uncovered: list[str], **extra: object) -> None:
+    """The fixture baseline, in the schema that SHIPS — not the historical one.
+
+    ARC 028 (C2): v1 survives only as the reader for committed revisions, and it
+    has its own test. A suite driving v1 while the tree installs v2 would be
+    measuring a program this repository does not ship, which is the distinction
+    `binding_census.py` exists to make.
+    """
     payload: dict[str, object] = {
-        "owner": _FIXTURE_LIVE_ARC,
-        "uncovered": sorted(uncovered),
-        "admitted": {},
+        "schema": 2,
+        "artifacts": {path: _row() for path in sorted(uncovered)},
     }
     payload.update(extra)
     (home / gate.BASELINE).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _read_baseline(home: Path) -> dict:
+    return json.loads((home / gate.BASELINE).read_text(encoding="utf-8"))
+
+
+def _save_baseline(home: Path, payload: dict) -> None:
+    (home / gate.BASELINE).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _set_owner(home: Path, owner: str, path: str | None = None) -> None:
+    """Point one row's owner — or every row's — at `owner`, uncommitted."""
+    payload = _read_baseline(home)
+    for key in [path] if path else list(payload["artifacts"]):
+        payload["artifacts"][key]["owner"] = owner
+    _save_baseline(home, payload)
 
 
 def _build(home: Path, *, commit_baseline: bool = True) -> Path:
@@ -138,11 +178,9 @@ def _admit(repo: Path, path: str, arc: str | None = None) -> None:
     (repo / path).parent.mkdir(parents=True, exist_ok=True)
     (repo / path).write_text("z = 3\n", encoding="utf-8")
     _git(repo, "add", "-A")
-    baseline = json.loads((repo / gate.BASELINE).read_text(encoding="utf-8"))
-    baseline["uncovered"] = sorted([*baseline["uncovered"], path])
-    if arc is not None:
-        baseline["admitted"] = {path: arc}
-    (repo / gate.BASELINE).write_text(json.dumps(baseline), encoding="utf-8")
+    payload = _read_baseline(repo)
+    payload["artifacts"][path] = _row(**({"admitted": arc} if arc is not None else {}))
+    _save_baseline(repo, payload)
 
 
 def _run(home: Path):
@@ -247,10 +285,10 @@ def test_CONTROL_the_same_addition_with_a_single_named_arc_is_ACCEPTED(
 
 def test_the_accepted_set_may_SHRINK_freely(repo: Path) -> None:
     """A ratchet that blocked tightening would be the opposite instrument."""
-    baseline = json.loads((repo / gate.BASELINE).read_text(encoding="utf-8"))
-    dropped = baseline["uncovered"][0]
-    baseline["uncovered"] = baseline["uncovered"][1:]
-    (repo / gate.BASELINE).write_text(json.dumps(baseline), encoding="utf-8")
+    baseline = _read_baseline(repo)
+    dropped = min(baseline["artifacts"])
+    del baseline["artifacts"][dropped]
+    _save_baseline(repo, baseline)
 
     result = _run(repo)
     # The dropped path is now uncovered-and-unaccepted, i.e. a regression — which
@@ -349,13 +387,16 @@ def test_a_baseline_owner_that_names_a_RANGE_is_CANNOT_MEASURE_naming_the_field(
     repo: Path,
 ) -> None:
     """The gate reports its own baseline as the offender, not the engine generically."""
-    baseline = json.loads((repo / gate.BASELINE).read_text(encoding="utf-8"))
-    baseline["owner"] = "the bulk check retrofit arc (ARC 021+), sized in ARC 020"
-    (repo / gate.BASELINE).write_text(json.dumps(baseline), encoding="utf-8")
+    _set_owner(repo, "the bulk check retrofit arc (ARC 021+), sized in ARC 020")
 
     result = _run(repo)
-    assert result.status is Status.CANNOT_MEASURE, result
-    assert f"{gate.BASELINE}:owner" in result.detail
+    # ARC 028 (C2/§0g): the value DIFFERS from the one committed at HEAD, so this
+    # is an ASSIGNMENT and assignments FAIL rather than defer — see
+    # `test_a_COMMITTED_range_owner_is_a_DEFERRAL_not_an_assignment_failure`
+    # for the same value judged by the read rule.
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert f"{gate.BASELINE}:artifacts:" in result.detail
+    assert ":owner" in result.detail
     assert "RANGE" in result.detail
 
 
@@ -405,20 +446,28 @@ def test_the_REAL_baselines_owner_is_a_single_arc_AND_THE_GATE_AGREES_WITH_THE_R
     from nixverify.contract import completed_arcs, guard_owner_defect
 
     payload = json.loads((REPO / gate.BASELINE).read_text(encoding="utf-8"))
-    owner = payload["owner"]
+    # ARC 028 (C2): one owner per ARTIFACT. The shape rule is asserted for EVERY
+    # row rather than for one field, which is the decomposition paying for
+    # itself here — a single malformed row can no longer hide behind fifteen
+    # well-formed ones.
+    owners = {path: row["owner"] for path, row in payload["artifacts"].items()}
+    assert owners, "the real baseline holds no rows; this control has no subject"
     completed, error = completed_arcs(REPO)
     assert not error, error
-    assert guard_owner_defect(owner) == "", owner
+    for path, owner in owners.items():
+        assert guard_owner_defect(owner) == "", (path, owner)
 
     result = _run(REPO)
-    if guard_owner_defect(owner, completed):
+    dead = {p: o for p, o in owners.items() if guard_owner_defect(o, completed)}
+    if dead:
         assert result.status is Status.CANNOT_MEASURE, result
-        assert f"{gate.BASELINE}:owner" in result.detail, result.detail
+        for path in dead:
+            assert f"{gate.BASELINE}:artifacts:{path}:owner" in result.detail, path
         assert "ALREADY COMPLETED" in result.detail, result.detail
     else:
         assert result.status in (Status.GUARDED, Status.PASS), result
         if result.status is Status.GUARDED:
-            assert result.guard_owner == owner.strip(), result
+            assert result.guard_owner in set(owners.values()), result
 
 
 def test_PLANT_a_baseline_owner_that_has_ALREADY_COMPLETED_is_CANNOT_MEASURE(
@@ -430,13 +479,16 @@ def test_PLANT_a_baseline_owner_that_has_ALREADY_COMPLETED_is_CANNOT_MEASURE(
     CANNOT_MEASURE cannot tell a dead owner from an unreadable file, and those
     have opposite repairs.
     """
-    baseline = json.loads((repo / gate.BASELINE).read_text(encoding="utf-8"))
-    baseline["owner"] = "ARC 005"
-    (repo / gate.BASELINE).write_text(json.dumps(baseline), encoding="utf-8")
+    _set_owner(repo, "ARC 005")
+    _git(repo, "add", "-A")
+    # COMMITTED, so the read rule judges it rather than the §0g assignment rule.
+    # The two arms answer the same question at different moments and this test
+    # owns the READ one; the assignment one is planted separately below.
+    _git(repo, "commit", "-qm", "own the guard from a closed arc")
 
     result = _run(repo)
     assert result.status is Status.CANNOT_MEASURE, result
-    assert f"{gate.BASELINE}:owner" in result.detail, result.detail
+    assert f"{gate.BASELINE}:artifacts:" in result.detail, result.detail
     assert "ALREADY COMPLETED" in result.detail, result.detail
 
 
@@ -565,9 +617,7 @@ def _reown(repo: Path, arc: str) -> None:
     by construction, so a fixture that only rewrote the file would exercise a
     ceiling that could never be reached.
     """
-    baseline = json.loads((repo / gate.BASELINE).read_text(encoding="utf-8"))
-    baseline["owner"] = arc
-    (repo / gate.BASELINE).write_text(json.dumps(baseline), encoding="utf-8")
+    _set_owner(repo, arc)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", f"re-own to {arc}")
 
@@ -581,24 +631,41 @@ def test_NONVACUITY_the_real_trees_owner_lineage_is_derived_from_COMMITTED_blobs
     an arm that is off. The real baseline has been re-owned twice, so the real
     tree is itself the proof that the derivation sees changes the working tree
     cannot show it.
+
+    **ARC 028 (C2) — AND THE PER-ROW ANSWER IS NOT UNIFORM, WHICH IS THE POINT.**
+    The aggregate reported `2 of 2 re-ownings` for all sixteen artifacts. Read
+    per path, thirteen of them carry
+    `the bulk check retrofit arc (ARC 025+)... -> ARC 025 -> ARC 027` and are AT
+    the ceiling; `scripts/nixverify/measurement_path.py` carries `ARC 025 ->
+    ARC 027` and has one left; `scripts/nixverify/gitenv.py` and
+    `scripts/nixverify/registry.py` were admitted in ARC 026 under the owner they
+    still carry and have never been re-owned at all. That is not the ceiling
+    being laundered — every one of those numbers is derived from committed
+    blobs, and the short ones are short because those deferrals are YOUNGER.
+    Asserted as a distribution rather than as a blanket, because a blanket would
+    have to be wrong in one direction or the other.
     """
     history = gate._committed_history(REPO)
     assert not history.error, history.error
     assert len(history.revisions) > 1, "the ratchet's own file has a history"
-    lineage = gate._owner_lineage(history)
-    assert len(lineage) > 1, (
-        f"the lineage must be read from committed blobs, not from the working "
-        f"tree, which holds exactly one owner: {lineage}"
+    working = json.loads((REPO / gate.BASELINE).read_text(encoding="utf-8"))
+    lengths = []
+    for path, row in working["artifacts"].items():
+        lineage = gate._row_lineage(history, path)
+        assert lineage, f"{path}: no committed lineage at all"
+        assert lineage[-1] == row["owner"], (path, lineage, row["owner"])
+        lengths.append(len(lineage))
+    assert max(lengths) > 1, (
+        "no row's lineage exceeds one value, so the derivation is reading the "
+        "working tree rather than committed blobs and the ceiling arm is off"
     )
-    working = json.loads((REPO / gate.BASELINE).read_text(encoding="utf-8"))["owner"]
-    assert lineage[-1] == working, (lineage, working)
 
 
 def _touch(repo: Path) -> None:
     """Commit a NEW revision of the baseline that does not change the owner."""
-    baseline = json.loads((repo / gate.BASELINE).read_text(encoding="utf-8"))
+    baseline = _read_baseline(repo)
     baseline["comment"] = [f"revision {len(baseline.get('comment', []))}"]
-    (repo / gate.BASELINE).write_text(json.dumps(baseline), encoding="utf-8")
+    _save_baseline(repo, baseline)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "touch baseline, same owner")
 
@@ -613,7 +680,8 @@ def test_the_lineage_COLLAPSES_consecutive_duplicates_so_a_recommit_is_not_a_reo
     """
     _touch(repo)  # same owner, new commit, different blob
     _touch(repo)
-    lineage = gate._owner_lineage(gate._committed_history(repo))
+    path = min(_read_baseline(repo)["artifacts"])
+    lineage = gate._row_lineage(gate._committed_history(repo), path)
     assert lineage == (_FIXTURE_LIVE_ARC,), lineage
 
 
@@ -631,7 +699,8 @@ def test_CONTROL_a_guard_reowned_TWICE_is_still_GUARDED_and_says_how_many_are_le
     result = _run(repo)
     assert result.status is Status.GUARDED, result
     assert result.guard_owner == "ARC 023"
-    assert "2 re-owning(s) of a ceiling of 2" in result.evidence, result.evidence
+    assert "ceiling 2 applied PER ARTIFACT" in result.evidence, result.evidence
+    assert "2 of 2 re-owning(s) used" in result.detail, result.detail
     assert exit_code_for(result.status) == 3
 
 
@@ -654,7 +723,13 @@ def test_PLANT_the_THIRD_reowning_escalates_GUARDED_to_FAIL_naming_the_LINEAGE(
 
     result = _run(repo)
     assert result.status is Status.FAIL_NEEDS_OPERATOR, result
-    assert result.site == f"{gate.BASELINE}:owner", result.site
+    # ARC 028 (C2): the site is now PER ARTIFACT. Every row was re-owned three
+    # times, so every row is named — which is the decomposition's whole claim,
+    # and it is asserted here rather than trusted.
+    rows = sorted(_read_baseline(repo)["artifacts"])
+    assert rows, "no rows to re-own"
+    for path in rows:
+        assert f"{gate.BASELINE}:artifacts:{path}:owner" in result.site, path
     assert "RE-OWNED 3 times, exceeding the ceiling of 2" in result.detail, (
         result.detail
     )
@@ -772,17 +847,369 @@ def test_the_LIVE_guard_on_the_real_tree_has_EXHAUSTED_its_ceiling() -> None:
     the ceiling. ARC 028 cannot re-point it: that move is the third re-owning and
     this gate now FAILs on it. The guard gets discharged or it goes red.
     """
-    history = gate._committed_history(REPO)
-    assert not history.error, history.error
-    lineage = gate._owner_lineage(history)
     from nixverify.contract import GUARD_REOWN_CEILING, reowning_defect
 
-    assert len(lineage) - 1 == GUARD_REOWN_CEILING, (
-        f"the live guard's re-owning count has moved off the ceiling; if it went "
-        f"UP this test is the alarm, and if it went DOWN the history was "
-        f"rewritten (CLAUDE.md directive 6): {lineage}"
+    history = gate._committed_history(REPO)
+    assert not history.error, history.error
+    working = json.loads((REPO / gate.BASELINE).read_text(encoding="utf-8"))
+    exhausted = {
+        path: gate._row_lineage(history, path)
+        for path in working["artifacts"]
+        if len(gate._row_lineage(history, path)) - 1 >= GUARD_REOWN_CEILING
+    }
+    assert exhausted, (
+        "NO artifact is at the ceiling any more; if the counts went DOWN the "
+        "history was rewritten (CLAUDE.md directive 6) or the decomposition "
+        "laundered them, and either is the alarm this test exists to raise"
     )
-    assert reowning_defect(lineage) == "", "at the ceiling is not over it"
-    assert reowning_defect((*lineage, "ARC 028")) != "", (
-        "the next re-owning must be a FAIL"
+    for path, lineage in exhausted.items():
+        assert len(lineage) - 1 == GUARD_REOWN_CEILING, (path, lineage)
+        assert reowning_defect(lineage) == "", "at the ceiling is not over it"
+        assert reowning_defect((*lineage, "ARC 029")) != "", (
+            f"{path}: the next re-owning must be a FAIL"
+        )
+
+
+# ===========================================================================
+# ARC 028 (C2) — THE DECOMPOSITION. ARCHITECT RULING against CHECK-DEBT D3.40.
+#
+# **A RETROFITTED CHECK IS A NEW CHECK** (check contract v2, rule 9). This arc
+# replaced one guard over sixteen artifacts with one guard PER artifact, added a
+# `measured_by` claim that is checked, and added the §0g assignment arm. Every
+# arm above was re-measured against the new shape rather than re-pointed until
+# it passed; the arms below are the new ones, each planted.
+#
+# §7.12, asked of this section: what would have to be true for the decomposition
+# to "succeed" while measuring nothing? The file could simply have more rows in
+# it, and a test could assert the row count. That is a measurement of a text
+# edit. So no test here counts rows: every one of them PERTURBS a row and
+# requires the gate to go non-green NAMING THAT ROW.
+# ===========================================================================
+
+
+def _declare_in_flight(home: Path, arc: int) -> None:
+    """Append a series row for `arc`, which the session log does not close.
+
+    That is exactly the shape of a live arc in this repository — the ledger's
+    series row is written DURING the arc, the session heading AT CLOSE — so it
+    is what `contract.in_flight_arc` reads. Without it the fixture has no arc in
+    flight and the §0g arm is correctly inert.
+    """
+    ledger = home / "docs" / "CHECK-DEBT.md"
+    ledger.write_text(
+        ledger.read_text(encoding="utf-8")
+        + f"| 2026-01-02 | ARC {arc:03d} | 6 | in flight |\n",
+        encoding="utf-8",
     )
+
+
+def test_the_HISTORICAL_v1_READER_is_what_stops_the_split_LAUNDERING_the_ceiling(
+    repo: Path,
+) -> None:
+    """**THE §0a DEFECT FOR THIS STEP, PLANTED AND MEASURED.**
+
+    A decomposition that read only the new schema would give every row a lineage
+    of length 1 — nought re-ownings — and a ceiling built over an arc would be
+    reset by a change of file format. Nothing else in this suite would notice:
+    the row count would be right, every row would be well-formed, and the gate
+    would be a cheerful GUARDED.
+
+    The fixture reproduces the real migration exactly: a history committed under
+    the FLAT schema, re-owned to the ceiling, then a working tree rewritten into
+    the per-artifact schema. The assertion is that the ceiling still bites.
+    """
+    payload = _read_baseline(repo)
+    paths = sorted(payload["artifacts"])
+
+    # A v1 history: three flat revisions, two re-ownings, exactly like the real
+    # file's `ARC 025+ -> ARC 025 -> ARC 027`.
+    for arc in (_FIXTURE_LIVE_ARC, "ARC 022", "ARC 023"):
+        _save_baseline(repo, {"owner": arc, "uncovered": paths, "admitted": {}})
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", f"flat schema owned by {arc}")
+
+    history = gate._committed_history(repo)
+    assert history.revisions[-1][1].schema == 1, "the history must be flat here"
+    for path in paths:
+        assert gate._row_lineage(history, path) == (
+            _FIXTURE_LIVE_ARC,
+            "ARC 022",
+            "ARC 023",
+        ), path
+
+    # Now the migration: same set, same owners, per-artifact shape.
+    _save_baseline(
+        repo, {"schema": 2, "artifacts": {p: _row("ARC 023") for p in paths}}
+    )
+    assert _read_baseline(repo)["schema"] == 2
+    control = _run(repo)
+    assert control.status is Status.GUARDED, control.detail
+    assert "2 of 2 re-owning(s) used" in control.detail, control.detail
+
+    # And the third re-owning is still a FAIL, per row, after the migration.
+    _set_owner(repo, "ARC 024")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "the third re-owning, in the new schema")
+    result = _run(repo)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
+    assert "RE-OWNED 3 times" in result.detail, result.detail
+    for path in paths:
+        assert f"{gate.BASELINE}:artifacts:{path}:owner" in result.site, path
+
+
+def test_PLANT_a_row_that_CANNOT_SAY_WHY_it_is_uncovered_FAILS_naming_it(
+    repo: Path,
+) -> None:
+    """A row with no `reason` is a suppression entry wearing a per-artifact shape."""
+    payload = _read_baseline(repo)
+    victim = sorted(payload["artifacts"])[3]
+    payload["artifacts"][victim]["reason"] = "   "
+    _save_baseline(repo, payload)
+
+    result = _run(repo)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
+    assert f"{gate.BASELINE}:artifacts:{victim}" in result.site, result.site
+    assert "no `reason`" in result.detail, result.detail
+    assert result.detail.count("no `reason`") == 1, (
+        "exactly one row was perturbed; the arm must not implicate the others"
+    )
+
+
+def test_PLANT_an_UNCLASSIFIED_row_FAILS_naming_the_row_and_the_allowed_values(
+    repo: Path,
+) -> None:
+    """`measured_by` is the field that separates 'the suite reaches it' from
+    'nothing in this repository names it'. A row that declines to answer is the
+    aggregate wearing a per-artifact shape, and it must not pass."""
+    payload = _read_baseline(repo)
+    victim = sorted(payload["artifacts"])[5]
+    payload["artifacts"][victim]["measured_by"] = "sort of"
+    _save_baseline(repo, payload)
+
+    result = _run(repo)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
+    assert f"{gate.BASELINE}:artifacts:{victim}" in result.site, result.site
+    assert "'sort of'" in result.detail, result.detail
+    assert "['tests', 'none']" in result.detail, result.detail
+
+
+def test_PLANT_a_FALSE_claim_of_test_coverage_FAILS_naming_the_row(
+    repo: Path,
+) -> None:
+    """The claim is CHECKED, in the direction that flatters the row.
+
+    `measured_by: tests` on an artifact no test module names is the same species
+    of defect as a check adding a path to `SUBJECTS` and never opening the file
+    (D3.16) — a declaration standing in for a measurement. The fixture tree has
+    no `scripts/tests/`, so nothing names anything, and the claim is false.
+    """
+    payload = _read_baseline(repo)
+    victim = sorted(payload["artifacts"])[1]
+    payload["artifacts"][victim]["measured_by"] = "tests"
+    _save_baseline(repo, payload)
+
+    result = _run(repo)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
+    assert f"{gate.BASELINE}:artifacts:{victim}:measured_by" in result.site, result.site
+    assert "the claim is false" in result.detail, result.detail
+
+
+def test_PLANT_a_STALE_claim_that_NOTHING_measures_it_FAILS_when_something_does(
+    repo: Path,
+) -> None:
+    """The other direction, and it matters as much.
+
+    A row that says nothing measures it, while a test module names it, is how an
+    artifact that HAS acquired coverage keeps its place in the accepted set. The
+    plant writes a real test module naming a real row, and leaves the row's
+    claim alone.
+    """
+    payload = _read_baseline(repo)
+    victim = sorted(payload["artifacts"])[2]
+    assert payload["artifacts"][victim]["measured_by"] == "none"
+
+    tests = repo / "scripts" / "tests"
+    tests.mkdir(parents=True, exist_ok=True)
+    (tests / "test_victim.py").write_text(
+        f'"""x."""\n\n\ndef test_it() -> None:\n    assert "{victim}"\n',
+        encoding="utf-8",
+    )
+    _git(repo, "add", "-A")
+
+    result = _run(repo)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
+    assert f"{gate.BASELINE}:artifacts:{victim}:measured_by" in result.site, result.site
+    assert "the row is stale and understates" in result.detail, result.detail
+    assert "scripts/tests/test_victim.py" in result.detail, result.detail
+
+
+def test_the_classifier_matches_by_IMPORTABLE_NAME_and_never_by_a_PACKAGE(
+    repo: Path,
+) -> None:
+    """Two properties, and the second is the one that keeps the answer honest.
+
+    A test module imports `nixverify.gitenv`; it never writes the file path. A
+    path-only classifier would call ten thoroughly-driven modules
+    named-by-nothing, which is a FALSE RED that would make the distinction
+    worthless. So the dotted name matches too.
+
+    `__init__.py` is excluded from that, deliberately: its package name is in
+    every `from nixverify... import` line in the tree, so a dotted match would
+    mark it covered on the strength of imports of its SIBLINGS.
+    """
+    assert gate._importable_name("scripts/nixverify/gitenv.py") == "nixverify.gitenv"
+    assert gate._importable_name("checks/_preamble.py") == "_preamble"
+    assert gate._importable_name("scripts/runtime_gate.py") == "runtime_gate"
+    # A FICTIONAL path on purpose. The first spelling of this line used a REAL
+    # baseline row, and the classifier — which counts any textual mention —
+    # promptly reported that row as named by a test module, reddening the gate
+    # on the real tree. The instrument became the artefact. Recorded as
+    # CHECK-DEBT D3.62 rather than papered over with an exclusion for this file.
+    assert gate._importable_name("checks/no_such_expected.json") == ""
+    assert gate._importable_name("scripts/somepackage/__init__.py") == "", (
+        "a package __init__ must not be matched by its package name"
+    )
+
+    tests = repo / "scripts" / "tests"
+    tests.mkdir(parents=True, exist_ok=True)
+    (tests / "test_imports.py").write_text(
+        '"""x."""\n\nfrom module_07 import thing\n', encoding="utf-8"
+    )
+    named = gate._named_by_tests(repo, ["scripts/module_07.py", "scripts/module_08.py"])
+    assert named["scripts/module_07.py"] == ["scripts/tests/test_imports.py"]
+    assert named["scripts/module_08.py"] == []
+
+
+def test_NONVACUITY_the_classifier_DISCRIMINATES_on_the_real_tree() -> None:
+    """A classifier that answered the same thing for every row would be vacuous.
+
+    Asserted against the REAL baseline: some rows are named by test modules and
+    some are named by nothing at all, so the field carries information. This is
+    also where the ARC 028 brief was CORRECTED — it said two artifacts are
+    covered by nothing; measured, it is FOUR, and the fourth is the `nixverify`
+    package initialiser — EXECUTED by every import in this repository and
+    ASSERTED ABOUT nowhere. Its path is deliberately not written out here: the
+    classifier counts any textual mention, so naming a `none` row in this file
+    would make the row read as covered BY THIS FILE. Measured the hard way, and
+    recorded as CHECK-DEBT D3.62.
+    """
+    payload = json.loads((REPO / gate.BASELINE).read_text(encoding="utf-8"))
+    named = gate._named_by_tests(REPO, sorted(payload["artifacts"]))
+    unnamed = sorted(path for path, hits in named.items() if not hits)
+    assert unnamed, "no row is named by nothing — the classifier says yes to all"
+    assert len(unnamed) < len(named), "no row is named by anything — it says no to all"
+    for path, row in payload["artifacts"].items():
+        expected = "none" if path in unnamed else "tests"
+        assert row["measured_by"] == expected, (path, row["measured_by"], expected)
+
+
+def test_PLANT_assigning_the_guard_to_the_ARC_IN_FLIGHT_is_REJECTED_naming_the_row(
+    repo: Path,
+) -> None:
+    """**STANDING RULE §0g, and it is CHECK-DEBT D3.40's general rule made
+    mechanical.**
+
+    ARC 026 pointed this guard at `ARC 027` and every read-time rule accepted it,
+    because at the moment of writing `ARC 027` had not closed. It closed by
+    appending its own summary, and the guard was dead the same day. No rule that
+    judges a value at READ time can see that.
+
+    The plant is the honest-looking move: a single, well-formed, currently-OPEN
+    arc — the arc doing the writing. The read rule passes it. §0g does not.
+    """
+    live = int(_FIXTURE_LIVE_ARC.split()[1])
+    _declare_in_flight(repo, live)
+    from nixverify.contract import in_flight_arc
+
+    assert in_flight_arc(repo) == (live, ""), in_flight_arc(repo)
+
+    victim = sorted(_read_baseline(repo)["artifacts"])[4]
+    _set_owner(repo, _FIXTURE_LIVE_ARC, path=victim)  # unchanged: still committed
+    control = _run(repo)
+    assert control.status is Status.GUARDED, control.detail
+
+    _set_owner(repo, "ARC 022", path=victim)  # a DIFFERENT live arc — fine
+    assert _run(repo).status is Status.GUARDED
+
+    _set_owner(repo, _FIXTURE_LIVE_ARC, path=victim)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "back to the committed owner")
+    # Now ASSIGN the arc in flight to a row that did not name it.
+    other = sorted(_read_baseline(repo)["artifacts"])[6]
+    _set_owner(repo, _FIXTURE_LIVE_ARC, path=other)
+    assert _run(repo).status is Status.GUARDED, (
+        "the value was already that; no assignment"
+    )
+
+    _set_owner(repo, "ARC 022", path=other)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "own it from another arc")
+    _set_owner(repo, _FIXTURE_LIVE_ARC, path=other)
+
+    result = _run(repo)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
+    assert f"{gate.BASELINE}:artifacts:{other}:owner" in result.site, result.site
+    assert "is the arc IN FLIGHT" in result.detail, result.detail
+    assert "CHECK-DEBT D3.40" in result.detail, result.detail
+    assert exit_code_for(result.status) == 1
+
+
+def test_a_COMMITTED_dead_owner_DEFERS_while_ASSIGNING_one_now_FAILS(
+    repo: Path,
+) -> None:
+    """The two arms answer the same question at different MOMENTS, and the
+    difference in verdict is the rule, not an inconsistency.
+
+    A dead owner already in the committed file is a debt somebody left behind:
+    CANNOT_MEASURE, certification withheld. The same value being written NOW is
+    somebody creating that debt in this working tree, with the record in front
+    of them: FAIL. An instrument that gave both the same colour could not tell
+    an inherited problem from one being made.
+    """
+    victim = min(_read_baseline(repo)["artifacts"])
+
+    _set_owner(repo, "ARC 005", path=victim)
+    assigning = _run(repo)
+    assert assigning.status is Status.FAIL_NEEDS_OPERATOR, assigning.detail
+    assert "ALREADY COMPLETED" in assigning.detail, assigning.detail
+    assert f"{gate.BASELINE}:artifacts:{victim}:owner" in assigning.site
+
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "commit the dead owner")
+    inherited = _run(repo)
+    assert inherited.status is Status.CANNOT_MEASURE, inherited.detail
+    assert "ALREADY COMPLETED" in inherited.detail, inherited.detail
+
+
+def test_the_REAL_TREES_in_flight_arc_would_be_REFUSED_as_an_owner_TODAY() -> None:
+    """§0g against the REAL records, without touching the production baseline.
+
+    Doctrine C.8 forbids planting into `checks/gate_coverage_baseline.json`, so
+    the drive above lands in a throwaway repository. What is asserted HERE is
+    that the rule is not inert on the real tree: the real ledger and the real
+    session log do identify an arc in flight, and naming it would be refused.
+
+    If this ever reports that no arc is in flight, the §0g arm is silently off
+    for this repository — which is exactly the state that existed before ARC 028
+    added the series row, and which was measured rather than assumed.
+    """
+    from nixverify.contract import (
+        completed_arcs,
+        guard_owner_assignment_defect,
+        in_flight_arc,
+    )
+
+    live, error = in_flight_arc(REPO)
+    assert not error, error
+    assert live is not None, (
+        "no arc is in flight per docs/CHECK-DEBT.md and sessions/SESSION.md, so "
+        "the §0g arm cannot fire on this tree at all"
+    )
+    completed, completion_error = completed_arcs(REPO)
+    assert not completion_error, completion_error
+    defect = guard_owner_assignment_defect(f"ARC {live:03d}", completed, live)
+    assert "is the arc IN FLIGHT" in defect, defect
+    # And the read rule does NOT catch it, which is why §0g had to exist.
+    from nixverify.contract import guard_owner_defect
+
+    assert guard_owner_defect(f"ARC {live:03d}", completed) == ""
