@@ -3,8 +3,69 @@
 from __future__ import annotations
 
 import dataclasses
+import re
 from enum import StrEnum
 from pathlib import Path
+
+#: A `guard_owner` names EXACTLY ONE arc. ARC 025.
+#:
+#: §4.1 defines GUARDED as a marker naming **the specific** discharging arc, and
+#: doctrine B.3 says *an owner that cannot pay is no owner wearing a name*. The
+#: non-empty test that shipped in ARC 024 catches `""` and nothing else, and the
+#: only `guard_owner` on the tree read `"the bulk check retrofit arc (ARC 025+),
+#: sized in ARC 024 Stage 6.4"` — which passes a non-empty test while naming a
+#: RANGE and two different arcs. A range cannot be held to account: every arc in
+#: it can point at the next one, which is precisely how a marker becomes
+#: furniture.
+#:
+#: **The grammar is deliberately the smallest thing that can be one arc.** No
+#: stage suffix, no parenthetical, no prose. Every additional production is a
+#: place a range can hide, and a stage suffix buys no binding power the arc
+#: number does not already carry — the ledger's owner column, `bank.sh`, and this
+#: engine all reason at arc granularity. Justification for the reader who wants
+#: to widen it: widen the ledger prose instead, which is free-text by design.
+GUARD_OWNER_PATTERN = r"ARC \d{3}"
+_GUARD_OWNER = re.compile(rf"^{GUARD_OWNER_PATTERN}$")
+#: Spellings that turn one arc into an open-ended commitment.
+_RANGE_MARKERS = re.compile(
+    r"(\d\s*\+)|(\bonwards?\b)|(\bor later\b)|(\bor after\b)|(\d{3}\s*[-–]\s*\d{3})",
+    re.IGNORECASE,
+)
+
+
+def guard_owner_defect(value: str) -> str:
+    """Why `value` is not a single-arc identifier, or `''` when it is one.
+
+    One implementation, two consumers (doctrine C.9): `validate_result` enforces
+    it on every GUARDED verdict, and `check_artifact_gate_coverage` uses the same
+    function for the arcs that admit a baseline addition. Two spellings of "what
+    counts as an arc" would disagree the first time one was edited.
+    """
+    owner = value.strip()
+    if not owner:
+        return (
+            "no discharging arc named (CHECK-DEBT.md B.3: an owner that cannot "
+            "pay is no owner wearing a name)"
+        )
+    if _GUARD_OWNER.fullmatch(owner):
+        return ""
+    if _RANGE_MARKERS.search(owner):
+        return (
+            f"{owner!r} names a RANGE of arcs, not one arc — GUARDED requires the "
+            "SPECIFIC discharging arc (§4.1), and a range lets every arc in it "
+            "point at the next one. Expected exactly 'ARC NNN'"
+        )
+    named = re.findall(GUARD_OWNER_PATTERN, owner)
+    if len(named) > 1:
+        return (
+            f"{owner!r} names {len(named)} arcs {named} — GUARDED requires exactly "
+            "one discharging arc (§4.1). Expected exactly 'ARC NNN'"
+        )
+    return (
+        f"{owner!r} is not a single arc identifier — expected exactly 'ARC NNN' "
+        "(the literal 'ARC', one space, three digits), with the prose about WHY "
+        "kept in the ledger rather than in the owner field"
+    )
 
 
 class Mode(StrEnum):
@@ -109,11 +170,11 @@ def validate_result(result: CheckResult) -> CheckResult:
             "engine: GUARDED rejected — no evidence recorded; a deferral must "
             "have measured (§5, AMENDMENT 1)"
         )
-    elif result.status is Status.GUARDED and not result.guard_owner.strip():
-        reason = (
-            "engine: GUARDED rejected — no discharging arc named "
-            "(CHECK-DEBT.md B.3: an owner that cannot pay is no owner wearing a name)"
-        )
+    elif result.status is Status.GUARDED and guard_owner_defect(result.guard_owner):
+        # ARC 025. The ARC 024 rule was `not guard_owner.strip()`, which is the
+        # right shape and the wrong strength: `"ARC 025+"` is non-empty and is
+        # still nobody. The owner is now MECHANICALLY VALIDATED, not conventional.
+        reason = f"engine: GUARDED rejected — {guard_owner_defect(result.guard_owner)}"
     if reason:
         result.status = Status.CANNOT_MEASURE
         # Append, never replace: the downgrade path is exactly where an
