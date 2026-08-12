@@ -106,30 +106,33 @@ they cannot fix themselves.
 `checks/check_<name>.py`, stdlib-only at module scope.
 
 ```python
-class Mode(StrEnum):          # install ⊇ correct ⊇ verify
-    VERIFY  = "verify"        # detect and report only
-    CORRECT = "correct"       # verify + repair what is broken
-    INSTALL = "install"       # correct + install what is absent — idempotent
+class Mode(StrEnum):  # install ⊇ correct ⊇ verify
+    VERIFY = "verify"  # detect and report only
+    CORRECT = "correct"  # verify + repair what is broken
+    INSTALL = "install"  # correct + install what is absent — idempotent
+
 
 class Status(StrEnum):
-    PASS                = "pass"
-    FAIL_REPAIRABLE     = "fail_repairable"
+    PASS = "pass"
+    FAIL_REPAIRABLE = "fail_repairable"
     FAIL_NEEDS_OPERATOR = "fail_needs_operator"
-    CANNOT_MEASURE      = "cannot_measure"
-    SKIPPED             = "skipped"
-    GUARDED             = "guarded"    # AMENDMENT 1 (ARC 024)
+    CANNOT_MEASURE = "cannot_measure"
+    SKIPPED = "skipped"
+    GUARDED = "guarded"  # AMENDMENT 1 (ARC 024)
+
 
 @dataclass
 class CheckResult:
-    name:     str
-    status:   Status
-    site:     str = ""                # the SPECIFIC setting/path/port at fault
-    evidence: str = ""                # what was actually measured
-    detail:   str = ""
-    action:   str = ""                # what correct/install actually did
-    upstream_available: str = ""      # advisory only (§7)
-    guard_owner: str = ""             # AMENDMENT 1 — arc that discharges a GUARDED
-    duration_s: float = 0.0           # stamped by the engine; never an input to a verdict
+    name: str
+    status: Status
+    site: str = ""  # the SPECIFIC setting/path/port at fault
+    evidence: str = ""  # what was actually measured
+    detail: str = ""
+    action: str = ""  # what correct/install actually did
+    upstream_available: str = ""  # advisory only (§7)
+    guard_owner: str = ""  # AMENDMENT 1 — arc that discharges a GUARDED
+    duration_s: float = 0.0  # stamped by the engine; never an input to a verdict
+
 
 def run(mode: Mode, ctx: Context) -> CheckResult: ...
 ```
@@ -138,9 +141,9 @@ Module-level metadata — **the check declares what it needs; the manifest decla
 (§6). One source of truth per fact, so the two can never disagree:
 
 ```python
-PRIVILEGE   = "user" | "root"
-INTERACTIVE = False    # True → runnable only from install.sh, never headless
-DISRUPTIVE  = False    # True → restarts a service / swaps a package (§8)
+PRIVILEGE = "user" | "root"
+INTERACTIVE = False  # True → runnable only from install.sh, never headless
+DISRUPTIVE = False  # True → restarts a service / swaps a package (§8)
 ```
 
 `INSTALL` is **idempotent**: it installs what is absent and corrects what is wrong. It never
@@ -387,7 +390,7 @@ ARC 010.
 
 ```json
 {
-  "manifest_version": "1.0.0",
+  "registry_version": "1.0.0",
   "blocks": [
     { "name": "bootstrap-floor",
       "on_fail": "halt",
@@ -427,13 +430,33 @@ those claims are pairwise disjoint (§4.4) — *"by definition no dependency"* i
 false of resource contention, and the hazard is live: two Gateway gates in one block both dial
 `127.0.0.1:4002`. Cycles (naming the participants), orphans **in both directions**, undeclared
 dependencies, and unreadable declarations are loud errors and **no plan is written at all**, not
-even as a proposal. A valid plan is written to `<manifest>.json.proposed`; `--commit` installs it.
+even as a proposal. A valid plan is written to `<registry>.json.proposed`; `--commit` installs it.
 The bound is stated rather than buried: disjointness is checked over **declarations**, so a false
 declaration is the residual and no static mechanism closes it.
 
 **Name, open.** The ARC 024 operator ruling calls this artifact `checks/manifest.json`; the file on
 disk is `checks/registry.json`, named per doctrine A.4/D.5. **Unresolved operator ruling — do not
 rename in either direction.**
+
+**Vocabulary, CLOSED — ARC 026 (B1), AMENDMENT 6.** The *file* name stays open; the *identifiers* do
+not. ARC 010 renamed `verify_manifest.json` to `registry.json` and stopped there, leaving one
+artifact wearing two names one layer apart: the file said `registry`, and the module, exception,
+loader, CLI flag and the file's own version key all said the other thing. That is the
+`ORDERS_OPEN`/`avg_price` class — two spellings of one thing, the last writer winning — and it is a
+defect independently of how the ruling lands, because *whichever* name the operator picks, one of
+them has to go.
+
+Today the vocabulary is `scripts/nixverify/registry.py`, `RegistryError`, `load_registry()`,
+`--registry`, and the JSON key `registry_version` (reader and writer changed in the same commit).
+**The five spellings it replaced are enumerated in `CHECK-CONTRACT-AMENDMENTS.md` AMENDMENT 6 and
+deliberately not here** — that ledger is the record of what the vocabulary used to be, this section
+is the statement of what it is, and writing the dead spellings into the live spec is how a purge
+half-happens twice.
+
+Gated by `checks/check_name_coherence.py`, which fails on any surviving identifier outside the
+historical records that may not be rewritten. **If the operator rules the other way, the rename is
+one mechanical pass over a vocabulary that is at least self-consistent; before this arc it was a
+rename plus an archaeology exercise.**
 
 ---
 

@@ -339,7 +339,13 @@ def standalone_main(
             "actuation_attempted", check=name, verb=args.mode.value, target=str(home)
         )
 
-    outcome = validate_result(run_fn(args.mode, Context(nix_home=home, mode=args.mode)))
+    # `home` is passed so the GUARDED dischargeability arm is live on the
+    # standalone path too (ARC 026 B2). The call stays on ONE LINE because
+    # scripts/tests/test_check_standalone_nonvacuity.py asserts on this exact
+    # text — the delegation allowance it grants every retrofitted check is only
+    # safe while this helper provably applies §5 itself.
+    ctx = Context(nix_home=home, mode=args.mode)
+    outcome = validate_result(run_fn(args.mode, ctx), home)
     print(f"{outcome.status.value}: {outcome.evidence or outcome.detail}")
     if outcome.detail and outcome.evidence:
         print(f"  detail: {outcome.detail}")

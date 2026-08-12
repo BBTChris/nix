@@ -131,7 +131,7 @@ def _line(result: CheckResult, theme: Theme, verbose: bool) -> str:
 
 
 def render_results(results: list[CheckResult], theme: Theme, verbose: bool) -> str:
-    """Render every result in manifest order (§6)."""
+    """Render every result in registry order (§6)."""
     return "\n".join(_line(r, theme, verbose) for r in results)
 
 
@@ -165,8 +165,8 @@ class LiveProgress:  # pylint: disable=too-many-instance-attributes
     to be a measurement:
 
     - **The run-level indicator is DERIVED and real.** `n/total` counts checks
-      completed against the total the manifest declares. Both halves come from
-      the manifest, nothing is typed, and it cannot drift: add a check and the
+      completed against the total the registry declares. Both halves come from
+      the registry, nothing is typed, and it cannot drift: add a check and the
       denominator moves in the same motion.
     - **The per-check indicator is a spinner with a count-up clock, and it
       measures elapsed time only** — never predicted remaining time. A check may

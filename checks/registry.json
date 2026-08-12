@@ -1,5 +1,5 @@
 {
-  "manifest_version": "1.0.0",
+  "registry_version": "1.0.0",
   "comment": "DERIVED by `verify.py --optimize` (ARC 024 \u00a73.4) from the checks folder, not hand-maintained. Blocks are dependency levels, ordered least-dependent to most-dependent. A block is `parallel` only where every member declared its RESOURCES and those claims are pairwise disjoint (\u00a73.2) \u2014 'by definition no dependency' is checked, not taken. Re-derive rather than editing this file by hand.",
   "blocks": [
     {
@@ -21,6 +21,7 @@
         "check_datafeed_bar_seal",
         "check_ibgateway_config",
         "check_ibgateway_service",
+        "check_name_coherence",
         "check_node_identity",
         "check_observed_resource_claims",
         "check_spec_citations",

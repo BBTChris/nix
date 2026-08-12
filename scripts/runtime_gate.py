@@ -128,6 +128,11 @@ import tempfile
 import xml.etree.ElementTree as ET  # nosec B405 - input is our own mkstemp file, see run_pytest
 from dataclasses import dataclass, field
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
+# pylint: disable=wrong-import-position
+from nixverify.gitenv import scrubbed_env
+
 #: Excluded from scope for the same reason every pre-commit hook excludes it: the
 #: `databases/schema/` tree is verbatim-extracted DB-spec artifact, never lint-fixed.
 _SCHEMA_PREFIX = "databases/schema/"
@@ -168,9 +173,27 @@ def blob_shas(path: pathlib.Path) -> set[str]:
 
 
 def git(*args: str) -> list[str]:
-    """Whitespace-split stdout of a git command, or [] if it failed."""
+    """Whitespace-split stdout of a git command, or [] if it failed.
+
+    THE ENVIRONMENT IS SCRUBBED, AND FOR THIS CALLER IT IS THE POINT (D3.22).
+    `git` honours `GIT_DIR`, `GIT_WORK_TREE` and `GIT_INDEX_FILE` **ahead of `cwd`**,
+    and *this program is invoked by `pre-commit`, from inside a `git commit`, with those
+    variables exported*. It was the one git caller in the tree with no scrub at all while
+    being the most exposed: `main()` derives the gate's entire SCOPE from `git ls-files`
+    and its changed set from `git diff --name-only HEAD`, so an inherited `GIT_INDEX_FILE`
+    sets what this gate measures. A scope silently set by ambient tracking state is
+    `debug.md` §8 failure mode #14, and it is the same mechanism that bared this repository.
+
+    Nothing is lost by scrubbing: on the normal path the variables git exports point at the
+    repository `cwd` already resolves to, so the answers are identical. They differ only in
+    the case this exists to refuse.
+    """
     proc = subprocess.run(  # nosec B603 - literal argv, shell=False
-        ("git",) + args, capture_output=True, text=True, check=False
+        ("git",) + args,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=scrubbed_env(),
     )
     return proc.stdout.split() if proc.returncode == 0 else []
 

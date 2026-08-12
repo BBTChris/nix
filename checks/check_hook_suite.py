@@ -177,7 +177,6 @@ Eight conditions, each stated so it could be planted.
 from __future__ import annotations
 
 import json
-import os
 import re
 import subprocess  # nosec B404 - fixed argv, shell=False, no user input
 import sys
@@ -186,6 +185,7 @@ from typing import NamedTuple
 
 import _preamble  # noqa: F401  pylint: disable=unused-import,wrong-import-order
 from nixverify.contract import CheckResult, Context, Mode, Status
+from nixverify.gitenv import scrubbed_env
 
 # R0801 (duplicate-code) is disabled at module scope for the same reason every
 # other gate carries it: `nix_check_contract.md` §4.2 requires each
@@ -295,8 +295,14 @@ def _clean_git_env() -> dict[str, str]:
     `tmp_path` during a real `git commit`, inherited `GIT_DIR`, and committed
     against the worktree instead. Stripping the prefix makes `cwd` the only
     thing that decides which repository is being asked.
+
+    **ARC 026 (B4): the prefix rule this function pioneered is now the shared
+    one.** `nixverify.gitenv.scrubbed_env` strips `GIT_*` exactly as this did —
+    the two weaker private copies elsewhere in the check population were raised
+    to it rather than this one being lowered to them. Behaviour here is
+    unchanged; the name is kept because the committed suite asserts on it.
     """
-    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    return scrubbed_env()
 
 
 def _git(nix_home: Path, *args: str) -> str | None:

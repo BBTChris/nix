@@ -54,7 +54,7 @@ import json
 from pathlib import Path
 
 from nixverify.declarations import Declaration, read_all
-from nixverify.manifest import Block
+from nixverify.registry import Block
 
 
 class OptimizeError(Exception):
@@ -260,7 +260,7 @@ def derive_plan(  # pylint: disable=too-many-locals
 def plan_to_payload(plan: Plan, declarations: dict[str, Declaration]) -> dict:
     """Render a Plan as a registry.json-shaped payload."""
     return {
-        "manifest_version": "1.0.0",
+        "registry_version": "1.0.0",
         "comment": (
             "DERIVED by `verify.py --optimize` (ARC 024 §3.4) from the checks "
             "folder, not hand-maintained. Blocks are dependency levels, ordered "
