@@ -1,4 +1,4 @@
-# nix_check_contract — Nix provisioning engine and check contract — v1.3.0
+# nix_check_contract — Nix provisioning engine and check contract — v1.4.0
 
 **Status: derived implementation spec, subordinate to `VERIFY-AND-CHECKS.md`.** Governs
 `bootstrap.sh`, `install.sh`, `scripts/verify.py`, and every `checks/check_*.py`.
@@ -267,6 +267,7 @@ Module-level symbols read by `scripts/nixverify/declarations.py` and consumed by
 | `EXPECTED_S` | expected duration, derived from the check's own timeout, never from an observed run |
 | `CORRECTABLE` | §4.3 |
 | `NON_CORRECTABLE_REASON` | mandatory when `CORRECTABLE` is False |
+| `ON_FAIL` | `"halt"` or `"continue"` (AMENDMENT 5, ARC 025). Failure policy the check demands of the plan. Absent reads as `"continue"`; an unrecognised value is a **named error**, never a default — silently reading a misspelled `"HALT"` as `"continue"` would discard the exact policy the declaration exists to carry |
 
 **Binding invariant: `--optimize` reads every declaration without executing the check's measurement
 logic.** Both candidate mechanisms were built and measured against all 13 registered checks before
@@ -891,7 +892,98 @@ AMENDMENT 3. None exists; the debt is recorded rather than blocking, per the sam
 
 ---
 
+## 17. The masked hazard — a property proven while its subject is unavailable is not proven (AMENDMENT 5, ARC 025)
+
+**Where an instrument cannot observe a resource *because the resource is unreachable*, the verdict is
+`CANNOT_MEASURE` for that subject — never `PASS`.**
+
+The measured case is ARC 024's refusal and ARC 025's closing of it. A parallel spelling would have
+put `check_ibgateway_config` and `check_ibgateway_service` in one block, both dialling
+`127.0.0.1:4002`. A `socket.connect` spy caught it. But the Gateway on this box is **down**, so both
+gates get `ECONNREFUSED` — and an observer that only recorded *successful* resource use would have
+seen two checks touching nothing, declared them disjoint, and certified the collision as safe. **The
+hazard is invisible precisely when the subject is unavailable, which is also when the observation is
+cheapest to take.**
+
+Two facts are therefore recorded, and they are different facts:
+
+- **the claim** — the *attempt* is the claim. `checks/check_observed_resource_claims.py` takes it
+  from a CPython audit hook (PEP 578), which fires *before* the syscall, so a refused connection is
+  still positive evidence that the check dials that endpoint.
+- **the outcome** — reachable or not, taken from a thin wrapper the hook cannot supply.
+
+**Order is the ruling, and it is not symmetric.** A positively-observed undeclared claim **outranks**
+masking: a check caught dialling an endpoint it never declared has been caught whether or not the
+rest of its run was observable. Only where there is no such evidence does unreachability decide, and
+it decides toward `CANNOT_MEASURE`. Live verdict on this tree: the observer returns `CANNOT_MEASURE`
+naming both Gateway gates, `ECONNREFUSED`, and the word `UNOBSERVED` — the clause biting, not an
+inert gate.
+
+**Bound, stated rather than implied.** This is a *dynamic* instrument: it observes the code paths a
+run actually took. A branch not taken is not observed, and the residual is narrower than D2.27's but
+real. It observes sockets, file **writes**, subprocesses and service interaction; it does not observe
+file reads (not a contended claim), anything a spawned child does, or module-level side effects
+(observation is armed after import, deliberately).
+
+## 18. Every can-fail control asserts the REASON, never the exit code alone (AMENDMENT 5, ARC 025)
+
+**A control asserts the message, the site, or the field — never only the number.**
+
+The measured incident is ARC 024's own §2.2 re-verify control, which **passed because the subprocess
+crashed and also returned 1**. An exit code is a shared namespace: the same integer is reached by the
+detector firing correctly, by the instrument breaking, and by the interpreter refusing to start. A
+control that reads only the number cannot distinguish *detects the defect* from *always fails* —
+which is §5.1's requirement restated, and doctrine C.2's, and the reason exit `2` exists at all
+(§B.2: a gate reported a violation **while having measured nothing**).
+
+**Audited, ARC 025, by AST over the whole suite** — 512 test functions:
+
+| population | at ARC 025 start | at close |
+|---|---|---|
+| controls over a **driven** subject | 47 | **68** |
+| — assert a REASON | 42 | **68** |
+| — **assert EXIT CODE ONLY** | **5 (10.6%)** | **0 (0.0%)** |
+| contract-**table** tests, exempt | 3 | 4 |
+
+**The exemption is real and is not a loophole.** A test of `exit_code_for`, `aggregate_exit` or
+`validate_result` has the exit code *as its subject*; asserting it alone is correct there. The
+discriminator is whether the test **drives** something — a check's `run()`, a subprocess, a gate
+entry point — or merely evaluates a mapping table. Conflating the two inflated the first measurement
+of this population by three.
+
+**The repairs are demonstrated, not asserted.** Planting a replacement reason string in
+`scripts/runtime_gate.py` makes the repaired control FAIL and name the plant **while
+`exc.value.code == 2` still PASSES** — the rule's whole argument in one measurement. Control restored
+byte-identical, sha256 equal before and after.
+
+**This rule is mechanically checkable and is therefore owed a check** under §1 as broadened by
+AMENDMENT 3. The ARC 025 auditor ran as a one-off; promoting it to a standing gate is recorded as
+debt rather than blocking, per the same section.
+
+---
+
 ## Changelog
+
+**v1.4.0 (ARC 025)** — **AMENDMENT 5**, three parts, all measured this arc.
+**§17 (new) — the masked hazard:** a safety property proven while its subject is unavailable is not
+proven; where an observer cannot see a resource *because the resource is unreachable* the verdict is
+`CANNOT_MEASURE`, never `PASS`. The attempt is the claim (PEP 578 audit hook, fires before the
+syscall), and a positively-observed undeclared claim outranks masking. Closes D2.27 with a *runtime*
+instrument: disjointness was previously proven over declarations only, and the residual — a check
+declaring `RESOURCES = ()` while dialling 4002 — is now measurable rather than trusted. It found
+**seven** false declarations on the real tree in its first two runs.
+**§18 (new) — every can-fail control asserts the REASON**, never the exit code alone; the measured
+incident is ARC 024's re-verify control passing because the subprocess *crashed* and also returned 1.
+Audited by AST over 512 test functions: exit-code-only controls **5 → 0** of 68, with three
+contract-table tests correctly exempted because there the code *is* the subject.
+**§4.4 gains `ON_FAIL`:** failure policy declared on the check and derived into the plan. This exists
+because `--optimize` was measured **silently dropping it** — `derive_plan` never emitted `on_fail`
+and `Block.on_fail` defaults to `"continue"`, so `--commit` would have installed a plan in which a
+failed Python runtime no longer halts the run, while every stated success criterion for the
+derivation was still met. A halting check is emitted as its **own single-check block**: marking the
+whole level `halt` is worse than the defect, because `engine.run_blocks` halts on ANY member's
+failure and `check_ibgateway_service` FAILs by design on this tree. §16 stands as written; §16.2's
+"any delta is a finding, including an environmental one" was exercised at ARC 025 Phase 0 and held.
 
 **v1.3.0 (ARC 025)** — **AMENDMENT 4:** §16 (new) — the arc close-out gate must prove **durability**,
 not authorship. `CLAUDE.md`'s write-back rule is satisfiable by a file that exists only in a working

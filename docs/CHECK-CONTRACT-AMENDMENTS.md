@@ -373,3 +373,122 @@ Added by the ARC 025 close-out:
    repaired in this close-out: the fix is a one-line source change, but a `CHECK-DEBT.md` row for it
    moves `check_debt_open_items` 66 → 67 and that number is compared by the very gate in question.
    Owed to ARC 025 proper as a paired change.
+
+---
+
+## AMENDMENT 5 — the masked hazard, the reason-asserting control, and declared failure policy
+
+| field | value |
+|---|---|
+| origin | **ARC 025.** Parts 1 and 2 are architect rulings carried in the ARC 025 brief; part 3 is a defect ARC 025 measured in ARC 024's own `--optimize` |
+| implemented by | ARC 025, recorded in `nix_check_contract.md` §17, §18 and §4.4 |
+| supersedes | nothing. All three are additive |
+| status | §17 shipped with a live emitter and a demonstrated FAIL path · §18 shipped and the existing population audited to zero · §4.4's `ON_FAIL` shipped and derived into the installed plan |
+
+### Part 1 — §17, a property proven while its subject is unavailable is not proven
+
+D2.27 read: *disjointness is proven over declarations, never over actual resource use, and no static
+mechanism can close that gap.* True of static mechanisms — and ARC 024 had already built the dynamic
+one as a one-off. ARC 025 promoted it to a standing gate,
+`checks/check_observed_resource_claims.py`, over `scripts/nixverify/observe.py`.
+
+**The instrument is a CPython audit hook (PEP 578), not a monkeypatch, and the substitution was made
+with a measurement.** A monkeypatch is defeated by re-import, by a reference captured before the
+patch, and by reaching through to `_socket` — and **a defeated spy reports no claims**, which is
+exactly the false green the gate exists to prevent. An audit hook cannot be removed or bypassed and
+fires *inside* CPython at the call, which is what makes a refused connection still an observed claim.
+
+**What it caught on the real tree, in its first two runs — seven false declarations:**
+
+| check | observed | had declared |
+|---|---|---|
+| `check_order_path_bans` | `subprocess:.venv/bin/python3` | `()` — *"reads source files only … writes nothing"* |
+| `check_verify_logging` | `file-write:checks/.plane2_control_<nonce>` | `journal` only |
+| `check_artifact_gate_coverage` | `subprocess:git` | `()` |
+| `check_derived_claims` | `subprocess:/usr/bin/python3` | `venv` only |
+| `check_hook_suite` | `subprocess:git` | `git-hooks, pre-commit-store, venv` |
+| `check_node_identity` | `subprocess:blkid`, `subprocess:findmnt` | `state/node_identity.json` only |
+
+The first is the one that matters most: `check_venv` claims `venv` and **rebuilds it under
+`--correct`**, so a plan that believed `()` could have co-scheduled `check_order_path_bans` with the
+check deleting its interpreter.
+
+The `check_node_identity` pair is the one that shows the mechanism earning its place. It was **not an
+oversight** — Wave A reasoned in writing that `findmnt` and `blkid` are read-only kernel/device
+queries contending with nothing, and deliberately left them undeclared. The argument is about
+*contention*; a declaration states what the check *touches*, and this project fails closed. **A
+human's plausible reasoning about resource use was checked against what the process actually did,
+and reality won.** That is the whole content of closing D2.27.
+
+**The masked-hazard clause is what makes the result trustworthy on THIS box.** The Gateway is down,
+so both Gateway gates get `ECONNREFUSED` and everything downstream of the handshake never executes.
+An observer recording only *successful* use would have seen two checks touching nothing and
+certified their collision as safe. The hazard is invisible exactly when the observation is cheapest.
+Live verdict: `CANNOT_MEASURE`, naming both gates, `ECONNREFUSED`, and `UNOBSERVED`.
+
+### Part 2 — §18, every can-fail control asserts the REASON
+
+ARC 024's §2.2 re-verify control **passed because the subprocess crashed and also returned 1**. ARC
+025 audited the whole population by AST and repaired it to zero.
+
+| population | ARC 025 start | close |
+|---|---|---|
+| controls over a driven subject | 47 | **68** |
+| assert a REASON | 42 | **68** |
+| **assert EXIT CODE ONLY** | **5** | **0** |
+| contract-table tests (exempt) | 3 | 4 |
+
+The last delinquent was `test_reverify_of_a_missing_check_is_cannot_measure` — **ARC 024's own
+incident, still unrepaired eighteen months of arcs later**, asserting `exit_code == 2` where exit 2
+is what the *interpreter* returns when it cannot open the file and also what a check that ran
+correctly and honestly reported CANNOT_MEASURE returns.
+
+### Part 3 — §4.4's `ON_FAIL`, because `--optimize` was silently dropping failure policy
+
+`derive_plan` never emitted `on_fail`, and `Block.on_fail` defaults to `"continue"`. **A
+`--optimize --commit` would have installed a plan in which a failed Python runtime no longer halts
+the run** — and every success criterion stated for the derivation (plan derived, zero cycles, zero
+orphans, `.proposed` written, `--commit` required) would still have been met. A planning tool that
+passes all its own tests while discarding a safety policy is this project's vacuity class wearing a
+new coat.
+
+**The obvious repair is worse than the defect and was refused with a measurement.** Marking the
+level `halt` fails because `engine.run_blocks` halts when **any** member of a halting block fails —
+and on this tree `check_ibgateway_service` FAILs by design, so it would have taken every downstream
+check with it. Halting checks are therefore emitted as their **own single-check blocks**, which
+reproduces the hand-maintained semantics exactly: the floor halts on its own failure and nothing
+else.
+
+### Open item 8 of AMENDMENT 4 is DISCHARGED
+
+`check_derived_claims`'s `pytest_collector` was environment-fragile: `FORCE_COLOR` in the ambient
+shell made pytest emit ANSI before the digits, the `(?m)^(\d+) tests? collected` anchor missed, and
+the claim degraded to `NOT MEASURED` — `verify.py` reporting `10 passed | 1 failed | 2 cannot
+measure` instead of `11 | 1 | 1`. ARC 024 recorded it and deferred it, correctly noting the
+circularity: the `CHECK-DEBT.md` row would move `check_debt_open_items` 66 → 67, and that number is
+compared by the very gate in question.
+
+**Repaired at the source runner, not by widening the regex.** A new `_child_env()` strips
+`FORCE_COLOR`/`CLICOLOR_FORCE` and sets `NO_COLOR=1`/`TERM=dumb` for **every** subprocess site, so
+it protects sources nobody has written yet rather than the one that broke; ANSI stripping in
+`_extract` is a second, independent layer for a tool that colours for its own reasons. Control:
+`verify.py` run twice, identical in every other respect, reports the same figures with
+`FORCE_COLOR` set and unset.
+
+**It was independently re-measured before it was fixed**, which is §16.2 working as designed — ARC
+025's Phase 0 re-run against the merged tree reproduced the exact degradation from the ledger entry.
+
+### Open items returned to the operator
+
+1. **The §17 observer's residual is DYNAMIC**, and narrower than D2.27's but real: it observes the
+   code paths a run actually took. A branch not taken is not observed. There is no proposal to close
+   this and it should not be read as closed.
+2. **§18's rule is mechanically checkable and the auditor ran as a one-off.** Promoting it to a
+   standing `checks/check_*.py` is owed; recorded as debt rather than blocking.
+3. **`registry.json` vs `manifest.json` remains UNRULED.** ARC 025 renamed nothing in either
+   direction, per instruction. The vocabulary (`manifest_version`, `nixverify/manifest.py`,
+   `ManifestError`, `load_manifest()`, `--manifest`) is untouched and still disagrees with the
+   filename.
+4. **Wave C's can-fail binding is still owed to the tap session** — see `CHECK-DEBT.md`. ARC 025
+   declared both Gateway gates and gave them the actuation surface; it did **not** re-bind them,
+   because that needs a live authenticated Gateway.

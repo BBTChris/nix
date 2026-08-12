@@ -146,3 +146,32 @@ than relying on memory.
 - The §16 gate is mechanically checkable and is therefore **owed a check** under §1 as broadened by
   AMENDMENT 3. None written; recorded rather than blocking, and returned to the architect as open
   items 6 and 7 in the amendment ledger's standing note.
+
+## ARC 025 — check contract v1.4.0: the masked hazard, the reason-asserting control, declared failure policy
+
+- **Check contract gains items 10, 11 and 12.** Substance in `docs/nix_check_contract.md`
+  **§17 and §18 (new)** plus `ON_FAIL` in **§4.4**, all AMENDMENT 5, recorded in
+  `docs/CHECK-CONTRACT-AMENDMENTS.md`; contract bumped **v1.3.0 → v1.4.0**.
+- **Item 10 — a safety property proven while its subject is unavailable is not proven.** Where an
+  observer cannot see a resource *because the resource is unreachable*, the verdict is
+  Cannot-measure, **never Pass**. The attempt is the claim; a positively-observed undeclared claim
+  outranks masking. This closes CHECK-DEBT **D2.27** with a *runtime* instrument — the row's claim
+  that no STATIC mechanism could close it was correct, which is why the closure is dynamic.
+- **Item 11 — every can-fail control asserts the REASON**, never the exit code alone. An exit code
+  is a shared namespace: the detector firing, the instrument breaking, and the interpreter refusing
+  to start all reach the same integer. Audited across 512 test functions; exit-code-only controls
+  **5 → 0** of 68. Exempt only where the exit code *is* the subject.
+- **Item 12 — declared resource claims are checked against OBSERVED ones**, and failure policy is
+  declared rather than assumed. `--optimize` was measured **silently dropping** `on_fail: halt`
+  while satisfying every stated success criterion for the derivation.
+- **Why these went into CLAUDE.md and not only into the spec:** items 5–9 already state what a check
+  must declare and how the plan is derived. Leaving the observed-vs-declared rule only in the
+  derived spec would have left this file asserting that declared disjointness is what the plan
+  rests on — which stopped being true this arc.
+- **The §18 rule is mechanically checkable and its auditor ran as a one-off**; promoting it to a
+  standing check is recorded as **D2.29** rather than blocking, per §1 as broadened by AMENDMENT 3.
+- `checks/registry.json` is now **DERIVED** by `verify.py --optimize --commit` rather than
+  hand-maintained. Its accumulated rationale comments are superseded: the ordering they justified is
+  now *declared* in each check's `DEPENDS_ON`/`RESOURCES`/`ON_FAIL`, which is one source of truth
+  instead of two, and the prose survives in git history (directive 6 — history is appended, and a
+  file replaced in a commit is not history erased).
