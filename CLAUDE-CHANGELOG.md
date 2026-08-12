@@ -197,3 +197,18 @@ to be the subject.
 **Nothing was renumbered.** Two rulings were both issued titled "AMENDMENT 5"; the ledger
 records the ARC 023 one as AMENDMENT 6 while keeping its self-reference verbatim, and the
 fold reproduces that exactly. The collision is the architect's to rule on.
+
+## ARC 028 (2026-08-12) — Phase 0
+
+- **Check contract gains rule 13:** *a rule that decides a check's verdict is written into `CLAUDE.md`
+  and recorded in `CHECK-CONTRACT-AMENDMENTS.md`, or it does not bind.* Arc-brief section labels are
+  per-arc and collide across arcs; they are not ledger identifiers. Added because a declaration-only
+  binding classifier governed three arcs' binding verdicts under the brief label `§0c` **while `§0c`
+  on disk meant rule 9** (a retrofitted check is a new check), which is live and load-bearing. The
+  withdrawn rule had no on-disk name at all, so nothing could be edited to withdraw it and nothing
+  could have contradicted it. Recorded as `CHECK-A7`; CHECK-DEBT D3.81.
+- **Both amendment ledgers gain a citation prefix** — `SPEC-A<n>` and `CHECK-A<n>`. Numbers are
+  unchanged and nothing was renumbered. The specs table row for `CHECK-CONTRACT-AMENDMENTS.md` now
+  carries the citation form. Enforced mechanically by `scripts/tests/test_amendment_ledgers.py`
+  (prefix present, number unique **within** its ledger, prefixes disjoint, refinements excluded from
+  the number space), driven red both ways against the real ledger and restored byte-identically.

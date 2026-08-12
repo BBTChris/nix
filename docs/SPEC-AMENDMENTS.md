@@ -5,6 +5,22 @@ describes behaviour that Nix implements and that `nics_risk_subsystem_spec_v1.3.
 describe. The frozen spec is **not edited** — that is a standing prohibition, and a v1.4 is an
 architect action, not an arc's.
 
+**CITATION FORM: `SPEC-A<n>` (ARC 028 / 0.4, architect ruling).** `SPEC-A3` *is* amendment 3 of
+this ledger; the number is unchanged and no entry was renumbered. The prefix exists because
+**"AMENDMENT 6" was ambiguous across two documents that each hold six** — this ledger and
+`CHECK-CONTRACT-AMENDMENTS.md`, which numbers from 1 independently. A bare "AMENDMENT 6" in a
+brief, a debt row or a commit message named two different rulings and nothing on disk could tell
+them apart. `scripts/tests/test_amendment_ledgers.py` now enforces the prefix and the
+**uniqueness of the number within this ledger** — the defect that made this ruling necessary was
+two entries issued as `AMENDMENT 5` in this file at once (ARC 022's D1.38 and per-channel
+freshness), which nothing detected until a human read both.
+
+The collision is not confined to amendments. **ARC 028 / 0.3 measured the same shape in arc-brief
+section labels**: `§0c` on disk means *"a retrofitted check is a new check"* (ARC 025; live, and
+enforced as check-contract rule 9 in `CLAUDE.md`), while `§0c` in the ARC 027 and ARC 028 briefs
+means the declaration-only binding classifier, which is **withdrawn**. Two rules, one label, both
+cited in this tree. See `CHECK-A7`.
+
 ## Why this file exists
 
 Two things were happening in the same place and needed separating:
@@ -33,7 +49,7 @@ is the only place it can be right.)*
 
 ---
 
-## AMENDMENT 1 — startup admission gate discriminates by ownership, not elapsed time
+## SPEC-A1 — startup admission gate discriminates by ownership, not elapsed time
 
 | field | value |
 |---|---|
@@ -75,7 +91,7 @@ with it** — they are one property, not two.
 
 ---
 
-## AMENDMENT 2 — protective `flatten` is idempotent within a bounded window
+## SPEC-A2 — protective `flatten` is idempotent within a bounded window
 
 | field | value |
 |---|---|
@@ -136,7 +152,7 @@ location are recorded by the implementing arc alongside the code, not here.
 
 ---
 
-## AMENDMENT 3 — the seam declares absence; it never substitutes a value for one
+## SPEC-A3 — the seam declares absence; it never substitutes a value for one
 
 | field | value |
 |---|---|
@@ -198,7 +214,7 @@ unrelated decisions.
 
 ---
 
-## AMENDMENT 3, REFINEMENT (ARC 022) — an optional field must name an observable absence
+## SPEC-A3-REFINEMENT (ARC 022) — an optional field must name an observable absence
 
 | field | value |
 |---|---|
@@ -240,7 +256,7 @@ is not a weakening of it.**
 
 ---
 
-## AMENDMENT 4 — the datafeed adapter emits bars only where the venue is the bar's source
+## SPEC-A4 — the datafeed adapter emits bars only where the venue is the bar's source
 
 | field | value |
 |---|---|
@@ -306,7 +322,7 @@ that boundary had to be drawn by somebody.
 
 ---
 
-## AMENDMENT 5 (D1.38) — the broker-datafeed port is async by default
+## SPEC-A5 (D1.38) — the broker-datafeed port is async by default
 
 | field | value |
 |---|---|
@@ -374,7 +390,7 @@ datafeed disconnect is an ordinary wire teardown.
 
 ---
 
-## AMENDMENT 6 — freshness is per-channel
+## SPEC-A6 — freshness is per-channel
 
 | field | value |
 |---|---|

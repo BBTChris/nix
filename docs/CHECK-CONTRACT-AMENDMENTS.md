@@ -10,6 +10,14 @@ doctrine to make Nix's implementation look conformant is the inverse of measurin
 therefore **implemented in the derived spec `nix_check_contract.md`** (v1.3.0) and **recorded
 here**. The doctrine keeps its authority over everything it does say.
 
+**CITATION FORM: `CHECK-A<n>` (ARC 028 / 0.4, architect ruling).** `CHECK-A3` *is* amendment 3 of
+this ledger; the number is unchanged and nothing was renumbered. The prefix exists because a bare
+**"AMENDMENT 6" named two different rulings** — one here, one in `SPEC-AMENDMENTS.md`, which
+numbers from 1 independently and also holds six. `scripts/tests/test_amendment_ledgers.py`
+enforces the prefix and the uniqueness of the number **within** each ledger, mechanically, because
+the defect that produced this ruling (two entries issued as `AMENDMENT 5` inside one file) was
+caught by a human reading both and by nothing else.
+
 ## Why this file exists rather than `SPEC-AMENDMENTS.md`
 
 ARC 024's brief (§2.6) said to record the amendment "in the project's amendment ledger alongside
@@ -37,7 +45,7 @@ the authority of the doctrine.
 
 ---
 
-## AMENDMENT 1 — `GUARDED`, a fourth exit code
+## CHECK-A1 — `GUARDED`, a fourth exit code
 
 | field | value |
 |---|---|
@@ -135,7 +143,7 @@ pipe.
 
 ---
 
-## AMENDMENT 2 — actuation: verify / correct / install, and the independent re-verify
+## CHECK-A2 — actuation: verify / correct / install, and the independent re-verify
 
 | field | value |
 |---|---|
@@ -220,7 +228,7 @@ a slice is a cgroup, always `active`, and reading it would produce a permanent m
 
 ---
 
-## AMENDMENT 3 — the coverage trigger broadened
+## CHECK-A3 — the coverage trigger broadened
 
 | field | value |
 |---|---|
@@ -272,7 +280,7 @@ subject, and a gate binds **per subject, not once**. Binding this one is a named
 
 ---
 
-## AMENDMENT 4 — the close-out gate proves durability, not authorship
+## CHECK-A4 — the close-out gate proves durability, not authorship
 
 | field | value |
 |---|---|
@@ -376,7 +384,7 @@ Added by the ARC 025 close-out:
 
 ---
 
-## AMENDMENT 5 — the masked hazard, the reason-asserting control, and declared failure policy
+## CHECK-A5 — the masked hazard, the reason-asserting control, and declared failure policy
 
 | field | value |
 |---|---|
@@ -495,7 +503,7 @@ it protects sources nobody has written yet rather than the one that broke; ANSI 
 
 ---
 
-## AMENDMENT 6 — the execution plan gets ONE name (ARC 026, B1)
+## CHECK-A6 — the execution plan gets ONE name (ARC 026, B1)
 
 **Amends `nix_check_contract.md` §6. Does not amend `VERIFY-AND-CHECKS.md`**, which names
 `registry.json` at A.4 and D.5 and says nothing about the identifiers — the doctrine was never the
@@ -553,3 +561,54 @@ green is doing the thing the doctrine names at B.4.**
 
 The gate cannot see an occurrence hidden inside its own source or its own test, because both are
 exempt by name. `CHECK-DEBT.md` D3.23.
+
+---
+
+## CHECK-A7 — the declaration-only binding classifier is WITHDRAWN (ARC 027 ratified, recorded ARC 028 / 0.3)
+
+| field | value |
+|---|---|
+| origin | Architect ruling, issued ARC 027 finding 0.3, ratified. Recorded to disk in ARC 028 / 0.3 |
+| status | **WITHDRAWN, not narrowed.** The rule is gone; nothing replaces it |
+| closes | nothing. It REMOVES a rule that governed binding verdicts across three arcs |
+
+### The rule that is withdrawn
+
+For three arcs, a check's binding verdict turned in part on a **declaration-only classification**:
+whether a control reached the gate's *measurement path* or only its *declarations*, computed by
+`scripts/nixverify/measurement_path.py`. A control that touched only declarations was not to count
+as binding.
+
+### The measured grounds, which are the point
+
+`scripts/nixverify/contract.py` sits on **every check's verdict path** and changed in three
+consecutive arcs. The classifier therefore answered "yes, the measurement path was reached" for
+every check, in every arc, without exception. **A rule whose output is a constant decides nothing.**
+It was not wrong; it was inert, while reading as though it were doing work — which is worse than
+absent, because a binding table carrying its verdicts implied a discrimination that was never made.
+
+`measurement_path.py` is **RETAINED as a STRUCTURAL instrument only.** It is what proved the
+finding, and deleting the instrument that disproved a rule is how the disproof gets re-litigated.
+It has no authority over any binding verdict.
+
+### THE LABEL COLLISION — and why nothing in the check contract was edited to record this
+
+The withdrawal was issued in the briefs as **"`0c`"**. It was NOT applied to
+`nix_check_contract.md` or to `CLAUDE.md`, and that refusal is deliberate and measured:
+
+> **``0c`` on disk is a DIFFERENT RULE, and it is live.** `CHECK-DEBT.md` D2.30 and D3.20 and
+> `CLAUDE-CHANGELOG.md` all cite ``0c`` as *"a retrofitted check is a NEW check: its can-fail
+> binding does not survive the retrofit and must be re-established, or it reverts to UNBOUND"* —
+> ARC 025's `0c`, which ships today as **check-contract rule 9 in `CLAUDE.md`** and is load-bearing.
+
+Withdrawing "`0c`" from the check contract by its label would have deleted the retrofit rule.
+``0c`` is an **arc-brief section label**, and arc-brief labels are per-arc and collide across arcs;
+they were never ledger identifiers and must not be treated as ones. The withdrawn rule had **no
+on-disk name at all** — which is itself the finding: a rule governed three arcs' binding verdicts
+without ever being written into the contract it governed, so nothing on disk could be edited to
+withdraw it and nothing on disk could have contradicted it either.
+
+**Standing consequence:** a rule that decides a check's verdict is written into
+`nix_check_contract.md` and recorded here, or it does not bind. A brief may propose one; a brief is
+not where one lives. See `SPEC-A6`'s header note and `CHECK-A6` for the same collision class one
+level up, and `CHECK-DEBT.md` D3.81.
