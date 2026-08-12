@@ -63,6 +63,31 @@ would be this module inventing a spec row, which is the substitution
 `docs/SPEC-AMENDMENTS.md` AMENDMENT 3 names. A process pinned to core 7 is
 **off-map**, and that is a finding for the architect, not a fact this file gets
 to decide.
+
+## ARC 027 — the architect decided it, and the decision is RESERVED-EMPTY
+
+`docs/CHECK-DEBT.md` **D1.44** carried that finding as an explicit architect
+question. The ruling this arc implements: cores above §10's table are **reserved
+and unassigned**, and are to be kept **empty of Nix processes**. Explicitly NOT
+more shared pool — §10's pool is cores 4-5 and stays cores 4-5, which
+`reserved_cores()` asserts by construction rather than by comment (it subtracts
+`SPEC_CORES`, of which 4 and 5 are members, so a reserved set that contained
+either would be arithmetically impossible).
+
+Reservation needs three readers §10's affinity story did not, and each is a
+DIFFERENT fact:
+
+| reader | interface | the fact |
+|---|---|---|
+| `online_cores` | `/sys/devices/system/cpu/online` | which cores EXIST to reserve |
+| `current_cpu` | `/proc/<pid>/stat` field 39 | where a task LAST RAN — occupancy |
+| `slice_members` | `nix-trading.slice`'s `cgroup.procs` | who the kernel counts as Nix |
+
+`current_cpu` is the one this module's own header called *"NOT MEASURED ... a
+different fact and is not read"*. It is read now, because *empty* is a statement
+about where tasks ran and an affinity mask cannot make it: a process permitted
+`0-19` is permitted core 7 and may never once have been scheduled there. Both
+facts are reported separately and neither is allowed to stand in for the other.
 """
 
 from __future__ import annotations
@@ -87,6 +112,22 @@ TRADING_SLICE_CPUSET = Path(
 
 #: Kernel command line, read for `isolcpus=` / `nohz_full=`.
 PROC_CMDLINE = Path("/proc/cmdline")
+
+#: Cores the kernel has ONLINE. `os.cpu_count()` is deliberately not used: it
+#: answers "how many", and a reservation is about WHICH — a box with cores 0-3
+#: and 8-11 online has count 8 and no core 4, and a set built from `range(count)`
+#: would reserve four cores that do not exist while missing four that do.
+CPU_ONLINE = Path("/sys/devices/system/cpu/online")
+
+#: The trading slice's process list, as the KERNEL maintains it. Membership here
+#: is not a claim anyone can write in a file: systemd puts a process in the
+#: cgroup, and this is the cgroup's own answer.
+TRADING_SLICE_PROCS = Path("/sys/fs/cgroup/nix.slice/nix-trading.slice/cgroup.procs")
+
+#: `/proc/<pid>/stat` field 39 (`processor`), 1-based per `proc(5)`. Fields 1 and
+#: 2 (`pid`, `comm`) are consumed by the `)`-split below, so field 3 is index 0
+#: of the remainder and the offset is `39 - 3`.
+_STAT_PROCESSOR_INDEX = 39 - 3
 
 
 class Role(enum.Enum):
@@ -337,6 +378,228 @@ def isolated_cores() -> tuple[frozenset[int], str]:
 def off_map_cores(mask: Iterable[int]) -> frozenset[int]:
     """Cores in `mask` that §10 assigns to nothing (i.e. 6 and above here)."""
     return frozenset(mask) - SPEC_CORES
+
+
+def online_cores() -> tuple[frozenset[int], str]:
+    """Cores the kernel reports ONLINE, from sysfs. Returns `(cores, error)`.
+
+    Never raises, and never falls back to `os.cpu_count()`. A fallback would let
+    the reserved set be derived from a *count* when the *identity* of the cores is
+    the whole question, and it would do so silently — the caller would receive a
+    plausible set and no way to know which reader produced it.
+    """
+    try:
+        text = CPU_ONLINE.read_text(encoding="utf-8")
+    except OSError as exc:
+        return frozenset(), f"cannot read {CPU_ONLINE}: {exc!r}"
+    try:
+        return parse_cpu_list(text), ""
+    except CoreMapError as exc:
+        return frozenset(), f"{CPU_ONLINE}: {exc}"
+
+
+def reserved_cores() -> tuple[frozenset[int], str]:
+    """Cores that EXIST and that §10 assigns to nothing. D1.44's subject.
+
+    `online - SPEC_CORES`. Cores 4-5 are members of `SPEC_CORES` (§10's shared
+    pool), so a reserved set containing either is not merely wrong, it is
+    unreachable by this arithmetic — which is how *"the surplus is not more
+    pool"* is enforced rather than asserted.
+
+    An EMPTY reserved set is a real and reportable state, not a defect: on the
+    6-core QuantVPS box §10's table is the whole machine and there is nothing to
+    reserve. The `error` string is empty in that case, and a caller must treat an
+    empty set as "nothing to measure here", never as "everything is clear".
+    """
+    online, error = online_cores()
+    if error:
+        return frozenset(), error
+    return online - SPEC_CORES, ""
+
+
+def current_cpu(pid: int) -> tuple[int | None, str]:
+    """The CPU `pid`'s task LAST RAN ON (`/proc/<pid>/stat` field 39).
+
+    Returns `(cpu, error)`. This is OCCUPANCY, not permission, and it is the only
+    one of the two that can answer "is this core empty" — see the module header.
+
+    The `comm` field can contain spaces AND parentheses (`(sh -c foo)bar`), so the
+    parse splits at the LAST `)`. Splitting on whitespace, or on the first `)`,
+    silently shifts every subsequent field and yields a confident wrong core
+    number, which is worse than an error.
+    """
+    stat = Path(f"/proc/{pid}/stat")
+    try:
+        text = stat.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return None, f"cannot read {stat}: {exc!r}"
+    _, _, tail = text.rpartition(")")
+    fields = tail.split()
+    if len(fields) <= _STAT_PROCESSOR_INDEX:
+        return None, f"{stat} carries {len(fields)} field(s) after comm; need 37"
+    try:
+        return int(fields[_STAT_PROCESSOR_INDEX]), ""
+    except ValueError as exc:
+        return None, f"{stat} field 39 is not an integer: {exc!r}"
+
+
+def slice_members() -> tuple[tuple[int, ...], str]:
+    """PIDs the kernel counts as members of `nix-trading.slice`.
+
+    Returns `(pids, error)`. As with `slice_cpuset`, an absent file means the
+    slice has never had a member — systemd creates the cgroup lazily — and that
+    is reported as an error string rather than as an empty tuple, because "no
+    members" and "no cgroup to ask" are the two facts a reservation gate must not
+    confuse.
+    """
+    try:
+        text = TRADING_SLICE_PROCS.read_text(encoding="utf-8")
+    except OSError as exc:
+        return (), f"cannot read {TRADING_SLICE_PROCS}: {exc!r}"
+    pids: list[int] = []
+    for line in text.split():
+        try:
+            pids.append(int(line))
+        except ValueError:
+            continue
+    return tuple(pids), ""
+
+
+@dataclasses.dataclass(frozen=True)
+class ProcessCore:
+    """One process, its permitted mask, and where it last ran. Both facts, apart."""
+
+    pid: int
+    cmdline: str
+    mask: frozenset[int]
+    cpu: int | None
+    in_slice: bool
+    error: str = ""
+
+    def pinned(self, online: frozenset[int]) -> bool:
+        """True when something narrowed this process's mask below the whole box.
+
+        A process at the box default is NOT pinned, and the distinction is the
+        one D1.44 turns on: an unpinned process is *permitted* every reserved
+        core by nobody's decision, whereas a process whose mask was narrowed ONTO
+        a reserved core was put there deliberately.
+        """
+        return bool(self.mask) and self.mask != online
+
+    def reserved_in_mask(self, reserved: frozenset[int]) -> frozenset[int]:
+        """Reserved cores this process is PERMITTED to run on."""
+        return self.mask & reserved
+
+    def occupies(self, reserved: frozenset[int]) -> bool:
+        """True when this process's task was last scheduled ON a reserved core."""
+        return self.cpu is not None and self.cpu in reserved
+
+
+def _cmdline_of(pid: int) -> str:
+    """`/proc/<pid>/cmdline`, NUL-separated, rendered with spaces. `''` if gone."""
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return ""
+    return " ".join(part for part in raw.decode("utf-8", "replace").split("\0") if part)
+
+
+def _cwd_of(pid: int) -> Path | None:
+    """`/proc/<pid>/cwd`, or `None` when it cannot be followed.
+
+    Needed because argv is routinely RELATIVE: `./.venv/bin/python
+    checks/check_x.py` is how every check is run by hand, and neither token is an
+    absolute path. Resolving them the way the kernel did — against the process's
+    own working directory — is the difference between finding those processes and
+    reporting an empty census. MEASURED: the first spelling of `_mentions_home`
+    considered absolute tokens only, and `check_reserved_cores` could not find
+    ITSELF.
+    """
+    try:
+        return Path(os.readlink(f"/proc/{pid}/cwd"))
+    except OSError:
+        return None
+
+
+def _mentions_home(pid: int, cmdline: str, nix_home: Path) -> bool:
+    """Does any argv token name a path inside `nix_home`?
+
+    `Path.is_relative_to`, never a string `startswith`: `/home/bbt/nix` is a
+    string prefix of `/home/bbt/nix-wt-arc-027-c`, so a prefix test would count a
+    different tree's processes as this tree's. MEASURED — three worktrees of this
+    repository were live on this node while this function was written.
+
+    A token counts as a path candidate only if it contains a `/` or ends in a
+    source-file suffix. Bare words (`git`, `-q`, `--json`) are not resolved
+    against the cwd: doing so would make every process whose working directory
+    happens to be inside the tree a Nix process, which would sweep an operator's
+    shell into a core-map census.
+    """
+    cwd: Path | None = None
+    for token in cmdline.split():
+        if token.startswith("/"):
+            candidate = Path(token)
+        elif "/" in token or token.endswith((".py", ".sh")):
+            if cwd is None:
+                cwd = _cwd_of(pid)
+            if cwd is None:
+                continue
+            candidate = cwd / token
+        else:
+            continue
+        try:
+            if candidate.is_relative_to(nix_home):
+                return True
+        except OSError, ValueError:
+            continue
+    return False
+
+
+def nix_processes(nix_home: Path) -> tuple[tuple[ProcessCore, ...], str]:
+    """Every live process this node can attribute to Nix, with both core facts.
+
+    Returns `(processes, error)`. TWO independent predicates, unioned, because
+    they cover different populations and each misses what the other catches:
+
+    * **`nix-trading.slice` membership** — the kernel's own answer, and the
+      population §10's map is actually about. Misses anything Nix runs outside
+      the slice, which today is everything: no unit has ever joined it (D1.42).
+    * **an argv token under `nix_home`** — catches an interactively-run
+      `verify.py`, a `pytest`, a spawned `capture.py`. Misses a Nix process
+      re-exec'd with a bare interpreter and no path argument.
+
+    Together they are still not "every Nix process", and this docstring says so
+    rather than a gate implying it. A process is reported with `error` set when it
+    was attributed but could not be read — it exited mid-scan, or it belongs to
+    another user — and a caller must not read that as a clean core.
+    """
+    members, member_error = slice_members()
+    in_slice = set(members)
+    try:
+        candidates = {
+            int(entry.name) for entry in Path("/proc").iterdir() if entry.name.isdigit()
+        }
+    except OSError as exc:
+        return (), f"cannot enumerate /proc: {exc!r}"
+    found: list[ProcessCore] = []
+    for pid in sorted(candidates | in_slice):
+        cmdline = _cmdline_of(pid)
+        member = pid in in_slice
+        if not member and not _mentions_home(pid, cmdline, nix_home):
+            continue
+        reading = effective_affinity(pid)
+        cpu, cpu_error = current_cpu(pid)
+        found.append(
+            ProcessCore(
+                pid=pid,
+                cmdline=cmdline,
+                mask=reading.mask if reading.agree else frozenset(),
+                cpu=cpu,
+                in_slice=member,
+                error="; ".join(part for part in (reading.error, cpu_error) if part),
+            )
+        )
+    return tuple(found), member_error
 
 
 def role_for_cores(mask: Iterable[int]) -> Role | None:
