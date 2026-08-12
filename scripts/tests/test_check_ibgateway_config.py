@@ -6,12 +6,14 @@ socket, so "did it actually try to connect?" is the scope question, and it is
 asserted here rather than assumed.
 """
 
+import ast
 import json
 import socket
 from pathlib import Path
 
 import pytest  # pylint: disable=import-error
 from nixverify.contract import Context, Mode, Status, validate_result
+from nixverify.declarations import read_declaration
 from nixverify.loader import load_check
 
 REPO = Path(__file__).resolve().parents[2]
@@ -211,13 +213,88 @@ def test_parse_jts_ini_reads_the_hashed_per_user_section() -> None:
     assert _mod().parse_jts_ini(JTS_CONFORMANT)["u:abc123"]["AutoRestart"] == "1"
 
 
-def test_the_port_is_not_a_literal_in_the_check_source() -> None:
-    """§2.4 / doctrine C.4: the port comes from declared state, never from code."""
+def _resources_line_span(source: str) -> tuple[int, int]:
+    """1-indexed [start, end] lines of the module-level RESOURCES assignment."""
+    for node in ast.parse(source).body:
+        target = None
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            target = node.target.id
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1:
+            first = node.targets[0]
+            target = first.id if isinstance(first, ast.Name) else None
+        if target == "RESOURCES":
+            return node.lineno, (node.end_lineno or node.lineno)
+    raise AssertionError("check_ibgateway_config declares no module-level RESOURCES")
+
+
+def test_the_port_is_not_a_literal_in_the_check_logic() -> None:
+    """§2.4 / doctrine C.4: the port comes from declared state, never from code.
+
+    SCOPE NARROWED, AND THE GATE MADE STRICTER, ARC 025 Stage 2.1.
+
+    This asserted the port string appeared NOWHERE in the source. Stage 2.1 then
+    had to declare `RESOURCES = ("port:4002",)`, because the shared token is what
+    stops `--optimize` co-scheduling the two Gateway gates on one endpoint, and
+    `declarations.py` reads declarations by AST — it can only read a LITERAL, so
+    there is no spelling of that declaration which derives the port at import
+    time. The two requirements are in genuine tension and the tension is real,
+    not a bug in either.
+
+    Weakening the gate to "assert nothing" would have been doctrine B.4's
+    forbidden direction. Instead the property is split and the pair demands
+    strictly MORE than the single assertion did:
+
+      * here — the port is absent from everything the check REASONS with, which
+        is the property §2.4 actually cares about; and
+      * `test_the_declared_port_must_equal_the_expectation_file` — the
+        declaration is PINNED to `ibgateway_expected.json`, so it cannot drift.
+
+    Absence could always be satisfied by a check that ignored the port entirely.
+    Equality cannot.
+    """
     source = (CHECKS / "check_ibgateway_config.py").read_text(encoding="utf-8")
     declared = json.loads(
         (CHECKS / "ibgateway_expected.json").read_text(encoding="utf-8")
     )
-    assert str(declared["api_port"]) not in source
+    start, end = _resources_line_span(source)
+    lines = source.splitlines()
+    logic = "\n".join(lines[: start - 1] + lines[end:])
+
+    # Non-vacuity BEFORE the assertion (doctrine C.3): prove the excluded span is
+    # the declaration and nothing more, and that logic is still most of the file.
+    excluded = "\n".join(lines[start - 1 : end])
+    assert "RESOURCES" in excluded, excluded
+    assert len(logic) > 0.8 * len(source), "excluded far more than one declaration"
+    assert "api_handshake" in logic, "the check's real logic was excluded"
+
+    assert str(declared["api_port"]) not in logic
+
+
+def test_the_declared_port_must_equal_the_expectation_file() -> None:
+    """Doctrine B.7 — the document and the code cannot drift, because a machine
+    reads both and compares.
+
+    `RESOURCES` has to carry a literal port (the AST reader cannot evaluate an
+    expression), which makes it exactly the kind of anchor doctrine C.4 warns
+    about: correct the day it is typed, silently wrong the first time an
+    operator repoints `api_port`. This closes that by construction — changing
+    `ibgateway_expected.json` without changing the declaration is RED, and
+    changing the declaration without the file is RED.
+    """
+    declared = json.loads(
+        (CHECKS / "ibgateway_expected.json").read_text(encoding="utf-8")
+    )
+    expected_token = f"port:{declared['api_port']}"
+
+    for name in ("check_ibgateway_config", "check_ibgateway_service"):
+        decl = read_declaration(CHECKS / f"{name}.py")
+        assert not decl.errors, decl.errors
+        assert expected_token in decl.resources, (
+            f"{name} declares RESOURCES={decl.resources} but "
+            f"{CHECKS / 'ibgateway_expected.json'} says api_port="
+            f"{declared['api_port']}. The declaration and the expectation file "
+            "have drifted — that is the moving anchor doctrine C.4 names."
+        )
 
 
 def test_handshake_reports_unreachable_rather_than_raising() -> None:

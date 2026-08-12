@@ -58,6 +58,12 @@ NON_CORRECTABLE_REASON = (
 #: check_artifact_gate_coverage's count would be manufacturing coverage for a
 #: file this check never opens.
 SUBJECTS: tuple[str, ...] = ()
+#: BOOTSTRAP FLOOR, and the first member of it. Every other check runs on this
+#: interpreter; if it is below the minimum, every downstream verdict is a
+#: statement about an interpreter the project does not support. Carried by
+#: `registry.json`'s `bootstrap-floor` block since ARC 009 — now DECLARED (ARC
+#: 025 Stage 2.2), because `--optimize` was measured silently dropping it.
+ON_FAIL = "halt"
 
 NAME = "check_python_runtime"
 

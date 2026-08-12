@@ -144,6 +144,53 @@ def _disjointness(
     return not reasons, reasons
 
 
+def _emit_level(
+    index: int, members: list[str], declarations: dict[str, Declaration]
+) -> tuple[list[Block], list[str]]:
+    """Turn one dependency level into blocks. Returns (blocks, notes).
+
+    **A check declaring `on_fail="halt"` is emitted as its OWN single-check
+    block, ahead of the rest of its level, and that is not cosmetic ordering.**
+
+    `engine.run_blocks` halts when ANY member of a halting block fails. So
+    folding a floor check into its level and marking the whole level `halt`
+    would stop the run on an UNRELATED failure — on this tree
+    `check_ibgateway_service` FAILs by design because the Gateway is down, and
+    it would take every downstream check with it. That is strictly WORSE than
+    the policy being silently dropped, which is the trap the obvious repair
+    walks into and the reason this splits instead.
+
+    Splitting reproduces the hand-maintained semantics exactly: the floor halts
+    on its own failure and on nothing else.
+    """
+    blocks: list[Block] = []
+    notes: list[str] = []
+
+    halting = [name for name in members if declarations[name].on_fail == "halt"]
+    blocks.extend(
+        Block(name=f"level-{index}-{name}", checks=(name,), on_fail="halt")
+        for name in halting
+    )
+
+    rest = [name for name in members if name not in set(halting)]
+    if not rest:
+        return blocks, notes
+    if len(rest) == 1:
+        blocks.append(Block(name=f"level-{index}", checks=(rest[0],)))
+        return blocks, notes
+
+    ok, reasons = _disjointness(rest, declarations)
+    # A level that cannot go parallel is NOT an error: it is still perfectly
+    # runnable sequentially, and refusing to emit a plan over it would make the
+    # safe outcome the unavailable one. It IS reported.
+    notes.extend(
+        f"level-{index} runs SEQUENTIALLY rather than parallel: {reason}"
+        for reason in reasons
+    )
+    blocks.append(Block(name=f"level-{index}", checks=tuple(rest), parallel=ok))
+    return blocks, notes
+
+
 def derive_plan(  # pylint: disable=too-many-locals
     checks_dir: Path, registry_path: Path
 ) -> Plan:
@@ -204,25 +251,9 @@ def derive_plan(  # pylint: disable=too-many-locals
 
     blocks: list[Block] = []
     for index, members in enumerate(levels):
-        if len(members) == 1:
-            blocks.append(Block(name=f"level-{index}", checks=(members[0],)))
-            continue
-        ok, reasons = _disjointness(members, declarations)
-        if ok:
-            blocks.append(
-                Block(name=f"level-{index}", checks=tuple(members), parallel=True)
-            )
-        else:
-            # NOT an error: a level that cannot go parallel is still perfectly
-            # runnable sequentially, and refusing to emit a plan over it would
-            # make the safe outcome the unavailable one. It IS reported.
-            notes.extend(
-                f"level-{index} runs SEQUENTIALLY rather than parallel: {reason}"
-                for reason in reasons
-            )
-            blocks.append(
-                Block(name=f"level-{index}", checks=tuple(members), parallel=False)
-            )
+        level_blocks, level_notes = _emit_level(index, members, declarations)
+        blocks.extend(level_blocks)
+        notes.extend(level_notes)
     return Plan(blocks=tuple(blocks), errors=tuple(errors), notes=tuple(notes))
 
 

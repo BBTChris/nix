@@ -37,6 +37,45 @@ from nixverify.contract import CheckResult, Context, Mode, Status, result_from_d
 
 PRIVILEGE = "user"
 INTERACTIVE = False
+
+# --- ARC 025 Stage 2.1 orchestration declarations (Wave C, declare-only) ---
+DEPENDS_ON: tuple[str, ...] = ()
+#: The API endpoint, and nothing else. Both Gateway gates claim this SAME token
+#: on purpose: `check_ibgateway_service` imports this module's `api_handshake`
+#: and dials the identical socket, and IBKR sessions collide by design (clientId
+#: 1/2/905 are distinct for exactly this reason). Declaring the shared token is
+#: what keeps `--optimize` from ever promoting the two into one parallel block —
+#: the constraint is now DECLARED and mechanically checked rather than being a
+#: property of the hand-maintained block order (§6, ARC 024's live hazard).
+#:
+#: The non-loopback reject probe dials the same port from a routable source
+#: address, so it is the same claim; `port:` matches on port, not on host.
+RESOURCES: tuple[str, ...] = ("port:4002",)
+#: Runtime is set by socket timeouts, not by work. NOT derived from an observed
+#: run: this box measures 0.04 s only because the Gateway is DOWN and
+#: ECONNREFUSED returns instantly. That figure is MASKED — it is what the check
+#: costs when its subject is unavailable, which is the one case the bound does
+#: not describe. 12.0 = CONNECT_TIMEOUT (8.0) + REJECT_TIMEOUT (4.0), one call
+#: each on the worst path, both literals in this module.
+TIME_BOUND = True
+EXPECTED_S = 12.0
+CORRECTABLE = False
+NON_CORRECTABLE_REASON = (
+    "the API surface this gate reads is not a file the engine can write. "
+    "'Allow connections from localhost only' lives in Gateway's ENCRYPTED "
+    "settings store and is observable only by behaviour, and the remaining "
+    "settings take effect through a Gateway restart that drops an "
+    "authenticated session. A 'correction' here would mean restarting the "
+    "broker connection unattended — §4.3 names broker session state as a "
+    "member of the non-correctable class, and §8 makes a session-dropping "
+    "restart an operator decision, never an unattended repair"
+)
+#: NOT `checks/ibgateway_expected.json`. This gate READS that file as its
+#: expectation (`load_expected` is a bare `json.loads` with no validation), and
+#: an input is not a measured subject. Declaring it would move the coverage
+#: count without measuring anything — the vacuity `check_artifact_gate_coverage`
+#: already warns it cannot see (D3.19).
+SUBJECTS: tuple[str, ...] = ()
 # Reads a socket and a config file. Nothing is restarted or swapped, so this
 # is safe on the boot runner (§8).
 DISRUPTIVE = False
@@ -311,15 +350,12 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
 # trailing disable comment here (verified empirically, pylint v4.0.6).
 # pylint: disable=duplicate-code
 if __name__ == "__main__":
-    from nixverify.contract import exit_code_for, validate_result
+    from nixverify.actuation import standalone_main
 
-    HOME = Path(__file__).resolve().parent.parent
-    OUTCOME = validate_result(
-        run(Mode.VERIFY, Context(nix_home=HOME, mode=Mode.VERIFY))
+    sys.exit(
+        standalone_main(
+            Path(__file__).resolve(),
+            run,
+            "check_ibgateway_config",
+        )
     )
-    print(f"{OUTCOME.status.value}: {OUTCOME.evidence or OUTCOME.detail}")
-    if OUTCOME.site:
-        print(f"  site: {OUTCOME.site}")
-    if OUTCOME.detail and OUTCOME.evidence:
-        print(f"  detail: {OUTCOME.detail}")
-    sys.exit(exit_code_for(OUTCOME.status))

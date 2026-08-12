@@ -71,6 +71,26 @@ TIME_BOUND = "TIME_BOUND"
 EXPECTED_S = "EXPECTED_S"
 CORRECTABLE = "CORRECTABLE"
 NON_CORRECTABLE_REASON = "NON_CORRECTABLE_REASON"
+#: Failure policy this check demands of the plan (ARC 025 Stage 2.2). `"halt"`
+#: means a failure here makes everything downstream meaningless, so the run
+#: stops rather than reporting twelve verdicts measured against a floor that
+#: already failed.
+#:
+#: This exists because `--optimize` was found SILENTLY DROPPING the policy. The
+#: hand-maintained registry carried `on_fail: "halt"` on `bootstrap-floor`;
+#: `derive_plan` never emitted `on_fail` at all and `Block.on_fail` defaults to
+#: `"continue"`, so `--optimize --commit` would have installed a plan in which a
+#: broken Python runtime no longer halts the run — and every stated success
+#: criterion for the derivation would still have been met. That is this
+#: project's vacuity class wearing a planning tool.
+#:
+#: Declared on the CHECK rather than written into the plan for §4.4's standing
+#: reason: one source of truth per fact, so the check and the plan cannot
+#: disagree. §6 still says the registry OWNS failure policy — it does; this is
+#: where the registry now DERIVES it from.
+ON_FAIL = "ON_FAIL"
+VALID_ON_FAIL = ("halt", "continue")
+
 #: Repo-relative artifacts this check claims to MEASURE. Feeds
 #: `check_artifact_gate_coverage.py`. Read the bound on what that gate can prove
 #: before trusting this: it establishes that a check NAMES an artifact, which is
@@ -97,6 +117,7 @@ class Declaration:  # pylint: disable=too-many-instance-attributes
     expected_s: float | None = None
     correctable: bool = True
     non_correctable_reason: str = ""
+    on_fail: str = "continue"
     subjects: tuple[str, ...] = ()
     declared: frozenset[str] = frozenset()
     errors: tuple[str, ...] = ()
@@ -175,8 +196,29 @@ _KNOWN = (
     EXPECTED_S,
     CORRECTABLE,
     NON_CORRECTABLE_REASON,
+    ON_FAIL,
     SUBJECTS,
 )
+
+
+def _read_on_fail(name: str, assigned: dict[str, ast.expr], errors: list[str]) -> str:
+    """Read ON_FAIL. An unrecognised value is a LOUD error, never a default.
+
+    Defaulting a misspelled `"HALT"` to `"continue"` would silently discard the
+    exact policy this declaration exists to carry — the failure mode that made
+    it necessary in the first place.
+    """
+    if ON_FAIL not in assigned:
+        return "continue"
+    value = _literal(name, ON_FAIL, assigned[ON_FAIL], errors)
+    if value is None:
+        return "continue"
+    if not isinstance(value, str) or value not in VALID_ON_FAIL:
+        errors.append(
+            f"{name}: {ON_FAIL} must be one of {VALID_ON_FAIL}, got {value!r}"
+        )
+        return "continue"
+    return value
 
 
 def _read_tuple(
@@ -251,6 +293,7 @@ def read_declaration(path: Path) -> Declaration:
         expected_s=_read_expected(name, assigned, errors),
         correctable=correctable,
         non_correctable_reason=reason,
+        on_fail=_read_on_fail(name, assigned, errors),
         subjects=_read_tuple(name, SUBJECTS, assigned, errors),
         declared=declared,
         errors=tuple(errors),

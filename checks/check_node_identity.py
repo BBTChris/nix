@@ -41,7 +41,27 @@ DEPENDS_ON: tuple[str, ...] = ()
 #: `findmnt` and `blkid` are deliberately NOT claimed — they are read-only
 #: kernel/device queries holding nothing another check could contend for, and an
 #: over-declaration costs parallelism without buying safety.
-RESOURCES: tuple[str, ...] = ("state/node_identity.json",)
+#: ARC 025 Stage 2.4 — CORRECTED BY THE RUNTIME OBSERVER, against this check's
+#: own written reasoning. Wave A declared only the JSON file and argued in its
+#: report that `findmnt`/`blkid` were "read-only kernel/device queries holding
+#: nothing another check could contend for", so they were deliberately NOT
+#: declared. `check_observed_resource_claims` then OBSERVED both on the real
+#: tree and reported the declaration as false.
+#:
+#: The argument was about CONTENTION and it is defensible on those terms. The
+#: declaration is not a contention model, it is a statement of what the check
+#: touches, and this project fails closed: an under-declaration costs
+#: correctness, an over-declaration costs only parallelism. Neither program is
+#: claimed by any other check, so declaring them costs nothing measurable here.
+#:
+#: This is the whole point of D2.27 closing — a human's plausible reasoning
+#: about resource use was checked against what the process actually did, and
+#: reality won.
+RESOURCES: tuple[str, ...] = (
+    "state/node_identity.json",
+    "subprocess:findmnt",
+    "subprocess:blkid",
+)
 #: FALSE on the facts. The two subprocesses carry a 30 s ceiling each, but a
 #: ceiling is not a bound this check PAYS: findmnt and blkid answer in
 #: milliseconds and the runtime is dominated by that work, not by waiting.

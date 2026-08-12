@@ -217,7 +217,17 @@ DEPENDS_ON: tuple[str, ...] = ("check_venv",)
 #: `pre-commit-store` is `PRE_COMMIT_HOME` — arms 3 and 4 read the installed
 #: environments there, and it is shared with every other worktree in exactly the
 #: same way.
-RESOURCES: tuple[str, ...] = ("git-hooks", "pre-commit-store", "venv")
+#: ARC 025 Stage 2.4 — `subprocess:git` added after the runtime observer caught
+#: it. This gate asks git itself where hooks resolve (`git rev-parse
+#: --git-path hooks`), which is the whole reason it is not fooled by a hook
+#: installed at the conventional path while `core.hooksPath` points elsewhere —
+#: so spawning git is load-bearing, not incidental, and it was undeclared.
+RESOURCES: tuple[str, ...] = (
+    "git-hooks",
+    "pre-commit-store",
+    "venv",
+    "subprocess:git",
+)
 #: TIME-BOUND, and this is the one gate here where the bound really does
 #: dominate: the probe subprocess resolves pre-commit's store and classifies
 #: every tracked file for eight hooks. `EXPECTED_S` is derived from

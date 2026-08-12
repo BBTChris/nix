@@ -221,6 +221,15 @@ def test_every_declaration_is_present_and_statically_readable() -> None:
     the whole `state/` directory — an over-declaration serialises the plan for
     no measured reason, and a future credential gate claiming a different file
     under `state/` is genuinely disjoint from this one.
+
+    ARC 025 Stage 2.4: the two `subprocess:` claims were NOT here when Wave A
+    wrote this test, and their absence was argued rather than overlooked —
+    `findmnt` and `blkid` are read-only kernel/device queries that contend with
+    nothing, so declaring them looked like noise. `check_observed_resource_claims`
+    then OBSERVED both on the real tree and reported the declaration false. The
+    argument was about contention; the declaration is a statement of what the
+    check TOUCHES, and this project fails closed. Reality was allowed to win —
+    which is the entire reason D2.27's runtime observer was built this arc.
     """
     declaration = read_declaration(CHECK_FILE)
     assert not declaration.errors, declaration.errors
@@ -234,7 +243,11 @@ def test_every_declaration_is_present_and_statically_readable() -> None:
     ):
         assert symbol in declaration.declared, f"{symbol} not declared"
     assert not declaration.depends_on
-    assert declaration.resources == ("state/node_identity.json",)
+    assert declaration.resources == (
+        "state/node_identity.json",
+        "subprocess:findmnt",
+        "subprocess:blkid",
+    )
     assert declaration.declares_resources is True
     assert declaration.time_bound is False
     assert declaration.expected_s is None

@@ -220,7 +220,14 @@ DEPENDS_ON: tuple[str, ...] = ("check_venv",)
 #: is read-only (`-p no:cacheprovider` writes no cache) but a check MUTATING the
 #: venv concurrently would change what this gate collects mid-run, which is
 #: exactly the disjointness question `check_python_deps` claims `venv` for.
-RESOURCES: tuple[str, ...] = ("venv",)
+#: ARC 025 Stage 2.4 — `subprocess:python3` added after the runtime observer
+#: caught it. The `venv` claim covered the pytest collector, which runs under
+#: `{venv_python}`; it did NOT cover this gate's OWN probe subprocesses, which
+#: re-enter this module as `{self} --probe` under whatever interpreter is
+#: running — `/usr/bin/python3` when invoked from `verify.py`, per §9.5. Ten of
+#: the thirteen claims are measured that way, so the undeclared program was the
+#: one doing most of the work.
+RESOURCES: tuple[str, ...] = ("venv", "subprocess:python3")
 #: NOT time-bound, and EXPECTED_S is deliberately NOT declared. The honest bound
 #: is `_TIMEOUT` multiplied by the number of sources and demonstrations, and that
 #: number lives in `derived_claims.json`, which this gate reads at RUN time — so

@@ -19,12 +19,24 @@ INTERACTIVE = False
 DISRUPTIVE = False
 
 # --- ARC 024 orchestration declarations (read statically, never imported) ---
-DEPENDS_ON: tuple[str, ...] = ()
+#: ARC 025: a real edge, not a formality. CORRECT/INSTALL here runs
+#: `sys.executable -m venv`, so a runtime that fails `check_python_runtime`'s
+#: minimum is the wrong interpreter to build a venv WITH — and the venv it built
+#: would be silently wrong rather than absent. Declaring the edge is also what
+#: separates the two floor members into their own levels, which is what lets
+#: each halt on its own failure instead of on the level's.
+DEPENDS_ON: tuple[str, ...] = ("check_python_runtime",)
 #: Claims the venv: CORRECT/INSTALL rebuilds it with `python -m venv`.
 RESOURCES: tuple[str, ...] = ("venv",)
 TIME_BOUND = False
 CORRECTABLE = True
 NON_CORRECTABLE_REASON = ""
+#: BOOTSTRAP FLOOR. Everything downstream imports from this venv or runs a
+#: subprocess under it; measuring twelve further properties against a venv whose
+#: interpreter does not answer produces twelve verdicts about nothing. Carried
+#: by `registry.json`'s `bootstrap-floor` block since ARC 009 — now DECLARED, so
+#: `--optimize` derives it instead of dropping it.
+ON_FAIL = "halt"
 SUBJECTS: tuple[str, ...] = ()
 
 NAME = "check_venv"
