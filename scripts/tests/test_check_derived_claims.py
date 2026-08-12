@@ -457,14 +457,48 @@ def test_a_discharged_regex_defect_discriminates_where_the_sources_differ(
     `check_debt_open_items` pairs `_p_check_debt_open_count` (which uses
     `_DISCHARGED`) against `_p_check_debt_series_latest` (which does not), so
     only one side moves and the gate reddens naming the claim.
+
+    ARC 026 Stage 2 — THE EXPECTATION IS DERIVED, NOT RESTATED. This control
+    first asserted `derived:ledger_rows=31` and `stated:...=69` as literals.
+    Both are functions of how many rows the ledger happens to hold, so the
+    control broke the moment sub-agent C's seven rows merged (36 and 76) —
+    inside the arc whose own brief warns about moving anchors, in the suite
+    for the gate that exists to stop numbers being restated. Updating the
+    literals to 36 and 76 would re-arm the identical trap for the next arc that
+    opens a row. The PROPERTY is directional, so it is asserted directionally:
+    the plant widens `_DISCHARGED`, so strictly MORE rows read as discharged
+    and strictly FEWER as open, on the derived side only.
     """
+
+    def _number(pattern: str, text: str) -> int:
+        """The one integer `pattern` names, or a loud failure naming the text.
+
+        A regex that does not match must not silently become 0 — a control that
+        compares two zeros passes while measuring nothing.
+        """
+        found = re.search(pattern, text)
+        assert found is not None, f"{pattern!r} did not match: {text[:2000]}"
+        return int(found.group(1))
+
+    clean_exit, clean_output = run_gate(scratch)
+    assert clean_exit == 0, clean_output[:2000]
+    open_rows = _number(r"check_debt_open_items=(\d+)", clean_output)
+    # Non-vacuity: a ledger with no open rows could not show a decrease.
+    assert open_rows > 0, clean_output[:2000]
+
     plant(_DISCHARGED_ANCHOR, _DISCHARGED_PLANT)
     exit_code, output = run_gate(scratch)
     assert exit_code == 1, output[:2000]
     part = claim_part(output, "check_debt_open_items")
     assert "DISAGREEMENT" in part, part
-    assert "derived:ledger_rows=31" in part, part
-    assert "stated:series_table_latest_row=69" in part, part
+
+    derived = _number(r"derived:ledger_rows=(\d+)", part)
+    stated = _number(r"stated:series_table_latest_row=(\d+)", part)
+    # The side that does NOT use `_DISCHARGED` must not have moved...
+    assert stated == open_rows, f"{stated} != unplanted {open_rows}: {part}"
+    # ...and the side that does must have fallen. Equality would mean the plant
+    # was inert, which is the failure mode a literal comparison hides.
+    assert derived < stated, f"the plant moved nothing: {part}"
 
 
 def test_the_authored_column_closed_the_hole_this_plant_used_to_walk_through(
