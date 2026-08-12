@@ -1,4 +1,4 @@
-"""Manifest: ordering, parallelism, failure policy only (§6)."""
+"""Registry: ordering, parallelism, failure policy only (§6)."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from typing import Any
 VALID_ON_FAIL = ("continue", "halt")
 
 
-class ManifestError(Exception):
-    """Manifest is absent, unparseable, or structurally invalid."""
+class RegistryError(Exception):
+    """Registry is absent, unparseable, or structurally invalid."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -27,16 +27,16 @@ class Block:
 def _parse_block(raw: Any, index: int) -> Block:
     """Validate one block entry."""
     if not isinstance(raw, dict):
-        raise ManifestError(f"block {index}: not an object")
+        raise RegistryError(f"block {index}: not an object")
     name = str(raw.get("name", f"block-{index}"))
     checks = raw.get("checks", [])
     if not isinstance(checks, list):
-        raise ManifestError(f"block {name!r}: checks must be a list")
+        raise RegistryError(f"block {name!r}: checks must be a list")
     if not checks:
-        raise ManifestError(f"block {name!r}: empty — a block must list checks")
+        raise RegistryError(f"block {name!r}: empty — a block must list checks")
     on_fail = raw.get("on_fail", "continue")
     if on_fail not in VALID_ON_FAIL:
-        raise ManifestError(
+        raise RegistryError(
             f"block {name!r}: on_fail {on_fail!r} not in {VALID_ON_FAIL}"
         )
     return Block(
@@ -53,29 +53,29 @@ def _reject_duplicates(blocks: tuple[Block, ...]) -> None:
     for block in blocks:
         for check in block.checks:
             if check in seen:
-                raise ManifestError(f"{check!r} listed in more than one block")
+                raise RegistryError(f"{check!r} listed in more than one block")
             seen.add(check)
 
 
-def load_manifest(path: Path) -> tuple[Block, ...]:
-    """Load and validate the manifest, preserving declared block order."""
+def load_registry(path: Path) -> tuple[Block, ...]:
+    """Load and validate the registry, preserving declared block order."""
     if not path.is_file():
-        raise ManifestError(f"manifest not found: {path}")
+        raise RegistryError(f"registry not found: {path}")
     try:
         raw = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
-        raise ManifestError(f"cannot read {path}: {exc}") from exc
+        raise RegistryError(f"cannot read {path}: {exc}") from exc
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise ManifestError(f"invalid JSON in {path}: {exc}") from exc
+        raise RegistryError(f"invalid JSON in {path}: {exc}") from exc
     if not isinstance(payload, dict):
-        raise ManifestError(
+        raise RegistryError(
             f"{path}: top-level JSON must be an object, got {type(payload).__name__}"
         )
     raw_blocks = payload.get("blocks", [])
     if not raw_blocks:
-        raise ManifestError(f"{path}: no blocks declared")
+        raise RegistryError(f"{path}: no blocks declared")
     blocks = tuple(_parse_block(raw, index) for index, raw in enumerate(raw_blocks))
     _reject_duplicates(blocks)
     return blocks

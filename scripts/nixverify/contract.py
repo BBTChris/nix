@@ -33,13 +33,136 @@ _RANGE_MARKERS = re.compile(
 )
 
 
-def guard_owner_defect(value: str) -> str:
-    """Why `value` is not a single-arc identifier, or `''` when it is one.
+#: WHERE "WHICH ARCS HAVE COMPLETED" COMES FROM, and it is DERIVED, never listed.
+#:
+#: `CLAUDE.md`: *"Every arc, on completion, MUST (1) append its summary to the end
+#: of `~/nix/sessions/SESSION.md`"*. That sentence makes the session log the
+#: DEFINITION of arc completion on this box, not a proxy for it — so this predicate
+#: reads it rather than restating what it says (directive 3).
+#:
+#: **Three candidates were weighed and two rejected on the facts:**
+#:
+#: * **A hardcoded list.** Rejected outright. It is a moving anchor (`debug.md` §8
+#:   failure mode #4) that goes stale at the close of every arc, which is exactly
+#:   the cadence at which this predicate has to be right.
+#: * **Git history.** The tempting one, because `check_artifact_gate_coverage`'s
+#:   ratchet uses it for precisely the *"the hand being judged cannot reach it"*
+#:   property. **It is wrong here, and measurably so:** commits naming an arc are
+#:   made THROUGHOUT that arc, so `ARC 026` is already all over the history while
+#:   ARC 026 is in flight. A rule reading it would reject a guard naming the arc
+#:   that is currently running — the one arc that certainly CAN discharge it —
+#:   and every arc would be born unable to own a marker.
+#: * **`docs/CHECK-DEBT.md`'s series table.** A real per-arc record, but a softer
+#:   convention than the session log (ARC 023 appears twice in it) and it carries
+#:   a count rather than a completion. Kept as a CROSS-CHECK, below.
+#:
+#: The session log's weakness is that it is an ordinary working-tree file, and a
+#: PARTIAL parse of it is the dangerous failure: fewer arcs read as fewer closed
+#: arcs, and a guard pointing at history would pass. That is answered by
+#: cross-derivation against `docs/CHECK-DEBT.md`'s series table — a second,
+#: independently-maintained per-arc record.
+#:
+#: **THE TWO RECORDS HAVE DIFFERENT TENSES, AND THE FIRST SPELLING OF THIS RULE
+#: GOT IT WRONG.** The obvious cross-check — *the session log's highest arc must
+#: not be below the series table's* — was written, and this arc's own suite
+#: reddened on it immediately: the series row for an arc is written DURING that
+#: arc (it carries the running figure), while the session summary is appended AT
+#: CLOSE. So the series table legitimately runs one arc ahead, always, and the
+#: simple floor called every in-flight arc a broken session log.
+#:
+#: The tense-correct rule: **every arc with a series row must be closed in the
+#: session log, EXCEPT the newest series row, which may be the arc in flight.**
+#: It still catches the failure that matters — a partial session parse leaves
+#: many series arcs unmatched, not one — and it cannot fire on the normal state
+#: of an arc that is running. Arcs before the ledger opened have no series rows
+#: and are simply not cross-checked, which is honest: the ledger cannot vouch for
+#: a period it did not cover.
+_SESSION_LOG = "sessions/SESSION.md"
+_DEBT_LEDGER = "docs/CHECK-DEBT.md"
+_ARC_IN_HEADING = re.compile(r"\bARC (\d{3})\b")
+_SERIES_ROW = re.compile(r"^\|\s*\d{4}-\d{2}-\d{2}\s*\|\s*ARC (\d+)\s*\|", re.MULTILINE)
+
+
+def completed_arcs(home: Path) -> tuple[frozenset[int], str]:
+    """Arcs whose CLOSE-OUT SUMMARY is on the record. Returns (arcs, error).
+
+    A non-empty `error` means the question could not be answered, and every
+    caller must treat that as CANNOT_MEASURE rather than as "nothing has
+    completed" — the fail-open reading would turn this whole predicate off
+    silently the first time the log moved, which is the defect it exists to stop.
+
+    Only HEADING lines are read. Arc summaries are `##`-level headings; the prose
+    beneath them cites other arcs constantly, and counting a citation as a
+    completion would mark an arc complete because somebody mentioned it.
+    """
+    log = home / _SESSION_LOG
+    try:
+        text = log.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        return frozenset(), f"cannot read {_SESSION_LOG}: {exc!r}"
+    arcs = frozenset(
+        int(match.group(1))
+        for line in text.splitlines()
+        if line.startswith("#")
+        for match in _ARC_IN_HEADING.finditer(line)
+    )
+    if not arcs:
+        return frozenset(), (
+            f"{_SESSION_LOG} names no arc in any heading — the completion record "
+            "cannot be read, so no guard owner can be checked against it"
+        )
+    ledger = home / _DEBT_LEDGER
+    try:
+        rows = _SERIES_ROW.findall(ledger.read_text(encoding="utf-8"))
+    except OSError, UnicodeDecodeError:
+        rows = []
+    if rows:
+        series = {int(value) for value in rows}
+        # The newest series row may belong to the arc in flight; every older one
+        # must name an arc the session log records as closed.
+        unmatched = sorted(series - arcs - {max(series)})
+        if unmatched:
+            return frozenset(), (
+                f"{_DEBT_LEDGER}'s series table records ARC(s) "
+                f"{', '.join(f'{n:03d}' for n in unmatched)} that "
+                f"{_SESSION_LOG} does not close, and they are not the newest "
+                "series row — the completion record is UNDER-REPORTING (a "
+                "partial parse or a truncated log), so it cannot be used to "
+                "judge whether a guard owner can still pay"
+            )
+    return arcs, ""
+
+
+def guard_owner_defect(value: str, completed: frozenset[int] | None = None) -> str:
+    """Why `value` is not a dischargeable single-arc identifier, or `''`.
 
     One implementation, two consumers (doctrine C.9): `validate_result` enforces
     it on every GUARDED verdict, and `check_artifact_gate_coverage` uses the same
     function for the arcs that admit a baseline addition. Two spellings of "what
     counts as an arc" would disagree the first time one was edited.
+
+    ## `completed` — the third iteration of one flaw (ARC 026, B2)
+
+    ARC 024 required a non-empty owner. `"the bulk check retrofit arc (ARC 025+)"`
+    passed it while naming a range. ARC 025 constrained the SHAPE to exactly one
+    arc — and set the only live guard to `ARC 025`, **an arc that has since
+    completed with the guard still standing.** Shape was never the property;
+    doctrine B.3 asks for *"the arc that can actually discharge it"*, and an arc
+    that is over can discharge nothing. A marker pointing at history is a
+    known-red with no owner wearing a name — the exact furniture B.3 describes,
+    reached by a third route.
+
+    Pass `completed` (from `completed_arcs`) to enforce dischargeability.
+
+    **IT IS OPT-IN, AND THAT IS A DISTINCTION RATHER THAN A CONVENIENCE.** A
+    `guard_owner` is a FORWARD-LOOKING OBLIGATION: it names who will pay, so a
+    completed arc is disqualifying. `check_artifact_gate_coverage`'s `admitted`
+    map is a BACKWARD-LOOKING RECORD: it names the arc that admitted a baseline
+    addition, an event that has already happened, so a completed arc is the
+    *normal and correct* value there and will be the value for every entry the
+    moment its arc closes. Applying dischargeability to `admitted` would redden
+    a true record at the next arc boundary. Same grammar, two tenses; the caller
+    states which one it is holding.
     """
     owner = value.strip()
     if not owner:
@@ -48,6 +171,14 @@ def guard_owner_defect(value: str) -> str:
             "pay is no owner wearing a name)"
         )
     if _GUARD_OWNER.fullmatch(owner):
+        if completed is not None and int(owner.split()[1]) in completed:
+            return (
+                f"{owner!r} has ALREADY COMPLETED — its close-out summary is in "
+                f"{_SESSION_LOG}. A guard may only name an arc that can still "
+                "discharge it (doctrine B.3: an owner that cannot pay is no "
+                "owner wearing a name). Re-point the marker at a live arc or "
+                "take the red"
+            )
         return ""
     if _RANGE_MARKERS.search(owner):
         return (
@@ -146,12 +277,51 @@ class Context:
     allow_interactive: bool = False
 
 
-def validate_result(result: CheckResult) -> CheckResult:
+def _guarded_defect(result: CheckResult, home: Path | None) -> str:
+    """Why this GUARDED verdict may not stand, or `''`.
+
+    Split out of `validate_result` so the §5 rules stay one flat chain of guard
+    clauses; the GUARDED arm is the only one that has to go to disk.
+
+    ARC 025. The ARC 024 rule was `not guard_owner.strip()`, which is the right
+    shape and the wrong strength: `"ARC 025+"` is non-empty and is still nobody.
+
+    ARC 026 (B2). Shape was never the property either. `ARC 025` is a perfect
+    single-arc identifier and ARC 025 is over, so the only live guard on the tree
+    was pointing at history — the third route to doctrine B.3's furniture.
+    Dischargeability needs the completion record, so it needs a tree; with no
+    tree the arm is OFF, and an arm that is off must say so rather than letting
+    the verdict stand as if it had run. **FAIL CLOSED:** an unreadable completion
+    record is a rejection naming the reason, never a quiet pass-through.
+    """
+    completed: frozenset[int] | None = None
+    if home is not None:
+        completed, completion_error = completed_arcs(home)
+        if completion_error:
+            return (
+                "engine: GUARDED rejected — the discharging arc cannot be "
+                f"checked against the completion record: {completion_error}"
+            )
+    defect = guard_owner_defect(result.guard_owner, completed)
+    return f"engine: GUARDED rejected — {defect}" if defect else ""
+
+
+def validate_result(result: CheckResult, home: Path | None = None) -> CheckResult:
     """Enforce §5 mechanically rather than trusting the check author.
 
     A PASS with no evidence measured nothing; a FAIL with no site cannot say
     what is wrong. Both are downgraded to CANNOT_MEASURE — the honest answer
     is 'unknown', never a false assurance.
+
+    `home` (ARC 026, B2) turns on the DISCHARGEABILITY arm of the guard-owner
+    rule, which needs to read the completion record and therefore needs a tree.
+    Every shipped caller passes it — `engine._execute_inner` from `ctx.nix_home`
+    and `actuation.standalone_main` from the resolved home — and
+    `scripts/tests/test_status_contract.py` asserts that they do, rather than
+    leaving it to convention. **That assertion is the point:** an arm that is
+    live only when a caller remembers an argument is an arm that is off, and
+    "off but present" is the shape of every gate this project has caught passing
+    while measuring nothing.
     """
     reason = ""
     if result.status is Status.PASS and not result.evidence.strip():
@@ -170,11 +340,8 @@ def validate_result(result: CheckResult) -> CheckResult:
             "engine: GUARDED rejected — no evidence recorded; a deferral must "
             "have measured (§5, AMENDMENT 1)"
         )
-    elif result.status is Status.GUARDED and guard_owner_defect(result.guard_owner):
-        # ARC 025. The ARC 024 rule was `not guard_owner.strip()`, which is the
-        # right shape and the wrong strength: `"ARC 025+"` is non-empty and is
-        # still nobody. The owner is now MECHANICALLY VALIDATED, not conventional.
-        reason = f"engine: GUARDED rejected — {guard_owner_defect(result.guard_owner)}"
+    elif result.status is Status.GUARDED:
+        reason = _guarded_defect(result, home)
     if reason:
         result.status = Status.CANNOT_MEASURE
         # Append, never replace: the downgrade path is exactly where an

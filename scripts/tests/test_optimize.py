@@ -150,15 +150,15 @@ def test_a_dependency_on_a_nonexistent_check_is_named(tmp_path: Path) -> None:
 def test_optimize_PROPOSES_and_does_not_overwrite(tmp_path: Path) -> None:
     """[ARCHITECT RULING — revocable] propose-then-commit, not overwrite.
 
-    The live manifest must be byte-identical after `--optimize` without
+    The live registry must be byte-identical after `--optimize` without
     `--commit`.
     """
     _check(tmp_path, "check_a", "()", "('journal',)")
     registry = _registry(tmp_path, ["check_a"])
     before = registry.read_text(encoding="utf-8")
-    code = verify.main(["--optimize", "--manifest", str(registry)])
+    code = verify.main(["--optimize", "--registry", str(registry)])
     assert code == 0
-    assert registry.read_text(encoding="utf-8") == before, "the live manifest moved"
+    assert registry.read_text(encoding="utf-8") == before, "the live registry moved"
     proposed = tmp_path / "registry.json.proposed"
     assert proposed.is_file()
     assert (
@@ -171,7 +171,7 @@ def test_optimize_with_commit_installs_the_plan(tmp_path: Path) -> None:
     """`--commit` restores the operator's ruling exactly."""
     _check(tmp_path, "check_a", "()", "('journal',)")
     registry = _registry(tmp_path, ["check_a"])
-    assert verify.main(["--optimize", "--commit", "--manifest", str(registry)]) == 0
+    assert verify.main(["--optimize", "--commit", "--registry", str(registry)]) == 0
     payload = json.loads(registry.read_text(encoding="utf-8"))
     assert payload["blocks"][0]["checks"] == ["check_a"]
     assert "DERIVED by `verify.py --optimize`" in payload["comment"]
@@ -187,13 +187,13 @@ def test_a_failed_derivation_writes_NOTHING(tmp_path: Path) -> None:
     _check(tmp_path, "check_b", "('check_a',)", "()")
     registry = _registry(tmp_path, ["check_a", "check_b"])
     before = registry.read_text(encoding="utf-8")
-    assert verify.main(["--optimize", "--manifest", str(registry)]) == 1
+    assert verify.main(["--optimize", "--registry", str(registry)]) == 1
     assert registry.read_text(encoding="utf-8") == before
     assert not (tmp_path / "registry.json.proposed").exists()
 
 
 def test_payload_records_each_blocks_claims(tmp_path: Path) -> None:
-    """The derived manifest carries the claims the parallel decision rested on."""
+    """The derived registry carries the claims the parallel decision rested on."""
     _check(tmp_path, "check_a", "()", "('journal',)")
     _check(tmp_path, "check_b", "()", "('port:5432',)")
     plan = derive_plan(tmp_path, _registry(tmp_path, ["check_a", "check_b"]))

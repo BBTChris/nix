@@ -27,6 +27,7 @@ from pathlib import Path
 
 import pytest  # pylint: disable=import-error
 import runtime_gate  # pylint: disable=import-error
+from nixverify.gitenv import scrubbed_env  # pylint: disable=import-error
 
 # W0212 protected-access is disabled for this module, deliberately and with a reason.
 # `_zero_selection` and `_NOESCALATE_ENV` are private to `runtime_gate` because nothing
@@ -92,8 +93,17 @@ def test_blob_shas_matches_git_hash_object(tmp_path: Path) -> None:
     # cross-checking our hash against the real git binary as an independent oracle, and
     # pinning an absolute path would make the test machine-specific for no security gain
     # (the repo is already being driven by git in every other hook).
+    # ARC 026 (B4): scrubbed like every other git call in the tree. `hash-object`
+    # of an absolute path is not repository-relative, so this one was never the
+    # exposure — but a harness with one unscrubbed git call is a harness whose
+    # rule has an exception, and D3.22 is exactly a rule that was applied
+    # everywhere except one place.
     proc = subprocess.run(  # nosec B603,B607 - literal argv, shell=False
-        ["git", "hash-object", str(target)], capture_output=True, text=True, check=True
+        ["git", "hash-object", str(target)],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=scrubbed_env(),
     )
     assert proc.stdout.strip() in runtime_gate.blob_shas(target)
 

@@ -18,7 +18,7 @@ from nixverify.contract import (
     validate_result,
 )
 from nixverify.loader import LoadedCheck, load_check
-from nixverify.manifest import Block
+from nixverify.registry import Block
 
 
 def _skip(name: str, reason: str) -> CheckResult:
@@ -133,13 +133,16 @@ def _execute_inner(checks_dir: Path, name: str, ctx: Context) -> CheckResult:
             f"{result.detail}; {_WITHHELD_NOTE}" if result.detail else _WITHHELD_NOTE
         )
     result.name = name
-    return validate_result(result)
+    # `ctx.nix_home` is threaded through so the GUARDED dischargeability arm is
+    # LIVE on the engine path (ARC 026 B2). Without it the arm exists and never
+    # runs, which is worse than not having it.
+    return validate_result(result, ctx.nix_home)
 
 
 def _run_block(
     block: Block, checks_dir: Path, ctx: Context, observer: Observer | None = None
 ) -> list[CheckResult]:
-    """Execute one block. Parallel blocks still report in manifest order."""
+    """Execute one block. Parallel blocks still report in registry order."""
     if not block.parallel or len(block.checks) == 1:
         return [_execute(checks_dir, name, ctx, observer) for name in block.checks]
     with ThreadPoolExecutor(max_workers=len(block.checks)) as pool:

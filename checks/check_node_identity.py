@@ -125,7 +125,7 @@ def _read_state(path: Path) -> tuple[str, str]:
     node identity" wording that tells the operator to re-run install.sh
     fresh when the real problem is a damaged file.
 
-    Mirrors scripts/nixverify/manifest.py's handling of the identical
+    Mirrors scripts/nixverify/registry.py's handling of the identical
     read-decode-parse operation: OSError (unreadable), UnicodeDecodeError
     (read_text on non-UTF-8 bytes — a ValueError, not caught by the prior
     `except OSError, json.JSONDecodeError`), and json.JSONDecodeError

@@ -61,15 +61,23 @@ Four ways, each closed by construction:
    environment (`_git_env`), and the scrub is asserted by the committed suite.
 """
 
+# pylint: disable=duplicate-code
+# R0801 pairs this module's §4.4 declaration preamble with
+# check_artifact_gate_coverage's. THE DUPLICATION CANNOT BE FACTORED OUT AND THAT
+# IS THE DESIGN: `PRIVILEGE`, `DEPENDS_ON`, `RESOURCES` and the rest are read
+# STATICALLY, by AST, without importing the check (check contract §4.4 / CLAUDE.md
+# item 6). A shared base module would be invisible to that reader, so every check
+# must carry its own literals. Two gates that both spawn `git` will therefore
+# always look alike here.
 from __future__ import annotations
 
-import os
 import subprocess  # nosec B404 - fixed argv, no shell, no user input
 import sys
 from pathlib import Path
 
 import _preamble  # noqa: F401  pylint: disable=unused-import,wrong-import-order
 from nixverify.contract import CheckResult, Context, Mode, Status
+from nixverify.gitenv import scrubbed_env
 
 PRIVILEGE = "user"
 INTERACTIVE = False
@@ -146,18 +154,16 @@ def _git_env() -> dict[str, str]:
 
     A gate that reported on the wrong repository would pass while measuring
     nothing, so the scrub is part of the measurement, not hygiene around it.
+
+    **ARC 026 (B4): the RULE now lives in `nixverify.gitenv`, not here.** This
+    function kept its name — it is the gate's own documented seam and its test
+    asserts on it — but it no longer owns a private copy of the variable list.
+    Three private copies existed across the check population and they had
+    already diverged by three variables; doctrine C.9 says extend the instrument
+    that owns a property rather than build a second one, and a scrub is exactly
+    the kind of rule that must not have two spellings.
     """
-    env = dict(os.environ)
-    for leaked in (
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_INDEX_FILE",
-        "GIT_COMMON_DIR",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    ):
-        env.pop(leaked, None)
-    return env
+    return scrubbed_env()
 
 
 def _git(args: list[str], cwd: Path) -> tuple[int, str]:

@@ -24,7 +24,6 @@ interpreter refusing to start all reach the same integer.
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -43,19 +42,29 @@ from nixverify.contract import (  # pylint: disable=wrong-import-position
     Mode,
     Status,
 )
+from nixverify.gitenv import scrubbed_env  # pylint: disable=wrong-import-position
 
 GATE_FILE = REPO / "checks" / "check_canonical_tree.py"
 
 
 def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-    """Real git, scrubbed environment, for building fixture repositories."""
-    env = dict(os.environ)
-    for leaked in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"):
-        env.pop(leaked, None)
-    env.setdefault("GIT_AUTHOR_NAME", "t")
-    env.setdefault("GIT_AUTHOR_EMAIL", "t@example.com")
-    env.setdefault("GIT_COMMITTER_NAME", "t")
-    env.setdefault("GIT_COMMITTER_EMAIL", "t@example.com")
+    """Real git, scrubbed environment, for building fixture repositories.
+
+    ARC 026 (B4): the scrub is `nixverify.gitenv.scrubbed_env`, the one the gate
+    itself now uses, rather than a fourth private copy of the variable list. This
+    fixture's copy named FOUR variables while the gate named six — a harness that
+    could redirect itself while the gate could not is measuring a different
+    program from the one that ships. The identity goes through `extra`, AFTER the
+    scrub, because `git commit` needs it and it must be visible at the call site.
+    """
+    env = scrubbed_env(
+        extra={
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@example.com",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@example.com",
+        }
+    )
     return subprocess.run(  # nosec B603 B607 - fixed argv, shell=False, tmp_path only
         ["git", *args],
         cwd=str(cwd),

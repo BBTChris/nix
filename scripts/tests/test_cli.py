@@ -21,61 +21,61 @@ PASSING = (
 
 
 def _fixture(tmp_path: Path, body: str) -> Path:
-    """Write a one-check manifest fixture and return its path."""
+    """Write a one-check registry fixture and return its path."""
     checks = tmp_path / "checks"
     checks.mkdir()
     (checks / "check_one.py").write_text(body, encoding="utf-8")
-    manifest = checks / "registry.json"
-    manifest.write_text(
+    registry = checks / "registry.json"
+    registry.write_text(
         json.dumps(
             {
-                "manifest_version": "1.0.0",
+                "registry_version": "1.0.0",
                 "blocks": [{"name": "b", "checks": ["check_one"]}],
             }
         ),
         encoding="utf-8",
     )
-    return manifest
+    return registry
 
 
 def test_all_passing_exits_zero(tmp_path: Path) -> None:
-    """A manifest of only passing checks exits 0."""
-    manifest = _fixture(tmp_path, PASSING)
-    assert verify.main(["--manifest", str(manifest)]) == 0
+    """A registry of only passing checks exits 0."""
+    registry = _fixture(tmp_path, PASSING)
+    assert verify.main(["--registry", str(registry)]) == 0
 
 
-def test_missing_manifest_exits_two_not_one(tmp_path: Path) -> None:
-    """A manifest we cannot read is unmeasurable, not a failed check."""
-    assert verify.main(["--manifest", str(tmp_path / "absent.json")]) == 2
+def test_missing_registry_exits_two_not_one(tmp_path: Path) -> None:
+    """A registry we cannot read is unmeasurable, not a failed check."""
+    assert verify.main(["--registry", str(tmp_path / "absent.json")]) == 2
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores permission bits")
-def test_permission_denied_manifest_exits_two_not_a_traceback(tmp_path: Path) -> None:
-    """A manifest that exists but cannot be read must not crash the CLI (exit 2)."""
-    manifest = _fixture(tmp_path, PASSING)
-    manifest.chmod(0o000)
+def test_permission_denied_registry_exits_two_not_a_traceback(tmp_path: Path) -> None:
+    """A registry that exists but cannot be read must not crash the CLI (exit 2)."""
+    registry = _fixture(tmp_path, PASSING)
+    registry.chmod(0o000)
     try:
-        assert verify.main(["--manifest", str(manifest)]) == 2
+        assert verify.main(["--registry", str(registry)]) == 2
     finally:
-        manifest.chmod(0o644)
+        registry.chmod(0o644)
 
 
-def test_undecodable_manifest_exits_two_not_a_traceback(tmp_path: Path) -> None:
+def test_undecodable_registry_exits_two_not_a_traceback(tmp_path: Path) -> None:
     """Undecodable bytes (truncated write, wrong encoding) must not crash the CLI."""
-    manifest = tmp_path / "registry.json"
-    manifest.write_bytes(b'{"a": "\xff\xfe"}')
-    assert verify.main(["--manifest", str(manifest)]) == 2
+    registry = tmp_path / "registry.json"
+    registry.write_bytes(b'{"a": "\xff\xfe"}')
+    assert verify.main(["--registry", str(registry)]) == 2
 
 
 def test_engine_runs_under_system_python_without_the_venv(tmp_path: Path) -> None:
     """§9.1: the engine must work before .venv exists."""
-    manifest = _fixture(tmp_path, PASSING)
+    registry = _fixture(tmp_path, PASSING)
     proc = subprocess.run(
         [
             "/usr/bin/python3",
             str(REPO / "scripts" / "verify.py"),
-            "--manifest",
-            str(manifest),
+            "--registry",
+            str(registry),
         ],
         capture_output=True,
         text=True,

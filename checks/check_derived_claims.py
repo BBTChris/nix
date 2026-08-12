@@ -53,7 +53,7 @@ while measuring nothing?
     PARTIALLY GUARDED: duplicate probe/argv identity within one claim is
     rejected. Causal independence cannot be proven mechanically, so each claim's
     `note` states in writing why its sources are independent, and that statement
-    is what a reviewer checks. `registered_check_count` (manifest vs disk) and
+    is what a reviewer checks. `registered_check_count` (registry vs disk) and
     `pytest_collected_tests` (collector vs AST) are independent in mechanism,
     not merely in spelling.
 
@@ -630,156 +630,63 @@ def _p_broker_order_coverage_seam(home: Path) -> tuple[int, str]:
 
 
 # --------------------------------------------------------------------------
-# BROKER-ORDER OPEN DEBT ROWS — the depth companion, and NOT a percent.
+# OPEN DEBT ROWS BY OWNING MODULE — the depth companion, and NOT a percent.
 # --------------------------------------------------------------------------
-# ARC 020 C2. Element coverage above is breadth. This is the other axis: how
-# many OPEN debts in the ledger are about the broker-order module. It rises when
-# a traversal finds defects and falls when they are paid, which is exactly the
-# movement the coverage figure cannot see.
+# ARC 020 C2 opened this axis: element coverage is BREADTH, this is DEPTH — how
+# many OPEN ledger rows a module owes. It rises when a traversal finds defects
+# and falls when they are paid, which is the movement coverage cannot see.
 #
-# IT IS A COUNT AND IT MUST NEVER BE EXPRESSED AS A PERCENT. To make a percent
-# of it one would have to divide by a total, and the only honest total is "how
-# many outstanding obligations does this module have" — which is the same
-# quantity as "how much do we trust this module", and is unknowable. That is
-# named gap 5 verbatim: the standing question's condition 7 above says this
-# instrument cannot prove the registry covers the numbers that matter, so the
-# denominator would be the size of a set nobody can enumerate. A percent over an
-# unknowable denominator is a confidence score wearing arithmetic, and inventing
-# one here would rebuild the rubric the rename in the block above just removed.
-# Twelve open rows is twelve open rows. It is a FLOOR on outstanding broker-order
+# IT IS A COUNT AND IT MUST NEVER BE EXPRESSED AS A PERCENT. A percent needs a
+# denominator, and the only honest one is "how many outstanding obligations does
+# this module have" — the same quantity as "how much do we trust this module",
+# and unknowable. A percent over an unknowable denominator is a confidence score
+# wearing arithmetic. Nine open rows is nine open rows: a FLOOR on outstanding
 # obligations, never a fraction of them.
 #
-# THE MODULE-SCOPING RULE, stated so it can be argued with rather than inferred:
+# ============================================================================
+# ARC 026 (B3) — SELECTION IS BY AUTHORED COLUMN. THE PROSE SCAN IS GONE.
+# ============================================================================
+# The rule of record now lives in `docs/CHECK-DEBT.md` ("The `owning module`
+# column is AUTHORED, never inferred from prose") and this harness READS it
+# rather than restating it — the vocabulary below is parsed out of the ledger's
+# own table, so a token added there is a token accepted here with no edit.
 #
-#   A row is BROKER-ORDER SCOPED iff it is OPEN — by the ledger's own bold-span
-#   rule, `_DISCHARGED` above — AND its row text names at least one order-path
-#   artefact, being either
-#     (i)  the basename of a Python module that exists under the order path AND
-#          does NOT implement the broker-datafeed port, or
-#     (ii) a broker-order roster identifier, matched on word boundaries.
+# WHAT WAS REMOVED, and why removal was the repair rather than a fifth narrowing.
+# Until this arc a row was selected if ANY text anywhere in it matched an
+# order-path module basename or a roster identifier. Four contaminations, each
+# repaired by narrowing the vocabulary and none by changing the mechanism:
 #
-# NOTHING IN THAT RULE IS TYPED. The order path is read by AST out of
-# `check_order_path_bans.py`'s own `ORDER_PATH_DIRS` anchor — the same
-# non-restating technique `_p_order_path_anchor_files` uses — and the basenames
-# come off the disk. The roster comes from the frozen spec on one side of the
-# claim and from the seam's declared tuples on the other, which is where the two
-# sources get their independence.
+#   * ARC 021 — `ibkr_mapping.py` hosts both §2A adapters; a row about its
+#     datafeed half counted as broker-order depth (11 -> 13, untouched module).
+#   * ARC 021 — `broker_datafeed_ibkr.py` lives on the order path because that
+#     is where §2A code lives, so the DATAFEED adapter's basename became
+#     order-path vocabulary and pulled in three rows with no order verb in them.
+#   * ARC 025 — D1.41 entered the metric on the single word `connect`, inside
+#     the phrase `socket.connect`: THE SPY THAT TOOK ARC 024'S MEASUREMENT
+#     CONTAMINATED THE METRIC MEASURING IT. Repaired by subtracting qualified
+#     identifiers whose receiver owns no order-path code.
+#   * ARC 025's own residual, stated and not closeable inside the mechanism:
+#     selection reads PROSE, so rewording a row moves the count silently
+#     (`debug.md` §8 failure mode #14, one level down), and a row about a verb
+#     both rosters share cannot be attributed at all.
 #
-# THE "AND DOES NOT IMPLEMENT THE DATAFEED PORT" CLAUSE IS ARC 022 (C3), AND IT
-# IS THE REPAIR OF A MEASURED CONTAMINATION — debt row D2.19. Until ARC 022 the
-# basename half was the raw directory glob, so EVERY `.py` under `scripts/broker`
-# was an order-path vocabulary term regardless of which §2A library it belongs
-# to. Two distinct contaminations followed, both measured on this tree rather
-# than reasoned about:
+# Each narrowing made the vocabulary smaller and left the mechanism intact, so a
+# fifth contamination was one wording away. An authored column ends the class:
+# attribution is a judgment a person makes once, visible in a diff, and prose is
+# no longer load-bearing.
 #
-#   * A SHARED HOST. `ibkr_mapping.py` carries BOTH §2A adapters, so a row about
-#     its datafeed half was counted as broker-order depth. That is D2.19's
-#     original subject and it moved `broker_order_open_debt_rows` 11 -> 13 in
-#     ARC 021 while nothing touched broker-order.
-#   * A DATAFEED-ONLY MODULE ON THE ORDER PATH. `broker_datafeed_ibkr.py` landed
-#     in ARC 021 and lives under `scripts/broker/` because that is where §2A code
-#     lives — so the glob made the DATAFEED ADAPTER'S OWN BASENAME an order-path
-#     vocabulary term, and D1.13, D3.9 and D3.10 (three rows with no order roster
-#     identifier anywhere in them) were counted as broker-order depth. D2.19
-#     predicted the arrival of a datafeed-only module would SELF-HEAL this; it
-#     healed the datafeed side's basename half and made the ORDER side worse.
-#
-# The clause says the thing the glob could not: a basename attributes to a
-# library only when it is DISTINCTIVE to that library. It is the exact mirror of
-# `_datafeed_only_modules` below, which has always subtracted the order port, and
-# the subtraction is derived from the seam's own `DATAFEED_PORT_VERBS` — nothing
-# is listed by hand, so a third §2A module joins or leaves the vocabulary by
-# being written.
-#
-# WHAT THE CLAUSE DELIBERATELY DOES NOT DO — the residual, named because ARC 021
-# named this ambiguity before it bit and it bit anyway:
-#   f. THE ROSTER HALF IS NOT MADE DISTINCTIVE, AND IT CARRIES THE SAME DEFECT.
-#      `connect` and `disconnect` are in BOTH §2A rosters. The datafeed claim
-#      subtracts them; this one cannot, because they are genuinely broker-order
-#      verbs too and an order row about `connect()` is real order debt. MEASURED
-#      CONSEQUENCE ON THIS TREE: D1.38 — a row whose entire subject is
-#      `BrokerDatafeedPort`'s sync/async split — is selected here, on the single
-#      word `connect`. It is left selected rather than papered over, because the
-#      only mechanical repairs are worse than the disease: dropping the shared
-#      verbs blinds the order claim to every real connect/disconnect row, and
-#      requiring two roster hits blinds it to single-verb rows. This residual is
-#      recorded in D2.19 and stays open with it.
-#   g. A SHARED HOST NOW NEEDS CORROBORATION FROM THE ROSTER HALF, WHICH IS PROSE.
-#      A row genuinely about `ibkr_mapping.py`'s ORDER half that names no order
-#      roster identifier is now invisible here. That is disclosure (c) — the rule
-#      reads prose — pointed at the shared host specifically, and it is the price
-#      of not counting the datafeed half. The mitigation is unchanged and weak:
-#      every selected row id is printed on every run.
-#
-# WHAT IS AMBIGUOUS, named rather than papered over — the rule attributes rows
-# to a module MECHANICALLY, and mechanical attribution is not the same as
-# correct attribution:
-#
-#  a. APPARATUS-ABOUT-THE-MODULE versus DEFECT-IN-THE-MODULE. Two selected rows
-#     are not defects in the order path at all. One is a residual in the gate
-#     that scans the order path; the other is a test instrument that happens to
-#     live in a seam module. Both are genuine outstanding broker-order
-#     obligations and both are counted. Whether "scoped to broker-order" means
-#     defects IN the code or obligations ABOUT it is a judgment, and this rule
-#     does not make it — it counts both, and this paragraph is why.
-#  b. IT UNDER-COUNTS ROWS THAT TALK ABOUT THE MODULE WITHOUT NAMING ANYTHING IN
-#     IT. A row deferred until "broker-order code exists" names no artefact and
-#     is not selected, correctly by the rule and arguably wrongly in substance.
-#  c. THE RULE READS PROSE, so the ledger's wording is load-bearing. Rewording a
-#     row to drop the verb name silently removes it from the count. That is
-#     failure mode #14 one level down — a scope set by text a person edits — and
-#     the mitigation is that every selected id is printed on every run.
-#  d. A ROW IS NOT A DEFECT. One selected row lists five observed symptoms of a
-#     single repair; another holds two separate specification gaps. The claim
-#     counts the ledger's unit of account, which is the row, and the number is
-#     therefore a floor and not a census.
-#  e. THE TWO ROSTERS CAN LEGITIMATELY DIVERGE. If the seam declares a
-#     broker-order element the spec does not — a flagged Nix addition, the
-#     `feed_lag()` precedent — the seam-side vocabulary gains a word the
-#     spec-side one lacks and the sources can disagree. That is the same
-#     derive-never-restate pair the coverage claim already carries, one level up,
-#     and a disagreement is the instrument working rather than a defect in it.
-
-
-def _order_path_basenames(home: Path) -> tuple[list[str], list[str]]:
-    """Order-DISTINCTIVE `.py` basenames under the order path, and what was cut.
-
-    Returns `(distinctive, excluded)`. Both anchors are read by AST and never
-    typed: the directory list comes out of `check_order_path_bans.py`'s own
-    `ORDER_PATH_DIRS`, and the datafeed subtraction comes out of the seam's
-    `DATAFEED_PORT_VERBS`. See the D2.19 block above for why the subtraction
-    exists — a module that implements the datafeed port cannot say, by basename
-    alone, which §2A library a row about it is about.
-    """
-    rel = "checks/check_order_path_bans.py"
-    dirs = _module_tuples(home, rel, ("ORDER_PATH_DIRS",))["ORDER_PATH_DIRS"]
-    if not dirs:
-        raise ProbeError(f"{rel}: ORDER_PATH_DIRS is empty")
-    on_path = sorted(
-        {p.name for d in dirs for p in (home / d).rglob("*.py") if p.is_file()}
-    )
-    if not on_path:
-        raise ProbeError(f"order path {list(dirs)} holds no .py module to name")
-
-    seam = "scripts/broker/broker_seam.py"
-    tuples = _module_tuples(home, seam, ("ORDER_PORT_VERBS", "DATAFEED_PORT_VERBS"))
-    feed = _port_implementors(home, list(tuples["DATAFEED_PORT_VERBS"]), 3)
-    order = _port_implementors(home, list(tuples["ORDER_PORT_VERBS"]), 4)
-
-    names = [n for n in on_path if n not in feed]
-    excluded = [n for n in on_path if n in feed]
-    # NON-VACUITY, and it is the whole point of the subtraction being safe: the
-    # surviving vocabulary must still hold a module that actually implements the
-    # ORDER port. A seam edit that made every order module look like a datafeed
-    # module would otherwise empty this list silently and the claim would report
-    # a smaller number having measured less.
-    if not set(names) & order:
-        raise ProbeError(
-            f"order-path vocabulary {names} holds no module implementing the "
-            f"order port (order implementors: {sorted(order)}); the datafeed "
-            f"subtraction removed {excluded} and left nothing distinctive"
-        )
-    return names, excluded
+# WHAT IS STILL TRUE OF THE NUMBER, carried forward because it was true before:
+#  a. APPARATUS-ABOUT-THE-MODULE vs DEFECT-IN-THE-MODULE is now DECIDED rather
+#     than counted both ways. The ledger's rule is "the artefact that must CHANGE
+#     to discharge the row", so a row about a gate is owned by the gate even when
+#     the gate measures broker-datafeed. That is a position; the prose scan took
+#     no position and counted both, which is why it counted things twice.
+#  b. A ROW IS NOT A DEFECT. One row can hold five symptoms of a single repair.
+#     The claim counts the ledger's unit of account, so it is a floor.
+#  c. THE COLUMN IS STILL WRITTEN BY A PERSON. It can be wrong. What it cannot
+#     be is wrong INVISIBLY: a wrong token is one word in a diff, where the old
+#     mechanism's failures were a word buried in a paragraph nobody was reading
+#     as an attribution.
 
 
 def _open_debt_rows(home: Path) -> list[tuple[str, str]]:
@@ -797,144 +704,134 @@ def _open_debt_rows(home: Path) -> list[tuple[str, str]]:
     return out
 
 
-#: A roster identifier immediately preceded by `<name>.` is an ATTRIBUTE of
-#: `<name>`, not the port verb. See `_roster_hit`.
-_QUALIFIER = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\.$")
+#: The ledger's vocabulary table. Read, never restated — a token list typed here
+#: would be the derive-never-restate defect inside the instrument built to catch
+#: it, which `derived_claims.json` records happening in an arc brief itself.
+_VOCAB_ROW = re.compile(r"^\|\s*`([a-z][a-z-]*)`\s*\|", re.MULTILINE)
+#: The stated per-module tally — the claim's SECOND source. See the ledger's
+#: "Stated per-module tally" block for why an authored column needs one.
+_TALLY_ROW = re.compile(r"^\|\s*([a-z][a-z-]*)\s*\|\s*(\d+)\s*\|\s*$", re.MULTILINE)
 
 
-def _order_path_owners(home: Path) -> set[str]:
-    """Receiver names a roster verb may legitimately hang off: order-path module
-    basenames (without `.py`) and the classes those modules declare."""
-    rel = "checks/check_order_path_bans.py"
-    dirs = _module_tuples(home, rel, ("ORDER_PATH_DIRS",))["ORDER_PATH_DIRS"]
-    owners: set[str] = set()
-    for directory in dirs:
-        for path in (home / directory).rglob("*.py"):
-            if not path.is_file() or "__pycache__" in path.parts:
-                continue
-            owners.add(path.stem)
-            try:
-                tree = ast.parse(path.read_text(encoding="utf-8"))
-            except OSError, SyntaxError:
-                continue
-            owners |= {
-                node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)
-            }
-    return owners
+def _owning_vocabulary(home: Path) -> set[str]:
+    """The legal `owning module` tokens, parsed out of the ledger itself."""
+    tokens = set(_VOCAB_ROW.findall(_read(home, "docs/CHECK-DEBT.md")))
+    if not tokens:
+        raise ProbeError(
+            "docs/CHECK-DEBT.md: the owning-module vocabulary table parsed to "
+            "nothing — with no legal tokens every row would be rejected, and a "
+            "count over a rejected population is not a count"
+        )
+    return tokens
 
 
-def _roster_hit(text: str, roster: list[str], owners: set[str]) -> bool:
-    """True when `text` names an order roster identifier AS AN ORDER VERB.
+def _owning_module(line: str) -> str:
+    """The row's LAST cell. Empty when the row carries no column at all."""
+    stripped = line.rstrip()
+    if not stripped.endswith("|"):
+        return ""
+    return stripped[:-1].rsplit("|", 1)[-1].strip()
 
-    ARC 025 / C4, THE QUALIFIED-IDENTIFIER SUBTRACTION, and it is the D2.19
-    principle applied to the roster half instead of to the basename half: a name
-    attributes to a library only when it is DISTINCTIVE to that library, and a
-    name qualified by a receiver that owns no order-path code is not.
 
-    MEASURED INSTANCE, which is why this exists rather than being reasoned into
-    place: D1.41's entire subject is two Gateway gates dialling one endpoint. It
-    names no order artefact and no order verb — it was selected on the single
-    word `connect` inside the phrase `socket.connect`, the name of the spy that
-    took the measurement. `\\bconnect\\b` matches there because `.` is a word
-    boundary. `socket` owns no order-path module and no order-path class, so the
-    hit is discarded; `IBKRBrokerOrder.disconnect()` and `broker_order_ibkr.flatten`
-    survive, because those receivers do.
+def _open_rows_by_module(home: Path) -> dict[str, list[str]]:
+    """Open row ids grouped by authored owning module. FAILS CLOSED.
+
+    A row with no column, an empty column, or a token outside the ledger's own
+    vocabulary is a **ProbeError naming the row**, never a silent exclusion. The
+    failure mode this column replaces was exactly a row leaving a count without
+    anybody noticing, and a lenient parser would rebuild it one layer down.
     """
-    for name in roster:
-        for match in re.finditer(r"\b" + re.escape(name) + r"\b", text):
-            qualifier = _QUALIFIER.search(text[: match.start()])
-            if qualifier is None or qualifier.group(1) in owners:
-                return True
-    return False
+    vocabulary = _owning_vocabulary(home)
+    grouped: dict[str, list[str]] = {token: [] for token in vocabulary}
+    unattributed: list[str] = []
+    for rid, line in _open_debt_rows(home):
+        token = _owning_module(line)
+        if token not in vocabulary:
+            unattributed.append(f"{rid}={token or '<absent>'}")
+            continue
+        grouped[token].append(rid)
+    if unattributed:
+        raise ProbeError(
+            "docs/CHECK-DEBT.md: open row(s) carry no valid `owning module` "
+            f"token: {', '.join(unattributed)}; legal tokens are "
+            f"{sorted(vocabulary)}"
+        )
+    return grouped
 
 
-def _row_cells(line: str) -> list[str]:
-    """A ledger row's cells. `[0]` is the id, `[1]` is the row's own subject."""
-    return [cell.strip() for cell in line.split("|")][1:]
+def _stated_tally(home: Path) -> dict[str, int]:
+    """The ledger's hand-written per-module tally — the STATED source."""
+    tally = {
+        name: int(count)
+        for name, count in _TALLY_ROW.findall(_read(home, "docs/CHECK-DEBT.md"))
+    }
+    vocabulary = _owning_vocabulary(home)
+    if not tally:
+        raise ProbeError(
+            "docs/CHECK-DEBT.md: the stated per-module tally parsed to nothing — "
+            "the claim would then have one source, which is unchecked by "
+            "construction"
+        )
+    alien = sorted(set(tally) - vocabulary)
+    if alien:
+        raise ProbeError(
+            f"docs/CHECK-DEBT.md: the tally names {alien}, which the "
+            "owning-module vocabulary does not contain"
+        )
+    return tally
 
 
-def _owned_by_its_instrument(
-    rid: str, line: str, on_path: list[str], roster: list[str], owners: set[str]
-) -> bool:
-    """Is this row's OWNING artefact an order-path one?
-
-    ARC 025 / C4. Applied to D3 rows only, and the restriction is read out of the
-    ledger's OWN column headers rather than chosen: D3 is titled *"Instruments
-    whose can-fail has never been demonstrated"* and its header row is
-    `# | instrument | status | owner`, so **a D3 row's subject is declared by the
-    ledger to be an INSTRUMENT**. Its `status` cell is evidence ABOUT that
-    instrument, and the artefacts a piece of can-fail evidence recites are the
-    instrument's test material, not the row's owner.
-
-    D1 (`# | subject | changed in | owner`) and D2 (`# | doctrine | gap | owner`)
-    are deliberately NOT restricted this way, and the difference is structural
-    rather than convenient: a D1 subject is a DEFECT DESCRIPTION and a D2
-    doctrine cell is a CITATION, so in both tables the module attribution
-    legitimately lives in the body. Measured: restricting D1/D2 to their first
-    cell drops seven rows that are genuinely order-side (D1.19, D1.22, D1.28,
-    D1.29, D1.30, D1.31, D1.38 among them), which is doctrine B.4's forbidden
-    direction — narrowing a rule's scope until the number looks better.
-
-    MEASURED INSTANCE: D3.20's subject is *"the ten checks NOT retrofitted in ARC
-    024..."*. It was selected as broker-order depth because its status cell
-    recites another gate's plant — *"`import tenacity` planted into the real
-    `broker_order_ibkr.py`"*. The row is owed against a CHECK. D3.8 survives:
-    its instrument cell is *"`RecordingSink.sequence` — the cross-stream ordering
-    observable in `scripts/broker/broker_seam.py`"*, which names a module on the
-    order path.
-
-    `on_path` is the RAW order-path module set, before D2.19's
-    datafeed-distinctiveness subtraction, and that is deliberate: this test asks
-    *"is the row's instrument a broker-path artefact at all"*, not *"which §2A
-    library does this basename attribute to"*. D3.8's instrument is in
-    `broker_seam.py`, which the distinctiveness rule excludes from the ATTRIBUTION
-    vocabulary and which is unarguably on the order path.
-    """
-    if not rid.startswith("D3"):
-        return True
-    cells = _row_cells(line)
-    subject = cells[1] if len(cells) > 1 else ""
-    return any(name in subject for name in on_path) or _roster_hit(
-        subject, roster, owners
-    )
-
-
-def _broker_order_scoped(home: Path, roster: list[str]) -> tuple[int, str]:
-    """Apply the module-scoping rule with one supplied roster vocabulary."""
-    if not roster:
-        raise ProbeError("empty roster — the scope vocabulary would select nothing")
-    files, excluded = _order_path_basenames(home)
-    owners = _order_path_owners(home)
-    on_path = sorted(set(files) | set(excluded))
-    picked = [
-        rid
-        for rid, line in _open_debt_rows(home)
-        if (any(f in line for f in files) or _roster_hit(line, roster, owners))
-        and _owned_by_its_instrument(rid, line, on_path, roster, owners)
-    ]
+def _module_depth_derived(home: Path, module: str) -> tuple[int, str]:
+    """Count of OPEN rows the ledger's column attributes to `module`."""
+    grouped = _open_rows_by_module(home)
+    if module not in grouped:
+        raise ProbeError(
+            f"docs/CHECK-DEBT.md: {module!r} is not in the owning-module "
+            f"vocabulary {sorted(grouped)} — the claim would count a module the "
+            "ledger cannot express"
+        )
+    picked = grouped[module]
+    total = sum(len(ids) for ids in grouped.values())
     return len(picked), (
-        f"NOT A PERCENT — open ledger rows OWNED BY an order-path artefact; "
-        f"vocabulary {len(files)} order-distinctive module(s) {files} "
-        f"(D2.19: {len(excluded)} datafeed-implementing module(s) {excluded or '[]'} "
-        f"on the order path are NOT vocabulary) + {len(roster)} roster "
-        f"identifier(s), qualified hits subtracted against {len(owners)} "
-        f"order-path owner name(s) (C4); D3 rows attributed by their INSTRUMENT "
-        f"cell; selected: {', '.join(picked) or 'NONE'}"
+        f"NOT A PERCENT — OPEN ledger rows whose AUTHORED `owning module` column "
+        f"reads {module!r}; {total} open row(s) attributed across "
+        f"{len(grouped)} module(s); selected: {', '.join(picked) or 'NONE'}"
     )
 
 
-def _p_broker_order_debt_rows_spec(home: Path) -> tuple[int, str]:
-    """Scoping vocabulary's roster half read from the FROZEN SPEC."""
-    return _broker_order_scoped(home, _spec_identifiers(home, "### broker-order"))
-
-
-def _p_broker_order_debt_rows_seam(home: Path) -> tuple[int, str]:
-    """Scoping vocabulary's roster half read from the SEAM CODE's restatement."""
-    tuples = _module_tuples(
-        home, "scripts/broker/broker_seam.py", ("ORDER_PORT_VERBS", "ORDER_EVENTS")
+def _module_depth_stated(home: Path, module: str) -> tuple[int, str]:
+    """What the ledger's own tally table SAYS `module` owes."""
+    tally = _stated_tally(home)
+    if module not in tally:
+        raise ProbeError(
+            f"docs/CHECK-DEBT.md: the stated per-module tally has no row for "
+            f"{module!r} (it names {sorted(tally)}) — an absent row would read "
+            "as zero, and zero is a claim"
+        )
+    return tally[module], (
+        f"stated by the ledger's per-module tally: {module}={tally[module]} "
+        f"(whole tally: {', '.join(f'{k}={v}' for k, v in sorted(tally.items()))})"
     )
-    roster = list(tuples["ORDER_PORT_VERBS"]) + list(tuples["ORDER_EVENTS"])
-    return _broker_order_scoped(home, roster)
+
+
+def _p_broker_order_debt_rows_ledger(home: Path) -> tuple[int, str]:
+    """DERIVED: the row scan over the authored column."""
+    return _module_depth_derived(home, "broker-order")
+
+
+def _p_broker_order_debt_rows_tally(home: Path) -> tuple[int, str]:
+    """STATED: the ledger's own per-module tally."""
+    return _module_depth_stated(home, "broker-order")
+
+
+def _p_datafeed_debt_rows_ledger(home: Path) -> tuple[int, str]:
+    """DERIVED: the row scan over the authored column."""
+    return _module_depth_derived(home, "broker-datafeed")
+
+
+def _p_datafeed_debt_rows_tally(home: Path) -> tuple[int, str]:
+    """STATED: the ledger's own per-module tally."""
+    return _module_depth_stated(home, "broker-datafeed")
 
 
 _SEAM_TUPLES = (
@@ -1046,84 +943,6 @@ def _p_seam_datafeed_roster_count(home: Path) -> tuple[int, str]:
     return total, f"broker_seam.py {parts}"
 
 
-def _port_implementors(home: Path, verbs: list[str], quorum: int) -> set[str]:
-    """Module basenames under scripts/ defining `quorum` of `verbs` as methods."""
-    out: set[str] = set()
-    for path in sorted((home / "scripts").rglob("*.py")):
-        if any(part in {".venv", "__pycache__"} for part in path.parts):
-            continue
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except OSError, SyntaxError:
-            continue
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.ClassDef):
-                continue
-            methods = {
-                b.name
-                for b in node.body
-                if isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef))
-            }
-            if len(methods & set(verbs)) >= quorum:
-                out.add(path.name)
-    return out
-
-
-def _datafeed_only_modules(home: Path) -> list[str]:
-    """Modules implementing the datafeed port and NOT the order port.
-
-    TODAY THIS IS EMPTY, and that is the honest answer rather than a defect:
-    the only class implementing the datafeed port outside the seam lives in
-    `ibkr_mapping.py`, which implements the order port too, so counting its
-    basename would select order rows as datafeed debt. A dedicated datafeed
-    module joins this set by being written — no edit here.
-    """
-    tuples = _module_tuples(
-        home,
-        "scripts/broker/broker_seam.py",
-        ("ORDER_PORT_VERBS", "DATAFEED_PORT_VERBS"),
-    )
-    feed = _port_implementors(home, list(tuples["DATAFEED_PORT_VERBS"]), 3)
-    order = _port_implementors(home, list(tuples["ORDER_PORT_VERBS"]), 4)
-    return sorted(feed - order)
-
-
-def _datafeed_scoped(home: Path, feed: list[str], order: list[str]) -> tuple[int, str]:
-    """The module-scoping rule, datafeed edition, with one supplied vocabulary."""
-    distinctive = [n for n in feed if n not in order]
-    if not distinctive:
-        raise ProbeError("datafeed roster is a subset of the order roster")
-    files = _datafeed_only_modules(home)
-    pats = [re.compile(r"\b" + re.escape(name) + r"\b") for name in distinctive]
-    picked = [
-        rid
-        for rid, line in _open_debt_rows(home)
-        if any(f in line for f in files) or any(p.search(line) for p in pats)
-    ]
-    return len(picked), (
-        f"NOT A PERCENT — open ledger rows naming a broker-datafeed artefact; "
-        f"vocabulary {len(files)} datafeed-only module(s) {files or '[]'} + "
-        f"{len(distinctive)} distinctive identifier(s) {distinctive}; "
-        f"selected: {', '.join(picked) or 'NONE'}"
-    )
-
-
-def _p_datafeed_debt_rows_spec(home: Path) -> tuple[int, str]:
-    """Vocabulary's roster half read from the FROZEN SPEC (plus flagged additions)."""
-    spec_feed, flagged = _spec_datafeed_flagged(home)
-    return _datafeed_scoped(
-        home, spec_feed + flagged, _spec_identifiers(home, "### broker-order")
-    )
-
-
-def _p_datafeed_debt_rows_seam(home: Path) -> tuple[int, str]:
-    """Vocabulary's roster half read from the SEAM CODE's restatement."""
-    tuples = _module_tuples(home, "scripts/broker/broker_seam.py", _SEAM_TUPLES)
-    feed = list(tuples["DATAFEED_PORT_VERBS"]) + list(tuples["DATAFEED_EVENTS"])
-    order = list(tuples["ORDER_PORT_VERBS"]) + list(tuples["ORDER_EVENTS"])
-    return _datafeed_scoped(home, feed, order)
-
-
 PROBES = {
     "registry_check_count": _p_registry_check_count,
     "checks_glob_count": _p_checks_glob_count,
@@ -1140,12 +959,12 @@ PROBES = {
     "order_path_anchor_files": _p_order_path_anchor_files,
     "broker_order_coverage_spec": _p_broker_order_coverage_spec,
     "broker_order_coverage_seam": _p_broker_order_coverage_seam,
-    "broker_order_debt_rows_spec": _p_broker_order_debt_rows_spec,
-    "broker_order_debt_rows_seam": _p_broker_order_debt_rows_seam,
+    "broker_order_debt_rows_ledger": _p_broker_order_debt_rows_ledger,
+    "broker_order_debt_rows_tally": _p_broker_order_debt_rows_tally,
     "spec_datafeed_plus_flagged": _p_spec_datafeed_plus_flagged,
     "seam_datafeed_roster_count": _p_seam_datafeed_roster_count,
-    "datafeed_debt_rows_spec": _p_datafeed_debt_rows_spec,
-    "datafeed_debt_rows_seam": _p_datafeed_debt_rows_seam,
+    "datafeed_debt_rows_ledger": _p_datafeed_debt_rows_ledger,
+    "datafeed_debt_rows_tally": _p_datafeed_debt_rows_tally,
 }
 
 

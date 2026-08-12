@@ -47,7 +47,7 @@ def test_metadata_defaults_when_unspecified(tmp_path: Path) -> None:
 
 
 def test_metadata_is_read_from_the_module(tmp_path: Path) -> None:
-    """§4: the check declares what it needs; the manifest never does."""
+    """§4: the check declares what it needs; the registry never does."""
     _plugin(
         tmp_path,
         "check_meta",
