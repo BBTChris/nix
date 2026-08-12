@@ -2439,3 +2439,169 @@ attracts no audit.
 
 Ten debt rows opened, one discharged (D3.22). ARC 026 closes at exit 1 and says so; the only FAIL is
 a Gateway that is switched off.
+
+---
+
+## ARC 027 — The True Binding State, the Unbound Four, and R1-D (2026-08-12)
+
+**Canonical path `/home/bbt/nix`, not relocated, nothing beside it deleted.** Branch
+`arc-027-integration`, predecessor ARC 026 at `f4dab7d`.
+
+**The arc in one line: the binding table stopped being read and started being measured, and every one
+of the 24 gates standing over this system has now been observed turning red.**
+
+### Phase 0 — the true binding state
+
+`measurement_path.py` gained a CLI that **refuses an empty range** (exit 2, no table, no override):
+an empty range classifies every check as declaration-only in silence, which is indistinguishable from
+an arc that touched nothing. Both revisions are extracted with `git archive` so imports resolve
+against the revision's own tree, not today's. Its own suite verified first: 24 passed.
+
+Five ranges, each stated and proven non-empty — ARC 022 `08d9c56..df36405` (9 of 12 preserve),
+ARC 023 `df36405..2871bc6` (9 of 12), ARC 024 `2871bc6..509159d` (**0 of 14**), ARC 025
+`509159d..0f9c5b9` (**0 of 15**), ARC 026 `0f9c5b9..f4dab7d` (**0 of 21**). The discriminator is
+measured: `scripts/nixverify/contract.py` changed in ARC 024, 025 **and** 026, and every check
+imports it transitively.
+
+**0.2 — the table is now an instrument.** `scripts/tests/binding_tracer.py` (a `sys.monitoring`
+PY_RETURN monitor recording every `run()` return from a check module, in pytest and in every spawned
+child, tagged with the **sha256 of the module that produced the verdict**) plus
+`scripts/tests/binding_census.py`, with 9 controls. **Its own §0a defect was measured on the first
+run and committed with the fix:** it opened its record file with `open()`, `nixverify.observe` hooks
+the `open` audit event, and the tracer's bookkeeping was charged to whichever gate was being observed
+— five controls went red. One descriptor opened at `sitecustomize` import, before the observer arms;
+`os.write` after, which raises no audit event. Non-perturbation proven twice — traced suite 957,
+untraced 957.
+
+The measured table **disagreed with ARC 026's in five places**, in both directions:
+`check_ibgateway_config` and `check_ibgateway_service` were listed UNBOUND with the tap session as
+owner and are in fact **BOUND**; `check_derived_claims` was listed BOUND and is bound only by a
+**modified copy of itself**; the three ARC 026 called PARTIAL/UNBOUND measured
+`EXERCISED-NEVER-RED`.
+
+**0.3 — §0c ruled on: RECOMMEND WITHDRAWAL, not narrowing.** It has preserved nothing for three
+consecutive arcs and cannot while the check contract evolves. The narrowing the brief offered fires
+in exactly the three arcs where §0c already preserves nothing — **it changes no verdict in the
+measured history.** §0c is a proxy for a question now measured directly every arc. Keep
+`measurement_path.py` as a structural instrument; it is what proved `contract.py` is on every verdict
+path. Architect ratifies; not restored.
+
+**0.4 — the brief's premise is false.** The "Amendment 5 vs 6" collision is **intra-ledger**, not
+cross-ledger: per-channel freshness was issued titled "AMENDMENT 5" while 5 was already taken inside
+`SPEC-AMENDMENTS.md` by ARC 022's D1.38. Both ledgers independently hold six. Full inventory
+recorded; **nothing renumbered.**
+
+**0.5 — zero delta** from ARC 026's close on all six measurements.
+
+### Stage 1 — four parallel sub-agents, disjoint file sets, provisioned worktrees
+
+**A — `EXERCISED-NEVER-RED` went to zero.** D3.25 discharged: `check_verify_logging` bound with five
+plants, one of which **edits no file** (`NIX_PLANE2_DISABLED` has existed since ARC 024 so the gate
+could drive a control, and nothing committed had ever driven it). `check_order_path_bans` bound with
+nine reds against real subjects. `check_python_deps` bound with plants into the real pin set. **Arms
+3 and 4 of `check_hook_suite` stay UNBOUND with measured reasons as their owners** — arm 4's defect
+branch is **unreachable by any plant** because `_probe_payload` consults `_environments_all_present`
+before `all_hooks`, so zero hooks becomes a vacuity complaint one layer up (D3.29). Found by
+attempting the plant, not by reading.
+
+**B — a live safety defect, found by a sweep nobody aimed at it.**
+`nixverify.actuation.session_state` swallowed a per-unit `systemctl show` failure and returned
+`"inactive"` — **the only verdict `permits_mutation` grants** — under evidence reading *"(measured,
+not assumed)"*. The trading-session mutation interlock could open on an unprobed unit while asserting
+the measurement it had just discarded. Now `unknown`, fail-closed, naming the units. It surfaced from
+B3's sweep for the CLASS (evidence authored independently of its measurement), four true positives
+across 21 checks and 12 modules. **B2's ceiling bit on the only guard there is**: lineage `the bulk
+check retrofit arc (ARC 025+)` → `ARC 025` → `ARC 027` = two re-ownings, derived from the baseline's
+own committed git history; `owner` deliberately left unchanged because re-pointing it is the move the
+ceiling forbids. **B1: 19 → 16 with three artifacts genuinely MEASURED and no path added to a
+`SUBJECTS` tuple to make the count fall**; two artifacts are covered by nothing at all. **B refused to
+ship a gate for the B3 class on its own numbers** — the rule over-fires >4× and still fires on
+`_drive_seal` after the repair, because the repair changed data flow and the rule reads control flow.
+**B4: v1.4 folded**, traceability proven against the committed blob `aaa6a28`, with two stated
+refusals.
+
+**C — R1-D.** A real `capture.py` on Core 1 over the real XPUB bus and SPSC ring, SIGKILLed by PID at
+**2,599,846 ticks/s** (rate reconstructed downstream from the ring's own sequence numbers, so no
+producer self-assertion is an input). **Attribution is the deliverable**: kill offsets randomised per
+trial, `detect-kill stdev 0.0039s` against `detect-start stdev 0.3509s`, ratio 91.1 — and a timer
+hypothesis predicts the opposite ordering, which a committed test feeds and requires to say no.
+Resolution bound 5 ms, stated in the gate's evidence. Per-channel transitions 0.698–0.703 s apart on
+deliberately unequal thresholds. **Plane 2: zero heartbeats lost across every killed arm**, proven by
+two independent transports; **`process_stop` is lost and named** — SIGKILL runs no code, so an
+operator reading Plane 2 alone cannot distinguish killed from hung from idle, and the clean-exit
+control in the same run proves that absence is attributable. C's own gate refused itself once
+(`kill offsets varied by only 0.0262s`) and the refusal became CANNOT_MEASURE plus stratified
+sampling — a gate that reddens at random is a coin toss. **C4's spelling refused with a measurement**:
+"cores 6–19 stay empty" is red on every run because of the gate's own runner, so it enforces "no Nix
+process is ASSIGNED to a reserved core" and reports occupancy.
+
+**D — the attribution class.** Three orders permuted **within a registry block only** after proving
+from `DEPENDS_ON` that no member depends on another, each swept twice, cold cache, 6 `__pycache__`
+trees cleared per sweep: **0 order-dependent, 0 unstable**. **My §0a warning was inverted and D
+measured it** — a same-order pair produces 12 spurious findings out of 23 claims, so the same-order
+sweep is the *baseline that makes the detector work*. Two instrument defects underneath:
+`check_observed_resource_claims` sweeps `sorted(declarations)` every run and is structurally blind to
+this class; `observe.py` applies `_WRITE_NOISE` in `_on_open` and not in `_on_path`, which is why ARC
+026 saw the `.pyc` claim at all. **D2 swept 38 cross-document groups over 258 occurrences from the
+DOCUMENTS rather than the registry** — `512 test functions → 782` disagrees, and ARC 026's own
+correction of the reflexivity figure had itself never been derived.
+
+### Stage 2 — convergence
+
+Plan regenerated: **diff against installed is none** (`added: []`, `removed: []`), independently
+confirming C's §0b substitution. Observer in three orders: 0 drift. **Census three ways 24 == 24 ==
+24.** Binding table built from **639 observations**, not carried forward.
+
+CHECK-DEBT conflicts resolved by reading both texts, never by trusting IDs — A's *discharge* of D3.25
+beat D's untouched base copy. **D2.31 and D3.21 marked discharged at integration** because B repaired
+both subjects and updated neither row; the correction is attributed in each row and D3.21's residual
+(D3.15's evidence was not re-taken) is stated rather than folded in. All four sub-agents wrote branch
+figures for the series row and said so (81/82/85/87); the integrated 103 is the gate's own
+`derived:ledger_rows`.
+
+**Two failures existed only at integration** — R0801 between `feed_kill_drill.py` and the broker
+modules, and five `Optional` narrowings — both **whole-tree properties invisible to the
+commit-scoped hook every sub-agent ran**, which is ARC 026 finding 4 recurring one arc later.
+
+### Close-out
+
+```
+verify.py    20 passed | 1 failed | 3 cannot measure | 0 skipped | 0 guarded     exit 1
+pytest       957 passed, 1 skipped, 2 xfailed
+pre-commit   8/8 Passed (--all-files)                                             exit 0
+claims       13/13 compared, 2/2 demonstrations                                   exit 0
+CHECK-DEBT   104 open (derived:ledger_rows=104 == stated:series_table_latest_row=104)
+census       24 == 24 == 24
+binding      23 BOUND | 1 BOUND-BY-MODIFIED-GATE   from 639 observations
+```
+
+Three of the four non-PASSes are exactly the stated baseline: `check_ibgateway_service` FAIL and
+`check_ibgateway_config` cannot-measure are Gateway-down; `check_observed_resource_claims`
+cannot-measure is its own masked-hazard clause biting. **There are no GUARDED checks, and the reason
+is this arc's last finding.**
+
+**D3.40 — a guard cannot survive its owner's own close-out.** Measured before the SESSION.md append:
+`20 | 1 | 2 | 0 | 1 guarded`. Measured after: `20 | 1 | 3 | 0 | 0 guarded`. **The non-PASS count did
+not change, only the class of one verdict.** Three individually-correct rules met: ARC 026 pointed
+`owner` at `ARC 027` so ARC 027 would pay; `completed_arcs` derives completion from `##` headings in
+this file, and every close-out appends one, so writing this summary retired the owner; and ARC 027's
+own ceiling reports `2 of 2 permitted re-owning(s) used`, forbidding a walk to ARC 028. Verbatim:
+`'ARC 027' has ALREADY COMPLETED — its close-out summary is in sessions/SESSION.md ... Re-point the
+marker at a live arc or take the red`. **The general rule: a guard's owner must always name a FUTURE
+arc, never the arc in flight.** `owner` was NOT re-pointed, the 16 artifacts were NOT discharged by
+being named, and the exclusion list was NOT widened. The committed control that reddened was
+**re-aimed, not weakened** — from *the owner can still pay* to a two-directional agreement between
+the gate's verdict and the live completion record, which additionally catches a GUARDED verdict
+standing under a dead owner. **Needs an operator ruling.**
+
+**§2.4 binding table: 23 BOUND · 1 BOUND-BY-MODIFIED-GATE · 0 EXERCISED-NEVER-RED · 0 UNBOUND.**
+`check_derived_claims` is the last unbound thing and is bound only by a modified copy of itself.
+
+One failure seen once and characterised rather than averaged over:
+`test_TWO_SUBSCRIBERS_are_BOTH_served_because_XPUB_VERBOSE_is_set` failed in the first traced suite
+and passes 3/3 traced, 3/3 untraced, and in a second full traced suite — a wall-clock budget in a
+suite that now contains ~2.6M ticks/s producers. **D3.39**, because a control that reddens under load
+teaches the operator to disbelieve it.
+
+Thirty debt rows opened, three discharged (D3.25, D2.31, D3.21). ARC 027 closes at exit 1 and
+says so; the only FAIL is a Gateway that is switched off.

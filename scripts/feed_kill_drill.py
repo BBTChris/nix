@@ -1,4 +1,19 @@
 #!/usr/bin/env python3
+# pylint: disable=duplicate-code
+#   R0801 pairs this file with `broker_datafeed_ibkr.py` and `broker_seam.py`
+#   over two CONSTRUCTOR CALLS — `ChannelFreshness(channel=…, venue_ts=…, lag=…,
+#   excess_staleness_s=…)` and `FeedLag(declared_lag_s=…, observed_lag_s=…,
+#   observed_n=…, provenance=…)`. Both types are `broker_seam`'s, and naming
+#   every field of a dataclass you are constructing is what the similarity
+#   checker sees; it is argument shape, not shared logic. Factoring them into a
+#   shared factory would couple the DRILL to the ADAPTER — the drill exists to
+#   kill the adapter's process and watch from outside, so a helper both of them
+#   called would be a dependency in exactly the direction the measurement must
+#   not have. On its own line because the Similarities checker does not honour a
+#   same-line pragma (see `check_venv.py`'s note). **Surfaced only at
+#   integration**: R0801 is a whole-tree property, invisible to the
+#   commit-scoped hook every sub-agent ran, which is the ARC 026 finding-4 class
+#   recurring one arc later.
 # pylint: disable=too-many-lines
 #   The file is ~1000 lines and roughly a third of them are the reasoning above
 #   the code: WHY the kill is randomised, WHY the two channels carry different

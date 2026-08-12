@@ -1,91 +1,91 @@
 {
- "registry_version": "1.0.0",
- "comment": "DERIVED by `verify.py --optimize` (ARC 024 §3.4) from the checks folder, not hand-maintained. Blocks are dependency levels, ordered least-dependent to most-dependent. A block is `parallel` only where every member declared its RESOURCES and those claims are pairwise disjoint (§3.2) — 'by definition no dependency' is checked, not taken. Re-derive rather than editing this file by hand.",
- "blocks": [
-  {
-   "name": "level-0-check_python_runtime",
-   "parallel": false,
-   "on_fail": "halt",
-   "checks": [
-    "check_python_runtime"
-   ],
-   "claims": []
-  },
-  {
-   "name": "level-0",
-   "parallel": false,
-   "on_fail": "continue",
-   "checks": [
-    "check_artifact_gate_coverage",
-    "check_canonical_tree",
-    "check_datafeed_bar_seal",
-    "check_ibgateway_config",
-    "check_ibgateway_service",
-    "check_name_coherence",
-    "check_node_identity",
-    "check_observed_resource_claims",
-    "check_price_ring",
-    "check_spec_citations",
-    "check_verify_logging"
-   ],
-   "claims": [
-    "file-write:checks",
-    "interpreter:sys.modules",
-    "interpreter:sys.path",
-    "journal",
-    "port:4002",
-    "reexecution-of-every-registered-check",
-    "shm",
-    "state/node_identity.json",
-    "subprocess:blkid",
-    "subprocess:findmnt",
-    "subprocess:git",
-    "subprocess:systemctl",
-    "subprocess:xdpyinfo"
-   ]
-  },
-  {
-   "name": "level-1-check_venv",
-   "parallel": false,
-   "on_fail": "halt",
-   "checks": [
-    "check_venv"
-   ],
-   "claims": [
-    "venv"
-   ]
-  },
-  {
-   "name": "level-2",
-   "parallel": false,
-   "on_fail": "continue",
-   "checks": [
-    "check_capture_plane2",
-    "check_core_map",
-    "check_datafeed_granted_mode",
-    "check_derived_claims",
-    "check_feed_kill_drill",
-    "check_hook_suite",
-    "check_order_path_bans",
-    "check_plane2_across_kill",
-    "check_python_deps",
-    "check_reserved_cores",
-    "check_state_bus"
-   ],
-   "claims": [
-    "cpu-affinity",
-    "file-write:/tmp",
-    "git-hooks",
-    "journal",
-    "network:pypi",
-    "pre-commit-store",
-    "shm",
-    "subprocess:git",
-    "subprocess:python",
-    "subprocess:python3",
-    "venv",
-    "zmq-ipc"
-   ]
-  }
- ]
+  "registry_version": "1.0.0",
+  "comment": "DERIVED by `verify.py --optimize` (ARC 024 \u00a73.4) from the checks folder, not hand-maintained. Blocks are dependency levels, ordered least-dependent to most-dependent. A block is `parallel` only where every member declared its RESOURCES and those claims are pairwise disjoint (\u00a73.2) \u2014 'by definition no dependency' is checked, not taken. Re-derive rather than editing this file by hand.",
+  "blocks": [
+    {
+      "name": "level-0-check_python_runtime",
+      "parallel": false,
+      "on_fail": "halt",
+      "checks": [
+        "check_python_runtime"
+      ],
+      "claims": []
+    },
+    {
+      "name": "level-0",
+      "parallel": false,
+      "on_fail": "continue",
+      "checks": [
+        "check_artifact_gate_coverage",
+        "check_canonical_tree",
+        "check_datafeed_bar_seal",
+        "check_ibgateway_config",
+        "check_ibgateway_service",
+        "check_name_coherence",
+        "check_node_identity",
+        "check_observed_resource_claims",
+        "check_price_ring",
+        "check_spec_citations",
+        "check_verify_logging"
+      ],
+      "claims": [
+        "file-write:checks",
+        "interpreter:sys.modules",
+        "interpreter:sys.path",
+        "journal",
+        "port:4002",
+        "reexecution-of-every-registered-check",
+        "shm",
+        "state/node_identity.json",
+        "subprocess:blkid",
+        "subprocess:findmnt",
+        "subprocess:git",
+        "subprocess:systemctl",
+        "subprocess:xdpyinfo"
+      ]
+    },
+    {
+      "name": "level-1-check_venv",
+      "parallel": false,
+      "on_fail": "halt",
+      "checks": [
+        "check_venv"
+      ],
+      "claims": [
+        "venv"
+      ]
+    },
+    {
+      "name": "level-2",
+      "parallel": false,
+      "on_fail": "continue",
+      "checks": [
+        "check_capture_plane2",
+        "check_core_map",
+        "check_datafeed_granted_mode",
+        "check_derived_claims",
+        "check_feed_kill_drill",
+        "check_hook_suite",
+        "check_order_path_bans",
+        "check_plane2_across_kill",
+        "check_python_deps",
+        "check_reserved_cores",
+        "check_state_bus"
+      ],
+      "claims": [
+        "cpu-affinity",
+        "file-write:/tmp",
+        "git-hooks",
+        "journal",
+        "network:pypi",
+        "pre-commit-store",
+        "shm",
+        "subprocess:git",
+        "subprocess:python",
+        "subprocess:python3",
+        "venv",
+        "zmq-ipc"
+      ]
+    }
+  ]
 }

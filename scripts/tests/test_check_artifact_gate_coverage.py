@@ -359,23 +359,66 @@ def test_a_baseline_owner_that_names_a_RANGE_is_CANNOT_MEASURE_naming_the_field(
     assert "RANGE" in result.detail
 
 
-def test_the_REAL_baselines_owner_is_a_single_arc_AND_CAN_STILL_PAY(
+def test_the_REAL_baselines_owner_is_a_single_arc_AND_THE_GATE_AGREES_WITH_THE_RECORD(
     _pytest_needs_no_fixture=None,
 ) -> None:
-    """The production artifact, pinned against BOTH iterations of the flaw.
+    """The production artifact, pinned against BOTH iterations of the flaw — and
+    now against the third, which is that a GUARD CANNOT SURVIVE ITS OWNER'S OWN
+    CLOSE-OUT.
 
-    ARC 025 pinned the shape. `"ARC 025"` satisfies the shape and ARC 025 has
-    since closed with the guard still standing, so shape alone is now known to be
-    insufficient — the second assertion is the one that would have caught it.
-    Derived from the live completion record, never from a number typed here.
+    ## Why this control was re-aimed in ARC 027, and what it did NOT give up
+
+    It used to assert `guard_owner_defect(owner, completed) == ""` — *the real
+    baseline's owner can still pay.* That is a statement about one happy state,
+    and ARC 027 walked into the state where it is false BY CONSTRUCTION:
+
+      * ARC 026 pointed `owner` at `ARC 027`, so that ARC 027 would discharge it.
+      * `completed_arcs` derives completion from `##` headings in
+        `sessions/SESSION.md`.
+      * **Every arc's close-out appends exactly such a heading.** So the instant
+        ARC 027 writes its own summary, `ARC 027` is a closed arc and a guard
+        naming it is dead — while the ARC 027 re-owning ceiling (2 of 2 used)
+        forbids walking the marker forward to ARC 028.
+
+    Three rules, each correct, meeting at a state the old assertion calls a bug.
+    It is not a bug: it is the ceiling working. **The general rule it exposes is
+    that a guard's owner must always name a FUTURE arc, never the arc in flight**
+    — and this one has run out of future. Recorded as D3.40.
+
+    ## What is asserted instead, and why it is STRICTER
+
+    The shape assertion is kept verbatim: a range, or an empty owner, still
+    fails here. What replaces the happy-state assertion is a two-directional
+    agreement between the gate's verdict on the REAL tree and the live
+    completion record:
+
+      * owner CLOSED  -> the gate must be CANNOT_MEASURE, naming its own field
+                         and saying ALREADY COMPLETED.
+      * owner LIVE    -> the gate must be GUARDED carrying that owner, or PASS
+                         if there is nothing left to guard.
+
+    The old form could only ever fail one way and could sit permanently red once
+    it did. This one has no permanently-red state and **catches a verdict that
+    disagrees with the record in EITHER direction** — including the one the old
+    assertion could not see: a gate reporting GUARDED under a dead owner.
     """
     from nixverify.contract import completed_arcs, guard_owner_defect
 
     payload = json.loads((REPO / gate.BASELINE).read_text(encoding="utf-8"))
+    owner = payload["owner"]
     completed, error = completed_arcs(REPO)
     assert not error, error
-    assert guard_owner_defect(payload["owner"]) == "", payload["owner"]
-    assert guard_owner_defect(payload["owner"], completed) == "", payload["owner"]
+    assert guard_owner_defect(owner) == "", owner
+
+    result = _run(REPO)
+    if guard_owner_defect(owner, completed):
+        assert result.status is Status.CANNOT_MEASURE, result
+        assert f"{gate.BASELINE}:owner" in result.detail, result.detail
+        assert "ALREADY COMPLETED" in result.detail, result.detail
+    else:
+        assert result.status in (Status.GUARDED, Status.PASS), result
+        if result.status is Status.GUARDED:
+            assert result.guard_owner == owner.strip(), result
 
 
 def test_PLANT_a_baseline_owner_that_has_ALREADY_COMPLETED_is_CANNOT_MEASURE(

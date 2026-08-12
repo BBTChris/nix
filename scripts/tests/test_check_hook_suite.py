@@ -407,8 +407,16 @@ def _real_store_dir() -> str:
 
 
 def _real_hook_sha() -> str:
-    hook = gate.git_layout(REPO).hooks_dir / gate.HOOK_TYPE
-    return hashlib.sha256(hook.read_bytes()).hexdigest()
+    hooks_dir = gate.git_layout(REPO).hooks_dir
+    # `hooks_dir` is Optional: `git_layout` returns None for it when the tree is
+    # not a git repository. Every caller here is about THIS repository's real
+    # installed hook, so a None is a broken premise and must say which one —
+    # not a TypeError about the `/` operator (check contract §18).
+    assert hooks_dir is not None, (
+        f"{REPO} reports no hooks directory — this control is about the REAL "
+        "installed hook and there is nothing to take a sha of"
+    )
+    return hashlib.sha256((hooks_dir / gate.HOOK_TYPE).read_bytes()).hexdigest()
 
 
 def test_arms_1_and_2_can_fail_against_the_real_repository(

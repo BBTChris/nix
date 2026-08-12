@@ -112,12 +112,28 @@ def test_two_trials_are_a_REFUSAL_however_clean_they_look() -> None:
 # --------------------------------------------------------------------------
 
 
+def _ch(report: object, channel: FeedChannel) -> drill.ChannelFreshness:
+    """`report.channel(c)`, refusing a miss BY NAME rather than by AttributeError.
+
+    `channel()` returns `None` for a channel the report does not carry, and every
+    assertion below is about a channel it MUST carry. Reading `.state` off `None`
+    would fail with a traceback naming the attribute instead of the channel —
+    which is the exit-code-alone defect one layer down (check contract §18).
+    """
+    entry = report.channel(channel)  # type: ignore[attr-defined]
+    assert entry is not None, (
+        f"the report carries no {channel!r} entry at all — the assertion below is "
+        "about that channel's verdict, and an absent channel is a different finding"
+    )
+    return entry
+
+
 def test_each_channel_is_judged_against_ITS_OWN_threshold() -> None:
     """The same age is fresh on one channel and stale on the other. The point."""
     now = 1000.0
     report = drill.report_for({"tick": now - 0.50, "poll": now - 0.50}, now)
-    assert report.channel(FeedChannel.TICK).state is ChannelState.STALE
-    assert report.channel(FeedChannel.POLL).state is ChannelState.FRESH
+    assert _ch(report, FeedChannel.TICK).state is ChannelState.STALE
+    assert _ch(report, FeedChannel.POLL).state is ChannelState.FRESH
     assert report.stale_channels == (FeedChannel.TICK,)
     assert report.fresh_channels == (FeedChannel.POLL,)
 
@@ -125,15 +141,16 @@ def test_each_channel_is_judged_against_ITS_OWN_threshold() -> None:
 def test_a_channel_with_no_venue_clock_is_CANNOT_MEASURE_never_stale() -> None:
     """`ChannelState`'s third member: an unasked question is not a degradation."""
     report = drill.report_for({"tick": 999.9}, 1000.0)
-    assert report.channel(FeedChannel.POLL).state is ChannelState.CANNOT_MEASURE
+    assert _ch(report, FeedChannel.POLL).state is ChannelState.CANNOT_MEASURE
     assert FeedChannel.POLL not in report.stale_channels
 
 
 def test_the_report_carries_the_numbers_behind_every_verdict() -> None:
     """A verdict whose inputs are stripped cannot be recomputed by an operator."""
     now = 1000.0
-    entry = drill.report_for({"tick": now - 0.05, "poll": now - 0.05}, now).channel(
-        FeedChannel.TICK
+    entry = _ch(
+        drill.report_for({"tick": now - 0.05, "poll": now - 0.05}, now),
+        FeedChannel.TICK,
     )
     assert entry.excess_staleness_s == pytest.approx(0.05)
     assert entry.threshold_s == drill.THRESHOLD_S[FeedChannel.TICK]
