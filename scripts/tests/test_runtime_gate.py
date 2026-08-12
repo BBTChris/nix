@@ -215,31 +215,56 @@ def test_verdict_exits_with_its_code_and_names_itself(
     assert "SELECTED=12" in out
 
 
-def test_zero_selection_unreadable_db_is_cannot_measure() -> None:
-    """An unreadable database means scope is unknowable: exit 2, not exit 1."""
+def test_zero_selection_unreadable_db_is_cannot_measure(
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """An unreadable database means scope is unknowable: exit 2, not exit 1.
+
+    ARC 025 Stage 3.3: this control asserts the REASON, not the exit code alone.
+    Exit 2 is reachable from four distinct arms of `_zero_selection` and from an
+    unrelated crash; a control that reads only the number cannot tell which one
+    fired, which is the exact shape of ARC 024's re-verify defect.
+    """
     with pytest.raises(SystemExit) as exc:
         runtime_gate._zero_selection(_run(state="unreadable(DatabaseError)"), [])
     assert exc.value.code == 2
+    out = capsys.readouterr().out
+    assert "RUNTIME-GATE verdict: CANNOT-MEASURE" in out
+    assert "unreadable, so scope is unknowable" in out
 
 
 def test_zero_selection_with_drift_is_selector_broken(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
-    """Under noescalate, drift with zero selection is named SELECTOR-BROKEN: exit 1."""
+    """Under noescalate, drift with zero selection is named SELECTOR-BROKEN: exit 1.
+
+    ARC 025 Stage 3.3: asserts the taxonomy NAME and the drift count that
+    justified it, not the exit code alone — exit 1 is shared with the
+    recorded-failures arm and with an outright crash.
+    """
     monkeypatch.setenv(runtime_gate._NOESCALATE_ENV, "noescalate")
     with pytest.raises(SystemExit) as exc:
         runtime_gate._zero_selection(_run(state="present", drift=["a.py"]), [])
     assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert "RUNTIME-GATE verdict: SELECTOR-BROKEN" in out
+    assert "1 in-scope file(s) differ from the db record" in out
+    assert "escalation suppressed" in out
 
 
 def test_zero_selection_with_recorded_failures_is_selector_broken(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
     """A recorded failure nobody re-ran is named, not treated as an absence of evidence."""
     monkeypatch.setenv(runtime_gate._NOESCALATE_ENV, "noescalate")
     with pytest.raises(SystemExit) as exc:
         runtime_gate._zero_selection(_run(state="present", recorded_failures=3), [])
     assert exc.value.code == 1
+    out = capsys.readouterr().out
+    # ARC 025 Stage 3.3 — the REASON, not the code. This arm shares exit 1 with
+    # the drift arm, so the count is what distinguishes them.
+    assert "RUNTIME-GATE verdict: SELECTOR-BROKEN" in out
+    assert "db records 3 failed test(s) yet nothing was selected" in out
 
 
 def test_drift_escalates_rather_than_failing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -256,13 +281,24 @@ def test_drift_escalates_rather_than_failing(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_unreadable_db_stays_terminal_even_with_escalation_available(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
-    """An unreadable database is the one arm escalation cannot rescue."""
+    """An unreadable database is the one arm escalation cannot rescue.
+
+    ARC 025 Stage 3.3: the whole point of this control is WHICH arm terminated —
+    with escalation available, every other zero-selection path returns instead of
+    exiting. Asserting only `code == 2` would pass if the function crashed before
+    reaching the unreadable branch at all.
+    """
     monkeypatch.delenv(runtime_gate._NOESCALATE_ENV, raising=False)
     with pytest.raises(SystemExit) as exc:
         runtime_gate._zero_selection(_run(state="unreadable(DatabaseError)"), [])
     assert exc.value.code == 2
+    out = capsys.readouterr().out
+    assert "RUNTIME-GATE verdict: CANNOT-MEASURE" in out
+    assert "unreadable, so scope is unknowable" in out
+    # Escalation was AVAILABLE and was not taken — that is the property.
+    assert "escalation suppressed" not in out
 
 
 def test_zero_selection_nothing_changed_is_cannot_measure_not_pass(
