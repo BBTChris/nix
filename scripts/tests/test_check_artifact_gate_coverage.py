@@ -1182,34 +1182,71 @@ def test_a_COMMITTED_dead_owner_DEFERS_while_ASSIGNING_one_now_FAILS(
 
 
 def test_the_REAL_TREES_in_flight_arc_would_be_REFUSED_as_an_owner_TODAY() -> None:
-    """§0g against the REAL records, without touching the production baseline.
+    """§0g against the REAL records — and it must survive its own close-out.
 
     Doctrine C.8 forbids planting into `checks/gate_coverage_baseline.json`, so
     the drive above lands in a throwaway repository. What is asserted HERE is
-    that the rule is not inert on the real tree: the real ledger and the real
-    session log do identify an arc in flight, and naming it would be refused.
+    that the rule is not inert.
 
-    If this ever reports that no arc is in flight, the §0g arm is silently off
-    for this repository — which is exactly the state that existed before ARC 028
-    added the series row, and which was measured rather than assumed.
+    ## Why this control was re-aimed, and it is D3.40 RECURRING INSIDE D3.40'S FIX
+
+    Its first spelling asserted `in_flight_arc(REPO) is not None` — *the real
+    records identify a running arc, and naming it would be refused.* MEASURED at
+    ARC 028's own close-out: that assertion is **false by construction, for every
+    arc, forever.** `in_flight_arc` derives the running arc as the newest series
+    row the session log does not close; the close-out APPENDS the `##` heading
+    that closes it. So the control went red at the write-back of the very arc
+    that built it.
+
+    That is precisely the shape D3.40 recorded one layer down — a guard whose
+    input is derived from the close-out record cannot survive the close-out — and
+    it reappeared **inside the mechanism written to prevent it**. Recorded as
+    D3.100 rather than quietly patched, because the recurrence is the finding.
+
+    ## What is asserted instead, and why it is STRICTER
+
+    Two arms, and neither can be satisfied by the other:
+
+      * The rule is driven against a **constructed** in-flight arc, so the §0g
+        arm is exercised on every run in every phase of every arc — mid-arc and
+        at close-out alike. The old form exercised it only mid-arc, which is the
+        half of the cycle where nobody is reading.
+      * The real records are still read, and `in_flight_arc` must ANSWER — an
+        error is a failure, because "which arc is running" being unanswerable is
+        the reading that turns §0g off. When it answers *an* arc, naming that arc
+        must be refused. When it answers *none* — the between-arcs and close-out
+        state — that is reported, not asserted away, and it is not a defect.
     """
     from nixverify.contract import (
         completed_arcs,
         guard_owner_assignment_defect,
+        guard_owner_defect,
         in_flight_arc,
     )
 
-    live, error = in_flight_arc(REPO)
-    assert not error, error
-    assert live is not None, (
-        "no arc is in flight per docs/CHECK-DEBT.md and sessions/SESSION.md, so "
-        "the §0g arm cannot fire on this tree at all"
-    )
     completed, completion_error = completed_arcs(REPO)
     assert not completion_error, completion_error
-    defect = guard_owner_assignment_defect(f"ARC {live:03d}", completed, live)
-    assert "is the arc IN FLIGHT" in defect, defect
-    # And the read rule does NOT catch it, which is why §0g had to exist.
-    from nixverify.contract import guard_owner_defect
+    assert completed, "no completed arc parsed from the session log — scope is empty"
 
-    assert guard_owner_defect(f"ARC {live:03d}", completed) == ""
+    # ARM 1 -- the rule itself, exercised unconditionally against a CONSTRUCTED
+    # in-flight arc. This is what keeps §0g bound at close-out.
+    synthetic = max(completed) + 1
+    defect = guard_owner_assignment_defect(f"ARC {synthetic:03d}", completed, synthetic)
+    assert "is the arc IN FLIGHT" in defect, defect
+    # And the READ rule does not catch it, which is why §0g had to exist at all.
+    assert guard_owner_defect(f"ARC {synthetic:03d}", completed) == "", (
+        "the read rule already refuses an in-flight owner, which would make the "
+        "write-time rule redundant -- §0g exists because it does not"
+    )
+
+    # ARM 2 -- the real records must ANSWER the question, whatever the answer.
+    live, error = in_flight_arc(REPO)
+    assert not error, (
+        f"in_flight_arc could not answer: {error}. An unanswerable 'which arc is "
+        "running' must never be read as 'none is' -- that reading is what turns "
+        "the §0g rule off silently"
+    )
+    if live is not None:
+        assert "is the arc IN FLIGHT" in guard_owner_assignment_defect(
+            f"ARC {live:03d}", completed, live
+        ), f"ARC {live:03d} is in flight and naming it as an owner was permitted"

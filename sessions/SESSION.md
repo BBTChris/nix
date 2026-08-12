@@ -2605,3 +2605,246 @@ teaches the operator to disbelieve it.
 
 Thirty debt rows opened, three discharged (D3.25, D2.31, D3.21). ARC 027 closes at exit 1 and
 says so; the only FAIL is a Gateway that is switched off.
+
+## ARC 028 — R2-A: The Limiter Spine (2026-08-12)
+
+**Canonical path: `/home/bbt/nix` (absolute).** First product arc on the safety spine. The code that
+decides whether an order exists at all: the firewall and the exit brake (§10 Core 2), the sole writer
+of financial truth (§9), and nothing reaches the broker without it (§12.5).
+
+### Phase 0 — corrections, and a refusal that changed the item
+
+**0.1 — one delta, and it was not the tree.** The working tree was byte-identical to ARC 027's HEAD,
+yet pytest gave `953 passed / 4 failed` against the expected 957. Isolated to the **invocation
+spelling**: `python -m pytest -k reserved_cores` → 4 failed; `./.venv/bin/python -m pytest -k
+reserved_cores` → 16 passed. Same bytes, same box, same minute. `core_map._mentions_home` refuses to
+resolve bare words against the cwd — correctly, since that rule keeps an operator's shell out of a
+core census — but an activated venv spells the interpreter `python`, so no argv token named a path
+and **the census could not see its own author**. `check_reserved_cores` was behaving correctly,
+returning CANNOT_MEASURE naming its own pid; the enumerator was blind, and `nix_processes`' own
+docstring had already conceded the miss in prose. The predicate written for the case
+(`/proc/<pid>/exe`) **measurably does not cover it** — the venv interpreter is a symlink, so the
+kernel records `/usr/bin/python3.14` — and that disproof is banked as a test so nobody deletes the
+predicate that does work believing `/proc/exe` covers it.
+
+**0.2 — worse than the brief stated.** ARC 027's header read `77 → 103 (+26)` while its own sentence
+said thirty opened and three discharged (+27) and the gate two hundred lines above said 104. The
+wrong `103` appears **three** times, and the sharp one is `RESULTS.md`:379 and `SESSION.md`:2559,
+both reading *"the integrated **103** is `check_derived_claims`' own `derived:ledger_rows`, not a
+hand count"* — **a figure claiming derivation the gate never produced.** The ledger's own series row
+was right at 104 all along; only the narration was wrong. **Correction, per the operator ruling:
+`SESSION.md`:2559 was NOT edited.** The banked sentence stands and this is its correction: the ARC
+027 figure is **104**, `77 + 30 − 3`, and it always was.
+
+**Answer to the question asked:** the D2 auditor's SCOPE does list `downloads/RESULTS.md`; its
+**extractor** is blind to the class, and that is the finding. Measured: `restated_figures.figures()`
+returns **0 occurrences** anywhere in `RESULTS.md`:495-505 and `_COUNT`/`_RATIO` both return `[]` on
+the header line. Two independent causes — `_COUNT` requires a noun after the digits, and the
+reconciling counts are spelled in words; and the auditor detects *cross-document restatement* while
+this is *intra-sentence arithmetic*. **D3.82.**
+
+**0.3 — a refusal with a measurement, and it changed the item.** The brief said to withdraw "0c" from
+the check contract and `CLAUDE.md`. Measured first: `0c` **on disk is a different rule, and it is
+live** — CHECK-DEBT D2.30/D3.20 and `CLAUDE-CHANGELOG`:96 all cite it as *"a retrofitted check is a
+NEW check"*, ARC 025's, shipping as check-contract **rule 9**. Withdrawing by the label would have
+deleted the retrofit rule. The rule actually withdrawn — binding turns on a declaration-only
+classification — **had no on-disk name at all**, which is the finding: it governed three arcs'
+binding verdicts without ever being written into the contract it governed, so nothing on disk could
+be edited to withdraw it and nothing could have contradicted it. Its grounds are that `contract.py`
+sits on every check's verdict path and changed in three consecutive arcs, so the classifier's output
+was a **constant** — and a rule whose output is a constant decides nothing. Recorded as **CHECK-A7**;
+`CLAUDE.md` gains **rule 13**. `measurement_path.py` retained as a structural instrument only.
+**D3.81.** The row demonstrates its own claim: written with the section glyph it drove
+`check_spec_citations` exit 0 → exit 1 on its own line.
+
+**0.4 — the premise was partly stale, and it is said rather than worked around.** The intra-ledger
+`AMENDMENT 5` collision was already repaired on disk by ARC 027. What was owed was the **mechanism**:
+prefixes `SPEC-A<n>` / `CHECK-A<n>` (numbers unchanged, nothing renumbered, SPEC-A5's `(D1.38)`
+attribution restored after the first pass dropped it) plus `test_amendment_ledgers.py` enforcing
+prefix, per-ledger number uniqueness, disjoint prefixes and refinement exclusion — driven red both
+ways against the real ledger and restored byte-identically (sha256 verified).
+
+**0.6 — the seam frozen.** `scripts/nixrisk/seam.py`: types and ports, no behaviour. Sync/async
+declared per the §2A precedent and argued from the spec — **every gate verb is synchronous**, because
+§5's single-threaded loop eliminates fill-vs-tick races by construction and an awaitable `evaluate`
+is a declared suspension point mid-pass; Plane 1 splits a synchronous non-durable `enqueue` from the
+drain because §12.4 needs exactly that split. `TerminalPath` transcribed from §3 and closed.
+`check_limiter_seam` guards it, and **the coverage ratchet is why it exists now rather than later —
+it correctly FAILED the commit on two new uncovered artifacts.**
+
+### Stage 1 — four parallel sub-agents, provisioned worktrees
+
+**A — the two-phase gate pass.** `GatePass` partitions by each rule's declared phase **at boot**, so
+ordering is a property of the executor, not the list: **hand it the manifest reversed and execution
+order does not move.** Proved by observation — real rule objects appending their own name to a shared
+log, handed in scrambled phase order (B,B,A,B,A,A,A), with `GateOutcome.evaluated` compared against
+the rules' own log so an executor that fabricates a record moves exactly one of the two. HALT is
+`evaluated[0]` on **every** pass, so §11.5 is checkable from any outcome and not only from a denial.
+A's own §0a finding: its discriminating-power guard was first spelled *"refuse if handed == observed
+order"*, and **the source-order plant turned the gate's sharpest FAIL into CANNOT_MEASURE**, because
+an executor that iterates the manifest makes them identical *by being the defect*. The O(1) claim was
+made only as a **shape**: rows yielded at |positions| ∈ (1, 64, 512, 4096) → `(1,0,0) (64,0,0)
+(512,0,0) (4096,0,0)`, while the planted summing defect reports `[1,64,512,4096]` **and the pass
+still approves** — nothing but the shape sees it.
+
+**B — the reservation lifecycle, and my hazard was half backwards.** Measured: a **double release
+breaks `Σ == fsum(TAKEN)` at the instant it happens**, so §11.7's mandated reconcile reports it next
+cycle; **a leak breaks no identity at all** — it sums into the incremental aggregate and the full
+scan identically, drift is exactly `0.0` forever, and §11.7 is structurally blind to it. The other
+half — invisible to a *naive leak test* — confirmed by driving the planted ledger and showing
+`outstanding() == ()` holds under the double release. B2's circularity closed mechanically: the path
+set comes from the spec parser and **no release-path name appears anywhere in the gate's source**.
+
+**B's finding about the SPEC (D3.55):** §3:151 fixes the terminal set with *blackout-onset
+cancellation*, but §3:173 says *"Blackout/**HALT** onset ⇒ Limiter cancels all pending ENTRY
+orders"* — and in this spec's own taxonomy HALT (§12.5) is not a blackout (§6.1–6.3). A Limiter
+cancelling on HALT onset has only bad options for the Plane-1 row. **No enum member was added.**
+Needs an architect ruling.
+
+**C — instrument debt.** `check_derived_claims` **BOUND**, the hedge that a shipped-bytes control
+might not be constructible refused with three of them. Coverage guard decomposed to **16 per-artifact
+rows**, ceiling **inherited rather than laundered** (reading only the new schema would have reset
+every lineage to length 1 by changing a file format), §0g enforced **at assignment**. The split
+revealed what the aggregate hid: 13 rows at the ceiling, two never re-owned, and **4 artifacts named
+by nothing — not the 2 the brief claimed.** D3.29/D3.30 discharged — arm 4's unreachability was
+**ordering, not detection**. D3.39 discharged — the 500 ms budget was measured **never to be spent**,
+so raising it was refused, and the original staging was found **vacuous**.
+
+**D — `risks/` as data.** 29 §12A knobs across five per-module configs, the count **derived** (the
+gate locates §12A at run time, takes the span, extracts backticked `UPPER_SNAKE` tokens, and reads
+each cited line back to confirm it carries that name; a control asserts no knob name and no count
+literal appears in the gate's source). **D refused a hazard stated backwards:** *"a code path keyed
+off a config value"* is what config **is** — the real hazard is the inverse, a config value naming a
+code path, and the gate bans that direction (no strings in value position at all).
+
+### Stage 2 — the financial picture and Plane 1
+
+**Atomicity as a property of the type, not a discipline:** the book's entire state is one immutable
+`FinancialPicture`; a mutation builds a new one and rebinds one name, so a reader does one attribute
+load and holds a whole self-consistent object. No lock — §11 forbids one on the entry path.
+
+**Proven under a real race, with the detector proven first.** Writer thread against reader thread,
+terminating on **arrival** (reads × distinct versions), never on a clock, at `switchinterval=1e-5`.
+**Two plants run before the subject is judged and each must tear or the verdict is CANNOT_MEASURE:**
+`_TwoReadConsumer` **1996 tears / 2000 reads (99.8%)**, `_TwoAttributeBook` **34–98 / 2000 (2–5%)**.
+Subject: 2000 reads, 64 versions, **0 tears** — and the evidence prints the weaker plant's rate
+beside it, so the zero carries stated power. **The detector had to be built twice**: the obvious
+coherence predicate is provably blind to §3's actual tear, because a publisher reading balance at
+generation *k* and the table at *k+1* then deriving consistently emits a snapshot every predicate
+accepts. A generation link was planted instead, and the blind spot is asserted in a test that fails
+the day it stops being true (D3.95).
+
+**Fsync proven as an observed syscall**, not inferred: `strace -f -y` requiring
+`fsync(3</tmp/nixwal-…/fsync.wal>) = 0`, with a withheld-sync control at **0** matches. Crash gap
+proven with a process that really died, kernel-reaped **-9**.
+
+**And the brief's hazard was stated backwards, refuted with a measurement:** a SIGKILL cannot test
+fsync. The same producer run with `--no-sync` (`fsyncs=0`, `durable_bytes=0`), genuinely SIGKILLed
+and reaped `-9`, leaves **4128 rows / 624,092 bytes fully readable**. A durability gate built on the
+kill alone is green on a WAL with the fsync deleted. Both figures now print side by side on every
+run. **D3.93.**
+
+Found by the instrument: the wire schema key was `_schema`, which `statebus._decode` strips — 18.9 MB
+carried, **zero** pictures decoded, reported CANNOT_MEASURE rather than agreement.
+
+### Three of my own defects, every one found by a sub-agent refuting me
+
+1. **The seam gate did not guard the seam's most-argued property.** I told all four sub-agents
+   `check_limiter_seam` would redden on a sync/async change. B measured it against the shipped bytes:
+   all four ledger verbs rewritten `async def` → **PASS, empty detail**. ARM 3 now exists — and
+   building it produced four more of my own, each found by a plant failing to plant: `Plane1Port`
+   carries a **digit** and my class pattern was `[A-Z][A-Za-z]*`, so the port the arc argues hardest
+   about was outside the comparison; the floor **discarded defects already observed** to report that
+   it could not measure; a port named only as `Class.verb` could be deleted outright and still pass;
+   and `{...} | ports - set(classes)` — `-` binds tighter than `|`, so the gate reported *every* port
+   missing.
+2. **The Phase 0 repair reintroduced its own defect one directory over.** A, B and C each
+   independently reported the reserved-cores controls red in their worktrees and two proved it
+   pre-existing by stashing their whole diff. `_runs_tree_venv` asked `is_relative_to(nix_home)`,
+   false in every provisioned worktree because `.venv` is a symlink and `activate` bakes the primary
+   path. **I had replaced a verdict that was a function of invocation *spelling* with one that was a
+   function of invocation *environment*.** Both sides now compared by resolution.
+3. **That repair's own cost, measured and recorded rather than left to be found (D3.84).** With two
+   trees live the primary census attributed 8 processes, **3 of them a sibling worktree's**, every
+   one via the `venv` predicate and none via `argv`. The two predicates now disagree about tree
+   identity. Over-attribution is the conservative half for a core census, but it makes the verdict a
+   function of concurrent arc activity — the D3.39 class. A repair exists (conjoin `cwd`) and would
+   redden the control whose child is spawned with `cwd="/"` precisely to prove argv-independence;
+   re-aiming it on a third change to a safety census mid-arc is the move the doctrine warns about.
+   The honest closure is D1.42's.
+
+### Convergence, and two artifacts nobody could attribute
+
+Plan regenerated: **identical to the live registry**, added `[]`, removed `[]` — which matters this
+arc, because five branches hand-added checks and `registry.json` conflicted twice. The union was only
+a way to reach parseable JSON; the derivation confirmed it independently. Observer in three orders,
+cold cache, each swept twice: **0 order-dependent, 0 unstable.** Census **30 == 30 == 30**.
+
+**D3.99 — `scripts/nix_status.sh` (561 lines) and `scripts/tests/test_nix_status.py` (250 lines) were
+on disk at `/home/bbt/nix`, staged by the mandated `git add -A`, and in NO COMMIT ON ANY BRANCH.**
+Found only because they broke three commit gates. Provenance measured four ways, all negative:
+`git log --all` returns nothing; `git cat-file -e HEAD:<path>` says *exists on disk, but not in HEAD*;
+nothing **committed** references either; a working-tree grep returns only the two files themselves.
+They did not exist at arc start. No sub-agent reported them, and all five were told to work only
+inside their worktrees. The test's docstring claims `nix_status.sh` v1.0.0 *shipped* with two faults —
+**v1.0.0 is in no commit either.** **NOT ADOPTED**; preserved with sha256 so an operator can restore
+them deliberately. This is ARC 024's failure class inverted and it is why the write-back gate exists:
+**a file's presence on disk is evidence of nothing; `HEAD`'s tree is the record.**
+
+### Close-out
+
+```
+verify.py    26 passed | 1 failed | 3 cannot measure | 0 skipped     exit 1   (30 checks)
+pytest       1204 passed, 1 skipped, 2 xfailed
+pre-commit   8/8 Passed (--all-files)                                exit 0
+claims       13/13 compared, 2/2 demonstrations                      exit 0
+CHECK-DEBT   142 open (derived:ledger_rows == stated:series_table_latest_row)
+census       30 == 30 == 30
+binding      30 BOUND | 0 UNBOUND | 0 BOUND-BY-MODIFIED-GATE   from 816 observations
+drift        0 order-dependent, 0 unstable   (3 orders x 2 sweeps, cold cache)
+```
+
+**§3.4 binding table: 30 BOUND · 0 BOUND-BY-MODIFIED-GATE · 0 EXERCISED-NEVER-RED · 0 UNBOUND.**
+Rebuilt from 816 measured observations, never carried forward. **For the first time in this project's
+history every registered check is bound to its own shipped bytes** — `check_derived_claims` was the
+last one bound only by a modified copy of itself.
+
+**Every non-PASS named, and all four are the stated baseline.** `check_ibgateway_service` FAIL and
+`check_ibgateway_config` cannot-measure are Gateway-down; `check_observed_resource_claims`
+cannot-measure is its own masked-hazard clause biting; `check_artifact_gate_coverage` cannot-measure
+is **16 per-artifact rows, sixteen times**, because until an artifact is genuinely measured that is
+the honest verdict. **GUARDED checks: none.**
+
+**Discharged: D3.29, D3.30, D3.39**, each with its own re-measurement. **Opened: 37** — thirty of
+them by an instrument, by a plant that failed to plant, or by a sub-agent refuting a stated premise.
+
+**NOT IN THIS ARC, and no gate implies otherwise:** stop conversion and trailing maintenance ·
+protective-exit wiring to broker-order · session-close flatten · full HALT semantics and auto-clear ·
+cold-start reconciliation · full Postgres schema integration · the Sentinel · Scoring · the Allocator.
+**A Limiter that gates, reserves, publishes and logs but CANNOT EXIT is not a safety spine yet.**
+
+**Returned to the architect:** D3.55 (HALT onset vs blackout onset in §3's terminal set — needs a
+ruling before the Plane-1 row can name a cause), D3.99 (provenance), and the tap session, still owed
+by twelve arcs and still the only FAIL in `verify.py`.
+
+### Close-out addendum — D3.100, found by the write-back itself
+
+**D3.40's class recurred inside the mechanism built to prevent it.** ARC 028's §0g refuses an owner
+naming the arc in flight, *at write time*, deriving that arc as the newest CHECK-DEBT series row the
+session log does not close. The rule is correct. Its control asserted `in_flight_arc(REPO) is not
+None` — and **the close-out appends the very `##` heading that closes the newest series row**, so the
+assertion is false by construction, for every arc, forever. It went red at the write-back of the arc
+that built it, exactly as D3.40 went red at the write-back of the arc that owned it, one layer down.
+
+Repaired and re-bound with two arms that cannot satisfy each other: the rule is driven against a
+**constructed** in-flight arc, so §0g is exercised in every phase of every arc rather than only
+mid-arc — the half of the cycle nobody reads — and the real records must still **answer**, with an
+error a failure and an answer of *none* reported rather than asserted away. Re-bound by a plant that
+leaves the helper in place and neuters only the rule, so it fails on the property:
+`assert 'is the arc IN FLIGHT' in ''`.
+
+**The general rule, now stated twice from two directions: any instrument whose input is derived from
+the close-out record must be exercised against a CONSTRUCTED state, not only the live one — the live
+one is guaranteed to be the wrong state at exactly the moment the instrument is read.**
+
+Final ledger: **CHECK-DEBT 104 → 142**, thirty-seven opened, three discharged, derived == stated.
