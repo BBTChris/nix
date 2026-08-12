@@ -33,7 +33,13 @@ DISRUPTIVE = True
 #: Nothing must run before this; the venv gate is a separate concern that this
 #: check does not depend on for its own measurement (it resolves the venv path
 #: itself and reports CANNOT_MEASURE if it is absent).
-DEPENDS_ON: tuple[str, ...] = ()
+#: ARC 025: was `()`, and that was an UNDER-declaration measured by `--optimize`
+#: once the floor gained a halt policy. This check's entire subject is the set of
+#: packages installed INSIDE `.venv`; running it before `check_venv` has proven
+#: the venv answers means reporting on the contents of something not yet shown to
+#: exist. `RESOURCES` already claimed `venv` — the ordering edge was the half that
+#: was missing, and the plan cannot infer it from a resource claim.
+DEPENDS_ON: tuple[str, ...] = ("check_venv",)
 #: The shared .venv, exclusively — pip mutates it, so no other check may run in
 #: parallel with this one while also claiming it. This is the D3.12 hazard
 #: written down as a claim instead of left in a docstring.

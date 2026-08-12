@@ -81,7 +81,12 @@ DISRUPTIVE = False
 #: ARC 024 orchestration declarations. See `nixverify/declarations.py` for the
 #: contract these satisfy and why they are read without importing this module.
 DEPENDS_ON: tuple[str, ...] = ()
-RESOURCES: tuple[str, ...] = ("journal",)
+#: `file-write:checks` added ARC 025: `_arm4_control` writes a scratch
+#: `.plane2_control_<nonce>` file into `checks/` to build the dead transport its
+#: control needs. OBSERVED by `check_observed_resource_claims`; the declaration
+#: said `journal` alone and was false about the directory every other check is
+#: enumerated from.
+RESOURCES: tuple[str, ...] = ("journal", "file-write:checks")
 TIME_BOUND = True
 #: Derived from READBACK_TIMEOUT_S below, not from an observed duration.
 EXPECTED_S = 6.0

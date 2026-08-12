@@ -223,10 +223,30 @@ def test_verify_only_on_the_same_control_needs_no_reverify(tmp_path: Path) -> No
 
 
 def test_reverify_of_a_missing_check_is_cannot_measure(tmp_path: Path) -> None:
-    """A re-verify that could not run is never read as confirmation."""
-    outcome = reverify(tmp_path / "nope.py", tmp_path, timeout=30)
+    """A re-verify that could not run is never read as confirmation.
+
+    ARC 025 Stage 3.3 — THIS CONTROL IS ARC 024'S OWN INCIDENT, and until now it
+    still asserted the exit code alone.
+
+    §2.2's re-verify control originally passed because the subprocess CRASHED and
+    also returned 1. The identical ambiguity lives here: exit 2 is what the
+    INTERPRETER returns when it cannot open the file, and it is also what a check
+    that ran perfectly well and honestly reported CANNOT_MEASURE returns. Reading
+    the number cannot tell those apart, so the assertion below could be satisfied
+    by a `reverify` that had stopped executing checks entirely.
+
+    The reason is the discriminator, so the reason is asserted: the failure is
+    the interpreter refusing to open THIS path, and nothing downstream ran.
+    """
+    missing = tmp_path / "nope.py"
+    outcome = reverify(missing, tmp_path, timeout=30)
     assert outcome.exit_code == 2
     assert outcome.confirmed is False
+    # The REASON: the interpreter named the file it could not open.
+    assert str(missing) in outcome.stderr, outcome.stderr
+    assert "No such file or directory" in outcome.stderr, outcome.stderr
+    # And nothing ran: a check that had executed would have printed its verdict.
+    assert outcome.stdout == "", outcome.stdout
 
 
 def test_only_exit_zero_counts_as_confirmed() -> None:

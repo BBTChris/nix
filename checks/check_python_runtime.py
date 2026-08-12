@@ -14,9 +14,56 @@ from pathlib import Path
 import _preamble  # noqa: F401  pylint: disable=unused-import,wrong-import-order
 from nixverify.contract import CheckResult, Context, Mode, Status
 
+# R0801 pairs this module's ARC 025 declaration block with the identical block in
+# every other retrofitted check. That similarity is the CONTRACT, not copied
+# logic: `nix_check_contract.md` §4.4 fixes the seven symbol names, and
+# `scripts/nixverify/declarations.py` reads them by AST, so each must be a
+# module-level literal assignment under exactly those names in every check. The
+# only way to deduplicate them is a shared module the AST reader cannot follow,
+# which would defeat the mechanism. Hoisted to module scope because R0801 is
+# reported at line 1 (see check_spec_citations.py's note).
+# pylint: disable=duplicate-code
 PRIVILEGE = "user"
 INTERACTIVE = False
 DISRUPTIVE = False
+
+# --- ARC 025 orchestration declarations (read statically, never imported) ---
+#: Nothing has to run before this. It is the bootstrap floor's first member in
+#: the plan, but that is the PLAN's fact, not the check's: `nix_check_contract.md`
+#: §4.4 — declarations are the check's, scheduling is the plan's.
+DEPENDS_ON: tuple[str, ...] = ()
+#: Claims NOTHING. It reads `sys.version_info` of the process it is already
+#: running in: no file is opened, no socket dialled, no service touched, nothing
+#: written anywhere. `()` is a positive claim ("claims nothing") and is what
+#: makes this check eligible for a parallel block — a check that simply omitted
+#: RESOURCES would be ineligible, never quietly assumed empty.
+RESOURCES: tuple[str, ...] = ()
+#: One tuple comparison. No timeout constant exists in this module, no poll, no
+#: subprocess — so there is no bound for EXPECTED_S to be derived from, and
+#: inventing one from an observed run is exactly what §4.4 forbids.
+TIME_BOUND = False
+#: NON-CORRECTABLE. The subject is the interpreter this check is executing on.
+CORRECTABLE = False
+NON_CORRECTABLE_REASON = (
+    "the subject is the interpreter this process is running on, and "
+    "`install.sh` owns interpreter installation (`nix_check_contract.md` §3). "
+    "A repair would have to replace the running interpreter underneath the "
+    "engine — the catastrophe check_venv's `_running_from` guard exists to "
+    "prevent, one level lower and with no surviving interpreter to recover "
+    "from. The verdict is FAIL_NEEDS_OPERATOR by construction, and §4.1 of "
+    "that document forbids auto-repairing that status."
+)
+#: Empty on the facts. The subject is the live interpreter, which is not a
+#: repo-relative tracked artifact. Naming a file here to raise
+#: check_artifact_gate_coverage's count would be manufacturing coverage for a
+#: file this check never opens.
+SUBJECTS: tuple[str, ...] = ()
+#: BOOTSTRAP FLOOR, and the first member of it. Every other check runs on this
+#: interpreter; if it is below the minimum, every downstream verdict is a
+#: statement about an interpreter the project does not support. Carried by
+#: `registry.json`'s `bootstrap-floor` block since ARC 009 — now DECLARED (ARC
+#: 025 Stage 2.2), because `--optimize` was measured silently dropping it.
+ON_FAIL = "halt"
 
 NAME = "check_python_runtime"
 
@@ -52,11 +99,12 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
 # trailing disable comment here (verified empirically, pylint v4.0.6).
 # pylint: disable=duplicate-code
 if __name__ == "__main__":
-    from nixverify.contract import exit_code_for, validate_result
+    from nixverify.actuation import standalone_main
 
-    HOME = Path(__file__).resolve().parent.parent
-    OUTCOME = validate_result(
-        run(Mode.VERIFY, Context(nix_home=HOME, mode=Mode.VERIFY))
+    sys.exit(
+        standalone_main(
+            Path(__file__).resolve(),
+            run,
+            NAME,
+        )
     )
-    print(f"{OUTCOME.status.value}: {OUTCOME.evidence or OUTCOME.detail}")
-    sys.exit(exit_code_for(OUTCOME.status))

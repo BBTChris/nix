@@ -200,6 +200,62 @@ DISRUPTIVE = False
 
 NAME = "check_hook_suite"
 
+# --- ARC 025 orchestration declarations (read statically, never imported) ---
+#: DEPENDS ON THE VENV, and cannot repair it. `_probe_interpreter` prefers
+#: `.venv/bin/python3` and falls back to `sys.executable` — which is the ENGINE's
+#: interpreter, where `pre_commit` is not installed — so an absent venv turns
+#: every arm into `probe output unparseable`. The gate then reports honestly and
+#: measures nothing, which is a coverage defect set by the box's state rather
+#: than by the subject.
+DEPENDS_ON: tuple[str, ...] = ("check_venv",)
+#: THE HOOKS DIRECTORY IS SHARED AND THE SHARING IS MEASURED, NOT ASSUMED: on
+#: this box `git rev-parse --git-path hooks` resolves to
+#: `/home/bbt/nix/.git/hooks` from ALL FIVE worktrees (the repository and four
+#: linked ones), i.e. one directory, five potential writers. The gate only READS
+#: it, but a parallel block member that wrote it would be altering the commit
+#: gate of every concurrently-running worktree.
+#: `pre-commit-store` is `PRE_COMMIT_HOME` — arms 3 and 4 read the installed
+#: environments there, and it is shared with every other worktree in exactly the
+#: same way.
+#: ARC 025 Stage 2.4 — `subprocess:git` added after the runtime observer caught
+#: it. This gate asks git itself where hooks resolve (`git rev-parse
+#: --git-path hooks`), which is the whole reason it is not fooled by a hook
+#: installed at the conventional path while `core.hooksPath` points elsewhere —
+#: so spawning git is load-bearing, not incidental, and it was undeclared.
+RESOURCES: tuple[str, ...] = (
+    "git-hooks",
+    "pre-commit-store",
+    "venv",
+    "subprocess:git",
+)
+#: TIME-BOUND, and this is the one gate here where the bound really does
+#: dominate: the probe subprocess resolves pre-commit's store and classifies
+#: every tracked file for eight hooks. `EXPECTED_S` is derived from
+#: `_PROBE_TIMEOUT` below — the module's own constant — never from an observed
+#: run (§4.4). One probe invocation, so the bound is that constant.
+TIME_BOUND = True
+EXPECTED_S = 180.0
+CORRECTABLE = False
+NON_CORRECTABLE_REASON = (
+    "the only repair this gate's subject admits is `pre-commit install`, which "
+    "writes `/home/bbt/nix/.git/hooks/pre-commit` — MEASURED as the single "
+    "directory all five worktrees resolve, so one worktree's --correct rewrites "
+    "the commit gate every other worktree is committing through, mid-commit. "
+    "This gate's own companion suite already refuses to write there for exactly "
+    "that reason (scripts/tests/test_check_hook_suite.py: uninstalling the hook "
+    "to prove a can-fail 'would disarm the gate for whatever else is committing "
+    "at the time'), and a --correct that wrote what the tests refuse to write "
+    "would make the gate more dangerous than the drift it repairs. Arms 3 and 4 "
+    "are not repairable at all without editing .pre-commit-config.yaml or "
+    "mutating the shared store"
+)
+#: `.pre-commit-config.yaml` is the artifact this gate measures — the hook set is
+#: DERIVED from it on every run, never snapshotted. It is not in
+#: `check_artifact_gate_coverage`'s tracked set (that gate includes only `.py`
+#: and `.json`), so declaring it adds no coverage there; it is declared because
+#: SUBJECTS states what a check measures, not what happens to be enumerated.
+SUBJECTS: tuple[str, ...] = (".pre-commit-config.yaml",)
+
 CONFIG_FILE = ".pre-commit-config.yaml"
 HOOK_TYPE = "pre-commit"
 
@@ -726,20 +782,18 @@ def _hooks_dir_for_probe(nix_home: Path) -> str:
 # trailing disable comment here (verified empirically, pylint v4.0.6).
 # pylint: disable=duplicate-code
 if __name__ == "__main__":
+    # `--probe` is this module re-entering itself under the venv interpreter to
+    # ask pre-commit about itself. It is not an actuation verb and is
+    # intercepted before `parse_actuation`, which would reject it.
     if "--probe" in sys.argv[1:]:
         sys.exit(_probe_main(Path(sys.argv[sys.argv.index("--probe") + 1])))
 
-    from nixverify.contract import exit_code_for, validate_result
+    from nixverify.actuation import standalone_main
 
-    HOME = (
-        Path(sys.argv[1])
-        if len(sys.argv) > 1
-        else Path(__file__).resolve().parent.parent
+    sys.exit(
+        standalone_main(
+            Path(__file__).resolve(),
+            run,
+            NAME,
+        )
     )
-    OUTCOME = validate_result(
-        run(Mode.VERIFY, Context(nix_home=HOME, mode=Mode.VERIFY))
-    )
-    print(f"{OUTCOME.status.value}: {OUTCOME.evidence or OUTCOME.detail}")
-    if OUTCOME.detail and OUTCOME.evidence:
-        print(f"  detail: {OUTCOME.detail}")
-    sys.exit(exit_code_for(OUTCOME.status))

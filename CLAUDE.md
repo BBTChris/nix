@@ -77,7 +77,7 @@ Not auto-loaded. Read the ones an arc touches; they cost nothing until opened. F
 
 ## Check contract (v2 — actuation)
 
-Amendments recorded in `docs/CHECK-CONTRACT-AMENDMENTS.md`; mechanics in `docs/nix_check_contract.md` v1.3.0.
+Amendments recorded in `docs/CHECK-CONTRACT-AMENDMENTS.md`; mechanics in `docs/nix_check_contract.md` v1.4.0.
 
 1. Every check verifies, corrects, installs, selected by flags — on the runner **and on the check's own CLI**. Default = measure-only; a flagless check never mutates.
 2. Correct/install is followed by an **independent** re-measurement: fresh process, verify-only, real effective state. A return value from the correcting path is not a verification. The verdict after a mutation is the re-verify's.
@@ -88,6 +88,9 @@ Amendments recorded in `docs/CHECK-CONTRACT-AMENDMENTS.md`; mechanics in `docs/n
 7. `verify.py --optimize` derives the plan from the folder. Cycles, orphans (both directions), undeclared dependencies, and non-disjoint parallel blocks are loud errors and **no plan is written**. Proposes `<manifest>.proposed`; `--commit` installs.
 8. `verify.py` emits Plane-2 structured events to journald (risk spec §12.10) via stdlib `SysLogHandler`→`/dev/log`. Presentation output never enters the journal; Plane 2 never lands in `logs/`. `verify.py` never writes Plane 1.
 9. A retrofitted check is a **new** check: its can-fail binding does not survive the retrofit and must be re-established, or it reverts to UNBOUND.
+10. **A safety property proven while its subject is unavailable is not proven.** Where an observer cannot see a resource *because the resource is unreachable*, the verdict is Cannot-measure — **never Pass**. The attempt is the claim; a positively-observed undeclared claim outranks masking. (§17)
+11. **Every can-fail control asserts the REASON** — message, site, or field — **never the exit code alone.** An exit code is a shared namespace: the detector firing, the instrument breaking, and the interpreter refusing to start all reach the same integer. Exempt only where the exit code *is* the subject (mapping-table tests). (§18)
+12. Declared resource claims are checked against **observed** ones at runtime, not merely against each other. A check declaring `RESOURCES = ()` while dialling a port is measurable, not trusted. Failure policy is declared (`ON_FAIL`) and derived into the plan; a halting check is emitted as its own single-check block, because a block halts on *any* member's failure. (§4.4, §17)
 
 ## Naming
 

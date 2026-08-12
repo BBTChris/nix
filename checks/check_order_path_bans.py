@@ -393,9 +393,23 @@ INTERACTIVE = False
 DISRUPTIVE = False
 
 # --- ARC 024 orchestration declarations (read statically, never imported) ---
-DEPENDS_ON: tuple[str, ...] = ()
-#: Reads source files only; opens no socket, restarts no service, writes nothing.
-RESOURCES: tuple[str, ...] = ()
+#: ARC 025: the ORDERING half of the same repair the RESOURCES comment below
+#: describes. Declaring `venv` stops this check being co-scheduled with
+#: `check_venv`; it does not stop it being ordered BEFORE it. `_probe_python()`
+#: prefers `.venv/bin/python3`, so running ahead of the check that proves that
+#: interpreter answers means the AST sub-probe can fall back silently and this
+#: gate's scope shrinks without anything saying so — the project's recurring
+#: tracking-state-sets-gate-scope class, reached through execution order.
+DEPENDS_ON: tuple[str, ...] = ("check_venv",)
+#: Opens no socket and restarts no service, but it DOES spawn the venv
+#: interpreter (`_probe_python()` at line ~1151 prefers `.venv/bin/python3` for
+#: the AST sub-probe). This declaration read `()` with the comment *"reads source
+#: files only ... writes nothing"* until ARC 025, when
+#: `check_observed_resource_claims` OBSERVED `subprocess:.venv/bin/python3` and
+#: reported the declaration as false. It matters: `check_venv` claims `venv` and
+#: rebuilds it under `--correct`, so an `--optimize` run that believed `()` could
+#: put this check in a parallel block with the check deleting its interpreter.
+RESOURCES: tuple[str, ...] = ("venv",)
 TIME_BOUND = False
 #: §2.3 — NON-CORRECTABLE, and this is the class's charter member. The subject is
 #: the order path. Risk spec §4 prohibits auto-resend there for exactly this

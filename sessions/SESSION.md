@@ -2149,3 +2149,178 @@ as a plant site. `--optimize` is **inert** until the bulk retrofit — 9 of 14 c
 so it exits 1 with one named error each and writes nothing, not even a `.proposed` file — and that
 is D2.26 rather than a surprise waiting for an operator. Six items returned to the operator; all five
 architect rulings implemented as written and flagged, none stalled waiting on ratification.
+
+---
+
+# ARC 025 — Bulk Retrofit, Observed Disjointness, and the Durability Gate
+
+**2026-08-12 · verify.py / checks subsystem · mega arc: Phase 0 blocking · Stage 1 three parallel
+sub-agents · Stage 2 serial convergence · Stage 3 doctrine · Phase 4 close-out**
+
+## PHASE 0 — the brief's premise was VOID, and that is the first finding
+
+The brief opened *"ARC 024 is staged in the index and has no commit — HEAD is still 2871bc6."*
+**Measured at execution time: false.** `HEAD` was `509159d`, the working tree was clean, and all
+**30** ARC 024 paths were already in history via `45a37fa` (PR #23) and `8d4e82f` AMENDMENT 4
+(PR #24). The count and the membership were confirmed rather than taken. Phase 0.1 became an audit
+and **Phase 0.2 was a no-op — there was nothing to commit, branch, or merge.** ARC 024 was committed
+and merged between the brief being authored and this arc running.
+
+**Phase 0.3 reproduced every figure against merged history — after one delta, which was real.** The
+first run returned `10 passed | 1 failed | 2 cannot measure` against an expected `11 | 1 | 1`. Root
+cause: this CLI exports `FORCE_COLOR=3`; pytest honours it **into a captured pipe**, so the collector
+line is `ESC[32mESC[32m441 tests collected` and `check_derived_claims`'s
+`(?m)^(\d+) tests? collected` anchor misses. The claim silently degraded to NOT MEASURED and the gate
+reported **12/13**. With the variable cleared, all five figures reproduced exactly: verify.py
+`11|1|1|0|1` exit 1, pytest 438 + 1 skipped + 2 xfailed, pre-commit 8/8, claims 13/13 with 2/2
+demonstrations, CHECK-DEBT 66.
+
+**Provenance correction, stated because it changes who found what:** this was **not** a new
+discovery. It was already recorded as **open item 8** of AMENDMENT 4 in
+`docs/CHECK-CONTRACT-AMENDMENTS.md`, found by ARC 024's own §16.2 re-measurement and explicitly
+*owed to ARC 025*, deferred because the CHECK-DEBT row would move `check_debt_open_items` 66 → 67 and
+that number is compared by the very gate in question. This arc independently re-measured it and
+discharged it. §16.2's rule — *any delta is a finding, including an environmental one* — is what
+surfaced it both times, and it worked.
+
+**Phase 0.4:** no rename in either direction. The `registry.json` / `manifest.json` ruling is still
+open and the vocabulary is untouched.
+
+## STAGE 1 — three sub-agents, disjoint by construction, merged with ZERO conflicts
+
+Four worktrees provisioned by `scripts/provision_worktree.sh`, each proving `check_node_identity`
+passes through the link and that `state`/`.venv` are **IGNORED, not merely untracked** (D2.24, proven
+per target). File sets held: A `ae33de9` (6 paths), B `2dbb8de` (5 paths), C `65c2b86` (11 paths), no
+overlap, no conflict on merge.
+
+**Wave A — all three BOUND**, and A built something stronger than asked: a *control on the control*.
+`test_the_refusal_control_can_tell_a_wrong_reason_from_the_right_one` plants a **different**
+`NON_CORRECTABLE_REASON`, gets the **identical exit 1**, and asserts the real reason is absent —
+ARC 024's lesson made mechanical. A also found a §0a defect in its own dispatch brief: *"prove the
+CLI with --correct/--install"* is satisfiable while measuring nothing, because all three checks are
+legitimately non-correctable and return 1 whether they refuse correctly, refuse for the wrong reason,
+or crash outright. A §0b substitution was refused with a measurement: `check_node_identity`'s two
+30-second subprocess timeouts suggest `EXPECTED_S = 60.0`, but the real figure is
+**0.0023 / 0.0030 / 0.0032 s** — a factor of ~20,000 — so `TIME_BOUND = False`, because §4.4 defines
+it as *runtime dominated by a bound, not by work*.
+
+**Wave B — all four BOUND, control shas matching either side**, two of them matching the banked
+ARC 023 figures exactly (`9eb19c2c…`, `2f93ad05…`). Plants in scratch copies outside any worktree,
+`__pycache__` purged between steps, every control restored byte-identical.
+
+**B3's reflexivity finding STANDS and it is worse than the brief assumed.** For **10 of
+`check_derived_claims`'s 13 claims, BOTH sources are probes implemented inside the gate itself**,
+invoked as `{self} --probe`; an external checker would have to re-enter the gate, and a defect in a
+shared helper moves both sides together. There is no `test_check_derived_claims.py` and no hook runs
+it (D2.22). **Exactly one source is genuinely independent** — `pytest_collector`, which shells to real
+pytest — and it is the only reason the architect's requirement could be satisfied at all: B planted
+`FORCE_COLOR`, the gate reported a **wrong count**, and a separate program confirmed 441 tests really
+were collectable. The architect is right that ARC 024's catch was luck of ordering, not architecture.
+
+**C4, third repair of `broker_order_open_debt_rows`.** Re-derived by OWNING MODULE at every historical
+anchor: corrected **11 → 13 → 13 → 13 → 13** against the old **11 → 13 → 13 → 13 → 15**. Identical
+everywhere before ARC 024, removing exactly `{D1.41, D3.20}` there. **ARC 024's movement was 0, not
++2** — and D1.41 was selected purely because `socket.connect` contains the word `connect`, so the spy
+that took ARC 024's measurement contaminated the metric measuring it.
+
+**Wave C — the runtime observer, and a §0b substitution that matters.** Monkeypatching was **REFUSED**
+in favour of CPython audit hooks (PEP 578): a monkeypatch is defeated by re-import, by a reference
+captured before the patch, and by reaching through to `_socket` — and **a defeated spy reports no
+claims**, which is precisely the false green the gate exists to prevent. C also discovered a
+**production defect the hard way**, when its own test suite damaged its worktree index: `git` honours
+`GIT_DIR` / `GIT_INDEX_FILE` / `GIT_WORK_TREE` **ahead of `-C`**, and `pre-commit` exports
+`GIT_INDEX_FILE`. The gate had the same exposure — run from inside any git operation it would have
+enumerated a **different repository** and reported a confident verdict about the wrong tree. Closed
+with a shared `git_env()` stripping nine variables, called by gate and harness alike so the hazard
+cannot be live on one side and invisible on the other.
+
+## STAGE 2 — the diff is the arc's most interesting artifact, and two of its deltas were REGRESSIONS
+
+`--optimize` went 9 errors → 3 → **0** and installed a derived plan. **The plan it was first willing
+to install was WRONG, and every stated success criterion was still met.**
+
+1. **`derive_plan` never emitted `on_fail` at all**, and `Block.on_fail` defaults to `"continue"`. A
+   commit would have installed a plan in which a failed Python runtime **no longer halts the run**,
+   and twelve downstream checks would have measured against a broken floor. An inert tool became a
+   *wrong* tool at the exact moment it started working. **The obvious repair is worse than the defect
+   and was refused with a measurement**: `engine.run_blocks` halts on ANY member's failure, and
+   `check_ibgateway_service` FAILs by design here, so marking the level `halt` would have taken every
+   downstream check with it. Halting checks are emitted as their own single-check blocks.
+2. **An ordering inversion**: `check_python_deps` and `check_order_path_bans` both claim `venv` while
+   declaring no dependency, so the derived plan ran them **before** the venv floor check they depend
+   on. A resource claim cannot imply an ordering edge; ARC 024 under-declared both.
+
+**Stage 2.4 is the headline.** Run under the observer against the real plan, **four more false
+declarations** fell out that static validation had passed — and the `check_node_identity` pair was
+**argued, not overlooked**: Wave A reasoned in writing that `findmnt` and `blkid` are read-only kernel
+queries contending with nothing. The argument was about CONTENTION; a declaration states what a check
+TOUCHES; the project fails closed. **A human's plausible reasoning was checked against what the
+process actually did, and reality won.** Seven false declarations total across the observer's first
+two runs, three of them in checks ARC 024 had already retrofitted and signed off.
+
+The observer's own live verdict is **CANNOT_MEASURE, not PASS** — its masked-hazard clause firing on
+the two Gateway gates, whose resource use past ECONNREFUSED is unobservable while the Gateway is down.
+
+**Doctrine B.4 applied twice rather than weakening a gate.** The port-literal gate correctly reddened
+`RESOURCES = ("port:4002",)` — a hardcoded port IS the moving anchor C.4 names, and the AST reader can
+only read a literal, so the two requirements are in genuine tension. Closed by making the gate
+**stricter**: scope narrowed to the check's LOGIC, and a B.7 self-enforcing pin added requiring the
+declared port to **equal** `ibgateway_expected.json`. Absence can be satisfied by a check that ignores
+the port; equality cannot. Can-fail demonstrated, control restored byte-identical.
+
+**A fifth instance of *tracking state sets gate scope*, created and caught inside this arc:**
+`--optimize` writes `registry.json.proposed` on every run and it was not ignored, so the mandated
+staging step captured it on the first measurement afterwards. Now covered by `checks/*.proposed`.
+
+## STAGE 3 — AMENDMENT 5, contract v1.3.0 → v1.4.0
+
+§17 the masked hazard · §18 every control asserts the REASON · §4.4 gains `ON_FAIL`. CLAUDE.md gains
+check-contract items 10, 11 and 12.
+
+**§18 audited and closed to zero.** 512 test functions by AST: exit-code-only controls **5 → 0** of
+68, with three contract-TABLE tests correctly exempted because there the exit code *is* the subject
+(conflating the two inflated the first measurement by three). The last delinquent was
+`test_reverify_of_a_missing_check_is_cannot_measure` — **ARC 024's own incident, still unrepaired** —
+where exit 2 is what the interpreter returns when it cannot open the file and equally what a check
+that ran correctly returns. Each repair is demonstrated: planting a replacement reason string makes
+the control FAIL and name the plant **while the exit-code assertion still PASSES**.
+
+## §0c — measured, not assumed
+
+Applying §0c literally would unbind every check whose module-level `ON_FAIL` literal was added,
+discarding bindings two arcs paid for on the strength of an edit that cannot reach `run()`. An AST
+classifier over the arc's own diff separates them: **5 checks had their MEASUREMENT PATH modified**
+(both datafeed gates, `check_derived_claims`, `check_artifact_gate_coverage`,
+`check_observed_resource_claims`) and all five were re-bound; **10 had declaration-only edits** with
+`run()` and every function it calls provably untouched. **[RULING — revocable]** §0c binds on the
+measurement path, not on the file's mtime.
+
+## CHECK-DEBT 66 → 68 (+2: five opened, three discharged)
+
+**Discharged: D2.27** (with a *dynamic* instrument — the row's claim that no STATIC mechanism could
+close it was correct), **D2.26**, **D1.41**. **Opened: D2.28** (the observer's residual is dynamic and
+narrower, not renamed), **D2.29** (§18's auditor ran as a one-off), **D2.30** — *this arc's honesty
+row*: Wave B re-bound four gates and committed **zero test files**, so four bindings exist only as
+prose and the next retrofit starts from zero — **D3.21** (a run whose EVIDENCE contradicts its own
+VERDICT), **D3.22** (`git` honouring `GIT_DIR` ahead of `-C`).
+
+Nothing was typed: 68 is `derived:ledger_rows` read back from `check_derived_claims`, agreeing with
+the series table.
+
+## Close-out figures
+
+```
+verify.py   11 passed | 1 failed | 2 cannot measure | 0 skipped | 1 guarded   exit 1
+pytest      520 passed, 1 skipped, 2 xfailed
+pre-commit  8/8
+claims      13/13 with 2/2 demonstrations
+CHECK-DEBT  68 (was 66)
+census      executed == planned == on disk == 15, proven three ways
+controls    68 over a driven subject; 0 assert an exit code alone
+```
+
+Every non-PASS is named: `check_ibgateway_service` FAIL and `check_ibgateway_config` cannot-measure
+are the standing Gateway-down baseline; `check_observed_resource_claims` cannot-measure is its own
+masked-hazard clause biting; the single GUARDED is **`check_artifact_gate_coverage`, `guard_owner`
+verbatim `'ARC 025'`** — one arc, mechanically validated by `guard_owner_defect`, where it read
+`"the bulk check retrofit arc (ARC 025+), sized in ARC 024 Stage 6.4"` at arc start.
