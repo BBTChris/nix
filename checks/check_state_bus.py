@@ -62,6 +62,18 @@ AF_UNIX socket either way — the bytes traverse the kernel — but a second pro
 is not spawned, so process-boundary concerns (fd inheritance, permissions,
 SELinux) are unproven here and `docs/CHECK-DEBT.md` carries the row rather than
 this docstring carrying a reassurance.
+
+## Boundary against `check_picture_atomicity` (§5.5 requires it in BOTH gates)
+
+This gate owns `scripts/nixbus/statebus.py` — whether the TRANSPORT delivers,
+answers a subscription with a snapshot, and stamps freshness. It says nothing
+about any particular table riding it. `checks/check_picture_atomicity.py` owns
+`scripts/nixrisk/picture.py` — whether §3's financial picture is ATOMIC under a
+real race and whether its mirror refuses when incomplete or stale. The two
+subjects are disjoint and neither re-measures the other: this gate would still
+fail on a broken bus with a perfect picture, and that one would still fail on a
+torn picture over a perfect bus. Added ARC 028 Stage 2, when the second gate
+landed.
 """
 
 from __future__ import annotations
