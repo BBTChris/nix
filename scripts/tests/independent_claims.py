@@ -183,133 +183,102 @@ def element_coverage(home: Path, roster: list[str]) -> int:
 
 
 # ---------------------------------------------------------------------------
-# THE MODULE-SCOPING RULE — the intricate one, re-implemented by regex.
+# THE OWNING-MODULE COLUMN — ARC 026 / B3 replaced the prose rule with an
+# AUTHORED column, and this section was rewritten to follow it.
+#
+# WHAT WAS HERE BEFORE, AND WHY IT IS GONE. Until B3 the two debt claims
+# selected rows by scanning prose for order-path basenames and roster verbs,
+# and this file carried an independent regex re-implementation of that ~300-line
+# rule. The rule no longer exists: `_roster_hit`, `_broker_order_scoped` and
+# `_order_path_basenames` are not in the gate any more. Re-implementing a rule
+# that was deleted would be a second opinion about nothing, so the code was
+# removed rather than kept passing.
+#
+# THE NEW RULE, and the mechanisms below are deliberately not the gate's:
+#   * vocabulary — the gate anchors `^\|\s*`token`\s*\|` with one MULTILINE
+#     regex over the whole file. This locates the vocabulary SECTION by heading
+#     and splits its rows into cells.
+#   * owning module — the gate does `stripped[:-1].rsplit("|", 1)[-1]`. This
+#     splits the whole row and indexes `[-2]`.
+#   * stated tally — the gate anchors `^\|\s*token\s*\|\s*(\d+)\s*\|$`.
+#     This locates the tally SECTION by heading and reads its cells.
+# Same stated rules, different readers, so a defect in one cannot move the other.
 # ---------------------------------------------------------------------------
 
-
-def order_path_dirs(home: Path) -> list[str]:
-    """The order path, read out of the bans gate's own anchor — never typed."""
-    return seam_tuple(home, "ORDER_PATH_DIRS", text(home, BANS))
+VOCAB_HEADING = "### The controlled vocabulary"
+TALLY_HEADING = "### Stated per-module tally"
 
 
-def _class_bodies(source: str) -> list[str]:
-    """The indented body of every top-level class, by indentation.
-
-    The gate does this with `ast.walk` + `isinstance(node, ast.ClassDef)`. This
-    reads columns, which is why it can disagree with the gate rather than merely
-    echo it — and it did, on the first run: an earlier spelling here returned
-    NO class bodies at all, which emptied the datafeed subtraction and selected
-    D1.13 that the gate correctly excludes. A silent empty set is this project's
-    vacuity class, so the caller asserts a non-empty implementor set.
-    """
-    bodies: list[str] = []
-    for chunk in re.split(r"(?m)^class ", source)[1:]:
-        body: list[str] = []
-        for line in chunk.split("\n")[1:]:
-            if line and not line[0].isspace():
-                break
-            body.append(line)
-        bodies.append("\n".join(body))
-    return bodies
+def _section(home: Path, heading: str) -> str:
+    """The markdown block under `heading`, up to the next `###`/`##` divider."""
+    body = text(home, LEDGER)
+    start = body.index(heading) + len(heading)
+    rest = re.split(r"(?m)^(?:###?\s|---\s*$)", body[start:])[0]
+    return rest
 
 
-def port_implementors(home: Path, verbs: list[str], quorum: int) -> set[str]:
-    """Modules under `scripts/` whose class defines `quorum` of `verbs`."""
-    out: set[str] = set()
-    for path in sorted((home / "scripts").rglob("*.py")):
-        if any(part in {".venv", "__pycache__"} for part in path.parts):
+def _cells(line: str) -> list[str]:
+    """A markdown row's cells, outer pipes discarded."""
+    parts = [cell.strip() for cell in line.split("|")]
+    return parts[1:-1] if len(parts) > 2 else []
+
+
+def owning_vocabulary(home: Path) -> set[str]:
+    """The legal `owning module` tokens, from the vocabulary table's first cell."""
+    tokens = set()
+    for line in _section(home, VOCAB_HEADING).splitlines():
+        cells = _cells(line)
+        if not cells:
             continue
-        for body in _class_bodies(path.read_text(encoding="utf-8")):
-            methods = set(re.findall(r"(?m)^    (?:async )?def (\w+)", body))
-            if len(methods & set(verbs)) >= quorum:
-                out.add(path.name)
-    return out
+        match = re.fullmatch(r"`([a-z][a-z-]*)`", cells[0])
+        if match:
+            tokens.add(match.group(1))
+    if not tokens:
+        raise AssertionError("the owning-module vocabulary table parsed to nothing")
+    return tokens
 
 
-def order_path_owners(home: Path) -> set[str]:
-    """Receiver names a roster verb may legitimately hang off."""
-    owners: set[str] = set()
-    for directory in order_path_dirs(home):
-        for path in (home / directory).rglob("*.py"):
-            if "__pycache__" in path.parts or not path.is_file():
-                continue
-            owners.add(path.stem)
-            owners |= set(
-                re.findall(r"(?m)^\s*class\s+(\w+)", path.read_text(encoding="utf-8"))
-            )
-    return owners
+def owning_module(line: str) -> str:
+    """The row's LAST cell — the authored column. `''` when the row has none."""
+    parts = line.rstrip().split("|")
+    return parts[-2].strip() if len(parts) >= 3 and parts[-1].strip() == "" else ""
 
 
-def roster_hit(body: str, roster: list[str], owners: set[str]) -> bool:
-    """A roster identifier used as a verb, not as somebody else's attribute."""
-    for name in roster:
-        for match in re.finditer(r"\b" + re.escape(name) + r"\b", body):
-            qualifier = re.search(r"([A-Za-z_]\w*)\.$", body[: match.start()])
-            if qualifier is None or qualifier.group(1) in owners:
-                return True
-    return False
+def rows_by_module(home: Path) -> dict[str, list[str]]:
+    """Open row ids grouped by their authored column. Fails closed, like the gate.
 
-
-def _d3_owned(
-    rid: str, line: str, on_path: list[str], roster: list[str], owners: set[str]
-) -> bool:
-    if not rid.startswith("D3"):
-        return True
-    cells = [cell.strip() for cell in line.split("|")][1:]
-    subject = cells[1] if len(cells) > 1 else ""
-    return any(name in subject for name in on_path) or roster_hit(
-        subject, roster, owners
-    )
-
-
-def order_debt_rows(home: Path, roster: list[str]) -> list[str]:
-    """Open ledger rows owned by an order-path artefact. Returns the IDS.
-
-    IDS, NOT A COUNT, and that is the point: the companion test compares the
-    SELECTED SET against the gate's own printed selection, verdict by verdict.
-    Two counts agreeing while two different rows were selected is doctrine C.6's
-    measured failure, and a count-only comparison cannot see it.
+    An unattributed open row raises rather than being dropped: the failure this
+    column replaces was a row leaving a count with nobody noticing, and a lenient
+    second source would agree with a lenient gate for the wrong reason.
     """
-    dirs = order_path_dirs(home)
-    on_path = sorted(
-        {p.name for d in dirs for p in (home / d).rglob("*.py") if p.is_file()}
-    )
-    feed = port_implementors(home, seam_tuple(home, "DATAFEED_PORT_VERBS"), 3)
-    if not feed:
-        raise AssertionError(
-            "no module implements the datafeed port — the D2.19 subtraction "
-            "would be vacuous and every datafeed module would count as order "
-            "depth (this exact emptiness selected D1.13 while it was live)"
-        )
-    distinctive = [name for name in on_path if name not in feed]
-    owners = order_path_owners(home)
-    return [
-        rid
-        for rid, line in open_rows(home)
+    vocabulary = owning_vocabulary(home)
+    grouped: dict[str, list[str]] = {token: [] for token in vocabulary}
+    stray = []
+    for rid, line in open_rows(home):
+        token = owning_module(line)
+        if token not in vocabulary:
+            stray.append(f"{rid}={token or '<absent>'}")
+            continue
+        grouped[token].append(rid)
+    if stray:
+        raise AssertionError(f"open row(s) with no valid owning module: {stray}")
+    return grouped
+
+
+def stated_tally(home: Path) -> dict[str, int]:
+    """The ledger's hand-written per-module tally, read from the tally SECTION."""
+    tally: dict[str, int] = {}
+    for line in _section(home, TALLY_HEADING).splitlines():
+        cells = _cells(line)
         if (
-            any(name in line for name in distinctive)
-            or roster_hit(line, roster, owners)
-        )
-        and _d3_owned(rid, line, on_path, roster, owners)
-    ]
-
-
-def datafeed_debt_rows(home: Path, feed: list[str], order: list[str]) -> list[str]:
-    """Open ledger rows naming a DISTINCTIVE broker-datafeed artefact."""
-    distinctive = [name for name in feed if name not in order]
-    if not distinctive:
-        raise AssertionError("the datafeed roster is a subset of the order roster")
-    feed_only = sorted(
-        port_implementors(home, seam_tuple(home, "DATAFEED_PORT_VERBS"), 3)
-        - port_implementors(home, seam_tuple(home, "ORDER_PORT_VERBS"), 4)
-    )
-    patterns = [re.compile(r"\b" + re.escape(name) + r"\b") for name in distinctive]
-    return [
-        rid
-        for rid, line in open_rows(home)
-        if any(name in line for name in feed_only)
-        or any(pattern.search(line) for pattern in patterns)
-    ]
+            len(cells) == 2
+            and re.fullmatch(r"[a-z][a-z-]*", cells[0])
+            and cells[1].isdigit()
+        ):
+            tally[cells[0]] = int(cells[1])
+    if not tally:
+        raise AssertionError("the stated per-module tally parsed to nothing")
+    return tally
 
 
 # ---------------------------------------------------------------------------
@@ -335,29 +304,42 @@ def spec_2a_broker_order_elements(home: Path) -> int:
     return len(spec_roster(home, "broker-order"))
 
 
+def arc014_broker_order_classification(home: Path) -> int:
+    """Claim `arc014_broker_order_classification`.
+
+    ADDED ARC 026 / A1 SECOND PASS. All THREE of this claim's sources call the
+    gate's `_spec_identifiers`, and truncating it moves 16 -> 15 -> 15 -> 15 with
+    the gate reporting agreement. Measured, not reasoned.
+    """
+    return len(grades(home, spec_roster(home, "broker-order")))
+
+
+def spec_2a_broker_datafeed_elements(home: Path) -> int:
+    """Claim `spec_2a_broker_datafeed_elements`.
+
+    ADDED ARC 026 / A1 SECOND PASS. Both sources call the gate's `_module_tuples`,
+    and truncating it moves 11 -> 9 on both sides in silence.
+    """
+    spec_feed = spec_roster(home, "broker-datafeed")
+    seam_feed = seam_tuple(home, "DATAFEED_PORT_VERBS") + seam_tuple(
+        home, "DATAFEED_EVENTS"
+    )
+    return len(spec_feed) + len(flagged_additions(home, seam_feed, spec_feed))
+
+
 def broker_order_element_coverage_v1(home: Path) -> int:
     """Claim `broker_order_element_coverage_v1`, scheme `sec2a-element-v1`."""
     return element_coverage(home, spec_roster(home, "broker-order"))
 
 
 def broker_order_open_debt_rows(home: Path) -> int:
-    """Claim `broker_order_open_debt_rows`."""
-    return len(order_debt_rows(home, spec_roster(home, "broker-order")))
+    """Claim `broker_order_open_debt_rows`, by the authored column."""
+    return len(rows_by_module(home)["broker-order"])
 
 
 def broker_datafeed_open_debt_rows(home: Path) -> int:
-    """Claim `broker_datafeed_open_debt_rows`."""
-    feed = spec_roster(home, "broker-datafeed")
-    seam_feed = seam_tuple(home, "DATAFEED_PORT_VERBS") + seam_tuple(
-        home, "DATAFEED_EVENTS"
-    )
-    return len(
-        datafeed_debt_rows(
-            home,
-            feed + flagged_additions(home, seam_feed, feed),
-            spec_roster(home, "broker-order"),
-        )
-    )
+    """Claim `broker_datafeed_open_debt_rows`, by the authored column."""
+    return len(rows_by_module(home)["broker-datafeed"])
 
 
 #: Claim id -> independent re-derivation. The companion module iterates this
@@ -366,6 +348,8 @@ SOURCES = {
     "registered_check_count": registered_check_count,
     "check_debt_open_items": check_debt_open_items,
     "spec_2a_broker_order_elements": spec_2a_broker_order_elements,
+    "arc014_broker_order_classification": arc014_broker_order_classification,
+    "spec_2a_broker_datafeed_elements": spec_2a_broker_datafeed_elements,
     "broker_order_element_coverage_v1": broker_order_element_coverage_v1,
     "broker_order_open_debt_rows": broker_order_open_debt_rows,
     "broker_datafeed_open_debt_rows": broker_datafeed_open_debt_rows,

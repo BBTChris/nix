@@ -4,6 +4,13 @@ ARC 026 / A1 + A2. Discharges CHECK-DEBT **D2.22** (no such file existed) and
 the `check_derived_claims` third of **D2.30** (ARC 025 re-bound the gate and
 committed no artifact, so the binding was prose).
 
+**RE-DERIVED AT STAGE 2 AGAINST SUB-AGENT B's REWRITE.** B3 replaced the debt
+metric's prose-based row selection with an AUTHORED `owning module` column and
+rewrote the gate (-519/+355). Three of this file's plants targeted helpers that
+no longer exist. Every plant below was re-measured against B's implementation
+rather than re-pointed until it passed, and **one of the answers changed** — see
+"WHAT B's COLUMN CLOSED".
+
 --------------------------------------------------------------------------
 THE DEFECT THIS FILE MEASURES
 --------------------------------------------------------------------------
@@ -13,45 +20,62 @@ the two sides share the gate's parsing helpers. A defect in a shared helper
 moves BOTH numbers together and the comparison reports agreement.
 
 (ARC 025 banked that figure as TEN, and the ARC 026 brief inherited it. Nine is
-what `derived_claims.json` says, and that file is byte-identical to its ARC 025
-revision — see `test_the_reflexivity_census_is_nine_of_thirteen_not_ten`. The
-census was restated three times and derived none, which is the defect this very
-gate exists to catch, missed because nobody registered it as a claim.)
+what `derived_claims.json` says — see
+`test_the_reflexivity_census_is_nine_of_thirteen_not_ten`. B3 changed which
+claims are reflexive without changing the count: the two debt claims left the
+set and nothing joined it.)
 
-Three plants, all measured on a scratch copy of this tree, all with the gate's
-own exit code and evidence recorded:
+--------------------------------------------------------------------------
+WHAT B's COLUMN CLOSED — and it is a real structural gain, stated plainly
+--------------------------------------------------------------------------
+Before B3, `_DISCHARGED` loosened to `\bdischarg` reddened
+`check_debt_open_items` (31 vs 68) while `broker_order_open_debt_rows` went
+13 -> **2** and `broker_datafeed_open_debt_rows` 13 -> **3** IN SILENCE, because
+both sources of both claims built their row set through `_open_debt_rows`.
 
-  1. `_DISCHARGED` loosened to `\\bdischarg`. The gate exits **1**, naming
-     `check_debt_open_items` (31 vs 68) — AND, in the SAME run,
-     `broker_order_open_debt_rows` goes 13 -> **2** and
-     `broker_datafeed_open_debt_rows` 13 -> **3**, both in silence.
-  2. `_roster_hit` short-circuited to False. The gate exits **0** reporting
-     `13/13 claim(s) compared`; `broker_order_open_debt_rows` is 13 -> **4**.
-  3. `_finding_pairs` lower-cases the grade. The gate exits **0** reporting
-     `13/13 claim(s) compared`; `broker_order_element_coverage_v1` is
-     **56% -> 0%**.
+After B3 the same plant reddens **all three**: the derived side scans the
+column, the stated side reads an authored per-module tally that never touches
+`_DISCHARGED`, so `broker_order_open_debt_rows` reports
+`derived:ledger_column=1` against `stated:stated_module_tally=9`.
+**B's structural repair closed this part of the reflexivity hole**, and
+`test_the_authored_column_closed_the_hole_this_plant_used_to_walk_through`
+pins it so a revert reddens rather than quietly restoring the blindness.
 
-The first plant is the one that settles the argument: **one plant, one run, both
-outcomes.** Where the two sources do not share the helper the comparison
-discriminates and names the site; where they do, a nine-row error in a number
-this project reports passes as agreement. The blindness is a property of the
-claim's construction, not of how hard the plant tried.
+--------------------------------------------------------------------------
+WHAT IS STILL SILENT — measured on B's tree, not inherited
+--------------------------------------------------------------------------
+  1. `_finding_pairs` lower-cases the grade -> exit **0**, `13/13 claim(s)
+     compared`, `broker_order_element_coverage_v1` **56% -> 0%**.
+  2. `_clean_fraction` off by one -> exit **0**, `13/13 compared`, the same
+     claim **56% -> 50%**. A second, subtler shape of the same blindness, and
+     the replacement for the retired `_roster_hit` plant.
+  3. `_spec_identifiers` truncated -> exit **0**, `13/13 compared`,
+     `arc014_broker_order_classification` **16 -> 15** with ALL THREE of its
+     sources moving together. Three sources are not three opinions.
+  4. `_module_tuples` truncated -> exit **0**, `13/13 compared`,
+     `spec_2a_broker_datafeed_elements` **11 -> 9**.
+
+RETIRED, NOT DELETED SILENTLY: the `_roster_hit` plant (13 -> 4, invisible).
+`_roster_hit`, `_broker_order_scoped` and `_order_path_basenames` were deleted
+by B3 along with the prose rule they implemented. The property it demonstrated
+— *a helper shared by both sources of one claim moves both numbers together* —
+is carried by plants 1-4 above, and the specific claim it demonstrated on is now
+covered by the column's own second source. See
+`test_the_retired_roster_hit_plant_has_no_helper_left_to_target`, which asserts
+the helpers are actually gone rather than taking this paragraph's word for it.
 
 --------------------------------------------------------------------------
 THE REPAIR, AND WHAT IT DOES NOT COVER
 --------------------------------------------------------------------------
-`scripts/tests/independent_claims.py` is a second source for six claims,
+`scripts/tests/independent_claims.py` is a second source for **eight** claims,
 implemented by regex where the gate uses `ast`, in a file that imports nothing
 from the gate. Every plant above is caught by it, and on the unplanted tree it
-agrees with the gate on all six — including `broker_order_open_debt_rows`
+agrees with the gate on all eight — including `broker_order_open_debt_rows`
 compared **as a set of row ids**, not as a count (doctrine C.6).
 
-Seven claims are NOT given a second source, and each is marked rather than
-implied — `INDEPENDENCE` below is the table, it is asserted, and the reasons are
-per claim. Four of the seven already have a genuinely external second source in
-the registry (a different program computes the other number) and need nothing
-from this file; three would require re-implementing an AST reader with an AST
-reader, which is a transcription wearing a second opinion's coat.
+Five claims are NOT given a second source, and each is marked rather than
+implied — `INDEPENDENCE` below is the table, it is asserted against the
+registry, and the reasons are per claim.
 """
 
 from __future__ import annotations
@@ -111,33 +135,54 @@ INDEPENDENCE: dict[str, tuple[str, str]] = {
     "check_debt_open_items": ("second", "both sides are gate probes"),
     "spec_2a_broker_order_elements": ("second", "both sides are gate probes"),
     "arc014_broker_order_classification": (
-        "none",
+        "second",
         (
-            "three sources, two of which call `_arc014_roster_grades` and all "
-            "three of which call `_spec_identifiers`. A second implementation "
-            "would be an AST reader re-reading an AST reader; the honest answer "
-            "is that this claim's sources cannot fail independently"
+            "THREE sources and none of them is an opinion: all three call "
+            "`_spec_identifiers`, and truncating it moves 16 -> 15 -> 15 -> 15 "
+            "with the gate reporting agreement. Given a second source ARC 026 "
+            "after that was measured"
         ),
     ),
     "seam_declared_elements": (
         "none",
         (
             "both sides call `_module_tuples` on the same file; the spec side "
-            "adds `_spec_identifiers` on top, so they can partially diverge, "
-            "which is weaker than independent"
+            "adds `_spec_identifiers` on top, so they diverge under some plants "
+            "and not others, which is weaker than independent"
         ),
     ),
     "order_path_scope_files": (
         "external",
         "one side is check_order_path_bans.py --print-scope-count",
     ),
-    "broker_order_element_coverage_v1": ("second", "both sides are gate probes"),
-    "broker_order_open_debt_rows": ("second", "both sides are gate probes"),
-    "spec_2a_broker_datafeed_elements": (
-        "none",
-        "both sides call `_module_tuples`; same shape as seam_declared_elements",
+    "broker_order_element_coverage_v1": (
+        "second",
+        (
+            "both sides are gate probes sharing `_arc014_findings` and "
+            "`_clean_fraction`; silent under two separate plants"
+        ),
     ),
-    "broker_datafeed_open_debt_rows": ("second", "both sides are gate probes"),
+    "broker_order_open_debt_rows": (
+        "second",
+        (
+            "ARC 026 / B3: derived row scan over the AUTHORED column vs the "
+            "ledger's stated per-module tally. The two no longer share a helper "
+            "below `_read`, so this pair is now genuinely independent — measured, "
+            "not assumed. The second source is kept as a third opinion and as the "
+            "row-by-row comparison the counts cannot make"
+        ),
+    ),
+    "spec_2a_broker_datafeed_elements": (
+        "second",
+        (
+            "both sides call `_module_tuples`; truncating it moves 11 -> 9 on "
+            "both sides in silence. Given a second source ARC 026"
+        ),
+    ),
+    "broker_datafeed_open_debt_rows": (
+        "second",
+        "ARC 026 / B3: same column-vs-tally pair as its order counterpart",
+    ),
     "datafeed_scope_files": (
         "external",
         "BOTH sides are external CLIs of two different gates",
@@ -332,13 +377,31 @@ def test_the_second_source_agrees_with_the_gate_on_the_unplanted_tree() -> None:
 def test_the_debt_row_selection_agrees_row_by_row_not_merely_in_total() -> None:
     """Doctrine C.6: a refactor once preserved the output SET and changed its ORDER.
 
-    Two counts agreeing while two different rows were selected is the failure
-    that measurement caught, so the comparison is over the ids.
+    RE-TARGETED at B3's column probe. Two counts agreeing while two different
+    rows were selected is a failure a count cannot see, and the authored column
+    makes that MORE likely rather than less: a mis-typed token moves a row from
+    one module to another and both tallies can still be right in total.
     """
-    gate_ids = claim_ids("broker_order_debt_rows_spec", REPO)
-    mine = second.order_debt_rows(REPO, second.spec_roster(REPO, "broker-order"))
+    gate_ids = claim_ids("broker_order_debt_rows_ledger", REPO)
+    mine = second.rows_by_module(REPO)["broker-order"]
     assert sorted(gate_ids) == sorted(mine), (gate_ids, mine)
     assert gate_ids, "an empty selection would make this comparison vacuous"
+
+
+def test_every_open_row_carries_a_valid_owning_module_token() -> None:
+    """B3's fail-closed promise, re-measured by a reader that is not B3's.
+
+    The column's whole claim is that an unattributed row is a LOUD error rather
+    than a silent exclusion. This asserts it from outside the gate: the
+    independent grouper raises on a stray row, so reaching a full grouping at
+    all is the measurement.
+    """
+    grouped = second.rows_by_module(REPO)
+    attributed = sum(len(ids) for ids in grouped.values())
+    assert attributed == second.check_debt_open_items(REPO), (
+        "some open row escaped the column without either reader complaining"
+    )
+    assert set(second.stated_tally(REPO)) <= set(grouped)
 
 
 # ===========================================================================
@@ -349,8 +412,41 @@ def test_the_debt_row_selection_agrees_row_by_row_not_merely_in_total() -> None:
 _DISCHARGED_ANCHOR = (
     '_DISCHARGED = re.compile(r"\\*\\*[^*]*\\bdischarged ARC \\d+", re.IGNORECASE)'
 )
-_ROSTER_HIT_ANCHOR = "    for name in roster:\n        for match in re.finditer("
+_DISCHARGED_PLANT = '_DISCHARGED = re.compile(r"\\bdischarg", re.IGNORECASE)'
 _GRADE_ANCHOR = "            pairs.append((str(verb.value), str(grade.value)))"
+_CLEAN_ANCHOR = (
+    '    clean = sum(1 for name in roster if grades.get(name) == "CLEAN")\n'
+    "    return clean, len(roster), 100 * clean // len(roster)"
+)
+_SPEC_ANCHOR = (
+    "    if not names:\n"
+    '        raise ProbeError(f"no §2A identifiers found under {heading!r}")\n'
+    "    return names"
+)
+_TUPLES_ANCHOR = "    missing = [w for w in wanted if w not in out]"
+
+#: The helpers B3 deleted. Named here so the retirement of the `_roster_hit`
+#: plant is an assertion rather than a claim in a docstring.
+_DELETED_BY_B3 = ("_roster_hit", "_broker_order_scoped", "_order_path_basenames")
+
+
+def test_the_retired_roster_hit_plant_has_no_helper_left_to_target(
+    scratch: Path,
+) -> None:
+    """The plant was RETIRED because its subject was deleted, not because it failed.
+
+    ARC 026 / A1 planted `_roster_hit` short-circuited to False and measured
+    `broker_order_open_debt_rows` 13 -> 4 with the gate exiting 0. B3 then
+    replaced the prose selection rule wholesale. Deleting a control silently
+    because the code moved is how a suite stops meaning anything, so the
+    retirement is asserted: these three helpers must actually be absent.
+    """
+    source = (scratch / GATE).read_text(encoding="utf-8")
+    present = [name for name in _DELETED_BY_B3 if f"def {name}(" in source]
+    assert not present, (
+        f"{present} still exist — the `_roster_hit` plant was retired on the "
+        "grounds that B3 deleted them, and that reason is no longer true"
+    )
 
 
 def test_a_discharged_regex_defect_discriminates_where_the_sources_differ(
@@ -362,74 +458,62 @@ def test_a_discharged_regex_defect_discriminates_where_the_sources_differ(
     `_DISCHARGED`) against `_p_check_debt_series_latest` (which does not), so
     only one side moves and the gate reddens naming the claim.
     """
-    plant(_DISCHARGED_ANCHOR, '_DISCHARGED = re.compile(r"\\bdischarg", re.IGNORECASE)')
+    plant(_DISCHARGED_ANCHOR, _DISCHARGED_PLANT)
     exit_code, output = run_gate(scratch)
     assert exit_code == 1, output[:2000]
     part = claim_part(output, "check_debt_open_items")
     assert "DISAGREEMENT" in part, part
     assert "derived:ledger_rows=31" in part, part
-    assert "stated:series_table_latest_row=68" in part, part
+    assert "stated:series_table_latest_row=69" in part, part
 
 
-def test_the_same_defect_is_invisible_where_both_sources_share_the_helper(
+def test_the_authored_column_closed_the_hole_this_plant_used_to_walk_through(
     scratch: Path, plant: Callable[[str, str], None]
 ) -> None:
-    """PLANT 1, second half — THE DELIVERABLE.
+    """PLANT 1, second half — AND THE ANSWER CHANGED AT STAGE 2.
 
-    The identical plant. `broker_order_open_debt_rows` and
-    `broker_datafeed_open_debt_rows` both build their row set with
-    `_open_debt_rows`, which is `_DISCHARGED`'s other caller, so BOTH sources of
-    both claims move together. The gate reports agreement on a number that lost
-    eleven of its thirteen rows, and the independent source is what says so.
+    BEFORE B3 this identical plant was INVISIBLE on both debt claims:
+    `broker_order_open_debt_rows` 13 -> 2 and its datafeed counterpart 13 -> 3,
+    gate exit 1 but naming only `check_debt_open_items`. Both sources of both
+    claims built their row set through `_open_debt_rows`, so both moved together.
+
+    AFTER B3 the derived side scans the authored column and the STATED side
+    reads a hand-written per-module tally that never touches `_DISCHARGED`. The
+    same plant now reddens both claims and names both numbers. B's structural
+    repair closed this part of the reflexivity hole, and this test is the pin:
+    if the column is ever reverted to a prose scan on both sides, this reddens
+    instead of the blindness quietly coming back.
     """
-    plant(_DISCHARGED_ANCHOR, '_DISCHARGED = re.compile(r"\\bdischarg", re.IGNORECASE)')
+    plant(_DISCHARGED_ANCHOR, _DISCHARGED_PLANT)
     _, output = run_gate(scratch)
 
-    for claim, planted, honest in (
-        ("broker_order_open_debt_rows", 2, 13),
-        ("broker_datafeed_open_debt_rows", 3, 13),
+    for claim, stated in (
+        ("broker_order_open_debt_rows", 9),
+        ("broker_datafeed_open_debt_rows", 7),
     ):
         part = claim_part(output, claim)
-        assert "DISAGREEMENT" not in part, (
-            f"{claim} discriminated — the reflexivity finding has been repaired "
-            f"and this control must be re-derived: {part}"
+        assert "DISAGREEMENT" in part, (
+            f"{claim} stayed silent under the `_DISCHARGED` plant — B3's "
+            f"column-versus-tally independence has regressed: {part}"
         )
-        assert claim_value(output, claim) == planted, part
-        assert second.SOURCES[claim](scratch) == honest, (
+        assert "derived:ledger_column=1" in part, part
+        assert f"stated:stated_module_tally={stated}" in part, part
+        assert second.SOURCES[claim](scratch) == stated, (
             "the independent source moved with the plant, so it is not "
             "independent after all"
         )
 
 
-def test_a_roster_hit_defect_is_invisible_to_both_sources(
-    scratch: Path, plant: Callable[[str, str], None]
-) -> None:
-    """PLANT 2. `_roster_hit` is called by `_broker_order_scoped`, which IS both
-    sources of `broker_order_open_debt_rows` — they differ only in the roster
-    passed in. Nine of thirteen rows vanish and the gate exits 0."""
-    plant(
-        _ROSTER_HIT_ANCHOR,
-        "    if roster:\n        return False\n" + _ROSTER_HIT_ANCHOR,
-    )
-    exit_code, output = run_gate(scratch)
-    assert exit_code == 0, output[:2000]
-    assert "13/13 claim(s) compared" in output, output[:200]
-    assert claim_value(output, "broker_order_open_debt_rows") == 4
-    assert second.broker_order_open_debt_rows(scratch) == 13, (
-        "the independent source did not hold its ground under the plant"
-    )
-
-
 def test_a_grade_defect_silently_zeroes_the_headline_coverage_number(
     scratch: Path, plant: Callable[[str, str], None]
 ) -> None:
-    """PLANT 3, and it is the most expensive one to have missed.
+    """PLANT 2, and it is the most expensive one to have missed.
 
     `broker_order_element_coverage_v1` is the number this project reports as
     broker-order element coverage. Both its sources take their grades from
     `_arc014_findings`/`_finding_pairs`. Lower-casing the grade makes nothing
     match `"CLEAN"`, the level collapses **56% -> 0%**, and the gate reports
-    `pass: 13/13 claim(s) compared`.
+    `pass: 13/13 claim(s) compared`. Unchanged by B3.
     """
     plant(
         _GRADE_ANCHOR,
@@ -443,6 +527,73 @@ def test_a_grade_defect_silently_zeroes_the_headline_coverage_number(
     assert second.broker_order_element_coverage_v1(scratch) == 56, (
         "the independent source read the grades through the same defect"
     )
+
+
+def test_an_arithmetic_defect_in_the_shared_percent_is_invisible(
+    scratch: Path, plant: Callable[[str, str], None]
+) -> None:
+    """PLANT 3 — the replacement for the retired `_roster_hit` plant.
+
+    `_clean_fraction` computes the percent for BOTH sources of the coverage
+    claim; only the roster and grade map differ. One off-by-one moves the
+    reported level **56% -> 50%** with the gate exiting 0 on `13/13 compared`.
+
+    Deliberately subtler than plant 2: a collapse to zero would be noticed by a
+    human reading the evidence line, and a six-point drift would not.
+    """
+    plant(
+        _CLEAN_ANCHOR,
+        '    clean = sum(1 for name in roster if grades.get(name) == "CLEAN")\n'
+        "    clean = max(clean - 1, 0)\n"
+        "    return clean, len(roster), 100 * clean // len(roster)",
+    )
+    exit_code, output = run_gate(scratch)
+    assert exit_code == 0, output[:2000]
+    assert "13/13 claim(s) compared" in output
+    assert claim_value(output, "broker_order_element_coverage_v1") == 50
+    assert second.broker_order_element_coverage_v1(scratch) == 56
+
+
+def test_three_sources_are_not_three_opinions(
+    scratch: Path, plant: Callable[[str, str], None]
+) -> None:
+    """PLANT 4. `arc014_broker_order_classification` carries THREE sources.
+
+    All three call `_spec_identifiers`. Truncating the §2A roster by one moves
+    16 -> 15 on every one of them and the gate reports agreement — while the
+    SAME plant reddens four other claims, which is what proves the plant real.
+    A claim's source count is not its independence.
+    """
+    plant(_SPEC_ANCHOR, _SPEC_ANCHOR + "[:-1]")
+    exit_code, output = run_gate(scratch)
+    assert exit_code == 1, output[:2000]
+    assert "DISAGREEMENT" in claim_part(output, "spec_2a_broker_order_elements")
+
+    part = claim_part(output, "arc014_broker_order_classification")
+    assert "DISAGREEMENT" not in part, part
+    assert claim_value(output, "arc014_broker_order_classification") == 15, part
+    assert second.arc014_broker_order_classification(scratch) == 16
+
+
+def test_a_module_tuple_defect_is_invisible_to_the_datafeed_element_claim(
+    scratch: Path, plant: Callable[[str, str], None]
+) -> None:
+    """PLANT 5. Both sources of `spec_2a_broker_datafeed_elements` read the seam
+    through `_module_tuples`; dropping one element from each declared tuple moves
+    11 -> 9 on both sides in silence, while reddening three other claims."""
+    plant(
+        _TUPLES_ANCHOR,
+        "    out = {k: (v[:-1] if v else v) for k, v in out.items()}\n"
+        + _TUPLES_ANCHOR,
+    )
+    exit_code, output = run_gate(scratch)
+    assert exit_code == 1, output[:2000]
+    assert "DISAGREEMENT" in claim_part(output, "seam_declared_elements")
+
+    part = claim_part(output, "spec_2a_broker_datafeed_elements")
+    assert "DISAGREEMENT" not in part, part
+    assert claim_value(output, "spec_2a_broker_datafeed_elements") == 9, part
+    assert second.spec_2a_broker_datafeed_elements(scratch) == 11
 
 
 def test_the_control_is_green_again_once_every_plant_is_gone(scratch: Path) -> None:
