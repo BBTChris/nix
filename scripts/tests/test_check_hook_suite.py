@@ -20,8 +20,11 @@ project:
 from __future__ import annotations
 
 import hashlib
+import shutil
+import sqlite3
 import subprocess  # nosec B404 - fixed argv, shell=False, repo-local
 import sys
+from collections.abc import Iterator
 from copy import deepcopy
 from pathlib import Path
 
@@ -502,41 +505,114 @@ def test_arms_1_and_2_can_fail_against_the_real_repository(
     assert gate._git(REPO, "config", "--get", "core.hooksPath") is None  # pylint: disable=protected-access
 
 
-def test_arm_4s_missing_store_row_branch_cannot_be_reached_by_any_plant(
+def test_arm_4_reddens_against_the_real_repository_when_a_pinned_env_is_missing(  # pylint: disable=invalid-name
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """MEASURED IMPOSSIBILITY, arm 4 — found by attempting the plant, not by reading.
+    """CAN-FAIL, ARM 4, AGAINST THE REAL REPOSITORY. **DISCHARGES CHECK-DEBT D3.29.**
 
-    Arm 4's primary defect is *"no environment installed for the pinned rev"*.
-    The plant is a store with no rows, and it is taken here against the REAL
-    repository and the REAL config by redirecting `PRE_COMMIT_HOME` at an empty
-    directory — a real operational state, and one that writes nothing shared.
+    ARC 027 took exactly this plant — `PRE_COMMIT_HOME` at an empty directory,
+    against the REAL repository and the REAL config, a real operational state
+    that writes nothing shared — and MEASURED the gate returning CANNOT_MEASURE
+    *"resolved to ZERO hooks"*: the missing environment emptied the hook set,
+    and the vacuity guard judged the empty set before arm 4 could judge its
+    cause. That was a reachability defect, not a false green, and D3.29 recorded
+    it as such rather than rounding it up to a binding.
 
-    **The gate returns CANNOT_MEASURE, never FAIL.** `_probe_payload` consults
-    `_environments_all_present` BEFORE calling `all_hooks` — deliberately, so a
-    gate that runs at boot cannot be tricked into cloning — so a missing row
-    yields zero hooks, and `_vacuity_complaint` turns zero hooks into
-    CANNOT_MEASURE one layer up. The defect branch in `hook_set_defects` is
-    shadowed by the gate's own vacuity guard and no plant can reach it.
+    ARC 028 (C3) repaired the ORDER — `repo_defects` runs before
+    `_vacuity_complaint` — and this is the same plant re-taken against the
+    repaired gate. The assertion is the REASON and the SITE, never the status
+    alone: every non-local pinned rev must be named.
 
-    This is not a false green: CANNOT_MEASURE withholds certification. It is a
-    reachability defect — the operator is told *"resolved to ZERO hooks"* when
-    the gate in fact knows which pinned rev has no environment, and doctrine C.2
-    asks a gate to name the site. **CHECK-DEBT D3.29**, and arm 4 stays UNBOUND
-    with this as the reason rather than with a policy as the reason.
+    Non-vacuity first, unplant last, and the old CANNOT_MEASURE text is asserted
+    ABSENT so a revert of the ordering reddens here instead of quietly restoring
+    the shadowing.
     """
+    # RESOLVED BEFORE THE PLANT, AND THAT IS NOT STYLE. `_real_store_dir()`
+    # asks pre-commit, which reads `PRE_COMMIT_HOME` — so calling it after the
+    # plant returns the PLANTED store and the "unplant" would restore nothing.
+    # Measured: the first cut of this control did exactly that, and its closing
+    # PASS assertion failed with the plant still in force.
+    real_store = _real_store_dir()
+    monkeypatch.setenv("PRE_COMMIT_HOME", real_store)
+    ambient = _run(REPO)
+    assert ambient.status is Status.PASS, ambient.detail
+
     monkeypatch.setenv("PRE_COMMIT_HOME", str(tmp_path / "empty-store"))
     payload = gate.probe(REPO).payload
     assert payload["all_files"] > 0, "the tree lost its tracked files; wrong subject"
-    assert all(
-        row["store_path"] is None for row in payload["repos"] if not row["local"]
-    ), payload["repos"]
-    assert payload["hooks"] == []
+    pinned = [row for row in payload["repos"] if not row["local"]]
+    assert pinned, "no non-local repo in the config; arm 4 has no subject"
+    assert all(row["store_path"] is None for row in pinned), payload["repos"]
+    assert payload["hooks"] == [], "the plant did not empty the hook set"
+    assert payload["hooks_resolved"] is False
 
     result = _run(REPO)
-    assert result.status is Status.CANNOT_MEASURE
-    assert "resolved to ZERO hooks" in (result.detail or "")
-    assert "no environment installed for the pinned rev" not in (result.detail or "")
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
+    assert "no environment installed for the pinned rev" in (result.detail or "")
+    assert "resolved to ZERO hooks" not in (result.detail or ""), (
+        "the vacuity guard is shadowing arm 4 again — D3.29 has regressed"
+    )
+    for row in pinned:
+        site = f"{gate.CONFIG_FILE}:{row['repo']}@{row['rev']}"
+        assert site in (result.site or ""), (site, result.site)
+    assert "will not run in the environment the pin names" not in (
+        result.detail or ""
+    ), "an unresolved hook set produced a spurious prefix mismatch"
+
+    monkeypatch.setenv("PRE_COMMIT_HOME", real_store)
+    assert _run(REPO).status is Status.PASS
+
+
+def test_arm_4_reddens_when_the_store_row_survives_but_its_directory_does_not(  # pylint: disable=invalid-name
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CAN-FAIL, ARM 4's SECOND STATE — a store row pointing at a deleted environment.
+
+    ARC 027 could only reach *"no row at all"*. A row that EXISTS while its
+    directory has been removed — a cleaned cache, a pruned `~/.cache`, a
+    partially-restored backup — was invisible twice over: `store_path` was
+    truthy so the missing-row branch stayed silent, and
+    `_environments_all_present` already treated it as absent so the hook set was
+    empty and the vacuity guard answered instead.
+
+    The plant is a REAL pre-commit store: the live `db.db` is COPIED into
+    `tmp_path` and every row's path is suffixed, so pre-commit's own reader
+    finds genuine rows naming directories that are not there. Nothing shared is
+    written — the real store is opened read-only and its own file is asserted
+    unchanged by sha256 either side.
+    """
+    real_store = _real_store_dir()  # before the plant; see the note above
+    real_db = Path(real_store) / "db.db"
+    if not real_db.is_file():
+        pytest.skip(f"no pre-commit store database at {real_db}")
+    before = hashlib.sha256(real_db.read_bytes()).hexdigest()
+
+    store = tmp_path / "store"
+    store.mkdir()
+    shutil.copy2(real_db, store / "db.db")
+    with sqlite3.connect(str(store / "db.db")) as conn:
+        changed = conn.execute(
+            "UPDATE repos SET path = path || '-REMOVED-BY-ARC-028'"
+        ).rowcount
+    assert changed > 0, "the copied store held no rows; the plant has no subject"
+
+    monkeypatch.setenv("PRE_COMMIT_HOME", str(store))
+    payload = gate.probe(REPO).payload
+    pinned = [row for row in payload["repos"] if not row["local"]]
+    assert pinned and all(row["store_path"] for row in pinned), payload["repos"]
+    assert all(not row["store_path_exists"] for row in pinned), payload["repos"]
+
+    result = _run(REPO)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
+    assert "which is not a directory" in (result.detail or "")
+    assert "-REMOVED-BY-ARC-028" in (result.detail or ""), result.detail
+    assert "resolved to ZERO hooks" not in (result.detail or "")
+
+    assert hashlib.sha256(real_db.read_bytes()).hexdigest() == before, (
+        "the plant wrote to the REAL pre-commit store"
+    )
+    monkeypatch.setenv("PRE_COMMIT_HOME", real_store)
+    assert _run(REPO).status is Status.PASS
 
 
 def test_arms_3_and_4_decide_correctly_over_the_real_resolved_hook_set() -> None:
@@ -606,6 +682,13 @@ def test_the_real_subject_route_for_arm_3_collapses_and_the_collapse_is_pinned(
     (`test_a_hook_that_selects_zero_files_fails`) is what the rule of record
     calls a purpose-built fake: it binds the predicate, not the subject.
     **CHECK-DEBT D3.30.**
+
+    **KEPT AFTER ARC 028 (C3) DISCHARGED D3.30, because it is the reason the
+    repair has the shape it has.** The collapse pinned here is exactly what
+    `real_population` had to overcome, and it names the missing ingredient: not
+    the config, which this route already carries, but a git repository for
+    `git.get_all_files()` to answer from. A future edit that drops the `git
+    init` from that fixture lands back here.
     """
     monkeypatch.setenv("PRE_COMMIT_HOME", _real_store_dir())
     home = tmp_path / "nix"
@@ -616,3 +699,126 @@ def test_the_real_subject_route_for_arm_3_collapses_and_the_collapse_is_pinned(
     result = _run(home)
     assert result.status is Status.CANNOT_MEASURE
     assert "not a git repository" in (result.detail or ""), result.detail
+
+
+# ===========================================================================
+# ARC 028 (C3) — ARM 3 AGAINST THE REAL CONFIGURATION OVER THE REAL POPULATION.
+# **DISCHARGES CHECK-DEBT D3.30.**
+#
+# ARC 027 measured two venues and refused both. The refusals were right and the
+# enumeration was incomplete: venue (a) failed because a COPY of the tree is not
+# a git repository — which is a missing ingredient, not a law. A copy that IS a
+# git repository carries the real `.pre-commit-config.yaml` over the real
+# `git ls-files` population, resolves the real store's environments, and
+# reproduces the real repository's per-hook selection counts exactly. It differs
+# from the subject in location and in nothing else the gate reads, and the
+# assertion below says so by comparing the two selection tables rather than by
+# claiming equivalence in prose.
+#
+# What this is NOT: it is not the live commit gate of the tree the suite runs
+# inside. Venue (b) stays REFUSED for the reason ARC 027 gave — a crash between
+# plant and restore would leave `~/nix` committing through a deliberately broken
+# hook set — and this venue makes that refusal cost nothing.
+# ===========================================================================
+
+
+@pytest.fixture(name="real_population")
+def _real_population(tmp_path: Path) -> Iterator[Path]:
+    """A git repository holding the REAL tracked file set and the REAL config.
+
+    The population comes from `git ls-files` rather than from a directory copy,
+    so it is the tracked set the gate's own `git.get_all_files()` reads and not
+    a superset carrying build detritus — the two differ, and a hook selecting
+    over the wrong one measures a population this repository does not have.
+    """
+    listing = subprocess.run(  # nosec B603 B607 - fixed argv, shell=False
+        ["git", "-C", str(REPO), "ls-files", "-z"],
+        check=True,
+        capture_output=True,
+        env=gate._clean_git_env(),  # pylint: disable=protected-access
+    ).stdout.decode("utf-8")
+    tracked = [rel for rel in listing.split("\0") if rel]
+    assert tracked, "git ls-files returned nothing — no population to copy"
+
+    home = tmp_path / "nix"
+    for rel in tracked:
+        source = REPO / rel
+        if not source.is_file():
+            continue
+        target = home / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+    _git(home, "init", "-q", ".")
+    _git(home, "config", "user.email", "arc028@example.invalid")
+    _git(home, "config", "user.name", "arc028")
+    _git(home, "add", "-A")
+    _git(home, "commit", "-qm", "real population", "--no-verify")
+    subprocess.run(  # nosec B603 - fixed argv, shell=False, tmp_path only
+        [str(PRE_COMMIT), "install"],
+        cwd=str(home),
+        check=True,
+        capture_output=True,
+        env=gate._clean_git_env(),  # pylint: disable=protected-access
+    )
+    assert (home / ".git").is_dir(), "fixture did not create a repository in tmp_path"
+    assert gate.git_layout(home).hooks_dir == home / ".git" / "hooks"
+    yield home
+
+
+def test_arm_3_reddens_over_the_real_config_and_the_real_tracked_population(  # pylint: disable=invalid-name
+    real_population: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CAN-FAIL, ARM 3. **DISCHARGES CHECK-DEBT D3.30.**
+
+    NON-VACUITY, and it is the load-bearing half: the venue is asserted to
+    reproduce the REAL repository's per-hook selection table, hook key by hook
+    key. That is what separates this from `test_a_hook_that_selects_zero_files_
+    fails`, whose four-file repository can satisfy arm 3 with a `files:` regex
+    that would never match anything real.
+
+    THE PLANT is one line of YAML added to a real hook entry — a `files:`
+    pattern that matches no path in the tree. That is failure mode #14 in its
+    natural form: the hook stays configured, stays installed, resolves its
+    pinned environment, and reads nothing, and `pre-commit` prints `Skipped` and
+    exits 0 for it.
+
+    UNPLANT, then the config's sha256 asserted identical, then PASS again.
+    """
+    real_store = _real_store_dir()  # before anything is perturbed
+    monkeypatch.setenv("PRE_COMMIT_HOME", real_store)
+
+    here = {
+        h["key"]: h["selected"] for h in gate.probe(real_population).payload["hooks"]
+    }
+    there = {h["key"]: h["selected"] for h in gate.probe(REPO).payload["hooks"]}
+    assert here == there, (
+        "the venue does not reproduce the real repository's selection table, so "
+        f"a plant against it is not a plant against arm 3's subject: {here} != {there}"
+    )
+    scoped = [
+        h for h in gate.probe(real_population).payload["hooks"] if not h["always_run"]
+    ]
+    assert scoped and all(h["selected"] > 0 for h in scoped)
+
+    control = _run(real_population)
+    assert control.status is Status.PASS, control.detail
+
+    config = real_population / gate.CONFIG_FILE
+    before = config.read_text(encoding="utf-8")
+    before_sha = hashlib.sha256(config.read_bytes()).hexdigest()
+    anchor = "      - id: ruff-check\n"
+    assert anchor in before, "the real config no longer declares ruff-check"
+    config.write_text(
+        before.replace(anchor, anchor + "        files: ^no-such-path-arc-028-c/\n", 1),
+        encoding="utf-8",
+    )
+
+    planted = _run(real_population)
+    assert planted.status is Status.FAIL_NEEDS_OPERATOR, planted.detail
+    assert "hook selects ZERO files" in (planted.detail or ""), planted.detail
+    assert f"{gate.CONFIG_FILE}:ruff-check" in (planted.site or ""), planted.site
+    assert "ruff-check=0" in (planted.evidence or ""), planted.evidence
+
+    config.write_text(before, encoding="utf-8")
+    assert hashlib.sha256(config.read_bytes()).hexdigest() == before_sha
+    assert _run(real_population).status is Status.PASS

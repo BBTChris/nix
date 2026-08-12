@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+# C0302: this module is over pylint's line ceiling and the excess is PROSE —
+# the §7.12 standing question answered condition by condition, and a rationale
+# beside every arm. Doctrine B.7 puts the argument next to the instrument it
+# argues for; splitting the gate to satisfy a line counter would move half the
+# reasoning away from the code it explains, which is the trade the check
+# contract explicitly refuses.
+# pylint: disable=too-many-lines
 """Gate: every tracked module and config artifact is NAMED by some check.
 
 ARC 024 §2.7. AMENDMENT 3 broadens the coverage trigger from *every environment
@@ -52,7 +59,7 @@ arc. Until then its green means *declared*, never *covered*.
    all stay green.** Every rule above judges the accepted SET; the owner rules
    judge the owner VALUE standing today. A marker re-pointed at the next arc at
    every arc boundary satisfies all of them permanently, and the debt is never
-   paid. *Closed by `_owner_lineage` + `contract.reowning_defect`:* the sequence
+   paid. *Closed by `_row_lineage` + `contract.reowning_defect`:* the sequence
    of committed owner values is derived from the SAME git walk the ratchet uses,
    and more than `GUARD_REOWN_CEILING` re-ownings escalates GUARDED to FAIL.
    Its own sub-vacuities: a lineage read from the working tree is length 1 by
@@ -66,20 +73,47 @@ arc. Until then its green means *declared*, never *covered*.
    for pre-rename revisions, which this gate correctly treats as an ERROR, so it
    would trade a silent reset for a permanent CANNOT_MEASURE. Recorded as
    CHECK-DEBT D2.35 rather than half-fixed.
+7. **ARC 028 — THE DECOMPOSITION COULD LAUNDER THE CEILING.** Splitting one
+   sixteen-artifact guard into sixteen rows hands each row a lineage, and a
+   lineage read only from the NEW schema starts at length 1 — nought re-ownings
+   — so a file format change would reset a ceiling ARC 027 spent an arc
+   building. *Closed by `_parse_v1`:* every historical revision is projected
+   onto per-path rows, so each of the sixteen inherits the aggregate's owner
+   sequence and is AT the ceiling on the day of the split, not below it.
+8. **ARC 028 — an owner could be assigned to the ARC IN FLIGHT**, which every
+   read-time rule accepts (that arc has not closed yet) and which is guaranteed
+   dead at that arc's own close-out. That is CHECK-DEBT D3.40, measured on this
+   very file. *Closed by `_assignment_defects` + `contract.
+   guard_owner_assignment_defect` (STANDING RULE §0g):* a row whose owner
+   differs from the value committed at `HEAD` is an assignment happening NOW and
+   is judged against the arc in flight, not merely against the completed set.
+9. **ARC 028 — `measured_by` could be a claim nobody checks**, which would make
+   the per-row honesty decorative. *Closed by `_coverage_defects`:* every row's
+   claim is compared against every module under `scripts/tests/`, in BOTH
+   directions, and what that comparison can and cannot prove is stated in
+   `_named_by_tests` and printed in the verdict.
 
 ## Why GUARDED rather than FAIL today
 
-The uncovered set is large and known: 12 of 13 checks predate the declaration
-mechanism and name nothing. That is a measured deferral with an owner — the bulk
-retrofit arc — which is precisely AMENDMENT 1's GUARDED (exit 3), not a failure.
-A *new* uncovered artifact is a regression and is a FAIL. So the instrument is a
-ratchet: existing debt is guarded and visible; new debt is red.
+The uncovered set is large and known: most checks predate the declaration
+mechanism and name nothing. That is a measured deferral with an owner — now one
+owner PER ARTIFACT — which is precisely AMENDMENT 1's GUARDED (exit 3), not a
+failure. A *new* uncovered artifact is a regression and is a FAIL. So the
+instrument is a ratchet: existing debt is guarded and visible; new debt is red.
+
+**AND TODAY IT IS NOT GUARDED, IT IS CANNOT_MEASURE, PER ROW.** All sixteen rows
+name `ARC 027`, which has completed. The decomposition deliberately did NOT
+re-point them at a live arc: that is the third re-owning D2.31's ceiling forbids,
+and it is forbidden per artifact now rather than in aggregate. Nothing was forced
+green and nothing was discharged by being named (D3.19). CHECK-DEBT D3.40 stays
+open and is now stated per artifact.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import json
+import re
 import subprocess  # nosec B404 - git ls-files/log/show, fixed argv, no shell
 import sys
 from pathlib import Path
@@ -92,7 +126,9 @@ from nixverify.contract import (
     Mode,
     Status,
     completed_arcs,
+    guard_owner_assignment_defect,
     guard_owner_defect,
+    in_flight_arc,
     reowning_defect,
 )
 from nixverify.declarations import read_all
@@ -160,35 +196,121 @@ def _declared_subjects(home: Path) -> set[str]:
     }
 
 
+#: The values `measured_by` may take. See `_coverage_defects` for what each one
+#: CLAIMS and — the part that matters — what the gate can actually check.
+MEASURED_BY_TESTS = "tests"
+MEASURED_BY_NOTHING = "none"
+MEASURED_BY_VALUES = (MEASURED_BY_TESTS, MEASURED_BY_NOTHING)
+
+
+@dataclasses.dataclass(frozen=True)
+class Row:
+    """ONE accepted-uncovered artifact. ARC 028 (C2), ARCHITECT RULING D3.40.
+
+    Until ARC 028 this file held a flat `uncovered` LIST under a single
+    top-level `owner`: sixteen unrelated debts, one promise, one ceiling. The
+    ceiling was blunt by construction — it could only ever say "somebody has
+    deferred this pile three times", never which artifact, and the two entries
+    nothing measures at all hid inside the aggregate exactly as well as the
+    thirteen the test suite drives hard.
+    """
+
+    #: The single arc that will discharge THIS artifact. Its lineage, and so its
+    #: re-owning ceiling, is derived per path from the same git walk.
+    owner: str = ""
+    #: The single arc that admitted this path to the accepted set. A RECEIPT
+    #: (backward-looking), never a promise — see `guard_owner_defect`.
+    admitted: str = ""
+    #: What DOES measure it, if anything: `tests` or `none`. Checked, not taken.
+    measured_by: str = ""
+    #: Why it is uncovered, in this file, per artifact. Required and non-empty.
+    reason: str = ""
+
+
 @dataclasses.dataclass(frozen=True)
 class Baseline:
     """The ratchet file, parsed. `error` non-empty means it could not be read."""
 
-    uncovered: frozenset[str] = frozenset()
-    owner: str = ""
-    #: path -> the single arc that admitted it. ARC 025; see `_ratchet_defects`.
-    admitted: dict[str, str] = dataclasses.field(default_factory=dict)
+    rows: dict[str, Row] = dataclasses.field(default_factory=dict)
+    #: 1 = the flat pre-ARC-028 shape, 2 = per-artifact. Recorded because the
+    #: ratchet reads HISTORICAL revisions and most of them are schema 1.
+    schema: int = 0
     error: str = ""
+
+    @property
+    def uncovered(self) -> frozenset[str]:
+        """The accepted set — the quantity the ratchet has always judged."""
+        return frozenset(self.rows)
+
+    def owner_of(self, path: str) -> str:
+        """This revision's owner for one artifact, or `''` if it held none."""
+        return self.rows[path].owner if path in self.rows else ""
+
+
+def _parse_v1(payload: dict, where: str) -> Baseline:
+    """The FLAT pre-ARC-028 shape, projected onto per-artifact rows.
+
+    **THIS IS WHAT STOPS THE DECOMPOSITION LAUNDERING THE CEILING**, and it is
+    the whole reason the historical reader exists rather than the old shape
+    being deleted. Every committed revision before ARC 028 carries ONE owner
+    covering ALL of its accepted paths, so projecting that owner onto each path
+    reconstructs a per-path lineage that INCLUDES the aggregate's history. The
+    sixteen artifacts inherit
+    `'the bulk check retrofit arc (ARC 025+)…' -> 'ARC 025' -> 'ARC 027'`
+    rather than starting at zero.
+
+    A decomposition that read only the new shape would hand every row a fresh
+    lineage of length 1 — nought re-ownings — and the ceiling ARC 027 spent an
+    arc building would be reset by a file format change. That is the §0a defect
+    for this step, and this function is the answer to it.
+    """
+    del where
+    admitted = payload.get("admitted", {})
+    admitted = admitted if isinstance(admitted, dict) else {}
+    owner = str(payload.get("owner", ""))
+    return Baseline(
+        rows={
+            str(item): Row(owner=owner, admitted=str(admitted.get(str(item), "")))
+            for item in payload.get("uncovered", [])
+        },
+        schema=1,
+    )
+
+
+def _parse_v2(payload: dict, where: str) -> Baseline:
+    """The per-artifact shape. One row per artifact, each with its own owner."""
+    artifacts = payload.get("artifacts")
+    if not isinstance(artifacts, dict):
+        return Baseline(error=f"{where}: `artifacts` is not a JSON object")
+    rows: dict[str, Row] = {}
+    for path, entry in artifacts.items():
+        if not isinstance(entry, dict):
+            return Baseline(error=f"{where}:{path} is not a JSON object")
+        rows[str(path)] = Row(
+            owner=str(entry.get("owner", "")),
+            admitted=str(entry.get("admitted", "")),
+            measured_by=str(entry.get("measured_by", "")),
+            reason=str(entry.get("reason", "")),
+        )
+    return Baseline(rows=rows, schema=2)
 
 
 def _parse_baseline(text: str, where: str) -> Baseline:
-    """Parse baseline JSON. Shared by the working tree and by `git show`."""
+    """Parse baseline JSON. Shared by the working tree and by `git show`.
+
+    Both schemas are read, and which one was read is RECORDED rather than
+    smoothed over: the ratchet's whole job is to compare today's file against
+    revisions committed under the older shape.
+    """
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
         return Baseline(error=f"{where} unreadable: {exc!r}")
     if not isinstance(payload, dict):
         return Baseline(error=f"{where} is not a JSON object")
-    admitted = payload.get("admitted", {})
-    return Baseline(
-        uncovered=frozenset(str(item) for item in payload.get("uncovered", [])),
-        owner=str(payload.get("owner", "")),
-        admitted=(
-            {str(k): str(v) for k, v in admitted.items()}
-            if isinstance(admitted, dict)
-            else {}
-        ),
-    )
+    if "artifacts" in payload:
+        return _parse_v2(payload, where)
+    return _parse_v1(payload, where)
 
 
 def _load_baseline(home: Path) -> Baseline:
@@ -265,7 +387,7 @@ class History:
     """Every COMMITTED revision of the baseline, oldest first.
 
     ARC 027 (B2). One git walk, two derived facts — the tightest accepted set
-    (`_high_water_mark`, ARC 025) and the owner lineage (`_owner_lineage`, D2.31's
+    (`_high_water_mark`, ARC 025) and the owner lineage (`_row_lineage`, D2.31's
     ceiling). Doctrine C.9: the property *"a fact about this file that the hand
     editing it cannot reach"* was already owned by the ratchet's walk, so the
     ceiling extends that walk instead of opening a second one. Two walks would be
@@ -318,12 +440,19 @@ def _committed_history(home: Path) -> History:
     return History(revisions=tuple(revisions), truncated=len(shas) >= _HISTORY_LIMIT)
 
 
-def _owner_lineage(history: History) -> tuple[str, ...]:
-    """The committed `owner` values, oldest first, consecutive duplicates collapsed.
+def _row_lineage(history: History, path: str) -> tuple[str, ...]:
+    """ONE artifact's committed `owner` values, oldest first, dupes collapsed.
 
-    ARC 027 (B2), D2.31's ceiling. One entry per CHANGE OF OWNER, so
-    `len(lineage) - 1` is the number of re-ownings — the quantity
-    `contract.reowning_defect` bounds.
+    ARC 027 (B2) built this over the file's single top-level owner; ARC 028 (C2)
+    reads it PER PATH, which is the whole of the decomposition — `len(lineage)
+    - 1` is now the number of times THIS artifact's deferral was handed on, and
+    `contract.reowning_defect` bounds that per artifact instead of bounding one
+    number for sixteen unrelated debts.
+
+    Revisions in which the path was NOT in the accepted set are skipped: a guard
+    that did not exist yet cannot have been re-owned. Revisions committed under
+    the flat schema contribute the file-wide owner, because under that schema it
+    genuinely was this artifact's owner (see `_parse_v1`).
 
     Consecutive duplicates are collapsed rather than de-duplicated globally: an
     owner re-appearing after a different one is a second deferral onto that arc,
@@ -331,16 +460,31 @@ def _owner_lineage(history: History) -> tuple[str, ...]:
     between two arc numbers at a constant apparent cost forever.
 
     **Derived from committed blobs, never from the working tree.** The working
-    tree holds exactly one owner value at any moment, so a lineage read from it
-    is length 1 and the ceiling is unreachable by construction — the same reason
-    the high-water mark is not a `previous_count` field in this file.
+    tree holds exactly one owner value per row at any moment, so a lineage read
+    from it is length 1 and the ceiling is unreachable by construction — the
+    same reason the high-water mark is not a `previous_count` field.
     """
     lineage: list[str] = []
     for _sha, revision in history.revisions:
-        owner = revision.owner.strip()
+        if path not in revision.rows:
+            continue
+        owner = revision.owner_of(path).strip()
         if not lineage or lineage[-1] != owner:
             lineage.append(owner)
     return tuple(lineage)
+
+
+def _head_owners(history: History) -> dict[str, str]:
+    """Each artifact's owner as most recently COMMITTED. `{}` with no history.
+
+    The reference the §0g assignment arm diffs the working tree against: an
+    owner value that differs from this IS an assignment happening now, in this
+    tree, and has not yet been committed anywhere.
+    """
+    if not history.revisions:
+        return {}
+    _sha, newest = history.revisions[-1]
+    return {path: row.owner.strip() for path, row in newest.rows.items()}
 
 
 def _high_water_mark(home: Path) -> tuple[frozenset[str], str, str]:
@@ -408,7 +552,7 @@ def _ratchet_defects(
         # completes, and the record stays true; passing the completion set here
         # would redden every honest `admitted` entry at the next arc boundary.
         # A guard owner is a promise, an admitting arc is a receipt.
-        defect = guard_owner_defect(baseline.admitted.get(path, ""))
+        defect = guard_owner_defect(baseline.rows[path].admitted)
         if defect:
             defects.append(
                 (
@@ -424,44 +568,365 @@ def _ratchet_defects(
     return defects
 
 
-def _ceiling_verdict(
-    lineage: tuple[str, ...], truncated: bool, evidence: str
-) -> CheckResult | None:
-    """The re-owning ceiling arm, or `None` when the guard may still stand.
+# ===========================================================================
+# PER-ROW ARMS. ARC 028 (C2). Each returns `[(site, why)]` so `run` stays a
+# linear sequence of named arms rather than a nest of conditionals inside the
+# instrument that decides whether this repo's coverage debt may grow.
+# ===========================================================================
 
-    ARC 027 (B2), CHECK-DEBT D2.31. Every rule before this one judges the owner
-    VALUE standing today, and a marker walked forward one honest arc at a time
-    passes all of them forever. This is the only arm that judges the SEQUENCE,
-    and so the only one that can see a deferral nobody intends to pay.
+#: Where a `measured_by: tests` claim is checked. Test modules are excluded from
+#: the ARTIFACT set (a test is not a settable artifact, it IS the measurement) —
+#: which is exactly why they are the population searched here.
+_TEST_DIR = "scripts/tests"
+
+
+def _importable_name(path: str) -> str:
+    """The dotted name a test would import this artifact by, or `''`.
+
+    `scripts/nixverify/gitenv.py` -> `nixverify.gitenv`, because `scripts/` is on
+    the path and no test writes the file path. Without this the classifier would
+    call ten thoroughly-tested modules uncovered-by-everything, which is a
+    FALSE RED and would make the honest distinction below worthless.
+
+    `__init__.py` gets NO dotted name, deliberately. Its package name appears in
+    every `from nixverify... import` line in the tree, so a dotted match would
+    mark it covered on the strength of imports of its SIBLINGS. It therefore
+    matches only by literal path — and comes back named by nothing, which is the
+    true answer: it is EXECUTED constantly and ASSERTED ABOUT nowhere.
     """
-    defect = reowning_defect(lineage)
-    if defect:
-        # Conclusive even on a TRUNCATED history: truncation drops the OLDEST
-        # revisions, so the lineage is a lower bound, and a lower bound already
-        # over the ceiling is over it. Checked BEFORE the truncation arm for
-        # exactly that reason.
-        return CheckResult(
-            name=NAME,
-            status=Status.FAIL_NEEDS_OPERATOR,
-            site=f"{BASELINE}:owner",
-            evidence=evidence,
-            detail=f"{BASELINE}:owner — {defect}",
+    if not path.endswith(".py") or path.endswith("__init__.py"):
+        return ""
+    parts = path[: -len(".py")].split("/")
+    if parts and parts[0] in ("scripts", "checks", "databases"):
+        parts = parts[1:]
+    return ".".join(parts)
+
+
+def _named_by_tests(home: Path, paths: list[str]) -> dict[str, list[str]]:
+    """Which test modules NAME each artifact, by path or by importable name.
+
+    **READ THE LIMIT BEFORE READING THE ANSWER.** This proves a test module
+    MENTIONS the artifact. It does not prove the test EXECUTES it, and it
+    certainly does not prove it ASSERTS anything about it — the same gap D3.16
+    named for `SUBJECTS`, one layer over. It is kept because it separates two
+    states this gate could not previously tell apart at all: an artifact the
+    suite at least reaches, and an artifact NOTHING in this repository names.
+    """
+    sources: dict[str, str] = {}
+    for module in sorted((home / _TEST_DIR).glob("*.py")):
+        try:
+            sources[f"{_TEST_DIR}/{module.name}"] = module.read_text(encoding="utf-8")
+        except OSError:  # pragma: no cover - a file that vanished mid-run
+            continue
+    found: dict[str, list[str]] = {}
+    for path in paths:
+        dotted = _importable_name(path)
+        pattern = re.compile(
+            re.escape(path)
+            if not dotted
+            else rf"{re.escape(path)}|\b{re.escape(dotted)}\b"
         )
-    if truncated:
-        # Under the ceiling on a lower bound proves nothing: the dropped
-        # revisions are the oldest, which is where the early owners live.
-        return CheckResult(
-            name=NAME,
-            status=Status.CANNOT_MEASURE,
-            evidence=evidence,
-            detail=(
-                f"{BASELINE}:owner — the committed history came back at the "
-                f"{_HISTORY_LIMIT}-revision limit, so the owner lineage is a "
-                "LOWER BOUND and the re-owning ceiling cannot be shown to be "
-                "unexhausted. Raise the limit or discharge the guard"
+        found[path] = sorted(
+            name for name, text in sources.items() if pattern.search(text)
+        )
+    return found
+
+
+def _shape_defects(baseline: Baseline) -> list[tuple[str, str]]:
+    """Every row must classify itself and say why. A blank row is not a row."""
+    defects: list[tuple[str, str]] = []
+    for path, row in sorted(baseline.rows.items()):
+        if row.measured_by not in MEASURED_BY_VALUES:
+            defects.append(
+                (
+                    f"{BASELINE}:artifacts:{path}",
+                    (
+                        f"`measured_by` is {row.measured_by!r}; expected one of "
+                        f"{list(MEASURED_BY_VALUES)}. An unclassified row is the "
+                        "aggregate wearing a per-artifact shape"
+                    ),
+                )
+            )
+        if not row.reason.strip():
+            defects.append(
+                (
+                    f"{BASELINE}:artifacts:{path}",
+                    (
+                        "no `reason` — the decomposition exists so each debt "
+                        "states its own case; a row that cannot say why it is "
+                        "uncovered is a suppression entry"
+                    ),
+                )
+            )
+    return defects
+
+
+def _coverage_defects(
+    baseline: Baseline, named: dict[str, list[str]]
+) -> list[tuple[str, str]]:
+    """Each row's `measured_by` claim, checked against the test tree.
+
+    Both directions, because both are lies of the same family: a row claiming
+    the suite measures it when nothing names it, and a row claiming nothing
+    measures it when something does. The second matters as much as the first —
+    it is how an artifact that HAS acquired coverage keeps hiding in the
+    accepted set.
+    """
+    defects: list[tuple[str, str]] = []
+    for path, row in sorted(baseline.rows.items()):
+        hits = named.get(path, [])
+        site = f"{BASELINE}:artifacts:{path}:measured_by"
+        if row.measured_by == MEASURED_BY_TESTS and not hits:
+            defects.append(
+                (
+                    site,
+                    (
+                        f"claims {MEASURED_BY_TESTS!r} but NO module under "
+                        f"{_TEST_DIR}/ names {path} or its importable name "
+                        f"{_importable_name(path)!r} — the claim is false"
+                    ),
+                )
+            )
+        elif row.measured_by == MEASURED_BY_NOTHING and hits:
+            defects.append(
+                (
+                    site,
+                    (
+                        f"claims {MEASURED_BY_NOTHING!r} but {len(hits)} test "
+                        f"module(s) name it ({', '.join(hits[:4])}) — the row is "
+                        "stale and understates what already exists"
+                    ),
+                )
+            )
+    return defects
+
+
+def _assignment_defects(
+    baseline: Baseline,
+    head: dict[str, str],
+    completed: frozenset[int],
+    live: int | None,
+) -> list[tuple[str, str]]:
+    """STANDING RULE §0g — an owner being ASSIGNED right now, judged now.
+
+    A row whose owner differs from the value committed at `HEAD` is an
+    assignment in progress: it exists only in this working tree and has not been
+    committed anywhere. That is the one moment at which "can this arc still
+    discharge it?" has a different answer from the read rule's, and CHECK-DEBT
+    D3.40 is the measured proof that the difference is a whole arc wide.
+
+    Rows whose owner is UNCHANGED are not assignments and are left to the read
+    rule; re-judging them here would redden an owner that was legitimate when it
+    was written, which is a different (and much louder) rule than the one §0g
+    asks for.
+    """
+    defects: list[tuple[str, str]] = []
+    for path, row in sorted(baseline.rows.items()):
+        if path in head and head[path] == row.owner.strip():
+            continue
+        defect = guard_owner_assignment_defect(row.owner, completed, live)
+        if defect:
+            defects.append((f"{BASELINE}:artifacts:{path}:owner", defect))
+    return defects
+
+
+def _ceiling_defects(
+    baseline: Baseline, history: History
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """The re-owning ceiling, PER ARTIFACT. Returns (defects, deferrals).
+
+    ARC 027 (B2), CHECK-DEBT D2.31, decomposed by ARC 028 (C2). Every rule
+    before this one judges an owner VALUE standing today, and a marker walked
+    forward one honest arc at a time passes all of them forever. This is the
+    only arm that judges the SEQUENCE — and now it judges sixteen sequences
+    rather than one, so an artifact that has been handed on three times is named
+    instead of being averaged into a pile.
+    """
+    defects: list[tuple[str, str]] = []
+    deferrals: list[tuple[str, str]] = []
+    for path in sorted(baseline.rows):
+        lineage = _row_lineage(history, path)
+        site = f"{BASELINE}:artifacts:{path}:owner"
+        if not lineage:
+            # A row with NO committed lineage has never been committed at all.
+            # For the single aggregate guard that meant a missing record and
+            # `reowning_defect` calls it a defect — correctly, because that file
+            # always had history. Per artifact it means something else and much
+            # more ordinary: a row added in THIS working tree. That case is
+            # already owned by `_ratchet_defects`, which FAILs it unless the
+            # baseline names the arc that admitted it, so judging it here as
+            # well would make every legitimate admission red. A path present in
+            # the high-water mark always has a lineage, so nothing that the
+            # ceiling should see reaches this branch.
+            continue
+        defect = reowning_defect(lineage)
+        if defect:
+            # Conclusive even on a TRUNCATED history: truncation drops the
+            # OLDEST revisions, so the lineage is a lower bound, and a lower
+            # bound already over the ceiling is over it. Checked BEFORE the
+            # truncation arm for exactly that reason.
+            defects.append((site, defect))
+        elif history.truncated:
+            deferrals.append(
+                (
+                    site,
+                    (
+                        f"the committed history came back at the {_HISTORY_LIMIT}-"
+                        "revision limit, so this artifact's owner lineage is a "
+                        "LOWER BOUND and its ceiling cannot be shown to be "
+                        "unexhausted. Raise the limit or discharge the guard"
+                    ),
+                )
+            )
+    return defects, deferrals
+
+
+def _owner_deferrals(
+    baseline: Baseline, completed: frozenset[int]
+) -> list[tuple[str, str]]:
+    """The READ rule, per artifact. ARC 025's arm, decomposed.
+
+    Validated HERE as well as in `validate_result` so an operator is told WHICH
+    row's `owner` field is the offender rather than being handed the engine's
+    generic downgrade.
+    """
+    return [
+        (f"{BASELINE}:artifacts:{path}:owner", defect)
+        for path, row in sorted(baseline.rows.items())
+        if (defect := guard_owner_defect(row.owner, completed))
+    ]
+
+
+def _render(pairs: list[tuple[str, str]]) -> str:
+    """`[(site, why)]` -> one detail line, IDENTICAL reasons grouped by site.
+
+    Sixteen rows failing for one reason used to print that reason sixteen times,
+    which buries the row that fails for a DIFFERENT one — the decomposition's
+    own §0a hazard, since more rows means more repetition. Grouping keeps every
+    site named (doctrine C.2) while making a single odd row visible.
+    """
+    grouped: dict[str, list[str]] = {}
+    for site, why in pairs:
+        grouped.setdefault(why, []).append(site)
+    return "; ".join(
+        (sites[0] if len(sites) == 1 else f"{len(sites)} rows [{', '.join(sites)}]")
+        + f": {why}"
+        for why, sites in grouped.items()
+    )
+
+
+def _guard_of_record(baseline: Baseline) -> str:
+    """The single arc `CheckResult.guard_owner` can hold, out of many.
+
+    **A STATED LIMITATION, NOT A DESIGN.** `CheckResult` carries ONE
+    `guard_owner`, and `validate_result` requires it to be exactly one arc. A
+    decomposed guard has one owner PER ARTIFACT, so when several live owners
+    disagree the field cannot represent the truth and the lowest-numbered — the
+    arc that owes soonest — is what it holds. The full per-row map is in
+    `detail` on every run, so nothing is hidden; what is lost is the ability to
+    read the owner off the summary line. CHECK-DEBT D3.63.
+    """
+    owners = {row.owner.strip() for row in baseline.rows.values() if row.owner.strip()}
+    return min(owners, default="")
+
+
+def _prepare(home: Path) -> tuple[list[str], Baseline, History, str]:
+    """Everything `run` needs before it can judge anything. `str` = a refusal."""
+    artifacts, error = _tracked_artifacts(home)
+    if error:
+        return [], Baseline(), History(), error
+    if len(artifacts) < MIN_CREDIBLE_ARTIFACTS:
+        return (
+            [],
+            Baseline(),
+            History(),
+            (
+                f"only {len(artifacts)} tracked artifact(s) enumerated, below the "
+                f"credibility floor of {MIN_CREDIBLE_ARTIFACTS} — an empty or tiny "
+                "enumeration would make every artifact trivially covered"
             ),
         )
-    return None
+    baseline = _load_baseline(home)
+    if baseline.error:
+        return [], baseline, History(), baseline.error
+    # ONE walk of the baseline's committed history; three facts derived from it
+    # (ARC 027 B2, extended ARC 028 C2). See `History`.
+    history = _committed_history(home)
+    if history.error:
+        # The ratchet's prior mark is what makes a green mean anything. Without
+        # it the gate can still see regressions but cannot see the baseline
+        # growing, which is the whole of ARC 025's C3 — so it reports what it
+        # could not measure rather than passing on the half it could.
+        return artifacts, baseline, history, history.error
+    return artifacts, baseline, history, ""
+
+
+def _ratchet_arms(
+    baseline: Baseline, uncovered: set[str], mark: frozenset[str], mark_sha: str
+) -> list[tuple[str, str]]:
+    """Regression, rot, and unadmitted growth — the three set-level arms."""
+    defects: list[tuple[str, str]] = [
+        (path, "no check declares this artifact as a SUBJECT")
+        for path in sorted(uncovered - baseline.uncovered)[:20]
+    ]
+    defects.extend(
+        (
+            f"{BASELINE}:{path}",
+            (
+                "baseline still accepts this artifact as uncovered, but a check "
+                "now declares it — tighten the baseline (a ratchet may only "
+                "shrink)"
+            ),
+        )
+        for path in sorted(baseline.uncovered - uncovered)[:20]
+    )
+    defects.extend(_ratchet_defects(baseline, mark, mark_sha)[:20])
+    return defects
+
+
+@dataclasses.dataclass(frozen=True)
+class Measured:
+    """One run's raw counts, so the evidence renderer takes one argument.
+
+    Grouped rather than passed as seven positionals because they are one thing —
+    what this run saw — and because a seven-argument renderer is where a caller
+    eventually swaps two same-typed arguments and the evidence quietly describes
+    a different measurement.
+    """
+
+    artifacts: list[str]
+    declared: set[str]
+    uncovered: set[str]
+    baseline: Baseline
+    mark: tuple[frozenset[str], str]
+    history: History
+    named: dict[str, list[str]]
+
+
+def _evidence_for(state: Measured) -> str:
+    """What was measured, on every run, including what it does NOT prove."""
+    artifacts, declared, uncovered = state.artifacts, state.declared, state.uncovered
+    baseline, mark, history, named = (
+        state.baseline,
+        state.mark,
+        state.history,
+        state.named,
+    )
+    unnamed = sorted(path for path in baseline.rows if not named.get(path))
+    return (
+        f"{len(artifacts)} tracked artifact(s); {len(declared)} declared subject(s); "
+        f"{len(uncovered)} uncovered; baseline schema v{baseline.schema} accepts "
+        f"{len(baseline.uncovered)} in {len(baseline.rows)} per-artifact row(s); "
+        f"ratchet high-water mark {len(mark[0])} at committed revision "
+        f"{mark[1][:12]}; ceiling {GUARD_REOWN_CEILING} applied PER ARTIFACT over "
+        f"{len(history.revisions)} committed revision(s)"
+        f"{' (history TRUNCATED — a lower bound)' if history.truncated else ''}; "
+        f"{len(unnamed)} row(s) named by NOTHING under {_TEST_DIR}/ "
+        f"({', '.join(unnamed) or 'none'}). "
+        "UNBOUND (D3.10): proves an artifact is NAMED by a check — and, per row, "
+        "MENTIONED by a test — never that it is MEASURED by either. Do not read "
+        "this verdict as coverage."
+    )
 
 
 def run(  # pylint: disable=unused-argument,too-many-locals,too-many-return-statements
@@ -469,130 +934,88 @@ def run(  # pylint: disable=unused-argument,too-many-locals,too-many-return-stat
 ) -> CheckResult:
     """Compare tracked artifacts against declared subjects, and ratchet.
 
-    Eight returns is eight guard clauses, each a distinct named outcome the
-    contract requires: four things that make the measurement impossible (no git,
-    too few artifacts, an unreadable baseline, no high-water mark), then the
-    defect verdict, the owner defect, the guarded deferral, and the pass. The
-    locals are the sets the ratchet arms compare. Nesting them to satisfy a
-    counter would trade a linear, auditable shape for conditionals inside the
-    instrument that decides whether this repo's coverage debt may grow.
+    ARC 028 (C2) decomposed the single sixteen-artifact guard into one row per
+    artifact. The arms below are unchanged in what they forbid; what changed is
+    that every one of them now names an ARTIFACT, and the owner and the ceiling
+    are per artifact rather than per file.
+
+    Five returns is five distinct named outcomes: the refusal, the failure, the
+    deferral, the guarded deferral and the pass. The arms are computed as lists
+    so that ALL of them are evaluated on every run — an early return per arm
+    would report the first defect and hide the other fifteen, which is precisely
+    what the aggregate did.
     """
     home = Path(ctx.nix_home)
-    artifacts, error = _tracked_artifacts(home)
-    if error:
-        return CheckResult(name=NAME, status=Status.CANNOT_MEASURE, detail=error)
-    if len(artifacts) < MIN_CREDIBLE_ARTIFACTS:
-        return CheckResult(
-            name=NAME,
-            status=Status.CANNOT_MEASURE,
-            detail=(
-                f"only {len(artifacts)} tracked artifact(s) enumerated, below the "
-                f"credibility floor of {MIN_CREDIBLE_ARTIFACTS} — an empty or tiny "
-                "enumeration would make every artifact trivially covered"
-            ),
-        )
+    artifacts, baseline, history, refusal = _prepare(home)
+    if refusal:
+        return CheckResult(name=NAME, status=Status.CANNOT_MEASURE, detail=refusal)
 
     declared = _declared_subjects(home)
     uncovered = {path for path in artifacts if path not in declared}
-    baseline = _load_baseline(home)
-    if baseline.error:
-        return CheckResult(
-            name=NAME, status=Status.CANNOT_MEASURE, detail=baseline.error
+    mark, mark_sha, _ = _mark_from(history)
+    named = _named_by_tests(home, sorted(baseline.rows))
+    evidence = _evidence_for(
+        Measured(
+            artifacts, declared, uncovered, baseline, (mark, mark_sha), history, named
         )
-
-    # ONE walk of the baseline's committed history; two facts derived from it
-    # (ARC 027, B2). See `History`.
-    history = _committed_history(home)
-    mark, mark_sha, mark_error = _mark_from(history)
-    if mark_error:
-        # The ratchet's prior mark is what makes a green mean anything. Without
-        # it the gate can still see regressions but cannot see the baseline
-        # growing, which is the whole of C3 — so it reports what it could not
-        # measure rather than passing on the half it could.
-        return CheckResult(name=NAME, status=Status.CANNOT_MEASURE, detail=mark_error)
-
-    lineage = _owner_lineage(history)
-    evidence = (
-        f"{len(artifacts)} tracked artifact(s); {len(declared)} declared subject(s); "
-        f"{len(uncovered)} uncovered; baseline accepts {len(baseline.uncovered)}; "
-        f"ratchet high-water mark {len(mark)} at committed revision "
-        f"{mark_sha[:12]}; committed owner lineage {len(lineage)} value(s) = "
-        f"{max(len(lineage) - 1, 0)} re-owning(s) of a ceiling of "
-        f"{GUARD_REOWN_CEILING}"
-        f"{' (history TRUNCATED — a lower bound)' if history.truncated else ''}. "
-        "UNBOUND (D3.10): proves an artifact is NAMED by a check, never that it is "
-        "MEASURED by one — do not read this verdict as coverage."
     )
 
-    # -- Regression: something uncovered that the baseline never accepted. ---
-    regressions = sorted(uncovered - baseline.uncovered)
-    # -- Rot: the baseline still lists something that is now covered. --------
-    stale = sorted(baseline.uncovered - uncovered)
-
-    defects: list[tuple[str, str]] = []
-    for path in regressions[:20]:
-        defects.append((path, "no check declares this artifact as a SUBJECT"))
-    for path in stale[:20]:
-        defects.append(
-            (
-                f"{BASELINE}:{path}",
-                (
-                    "baseline still accepts this artifact as uncovered, but a "
-                    "check now declares it — tighten the baseline (a ratchet "
-                    "may only shrink)"
-                ),
-            )
+    completed, completion_error = completed_arcs(home)
+    if completion_error:
+        # ARC 026 (B2). FAIL CLOSED. Without the completion record this gate
+        # cannot tell a live owner from a dead one, and "probably still open" is
+        # the assumption that let `ARC 025` stand as an owner through a whole arc.
+        return CheckResult(
+            name=NAME,
+            status=Status.CANNOT_MEASURE,
+            evidence=evidence,
+            detail=f"{BASELINE} owners cannot be judged — {completion_error}",
         )
-    # -- ARC 025: the baseline may not GROW without a named arc. -------------
-    defects.extend(_ratchet_defects(baseline, mark, mark_sha)[:20])
+    live, live_error = in_flight_arc(home)
+
+    defects = _ratchet_arms(baseline, uncovered, mark, mark_sha)
+    defects.extend(_shape_defects(baseline))
+    defects.extend(_coverage_defects(baseline, named))
+    defects.extend(
+        _assignment_defects(baseline, _head_owners(history), completed, live)
+    )
+    ceiling_defects, deferrals = _ceiling_defects(baseline, history)
+    defects.extend(ceiling_defects)
     if defects:
         return CheckResult(
             name=NAME,
             status=Status.FAIL_NEEDS_OPERATOR,
             site="; ".join(site for site, _ in defects),
             evidence=evidence,
-            detail="; ".join(f"{site}: {why}" for site, why in defects),
+            detail=_render(defects),
         )
 
-    if uncovered:
-        # AMENDMENT 1: measured subject, known-red marker, named owner. ARC 025:
-        # the owner is validated HERE as well as in `validate_result`, so an
-        # operator reading this gate is told the baseline's `owner` field is the
-        # offender rather than being handed the engine's generic downgrade.
-        completed, completion_error = completed_arcs(home)
-        if completion_error:
-            # ARC 026 (B2). FAIL CLOSED. Without the completion record this gate
-            # cannot tell a live owner from a dead one, and "probably still open"
-            # is the assumption that let `ARC 025` stand as an owner through the
-            # whole of ARC 026's predecessor.
-            return CheckResult(
-                name=NAME,
-                status=Status.CANNOT_MEASURE,
-                evidence=evidence,
-                detail=(f"{BASELINE}:owner cannot be judged — {completion_error}"),
-            )
-        owner_defect = guard_owner_defect(baseline.owner, completed)
-        if owner_defect:
-            return CheckResult(
-                name=NAME,
-                status=Status.CANNOT_MEASURE,
-                evidence=evidence,
-                detail=f"{BASELINE}:owner — {owner_defect}",
-            )
-        # -- ARC 027 (B2), D2.31: THE RE-OWNING CEILING. --------------------
-        ceiling = _ceiling_verdict(lineage, history.truncated, evidence)
-        if ceiling is not None:
-            return ceiling
+    deferrals.extend(_owner_deferrals(baseline, completed))
+    if live_error and baseline.rows:
+        deferrals.append((f"{BASELINE}:artifacts", live_error))
+    if deferrals:
+        return CheckResult(
+            name=NAME,
+            status=Status.CANNOT_MEASURE,
+            evidence=evidence,
+            detail=_render(deferrals),
+        )
+
+    if baseline.rows:
+        # AMENDMENT 1: measured subject, known-red marker, named owner — now one
+        # marker per artifact, with `guard_owner` holding the arc that owes
+        # soonest because the field can hold only one (see `_guard_of_record`).
         return CheckResult(
             name=NAME,
             status=Status.GUARDED,
             evidence=evidence,
-            guard_owner=baseline.owner.strip(),
-            detail=(
-                f"{len(uncovered)} artifact(s) accepted as uncovered by "
-                f"{BASELINE}, discharged by {baseline.owner.strip()}; "
-                f"{len(lineage) - 1} of {GUARD_REOWN_CEILING} permitted "
-                "re-owning(s) used"
+            guard_owner=_guard_of_record(baseline),
+            detail="; ".join(
+                f"{path} -> {row.owner.strip()} "
+                f"({len(_row_lineage(history, path)) - 1} of "
+                f"{GUARD_REOWN_CEILING} re-owning(s) used, measured_by="
+                f"{row.measured_by})"
+                for path, row in sorted(baseline.rows.items())
             ),
         )
     return CheckResult(name=NAME, status=Status.PASS, evidence=evidence)
