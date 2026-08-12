@@ -28,6 +28,46 @@ INTERACTIVE = False
 # DISRUPTIVE to gate. False is correct on the facts, not by default.
 DISRUPTIVE = False
 
+# --- ARC 025 orchestration declarations (read statically, never imported) ---
+#: Nothing must run first. The registry puts this after the bootstrap floor,
+#: but that is ordering the PLAN chose, not a causal dependency this check has:
+#: it is stdlib-only and does not need the venv (`nix_check_contract.md` §4.4 —
+#: declarations are the check's, scheduling is the plan's).
+DEPENDS_ON: tuple[str, ...] = ()
+#: The one artifact this check opens. Named at FILE granularity rather than as
+#: the whole `state/` directory on purpose: a future credential gate that claims
+#: a different file under `state/` is genuinely disjoint from this one, and
+#: claiming the directory would serialise the two for no measured reason.
+#: `findmnt` and `blkid` are deliberately NOT claimed — they are read-only
+#: kernel/device queries holding nothing another check could contend for, and an
+#: over-declaration costs parallelism without buying safety.
+RESOURCES: tuple[str, ...] = ("state/node_identity.json",)
+#: FALSE on the facts. The two subprocesses carry a 30 s ceiling each, but a
+#: ceiling is not a bound this check PAYS: findmnt and blkid answer in
+#: milliseconds and the runtime is dominated by that work, not by waiting.
+#: TIME_BOUND describes a check whose duration IS its bound — check_verify_logging
+#: polling journald — which this is not, so no EXPECTED_S is declared either.
+TIME_BOUND = False
+#: NON-CORRECTABLE — [ARCHITECT RULING, ARC 025 A2, revocable].
+CORRECTABLE = False
+NON_CORRECTABLE_REASON = (
+    "the subject is credential-adjacent identity material: "
+    "state/node_identity.json sits in the 0600 `state/` directory that "
+    "`nix_check_contract.md` §11 governs, and §4.3 of that document names "
+    "credentials and `state/` as members of the non-correctable class. A "
+    "'correction' here could only mean the engine SYNTHESISING a hardware "
+    "identity — overwriting the stored UUID with whatever the live disk "
+    "currently reports — which does not repair the finding, it erases it. A "
+    "mismatch means a cloned VM, a swapped disk, or a restore onto different "
+    "hardware, and each of those is a fact an operator must see, not a "
+    "divergence an instrument may reconcile in its own favour."
+)
+#: The stored identity file is what this check measures. It is untracked (the
+#: `state/` tree is gitignored) so it adds nothing to
+#: check_artifact_gate_coverage's tracked-artifact arithmetic; it is declared
+#: because it is TRUE, not to move a count.
+SUBJECTS: tuple[str, ...] = ("state/node_identity.json",)
+
 NAME = "check_node_identity"
 
 
@@ -161,11 +201,12 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
 # trailing disable comment here (verified empirically, pylint v4.0.6).
 # pylint: disable=duplicate-code
 if __name__ == "__main__":
-    from nixverify.contract import exit_code_for, validate_result
+    from nixverify.actuation import standalone_main
 
-    HOME = Path(__file__).resolve().parent.parent
-    OUTCOME = validate_result(
-        run(Mode.VERIFY, Context(nix_home=HOME, mode=Mode.VERIFY))
+    sys.exit(
+        standalone_main(
+            Path(__file__).resolve(),
+            run,
+            NAME,
+        )
     )
-    print(f"{OUTCOME.status.value}: {OUTCOME.evidence or OUTCOME.detail}")
-    sys.exit(exit_code_for(OUTCOME.status))
