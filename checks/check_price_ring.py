@@ -270,10 +270,33 @@ def _docstring_ids(tree: ast.Module) -> frozenset[int]:
 
 
 def _python_files(home: Path) -> list[Path]:
-    """Every `.py` under `home`, minus the stated exclusions."""
+    """Every `.py` under `home`, minus the stated exclusions.
+
+    ARC 026 Stage 2. AppleDouble sidecars (`._name`) are excluded, and the
+    exclusion is a FILENAME CLASS rather than a tracking state — which is the
+    distinction that matters here, because "git tracking state silently sets
+    gate scope" is this project's most-repeated defect and the canonical path
+    is now the live Samba share, so macOS metadata lands in the tree as a
+    matter of course. Filtering on `git check-ignore` would have been that
+    defect; filtering on a name pattern stated in the source is not.
+
+    These files are not Python and cannot be: an AppleDouble sidecar is the
+    resource fork and extended attributes of its sibling, raw bytes with NUL
+    at offset 0 (this tree's carry `com.apple.quarantine`). PEP 263 requires
+    source be decodable text, so a sidecar cannot contain an `import mmap` for
+    the sweep to miss. They were reaching `ast.parse`, raising
+    UnicodeDecodeError, and correctly driving the whole gate to CANNOT_MEASURE
+    — fail-closed working exactly as designed, on 37 files that are not code.
+
+    Over-exclusion cannot hide here: `MIN_CREDIBLE_FILES` runs on the result of
+    this function, so a filter that ate the tree fails the credibility floor
+    instead of returning a clean sweep.
+    """
     found: list[Path] = []
     for path in home.rglob("*.py"):
         if _SKIP_DIRS.intersection(path.parts):
+            continue
+        if path.name.startswith("._"):
             continue
         found.append(path)
     return sorted(found)

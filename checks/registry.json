@@ -24,6 +24,7 @@
         "check_name_coherence",
         "check_node_identity",
         "check_observed_resource_claims",
+        "check_price_ring",
         "check_spec_citations",
         "check_verify_logging"
       ],
@@ -34,6 +35,7 @@
         "journal",
         "port:4002",
         "reexecution-of-every-registered-check",
+        "shm",
         "state/node_identity.json",
         "subprocess:blkid",
         "subprocess:findmnt",
@@ -58,19 +60,26 @@
       "parallel": false,
       "on_fail": "continue",
       "checks": [
+        "check_capture_plane2",
+        "check_core_map",
         "check_datafeed_granted_mode",
         "check_derived_claims",
         "check_hook_suite",
         "check_order_path_bans",
-        "check_python_deps"
+        "check_python_deps",
+        "check_state_bus"
       ],
       "claims": [
+        "cpu-affinity",
+        "file-write:/tmp",
         "git-hooks",
+        "journal",
         "network:pypi",
         "pre-commit-store",
         "subprocess:git",
         "subprocess:python3",
-        "venv"
+        "venv",
+        "zmq-ipc"
       ]
     }
   ]
