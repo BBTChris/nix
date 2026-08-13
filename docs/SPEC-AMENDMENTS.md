@@ -492,6 +492,66 @@ measurement is owed and the amendment names who owes it.
 
 ---
 
+## SPEC-A7 — HALT onset is a DISTINCT terminal path, not blackout onset
+
+| field | value |
+|---|---|
+| origin | **Architect ruling, issued in ARC 029 (brief §0.4).** Not spec text. |
+| implemented by | ARC 029, Phase 0.4 |
+| closes | CHECK-DEBT **D3.55** — opened ARC 028 (B) as a finding ABOUT THE SPEC and deliberately not absorbed: §3's terminal set named one trigger and §3's own prose named two |
+| section that would have to say it | **§3:151-152** (the `released on:` sentence) in `nics_risk_subsystem_spec_v1.3.md`, with **§3:173** as the corroborating prose |
+| status | **PENDING** a v1.4 of `nics_risk_subsystem_spec_v1.3.md`, which the architect owns |
+| terminal-path additions | `HALT_ONSET` |
+
+### Ruling, verbatim as issued
+
+> **§3:151's terminal set names *blackout-onset cancellation*; §3:173 says *Blackout/**HALT**
+> onset*. They are not synonyms in this spec's taxonomy** — Phase A lists the HALT flag separately
+> from the blackouts, HALT is §12.5 with six setters, blackouts are §6.1–6.3 and clear on schedule.
+>
+> **Decisive:** `CANCEL` is already a member *alongside* `BLACKOUT_ONSET`, so the spec has already
+> decided that cancellation cause is worth distinguishing. **Add `HALT_ONSET` as a distinct
+> terminal path.** Amend as **SPEC-A7**; do not edit the frozen document in place.
+
+### What the frozen spec says today
+
+§3:151-152 fixes the lifecycle as *"taken at approval → released on: fill (converts to
+open-margin), cancel, reject, pending-timeout resolution, blackout-onset cancellation. No leak
+paths."* Twenty-two lines later §3:173 reads *"**Blackout/HALT onset ⇒ Limiter cancels all pending
+ENTRY orders** (exits untouched)"* — the same action, from two triggers, one of which the terminal
+set does not name.
+
+### Why the three alternatives were all wrong, which is what makes this a ruling and not a tidy-up
+
+D3.55 enumerated what a Limiter cancelling pending entries on HALT onset could do with those
+reservations, and every option was a defect:
+
+  * book them as `BLACKOUT_ONSET` — a Plane-1 row naming the **wrong cause**, in §9's record of
+    money truth;
+  * book them as `CANCEL` — the cause **erased**, which is the same loss one level quieter;
+  * add an enum member — which `check_limiter_seam` ARM 1 would correctly redden as *"declared but
+    NOT named by §3"*.
+
+ARC 028 took the fourth option and **reported it**, adding no member and widening no path, because
+B2's standing rule is that a terminal state the spec does not name is a finding, never a member
+quietly added to make a sweep green. This ruling is the answer that was owed.
+
+### How the gate reads this amendment, and why that mechanism had to be built
+
+**`check_limiter_seam.spec_terminal_paths` parsed the frozen spec and NOTHING ELSE**, so an
+amendment recorded here was invisible to it: adding `HALT_ONSET` would have reddened the gate
+forever as an unspecced member, and the only way to green it would have been to edit the frozen
+document — precisely what the ruling forbids. The derivation now returns the **effective** roster,
+the frozen §3 sentence UNIONED with the `terminal-path additions` row of every amendment in this
+file. The row above is that machine-readable surface. It is parsed, never typed into the gate, so
+this file remains the single source and a future amendment needs no code change.
+
+**The ordering was measured, not assumed** (ARC 029 / 0.4): with this amendment recorded and the
+member not yet added, the seam gate reddened naming `HALT_ONSET` as a path §3 names and the seam
+does not declare. It went green only when the member landed. Both directions are pinned by tests.
+
+---
+
 ## Standing note for the architect
 
 Every ruling in this file was issued **because the arc that met the gap refused to invent the

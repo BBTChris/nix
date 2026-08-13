@@ -27,6 +27,7 @@ gate's evidence.
 
 from __future__ import annotations
 
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -38,6 +39,7 @@ sys.path.insert(0, str(REPO / "scripts"))
 # APPENDED, never inserted at the front — loader.py's failure mode #8 note.
 sys.path.append(str(REPO / "checks"))
 
+import check_limiter_seam as seam_gate  # pylint: disable=wrong-import-position
 import check_reservation_lifecycle as gate  # pylint: disable=wrong-import-position
 from nixverify.contract import (  # pylint: disable=wrong-import-position
     Context,
@@ -48,6 +50,7 @@ from nixverify.contract import (  # pylint: disable=wrong-import-position
 SEAM = "scripts/nixrisk/seam.py"
 INIT = "scripts/nixrisk/__init__.py"
 SPEC = "docs/nics_risk_subsystem_spec_v1.3.md"
+AMENDMENTS = "docs/SPEC-AMENDMENTS.md"
 
 
 @pytest.fixture
@@ -55,7 +58,11 @@ def home(tmp_path: Path) -> Path:
     """A throwaway tree carrying COPIES of the ledger, the seam and the spec."""
     (tmp_path / "scripts" / "nixrisk").mkdir(parents=True)
     (tmp_path / "docs").mkdir()
-    for rel in (gate.LEDGER, SEAM, INIT, SPEC):
+    # SPEC-AMENDMENTS.md joins the copied tree in ARC 029 / 0.4: the effective
+    # release-path roster is the frozen sentence UNIONED with the ledger's
+    # additions, so a tree carrying only one source is genuinely unmeasurable and
+    # the gate says so rather than reporting over half a roster.
+    for rel in (gate.LEDGER, SEAM, INIT, SPEC, AMENDMENTS):
         shutil.copy(REPO / rel, tmp_path / rel)
     return tmp_path
 
@@ -92,19 +99,40 @@ _EMIT_ANCHOR = (
 
 
 def test_the_REAL_TREE_passes_and_the_EVIDENCE_names_what_was_DRIVEN() -> None:
-    """The credibility floor: five spec paths, real margin, real Plane-1 rows."""
+    """The credibility floor: every spec path driven, real margin, real rows.
+
+    **The counts are DERIVED FROM THE ROSTER, not typed.** They were literals —
+    `15 reservation(s)`, `40118.75 of margin`, `5 duplicate`, `30 Plane-1 row(s)`
+    — every one of them a function of a roster that had five members. SPEC-A7
+    made it six and all four went stale in the same motion (ARC 029 / 0.4). A
+    figure that moves whenever the spec moves is exactly what directive 3 forbids
+    restating, and re-typing today's six numbers would rot on the next ruling.
+
+    The relations are the property anyway: three reservations per path, one
+    refused duplicate per path, two Plane-1 rows per reservation-and-release.
+    """
     result = _run(REPO)
+    paths, complaint = seam_gate.spec_terminal_paths(REPO)
+    assert complaint == "", complaint
 
     assert result.status is Status.PASS, result
-    assert "§3 release paths 5 parsed from the frozen spec at run time" in (
-        result.evidence
-    ), result.evidence
-    assert "15 reservation(s) taken over 40118.75 of margin" in result.evidence, (
+    assert f"§3 release paths {len(paths)} parsed at run time" in result.evidence, (
         result.evidence
     )
-    assert "15 released" in result.evidence, result.evidence
-    assert "5 duplicate terminal event(s) refused" in result.evidence, result.evidence
-    assert "30 Plane-1 row(s) booked" in result.evidence, result.evidence
+    assert f"{3 * len(paths)} reservation(s) taken over " in result.evidence, (
+        result.evidence
+    )
+    assert f"{3 * len(paths)} released" in result.evidence, result.evidence
+    assert f"{len(paths)} duplicate terminal event(s) refused" in result.evidence, (
+        result.evidence
+    )
+    assert f"{6 * len(paths)} Plane-1 row(s) booked" in result.evidence, result.evidence
+    # Real margin, asserted as a floor rather than as today's total: the exact
+    # figure is a function of the roster size and the driver's per-path amounts,
+    # and pinning it would re-create the defect this docstring describes.
+    stated_margin = re.search(r"taken over ([0-9.]+) of margin", result.evidence)
+    assert stated_margin is not None, result.evidence
+    assert float(stated_margin.group(1)) > 1000.0, result.evidence
 
 
 def test_the_PATH_SET_is_PARSED_FROM_THE_SPEC_and_appears_NOWHERE_in_the_gate() -> None:
@@ -124,6 +152,10 @@ def test_the_PATH_SET_is_PARSED_FROM_THE_SPEC_and_appears_NOWHERE_in_the_gate() 
         "REJECT",
         "PENDING_TIMEOUT",
         "BLACKOUT_ONSET",
+        # SPEC-A7 (ARC 029 / 0.4). Present because a RULING put it in the
+        # effective roster, which is the frozen sentence unioned with
+        # SPEC-AMENDMENTS.md -- not because the seam declares it.
+        "HALT_ONSET",
     }, f"§3 parsed to {sorted(paths)}"
     source = Path(gate.__file__).read_text(encoding="utf-8")
     for member in paths:
@@ -393,13 +425,26 @@ def test_a_SPEC_PATH_THE_SEAM_CANNOT_EXPRESS_is_CANNOT_MEASURE_not_a_SHRUNK_SET(
 def test_a_SPEC_WITH_TOO_FEW_PATHS_is_CANNOT_MEASURE_against_a_FLOOR(
     home: Path,
 ) -> None:
-    """MIN_TERMINAL_PATHS is a floor, not today's count."""
+    """MIN_TERMINAL_PATHS is a floor, not today's count.
+
+    ARC 029 / 0.4: the AMENDMENT ledger is stripped as well as the spec sentence.
+    The roster is the union of both sources now, so shrinking only the frozen
+    sentence leaves SPEC-A7's `HALT_ONSET` topping the count back up — and the
+    test would pass while measuring a floor it never reached.
+    """
     spec = home / SPEC
     spec.write_text(
         spec.read_text(encoding="utf-8").replace(
             "released on: fill (converts to open-margin), cancel, reject,\n"
             "   pending-timeout resolution, blackout-onset cancellation.",
             "released on: fill (converts to open-margin), cancel.",
+        ),
+        encoding="utf-8",
+    )
+    ledger = home / AMENDMENTS
+    ledger.write_text(
+        ledger.read_text(encoding="utf-8").replace(
+            "| terminal-path additions | `HALT_ONSET` |", ""
         ),
         encoding="utf-8",
     )
@@ -420,7 +465,7 @@ def test_the_SAME_COPIED_TREE_passes_once_every_plant_is_gone(home: Path) -> Non
     result = _run(home)
 
     assert result.status is Status.PASS, result
-    assert "§3 release paths 5" in result.evidence, result.evidence
+    assert "§3 release paths 6" in result.evidence, result.evidence
 
 
 def test_a_PLANT_APPLIED_AND_REVERTED_leaves_the_gate_GREEN_on_the_same_tree(

@@ -87,6 +87,9 @@ NAME = "check_limiter_seam"
 SEAM = "scripts/nixrisk/seam.py"
 PACKAGE = "scripts/nixrisk"
 SPEC = "docs/nics_risk_subsystem_spec_v1.3.md"
+#: The amendment ledger. The frozen spec is never edited, so a ruling that adds a
+#: terminal path lands here and the gate must read BOTH to know the effective set.
+AMENDMENTS = "docs/SPEC-AMENDMENTS.md"
 
 #: The §3 sentence carrying the release paths. Anchored on "released on:" so the
 #: gate fails loud if the sentence is renamed or moved, rather than silently
@@ -97,6 +100,18 @@ _RELEASE_SENTENCE = re.compile(r"released on:(?P<paths>.*?)\.\s", re.DOTALL)
 #: parenthetical or trailing noun, join with `_`. "pending-timeout resolution"
 #: -> PENDING_TIMEOUT; "fill (converts to open-margin)" -> FILL.
 _TRAILING_NOUN = ("resolution", "cancellation")
+
+#: The amendment ledger's machine-readable surface: a table row whose label is
+#: `terminal-path additions`. Anchored on the label so a renamed row is a
+#: complaint rather than a silently empty addition set.
+_ADDITIONS_ROW = re.compile(
+    r"^\|\s*terminal-path additions\s*\|(?P<members>[^|]*)\|\s*$", re.MULTILINE
+)
+#: Members inside the row, each in backticks. Deliberately NOT exemplified with
+#: a real member name: the suite asserts no member appears as a literal in this
+#: gate's source, because an expected side the gate spells is a gate agreeing
+#: with itself.
+_CODE_SPAN = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*)`")
 
 #: Names whose presence in the seam is behaviour by construction.
 _FORBIDDEN_CALLS = frozenset(
@@ -155,8 +170,54 @@ def _phrase_to_member(phrase: str) -> str:
     return "_".join(words).upper()
 
 
+def amended_terminal_paths(home: Path) -> tuple[frozenset[str], str]:
+    """Terminal paths ADDED by a ruling in `SPEC-AMENDMENTS.md`. Parsed, never typed.
+
+    ARC 029 / 0.4, and the mechanism had to exist before SPEC-A7 could be obeyed.
+
+    **The frozen spec is not edited — that is the standing rule — so an amendment
+    that adds a terminal path had nowhere to be seen from.** `spec_terminal_paths`
+    read `nics_risk_subsystem_spec_v1.3.md` and nothing else, which left SPEC-A7's
+    `HALT_ONSET` in an impossible position: adding the member reddens ARM 1 as
+    *"declared but NOT named by §3"* forever, and the only way to green it would be
+    to edit the frozen document. A gate that can only be satisfied by breaking a
+    standing rule is a gate that will be broken instead.
+
+    So the reference side is now the EFFECTIVE roster: the frozen sentence unioned
+    with every amendment's additions. The additions are read out of the ledger's
+    own table row — a `terminal-path additions` row — so the ledger
+    stays the single source and a future ruling needs no code change here. A
+    malformed row is a COMPLAINT, never a silent skip: an amendment nobody can
+    parse must not read as an amendment that adds nothing.
+    """
+    ledger = home / AMENDMENTS
+    if not ledger.is_file():
+        return frozenset(), (
+            f"{AMENDMENTS} is not on disk — amendments to the terminal set could "
+            "not be read, and a gate that cannot see them would report the frozen "
+            "roster as the whole truth"
+        )
+    found: set[str] = set()
+    for row in _ADDITIONS_ROW.finditer(ledger.read_text(encoding="utf-8")):
+        members = _CODE_SPAN.findall(row.group("members"))
+        if not members:
+            return frozenset(), (
+                f"{AMENDMENTS}: a 'terminal-path additions' row names no member in "
+                f"backticks: {row.group('members').strip()!r} — an unparseable "
+                "amendment must not read as one that adds nothing"
+            )
+        found.update(member.strip().upper() for member in members)
+    return frozenset(found), ""
+
+
 def spec_terminal_paths(home: Path) -> tuple[frozenset[str], str]:
-    """§3's release paths, parsed from the frozen spec. `(members, complaint)`."""
+    """The EFFECTIVE release-path roster. `(members, complaint)`.
+
+    §3's frozen sentence UNIONED with `SPEC-AMENDMENTS.md`'s additions — see
+    `amended_terminal_paths` for why the union exists. Both sources must be
+    readable; either one failing is a complaint, because a roster assembled from
+    half its sources compares green against the wrong set rather than no set.
+    """
     spec = home / SPEC
     if not spec.is_file():
         return frozenset(), f"{SPEC} is not on disk — the reference side is absent"
@@ -167,8 +228,12 @@ def spec_terminal_paths(home: Path) -> tuple[frozenset[str], str]:
             "was renamed or moved, so this gate has no reference side and an "
             "empty expected set would compare green against anything"
         )
+    amended, complaint = amended_terminal_paths(home)
+    if complaint:
+        return frozenset(), complaint
     phrases = [part for part in match.group("paths").split(",") if part.strip()]
-    return frozenset(_phrase_to_member(part) for part in phrases), ""
+    frozen = frozenset(_phrase_to_member(part) for part in phrases)
+    return frozen | amended, ""
 
 
 def _enum_members(tree: ast.Module, name: str) -> frozenset[str]:
@@ -455,13 +520,21 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
                 "clean sheet would be about an empty reading"
             )
 
+        # The relation is COMPUTED, never spelled. ARC 029 / 0.4 measured this
+        # line printing `6 == TerminalPath members 5` on a run that was RED for
+        # exactly that inequality — a verdict's own evidence asserting the
+        # agreement the verdict was denying. A hardcoded operator in an evidence
+        # string is a restated fact (directive 3) in the one place a reader looks
+        # when the gate has just told them something is wrong.
+        relation = "==" if len(expected) == len(declared) else "!="
         evidence = (
-            f"§3 release paths {len(expected)} == TerminalPath members "
+            f"§3 release paths {len(expected)} {relation} TerminalPath members "
             f"{len(declared)} [{', '.join(sorted(expected))}]; "
             f"{classified} callable(s) classified, {len(behaviour)} carrying behaviour; "
             f"{verbs} verb(s) held against the seam's own sync/async declaration, "
             f"{len(synchrony)} disagreeing; "
-            f"parsed from {SPEC} at run time, not from a constant in this gate"
+            f"parsed at run time from {SPEC} unioned with {AMENDMENTS}, not from "
+            "a constant in this gate"
         )
         if defects:
             return CheckResult(

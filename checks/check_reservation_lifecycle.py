@@ -705,7 +705,8 @@ def _arm_floors(module: ModuleType) -> list[Finding]:
 
 def _evidence(paths: tuple[str, ...], tally: Tally) -> str:
     return (
-        f"§3 release paths {len(paths)} parsed from the frozen spec at run time "
+        f"§3 release paths {len(paths)} parsed at run time from the frozen spec "
+        f"unioned with docs/SPEC-AMENDMENTS.md "
         f"[{', '.join(paths)}]; {tally.reservations} reservation(s) taken over "
         f"{tally.margin!r} of margin, {tally.releases} released, "
         f"{tally.refusals} duplicate terminal event(s) refused, "

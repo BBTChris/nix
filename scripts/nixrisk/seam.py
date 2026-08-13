@@ -226,6 +226,21 @@ class TerminalPath(enum.Enum):
     about the spec to be reported — never a member quietly added to this enum,
     because deriving the path set from the code and then proving the code covers
     it is circular and passes while measuring nothing.
+
+    **`HALT_ONSET` is that rule working, not an exception to it (SPEC-A7).** ARC
+    028 met the gap and REPORTED it as D3.55 rather than adding a member: §3:151's
+    terminal set names *blackout-onset cancellation*, while §3:173 says
+    *Blackout/**HALT** onset*, and the two are not synonyms in this spec's own
+    taxonomy — Phase A lists the HALT flag separately from the blackouts, HALT is
+    §12.5 with six setters, blackouts are §6.1–6.3 and clear on schedule. Booking
+    a HALT-onset cancellation as `BLACKOUT_ONSET` would put the wrong cause in
+    §9's record of money truth, and booking it as `CANCEL` would erase the cause
+    entirely. The architect ruled in ARC 029 that `CANCEL` already sits beside
+    `BLACKOUT_ONSET`, so the spec has already decided cancellation cause is worth
+    distinguishing. The member is here because a RULING put it in the effective
+    roster, which `check_limiter_seam` derives from the frozen sentence unioned
+    with `SPEC-AMENDMENTS.md` — so this enum is still the spec's list and still
+    not the implementation's.
     """
 
     FILL = "fill"
@@ -233,6 +248,7 @@ class TerminalPath(enum.Enum):
     REJECT = "reject"
     PENDING_TIMEOUT = "pending_timeout"
     BLACKOUT_ONSET = "blackout_onset"
+    HALT_ONSET = "halt_onset"
 
 
 class ReservationState(enum.Enum):

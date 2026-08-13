@@ -45,6 +45,8 @@ def home(tmp_path: Path) -> Path:
     (tmp_path / "docs").mkdir()
     shutil.copy(REPO / gate.SEAM, tmp_path / gate.SEAM)
     shutil.copy(REPO / gate.SPEC, tmp_path / gate.SPEC)
+    # ARC 029 / 0.4: the roster has two sources now, so the fixture carries both.
+    shutil.copy(REPO / gate.AMENDMENTS, tmp_path / gate.AMENDMENTS)
     return tmp_path
 
 
@@ -66,7 +68,7 @@ def test_the_REAL_TREE_passes_and_the_EVIDENCE_names_what_was_compared() -> None
     result = _run(REPO)
 
     assert result.status is Status.PASS, result
-    assert "§3 release paths 5 == TerminalPath members 5" in result.evidence, (
+    assert "§3 release paths 6 == TerminalPath members 6" in result.evidence, (
         result.evidence
     )
     assert "callable(s) classified" in result.evidence, result.evidence
@@ -83,6 +85,10 @@ def test_the_EXPECTED_SET_is_PARSED_FROM_THE_SPEC_and_is_not_a_constant_here() -
         "REJECT",
         "PENDING_TIMEOUT",
         "BLACKOUT_ONSET",
+        # SPEC-A7 (ARC 029 / 0.4). Present because a RULING put it in the
+        # effective roster, which is the frozen sentence unioned with
+        # SPEC-AMENDMENTS.md -- not because the seam declares it.
+        "HALT_ONSET",
     }, f"§3 parsed to {sorted(parsed)}"
     source = Path(gate.__file__).read_text(encoding="utf-8")
     for member in sorted(parsed):
@@ -367,3 +373,92 @@ def test_a_BARE_NAMED_PORT_the_seam_drops_is_ALSO_named_not_just_counted(
     assert result.status is Status.FAIL_NEEDS_OPERATOR, result
     assert "ReservationLedgerPort" in result.site, result.site
     assert "NOT DEFINED" in result.detail, result.detail
+
+
+# --------------------------------------------------------------------------
+# ARC 029 / 0.4 — SPEC-A7, and the mechanism that had to exist to obey it.
+#
+# The frozen spec is never edited. So a ruling that ADDS a terminal path had
+# nowhere to be seen from: `spec_terminal_paths` read the frozen document and
+# nothing else, which put SPEC-A7's `HALT_ONSET` in an impossible position —
+# adding the member reddens ARM 1 as "declared but NOT named by §3" forever, and
+# the only way to green it would be to edit the document the rule protects.
+#
+# The reference side is now the EFFECTIVE roster: frozen sentence UNION ledger
+# additions. These controls pin both halves and both failure directions.
+# --------------------------------------------------------------------------
+
+
+def test_the_AMENDED_PATH_IS_NOT_IN_THE_FROZEN_SENTENCE(home: Path) -> None:
+    """The premise, asserted rather than assumed.
+
+    If `HALT_ONSET` were somehow already in §3's sentence, every control below
+    would pass without the union existing at all — the union would be decoration
+    and this suite would be proving nothing about it.
+    """
+    frozen = (home / gate.SPEC).read_text(encoding="utf-8")
+    match = gate._RELEASE_SENTENCE.search(frozen)  # pylint: disable=protected-access
+    assert match is not None
+    assert "halt" not in match.group("paths").lower(), match.group("paths")
+
+
+def test_the_EFFECTIVE_ROSTER_IS_THE_UNION_OF_BOTH_SOURCES(home: Path) -> None:
+    """SPEC-A7's member arrives from the LEDGER, not from the frozen spec."""
+    amended, complaint = gate.amended_terminal_paths(home)
+    assert complaint == "", complaint
+    assert "HALT_ONSET" in amended
+
+    effective, complaint = gate.spec_terminal_paths(home)
+    assert complaint == "", complaint
+    assert amended <= effective, (amended, effective)
+    assert "BLACKOUT_ONSET" in effective, "the frozen half of the union went missing"
+
+
+def test_WITHOUT_THE_RULING_the_member_is_an_UNSPECCED_PATH(home: Path) -> None:
+    """The ordering the brief required, driven in reverse.
+
+    Strip the ruling and the seam's `HALT_ONSET` becomes exactly what ARC 028
+    refused to create: a member the spec does not name. The gate must say so in
+    those words, because B2's rule is that such a member is a FINDING ABOUT THE
+    SPEC and never a quiet addition to make a sweep green.
+    """
+    ledger = home / gate.AMENDMENTS
+    ledger.write_text(
+        ledger.read_text(encoding="utf-8").replace(
+            "| terminal-path additions | `HALT_ONSET` |", ""
+        ),
+        encoding="utf-8",
+    )
+    result = _run(home)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert "HALT_ONSET" in result.detail, result.detail
+    assert "FINDING ABOUT THE SPEC" in result.detail, result.detail
+
+
+def test_a_MALFORMED_additions_row_is_a_COMPLAINT_not_an_empty_set(home: Path) -> None:
+    """An amendment nobody can parse must not read as one that adds nothing.
+
+    This is the vacuity that would matter most: a ruling lands, its row is
+    mistyped, the gate silently derives the OLD roster and reports green over a
+    seam that is now missing a path the architect required.
+    """
+    ledger = home / gate.AMENDMENTS
+    ledger.write_text(
+        ledger.read_text(encoding="utf-8").replace(
+            "| terminal-path additions | `HALT_ONSET` |",
+            "| terminal-path additions | HALT_ONSET |",
+        ),
+        encoding="utf-8",
+    )
+    _, complaint = gate.amended_terminal_paths(home)
+    assert "names no member in backticks" in complaint, complaint
+    result = _run(home)
+    assert result.status is Status.CANNOT_MEASURE, result
+
+
+def test_an_ABSENT_LEDGER_is_CANNOT_MEASURE_never_a_PASS(home: Path) -> None:
+    """Half a roster compares green against the wrong set, not against no set."""
+    (home / gate.AMENDMENTS).unlink()
+    result = _run(home)
+    assert result.status is Status.CANNOT_MEASURE, result
+    assert "SPEC-AMENDMENTS" in result.detail, result.detail
