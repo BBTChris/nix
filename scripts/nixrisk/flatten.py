@@ -49,20 +49,19 @@ HONEST LIMITATIONS — carried in the verdicts, never implied away
   nothing here DETECTS an orphan.
 
 ------------------------------------------------------------------------------
-A FROZEN-SEAM GAP, REPORTED NOT ROUTED AROUND — the Plane-1 exit rows
+THE PLANE-1 EXIT ROWS — on the real port (ARC 029 Stage 2.2)
 ------------------------------------------------------------------------------
-§12.10 books `protective-exit` and `closed` on Plane 1, but the frozen seam's
-`EventKind` deliberately omits both (seam.py: they *"belong to machinery this arc
-explicitly does not build"* — written in ARC 028, before this arc built it). The
-seam is FROZEN for this sub-agent and must not be edited, so those rows cannot be
-enqueued through `Plane1Port` yet. `ExitEventKind` + `ExitEventLog` below carry
-the kind on a DISTINCT surface, exactly as ARC 028 met the `HALT_ONSET` gap by
-reporting it rather than adding a member. The integrator adds the `EventKind`
-members (Stage 2.2) — the same route SPEC-A7 took for `TerminalPath` — and then
-`ExitEventLog` collapses onto `Plane1Port`. Reservation releases, whose kind
-`EventKind.RESERVATION_RELEASED` DOES exist, go through the real ledger onto the
-real Plane 1 under their §12.10-correct cause; only the two missing kinds live on
-the interim surface.
+§12.10 books `protective-exit`, `exit-intent`, `closed` and `cancel` on Plane 1.
+Sub-agent B built this executor while the seam was FROZEN and its `EventKind`
+omitted those members, so B carried the kinds on an interim `ExitEventLog` surface
+and reported the gap rather than routing around it — exactly as ARC 028 met the
+`HALT_ONSET` gap. Stage 2.2 closed the gap: the integrator added the five exit-half
+members to the seam's `EventKind` (the same route SPEC-A7 took for `TerminalPath`,
+because the mechanism now exists), and the interim surface COLLAPSED — every exit
+row now enqueues through the real `Plane1Port` as an `EventRow` (`_book`), the same
+append-only WAL every other Limiter row rides. §9 sole-writer holds: no new writer,
+the same port. Reservation releases already went onto real Plane 1 under
+`EventKind.RESERVATION_RELEASED`; now the exit-kind rows join them.
 """
 
 from __future__ import annotations
@@ -76,8 +75,11 @@ from typing import Protocol, runtime_checkable
 from nixrisk.picture import FinancialPictureBook
 from nixrisk.reservations import Refusal, ReservationLedger
 from nixrisk.seam import (
+    EventKind,
+    EventRow,
     FinancialPicture,
     FlattenTrigger,
+    Plane1Port,
     PositionRow,
     PositionState,
     Reservation,
@@ -200,48 +202,6 @@ class BrokerFlattenPort(Protocol):
 
     async def query_balance(self) -> _BrokerBalance:
         """ASYNC reconcile read: broker-authoritative balance (§4)."""
-
-
-# ---------------------------------------------------------------------------
-# The §12.10 exit rows the frozen EventKind cannot yet name — see module docstring
-# ---------------------------------------------------------------------------
-
-
-class ExitEventKind(enum.Enum):
-    """§12.10 exit-half rows the FROZEN seam's `EventKind` does not yet declare.
-
-    `protective-exit` and `closed` are §12.10 Plane-1 inventory rows, but the
-    frozen `EventKind` omits them by ARC 028's own design. This LOCAL enum carries
-    the kind on the interim `ExitEventLog` surface until the integrator adds the
-    members to the frozen seam (Stage 2.2), the same route `HALT_ONSET` took to
-    `TerminalPath` via SPEC-A7. `cancel` is here too because the entry-cancel
-    row (§12.10 *"cancels (incl. IOC remainder-cancel)"*) is on the same footing.
-    """
-
-    PROTECTIVE_EXIT = "protective-exit"
-    EXIT_INTENT = "exit-intent"
-    CLOSED = "closed"
-    CANCEL = "cancel"
-
-
-@runtime_checkable
-class ExitEventLog(Protocol):
-    """The interim Plane-1 exit surface (see `ExitEventKind`). §9: Limiter-written."""
-
-    # too-many-arguments: §9 requires timestamp + strategy_id + trade_id + reason
-    # on every row, and §12.10 adds the kind and the symbol. The count is the
-    # frozen row shape, not this method's design.
-    def record(  # pylint: disable=too-many-arguments
-        self,
-        *,
-        kind: ExitEventKind,
-        trade_id: str | None,
-        strategy_id: str,
-        symbol: str,
-        reason: str,
-        ts: float,
-    ) -> None:
-        """Append one exit row. Bounded, hot-path-safe, no delivery dependency."""
 
 
 # ---------------------------------------------------------------------------
@@ -427,7 +387,7 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
         ledger: ReservationLedger,
         picture: FinancialPictureBook,
         strategy: StrategyExitSink,
-        event_log: ExitEventLog,
+        plane1: Plane1Port,
         scoring: ScoringSink,
         clock: Callable[[], float] = time.time,
     ) -> None:
@@ -435,7 +395,11 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
         self._ledger = ledger
         self._picture = picture
         self._strategy = strategy
-        self._event_log = event_log
+        #: §9: the Limiter is the SOLE Plane-1 writer. ARC 029 Stage 2.2 collapsed
+        #: the interim ExitEventLog onto this real port once EventKind gained the
+        #: exit-half members — no new writer, the same append-only WAL every other
+        #: Limiter row rides.
+        self._plane1 = plane1
         self._scoring = scoring
         self._clock = clock
         #: trade_id -> the authoritative close. The arbiter's ground truth (§4).
@@ -550,11 +514,11 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
             superseded=prior.authority if prior is not None else None,
         )
         self._closed[target.trade_id] = record
-        self._event_log.record(
+        self._book(
             kind=(
-                ExitEventKind.PROTECTIVE_EXIT
+                EventKind.PROTECTIVE_EXIT
                 if authority is CloseAuthority.PROTECTIVE
-                else ExitEventKind.EXIT_INTENT
+                else EventKind.EXIT_INTENT
             ),
             trade_id=target.trade_id,
             strategy_id=target.strategy_id,
@@ -576,8 +540,8 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
         books `BLACKOUT_ONSET`, and neither collapses to a bare `CANCEL` — §9's
         record of money truth would otherwise lose which onset released the
         capital. The reservation release goes through the real ledger onto the
-        real Plane 1 (`EventKind.RESERVATION_RELEASED` exists); the cancel row
-        rides the interim `ExitEventLog`.
+        real Plane 1 (`EventKind.RESERVATION_RELEASED`); the cancel row is booked
+        under `EventKind.CANCEL` onto that same Plane 1 (Stage 2.2).
 
         This method calls `cancel_order` ONLY. It never calls `flatten`, because
         §3 says exits are untouched — a pending ENTRY is a window a fill has not
@@ -603,8 +567,8 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
             if resolution.refusal is not None:
                 refusals.append(resolution.refusal)
             cancelled.append(entry.client_order_id)
-            self._event_log.record(
-                kind=ExitEventKind.CANCEL,
+            self._book(
+                kind=EventKind.CANCEL,
                 trade_id=None,
                 strategy_id=entry.strategy_id,
                 symbol=entry.symbol,
@@ -719,14 +683,47 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
             self._strategy.on_closed(
                 trade_id, row.strategy_id, reason, hard_reset=hard_reset
             )
-            self._event_log.record(
-                kind=ExitEventKind.CLOSED,
+            self._book(
+                kind=EventKind.CLOSED,
                 trade_id=trade_id,
                 strategy_id=row.strategy_id,
                 symbol=row.symbol,
                 reason=reason,
                 ts=now,
             )
+
+    # too-many-arguments: §9 requires timestamp + strategy_id + trade_id + reason
+    # on every row, and §12.10 adds the kind and the symbol. The count is the
+    # frozen row shape, not this method's design.
+    def _book(  # pylint: disable=too-many-arguments
+        self,
+        *,
+        kind: EventKind,
+        trade_id: str | None,
+        strategy_id: str,
+        symbol: str,
+        reason: str,
+        ts: float,
+    ) -> None:
+        """One §12.10 exit row onto Plane 1 (Limiter sole writer, §9).
+
+        ARC 029 Stage 2.2: the interim `ExitEventLog` collapsed here once the seam
+        gained the exit-half `EventKind` members. `EventRow` carries trade_id /
+        strategy_id / reason natively; the symbol rides `fields`, which is where
+        §12.10's per-row extras live (the reservation-release rows already do this).
+        Bounded and hot-path-safe: `enqueue` appends to the WAL and returns without
+        durability, so booking an exit row adds no wire dependency to the exit path.
+        """
+        self._plane1.enqueue(
+            EventRow(
+                kind=kind,
+                ts=ts,
+                strategy_id=strategy_id,
+                reason=reason,
+                trade_id=trade_id,
+                fields={"symbol": symbol},
+            )
+        )
 
     def _attribution(
         self, record: ClosedRecord | None, symbol: str

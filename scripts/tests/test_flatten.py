@@ -63,7 +63,6 @@ from nixrisk.flatten import (  # pylint: disable=wrong-import-position
     CloseOutcome,
     CloseTarget,
     ConfirmedFlat,
-    ExitEventKind,
     FlattenAction,
     NotAnOnsetCause,
     PendingEntry,
@@ -148,33 +147,6 @@ class StrategySink:
         self, trade_id: str, strategy_id: str, reason: str, *, hard_reset: bool
     ) -> None:
         self.closed.append((trade_id, strategy_id, reason, hard_reset))
-
-
-@dataclass
-class ExitLog:
-    """The interim §12.10 exit surface. Records every row and its kind."""
-
-    rows: list[tuple[ExitEventKind, str | None, str, str, str]] = field(
-        default_factory=list
-    )
-
-    def record(
-        self,
-        *,
-        kind: ExitEventKind,
-        trade_id: str | None,
-        strategy_id: str,
-        symbol: str,
-        reason: str,
-        ts: float,
-    ) -> None:
-        del ts
-        self.rows.append((kind, trade_id, strategy_id, symbol, reason))
-
-    def of(
-        self, kind: ExitEventKind
-    ) -> list[tuple[ExitEventKind, str | None, str, str, str]]:
-        return [row for row in self.rows if row[0] is kind]
 
 
 @dataclass
@@ -275,17 +247,24 @@ def _executor(
     picture: FinancialPictureBook,
     ledger: ReservationLedger | None = None,
     strategy: StrategySink | None = None,
-    event_log: ExitLog | None = None,
+    plane1: Plane1Recorder | None = None,
     scoring: ScoringSink | None = None,
     cls: type[ProtectiveFlatten] = ProtectiveFlatten,
 ) -> ProtectiveFlatten:
-    """One executor wired to the given collaborators, defaulting the rest."""
+    """One executor wired to the given collaborators, defaulting the rest.
+
+    ARC 029 Stage 2.2: ONE `Plane1Recorder` feeds both the reservation ledger and
+    the executor, so every §12.10 row — reservation-release AND the exit kinds —
+    lands on the ONE Plane-1 writer §9 requires. A caller passing an explicit
+    `ledger` opts that ledger's own sink out of the shared recorder deliberately.
+    """
+    plane1 = plane1 or Plane1Recorder()
     return cls(
         broker=broker,
-        ledger=ledger or ReservationLedger(Plane1Recorder()),
+        ledger=ledger or ReservationLedger(plane1),
         picture=picture,
         strategy=strategy or StrategySink(),
-        event_log=event_log or ExitLog(),
+        plane1=plane1,
         scoring=scoring or ScoringSink(),
         clock=_clock,
     )
@@ -746,13 +725,13 @@ async def test_reconcile_when_the_flatten_CLOSES_A_REAL_POSITION_publishes_CONFI
     broker = ReconcileBroker(positions=[Position("MESU6", 1, 7800.0)], cash=20344.34)
     broker.realize_on_flatten["MESU6"] = 500.0
     strategy = StrategySink()
-    event_log = ExitLog()
+    plane1 = Plane1Recorder()
     scoring = ScoringSink()
     ex = _executor(
         broker,
         picture=book,
         strategy=strategy,
-        event_log=event_log,
+        plane1=plane1,
         scoring=scoring,
     )
 
@@ -777,7 +756,7 @@ async def test_reconcile_when_the_flatten_CLOSES_A_REAL_POSITION_publishes_CONFI
     assert strategy.closed and strategy.closed[-1][0] == trade_id
     assert strategy.closed[-1][3] is True, "protective close did not hard-reset the FSM"
     assert "uncertainty" in strategy.closed[-1][2], strategy.closed[-1]
-    assert event_log.of(ExitEventKind.CLOSED), event_log.rows
+    assert plane1.of(EventKind.CLOSED), plane1.rows
     assert scoring.booked[-1][0] == (trade_id,), scoring.booked
     assert scoring.booked[-1][1] == 500.0, scoring.booked
 

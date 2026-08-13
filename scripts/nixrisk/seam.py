@@ -396,13 +396,25 @@ class FinancialPicturePort(Protocol):
 
 
 class EventKind(enum.Enum):
-    """The §12.10 inventory rows this arc's seam can produce.
+    """The §12.10 inventory rows this seam can produce.
 
-    NOT the whole inventory. §12.10 also books protective-exit, exit-intent,
-    closed, GO-timeout, HALT set/clear, operator action, strategy lifecycle and
-    cold-start outcome; every one of those belongs to machinery this arc
-    explicitly does not build, and inventing their members here would let a gate
-    report coverage of paths that have no code.
+    A member lands here ONLY when the machinery that emits it exists — inventing
+    a member for a path with no code would let a gate report coverage of nothing.
+    That rule is why the set grows arc by arc rather than being written out whole.
+
+    **ARC 029 (Stage 2.2) landed the exit-half kinds.** The Phase-0.6 seam omitted
+    protective-exit / exit-intent / closed / cancel / cold-start-outcome on the
+    stated grounds that ARC 028 built no mechanism for them. ARC 029 built that
+    mechanism — `nixrisk.flatten` (the protective-flatten executor) and
+    `nixrisk.coldstart` (the reconciler) — so the five members land now, the same
+    way SPEC-A7 added `HALT_ONSET` to `TerminalPath` once the ruling that needed
+    it existed. `nixrisk.flatten`'s interim `ExitEventLog` surface, which carried
+    these on a distinct channel while the seam was frozen for Stage 1, collapses
+    onto `Plane1Port` in the same arc.
+
+    STILL OMITTED, and still for the same reason (no emitting code): `filled`
+    (entry-fill confirmation), `GO-timeout`, `HALT set/clear`, operator-control
+    actions and strategy-lifecycle rows. They land in the arcs that build them.
     """
 
     SIGNAL = "signal"
@@ -411,6 +423,12 @@ class EventKind(enum.Enum):
     RESERVATION_TAKEN = "reservation_taken"
     RESERVATION_RELEASED = "reservation_released"
     BOOT = "boot"
+    #: ARC 029 (Stage 2.2) — the exit half's §12.10 rows, mechanism now built.
+    PROTECTIVE_EXIT = "protective_exit"
+    EXIT_INTENT = "exit_intent"
+    CLOSED = "closed"
+    CANCEL = "cancel"
+    COLD_START = "cold_start"
 
 
 @dataclass(frozen=True)

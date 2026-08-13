@@ -407,14 +407,15 @@ class ColdStart:
     def _book(self, now: float, reason: str) -> None:
         """§12.10's cold-start outcome row, on the sole Plane-1 writer (§9).
 
-        Booked under `EventKind.BOOT`: the frozen seam's `EventKind` has no
-        `COLD_START` member (its docstring refuses to invent inventory rows for
-        machinery that does not exist), and cold-start reconciliation IS the boot
-        event. The dedicated kind is an integration debt, not a member added here.
+        Booked under `EventKind.COLD_START` (ARC 029 Stage 2.2). Sub-agent D built
+        this against the FROZEN seam, whose `EventKind` had no `COLD_START` member,
+        so the outcome rode `BOOT` and the dedicated kind was reported as owed. The
+        integrator added `COLD_START` to the seam once this mechanism existed — the
+        SPEC-A7 route — and the row now books under its own §12.10 kind.
         """
         self._plane1.enqueue(
             EventRow(
-                kind=EventKind.BOOT,
+                kind=EventKind.COLD_START,
                 ts=now,
                 strategy_id=SYSTEM_ACTOR,
                 reason=reason,

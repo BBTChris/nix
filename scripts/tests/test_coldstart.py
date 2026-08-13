@@ -542,14 +542,15 @@ def test_the_ADMIT_and_HOLD_outcomes_each_BOOK_a_PLANE1_row_carrying_the_reason(
     None
 ):
     """§12.10 books the cold-start outcome on Plane 1; §9 requires ts + strategy_id
-    + reason on every row. Booked under BOOT — the frozen seam has no COLD_START
-    kind (see its EventKind docstring) — and carries the state and admission."""
+    + reason on every row. Booked under COLD_START (ARC 029 Stage 2.2 added the
+    §12.10 member to the seam once this mechanism existed) — carries state and
+    admission."""
     cs, _broker, _flat, _halt, rec = build(open_truth(1), tradable=(False, "closed"))
     cs.reconcile(1_000.0)  # a HELD outcome
 
     assert len(rec.rows) == 1, rec.rows
     row = rec.rows[0]
-    assert row.kind is EventKind.BOOT, row
+    assert row.kind is EventKind.COLD_START, row
     assert row.ts == 1_000.0
     assert row.reason and "HALT" in row.reason, row
     assert row.fields["state"] == ColdStartState.HELD_IN_HALT.value, row
