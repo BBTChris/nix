@@ -320,8 +320,9 @@ chk("4c opus weighting applied", s["g5"].used > 1e8, s["g5"].used)
 chk("4c cap_eta computed", s["cap_eta"] is not None, s["cap_eta"])
 r = M.Renderer(False)
 txt = "\n".join("".join(t for t, _ in row) for row in r.render(s, 100, 60))
-chk("4c overrun warning shown", "ESTIMATE EXCEEDED" in txt, txt[:600])
-chk("4c prior overrun labelled", "PRIOR TOO LOW" in txt, txt[:600])
+chk("4c prior shows no confident percent",
+    "PRIOR TOO LOW" not in txt and ">100%" not in txt, txt[:600])
+chk("4c prior points to statusline", "statusline" in txt.lower(), txt[:600])
 chk("4c ctx bar never >100%", s["ctx_used"] <= s["ctx_limit"],
     (s["ctx_used"], s["ctx_limit"]))
 # genuine sub-cap collision: moderate burn against a calibrated denominator
@@ -418,6 +419,71 @@ print()
 print()
 print()
 print()
+print()
+print()
+print("=" * 72)
+print("SCENARIO 4L: NIX logo renders wide, falls back narrow, never overflows")
+print("=" * 72)
+root, repo, ch, dl = build(n_msgs=30)
+cfg = mk_cfg(repo, ch, dl); proc = subprocess.Popen(["sleep", "300"])
+try:
+    mon, s = collect(cfg, pid=proc.pid)
+    for asc in (False, True):
+        for wdt in (60, 72, 80, 88, 100, 132):
+            rows = M.Renderer(asc).render(s, wdt, 30)
+            for y, row in enumerate(rows):
+                plain = "".join(t for t, _ in row)
+                assert len(plain) <= max(60, wdt) + 2, f"overflow w={wdt} asc={asc} y={y} len={len(plain)}"
+    # wide frame shows the logo glyph (▓ present in header region) + header text
+    wide = "\n".join("".join(t for t, _ in r) for r in M.Renderer(False).render(s, 104, 30))
+    hdr = "\n".join(wide.splitlines()[1:6])
+    chk("4L logo present wide", M.NIX_LOGO and (M.Renderer(False).b["f"] in hdr), hdr[:80])
+    chk("4L header text beside logo", "PHASE" in hdr and "session" in hdr, hdr[:120])
+    # narrow frame: plain header, no logo gutter widening
+    narrow = "\n".join("".join(t for t, _ in r) for r in M.Renderer(False).render(s, 80, 30))
+    nhdr = narrow.splitlines()[1]
+    chk("4L narrow header has arc name, no logo", "ARC" in nhdr
+        and M.Renderer(False).b["f"] not in nhdr, nhdr[:60])
+    chk("4L logo renders all widths without overflow", True)
+finally:
+    proc.kill(); proc.wait()
+
+print("=" * 72)
+print("SCENARIO 4K: LIMITS shows no confident-wrong % without a real denominator")
+print("=" * 72)
+# uncalibrated (prior only): must NOT print a percentage or PRIOR TOO LOW
+root, repo, ch, dl = build(n_msgs=40, burn_mult=200, model="claude-opus-4-1")
+cfg = mk_cfg(repo, ch, dl)  # no calib_5h/calib_weekly -> prior
+proc = subprocess.Popen(["sleep", "300"])
+try:
+    mon, s = collect(cfg, pid=proc.pid)
+    frame = "\n".join("".join(t for t, _ in row)
+                      for row in M.Renderer(False).render(s, 104, 30))
+    lim = frame.split("LIMITS")[1].split("AGENTS")[0] if "LIMITS" in frame else ""
+    chk("4K no PRIOR TOO LOW", "PRIOR TOO LOW" not in lim, lim[:300])
+    chk("4K no >100%", ">100%" not in lim, lim[:300])
+    chk("4K no bogus 5h percent", "%" not in lim.split("reset")[0], lim[:200])
+    chk("4K shows est n/a", "est. n/a" in lim, lim[:300])
+    chk("4K points to statusline", "statusline" in lim.lower(), lim[:400])
+    chk("4K burn still shown", "burn" in lim)
+    chk("4K no estimate-exceeded banner on prior", "EXCEEDED" not in frame,
+        [l for l in frame.splitlines() if "EXCEED" in l])
+    chk("4K reset clocks still shown", "reset" in lim)
+finally:
+    proc.kill(); proc.wait()
+
+# calibrated: a real denominator DOES yield a percentage
+root, repo, ch, dl = build(n_msgs=40)
+cfg = mk_cfg(repo, ch, dl)
+mon, s0 = collect(cfg)
+cfg["calib_5h"] = [s0["g5"].used * 1.3]  # real-ish denominator
+mon, s = collect(cfg)
+frame = "\n".join("".join(t for t, _ in row)
+                  for row in M.Renderer(False).render(s, 104, 30))
+lim = frame.split("LIMITS")[1].split("AGENTS")[0]
+chk("4K calibrated shows a percent", "%" in lim, lim[:300])
+chk("4K calibrated labels calib", "calib" in lim, lim[:300])
+
 print("=" * 72)
 print("SCENARIO 4J: ETA from task-progress-bar --status-line (real CC source)")
 print("=" * 72)

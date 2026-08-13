@@ -1315,6 +1315,18 @@ BOX_A = {"h": "-", "v": "|", "tl": "+", "tr": "+", "bl": "+", "br": "+",
 
 A_DIM, A_NORM, A_HDR = "dim", "norm", "hdr"
 A_OK, A_WARN, A_CRIT, A_INFO, A_ACCENT = "ok", "warn", "crit", "info", "accent"
+# NIX wordmark gradient columns (orange -> red -> magenta), from the SSH splash
+A_LOGO1, A_LOGO2, A_LOGO3, A_LOGO4 = "logo1", "logo2", "logo3", "logo4"
+# 5-row block glyphs; '#'=cell. Compact so it sits beside the header in <=100 cols.
+NIX_LOGO = [
+    "#   # ### #   #",
+    "##  #  #   # # ",
+    "# # #  #   ##  ",
+    "#  ##  #   # # ",
+    "#   # ### #   #",
+]
+_LOGO_W = max(len(r) for r in NIX_LOGO)
+_LOGO_ATTRS = (A_LOGO1, A_LOGO2, A_LOGO3, A_LOGO4)
 
 
 class Renderer:
@@ -1370,6 +1382,29 @@ class Renderer:
                 [(" " * (inner - used), A_NORM), (self.b["v"], A_DIM)])
 
     # -- panels ------------------------------------------------------------
+    def logo_row(self, r: int) -> list:
+        """One row of the NIX wordmark as colored segments (empty if out of range)."""
+        if r >= len(NIX_LOGO):
+            return [("              ", A_NORM)]
+        row = NIX_LOGO[r].ljust(_LOGO_W)
+        segs, run, run_attr = [], "", None
+        for x, ch in enumerate(row):
+            if ch == "#":
+                idx = min(len(_LOGO_ATTRS) - 1, int(x / _LOGO_W * len(_LOGO_ATTRS)))
+                a = _LOGO_ATTRS[idx]
+                glyph = self.b["f"]
+            else:
+                a, glyph = A_NORM, " "
+            if a == run_attr:
+                run += glyph
+            else:
+                if run:
+                    segs.append((run, run_attr))
+                run, run_attr = glyph, a
+        if run:
+            segs.append((run, run_attr))
+        return segs
+
     def render(self, s: dict, w: int, h: int) -> list:
         w = max(60, w)
         b, out = self.b, []
@@ -1385,30 +1420,49 @@ class Renderer:
         out.append(self.rule(w, b["tl"], b["tr"], f"{title} \u00b7 {host}"))
         arc = s["arc"]
         pid_s = f"PID {s['pid']}" if s["pid"] else "PID --"
-        out.append(self.row(w, [
-            (" ", A_NORM), (clip(arc.get("name") or "no arc", 24), A_ACCENT),
-            ("  ", A_NORM), (f"{pid_s:<11}", A_NORM),
-            (f"up {fmt_dur(s.get('uptime')):<9}", A_NORM),
-            (right, A_DIM),
-        ]))
-        # current live session line - this is THIS session, not history
         sess_id = s.get("cur_session")
-        if sess_id:
-            model = s.get("cur_model") or "?"
-            out.append(self.row(w, [
-                (" session ", A_DIM), (sess_id, A_ACCENT),
-                ("  model ", A_DIM), (model, A_INFO),
-                ("  ", A_NORM),
-                (f"ctx {fmt_tok(s['ctx_used'])}/{fmt_tok(s.get('ctx_limit') or CTX_LIMIT)}", A_DIM),
-            ]))
+        model = s.get("cur_model") or "?"
         ph, why = s["phase"]
         pattr = {PHASE_STALL: A_CRIT, PHASE_DEAD: A_CRIT, PHASE_NOPROC: A_CRIT,
                  PHASE_DONE: A_OK, PHASE_IDLE: A_WARN,
                  PHASE_COMPACT: A_WARN}.get(ph, A_INFO)
-        out.append(self.row(w, [
-            (" PHASE ", A_DIM), (b["arw"] + " ", pattr), (f"{ph}", pattr),
-            (": ", A_DIM), (clip(why, max(0, w - 22 - len(ph))), A_NORM),
-        ]))
+
+        # The header text lines (built once), placed to the RIGHT of the logo.
+        text_rows = [
+            [(clip(arc.get("name") or "no arc", 24), A_ACCENT),
+             ("  ", A_NORM), (f"{pid_s:<11}", A_NORM),
+             (f"up {fmt_dur(s.get('uptime')):<9}", A_NORM), (right, A_DIM)],
+        ]
+        if sess_id:
+            text_rows.append([
+                ("session ", A_DIM), (sess_id, A_ACCENT),
+                ("  model ", A_DIM), (model, A_INFO), ("  ", A_NORM),
+                (f"ctx {fmt_tok(s['ctx_used'])}/{fmt_tok(s.get('ctx_limit') or CTX_LIMIT)}", A_DIM)])
+        text_rows.append([
+            ("PHASE ", A_DIM), (b["arw"] + " ", pattr), (f"{ph}", pattr),
+            (": ", A_DIM), (why, A_NORM)])
+
+        # Logo occupies the left gutter; header text sits beside it. Only when
+        # the terminal is wide enough (else fall back to plain stacked header).
+        logo_cols = _LOGO_W + 2   # glyph width + a small gutter
+        if w >= 88:
+            nrows = max(len(NIX_LOGO), len(text_rows))
+            # vertically center the (shorter) text block against the logo
+            pad_top = (len(NIX_LOGO) - len(text_rows)) // 2
+            for i in range(len(NIX_LOGO)):
+                lseg = self.logo_row(i)
+                ti = i - pad_top
+                tseg = text_rows[ti] if 0 <= ti < len(text_rows) else []
+                lseg_fit, lused = self.fit([(" ", A_NORM)] + lseg, logo_cols)
+                gap = logo_cols - lused
+                inner = max(0, w - 2)
+                body, bused = self.fit(lseg_fit + [(" " * (gap + 1), A_NORM)] + tseg,
+                                       inner)
+                out.append([(b["v"], A_DIM)] + body
+                           + [(" " * (inner - bused), A_NORM), (b["v"], A_DIM)])
+        else:
+            for tr in text_rows:
+                out.append(self.row(w, [(" ", A_NORM)] + tr))
 
         # discovery failures --------------------------------------------------
         if s["discovery"]:
@@ -1431,15 +1485,14 @@ class Renderer:
                        (b["v"], A_DIM)])
 
         # collision warning ---------------------------------------------------
+        # Only meaningful against a CALIBRATED denominator. On a prior/uncalibrated
+        # gauge the cap is a guess, so we stay silent rather than cry wolf.
         cap = s.get("cap_eta")
-        if s.get("cap_over"):
-            calib = s["g5"].calibrated or s["gw"].calibrated
-            msg = ("ESTIMATE EXCEEDED - past the "
-                   + ("calibrated denominator" if calib
-                      else "PRIOR (prior is unreliable, not necessarily the cap)"))
+        calib = s["g5"].calibrated or s["gw"].calibrated
+        if s.get("cap_over") and calib:
             out.append(self.row(w, [(" " + b["warn"] + " ", A_CRIT),
-                                    (msg, A_CRIT if calib else A_WARN)]))
-        elif cap is not None and cap < 3 * 3600:
+                                    ("USAGE CAP EXCEEDED (calibrated)", A_CRIT)]))
+        elif calib and cap is not None and cap < 3 * 3600:
             # burn-rate projection to the USAGE cap (a limit warning, not a
             # task-completion estimate) - checkpoint before a lockout
             msg = f"APPROACHING USAGE CAP in ~{fmt_dur(cap, True)} - checkpoint soon"
@@ -1578,35 +1631,45 @@ class Renderer:
         return [[(clip(t, w), a) for t, a in row] for row in out]
 
     def _limits_col(self, s: dict, w: int, now: float) -> list:
+        # Claude Code does not persist its real 5h/weekly usage anywhere the
+        # monitor can read (verified: not in transcript, cache, daemon, or CLI).
+        # A percentage bar here would be a guess against a placeholder prior and
+        # would silently disagree with Claude Code's own statusline. Per the
+        # vacuous-pass rule we DO NOT show a confident wrong number: a %% is
+        # shown ONLY when calibrated from an observed lockout (real denominator).
+        # Otherwise we show the honest measurables (burn rate, reset clocks) and
+        # point at the statusline for the authoritative figure.
         out = []
         bw = max(6, min(12, w - 30))
-        note = "  (local est; excl. claude.ai)" if w >= 46 else "  (local est)"
-        out.append([(" LIMITS", A_HDR), (note if w >= 28 else "", A_DIM)])
+        out.append([(" LIMITS", A_HDR),
+                    ("  (usage: see CC statusline)" if w >= 44 else "", A_DIM)])
         for lab, g, reset in (("5h", s["g5"], s["reset5"]),
                               ("week", s["gw"], s["reset_week"])):
-            pct = g.pct
-            frac = None if pct is None else min(1.0, pct / 100.0)
-            attr = (A_DIM if pct is None else
-                    A_CRIT if pct >= 90 else A_WARN if pct >= 80 else
-                    A_INFO if pct >= 60 else A_OK)
-            overrun = pct is not None and pct > 100.0
-            tail = "UNCAL" if pct is None else (
-                ">100%" if overrun else f"{pct:.0f}%")
-            out.append([(f" {lab:<5}", A_NORM), (self.bar(frac, bw), attr),
-                        (f" {tail:>5} ", attr),
-                        (f"{fmt_tok(g.used)}wt", A_DIM)])
-            if overrun and g.basis == "prior":
-                basis = ("PRIOR TOO LOW", A_CRIT)
+            if g.calibrated:
+                pct = g.pct
+                frac = None if pct is None else min(1.0, pct / 100.0)
+                over = pct is not None and pct > 100.0
+                attr = (A_CRIT if (pct or 0) >= 90 else A_WARN if (pct or 0) >= 80
+                        else A_INFO if (pct or 0) >= 60 else A_OK)
+                tail = ">100%" if over else f"{pct:.0f}%"
+                out.append([(f" {lab:<5}", A_NORM), (self.bar(frac, bw), attr),
+                            (f" {tail:>5} ", attr),
+                            (g.basis_label(now), A_DIM)])
             else:
-                basis = (g.basis_label(now),
-                         A_DIM if g.calibrated else A_WARN)
-            out.append([("       reset ", A_DIM), (fmt_reset(reset, now), A_NORM),
-                        ("  ", A_NORM), basis])
-        out.append([(f" burn  {fmt_tok(s['burn'])}wt/h", A_NORM)])
-        if s.get("cap_over"):
-            out.append([(" cap   ESTIMATE EXCEEDED", A_CRIT)])
-        elif s.get("cap_eta") is not None:
-            out.append([(f" cap in {fmt_dur(s['cap_eta'], True)}", A_WARN)])
+                # no real denominator -> no percentage, just the wtok burned
+                out.append([(f" {lab:<5}", A_NORM), (self.bar(None, bw), A_DIM),
+                            (f" {fmt_tok(g.used)}wt", A_DIM),
+                            ("  est. n/a", A_WARN)])
+            if reset is not None:
+                out.append([("       reset ", A_DIM), (fmt_reset(reset, now), A_NORM)])
+        out.append([(f" burn  {fmt_tok(s['burn'])}wt/h", A_DIM)])
+        # cap projection only meaningful with a calibrated denominator
+        if (s["g5"].calibrated or s["gw"].calibrated):
+            if s.get("cap_over"):
+                out.append([(" cap   ESTIMATE EXCEEDED", A_CRIT)])
+            elif s.get("cap_eta") is not None:
+                out.append([(f" cap in {fmt_dur(s['cap_eta'], True)}", A_WARN)])
+        out.append([(" real 5h/weekly %: Claude Code statusline", A_DIM)])
         return [[(clip(t, w), a) for t, a in row] for row in out]
 
 
@@ -1629,10 +1692,15 @@ def run_tui(mon: Monitor, cfg: dict) -> int:
                 bg = -1
             except curses.error:
                 bg = curses.COLOR_BLACK
+            has256 = curses.COLORS >= 256
+            L1, L2, L3, L4 = ((208, 202, 199, 201) if has256
+                              else (curses.COLOR_YELLOW, curses.COLOR_RED,
+                                    curses.COLOR_MAGENTA, curses.COLOR_MAGENTA))
             spec = [(A_NORM, curses.COLOR_WHITE), (A_DIM, curses.COLOR_WHITE),
                     (A_HDR, curses.COLOR_CYAN), (A_OK, curses.COLOR_GREEN),
                     (A_WARN, curses.COLOR_YELLOW), (A_CRIT, curses.COLOR_RED),
-                    (A_INFO, curses.COLOR_CYAN), (A_ACCENT, curses.COLOR_MAGENTA)]
+                    (A_INFO, curses.COLOR_CYAN), (A_ACCENT, curses.COLOR_MAGENTA),
+                    (A_LOGO1, L1), (A_LOGO2, L2), (A_LOGO3, L3), (A_LOGO4, L4)]
             for i, (name, col) in enumerate(spec, start=1):
                 try:
                     curses.init_pair(i, col, bg)
