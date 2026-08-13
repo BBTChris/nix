@@ -479,7 +479,16 @@ BANNED_CALLS: tuple[str, ...] = ("asyncio.run", "run_until_complete", "run_forev
 # --------------------------------------------------------------------------
 # Kept under its original name so CHECK-DEBT D2.15's citation of
 # `ORDER_PATH_DIRS` does not go stale in the act of discharging the row.
-ORDER_PATH_DIRS: tuple[str, ...] = ("scripts/broker",)
+#
+# ARC 029 (exit half): `scripts/nixrisk` is CONFIRMED as the order path's second
+# home and added to the floor. The Limiter's protective-exit modules fire broker
+# orders in-process (flatten.py's zero-wire flatten, coldstart.py's flatten-to-
+# flat), so they are order-path code and must be scanned for the same banned
+# retry libraries and broker-native stop order-types. The derived scope self-
+# healed to include the directory the moment those modules were written (the
+# `order_path_scope_files` claim went 6 -> 16 and named the second home); this
+# constant is the human confirmation that claim asks for, per its own note.
+ORDER_PATH_DIRS: tuple[str, ...] = ("scripts/broker", "scripts/nixrisk")
 
 # Where the derivation looks for a second home. Named in §7.12 condition 4 as a
 # residual: code outside these roots is not walked.
@@ -1282,17 +1291,43 @@ def scan_source(
     return bans + shapes, ban_notes + shape_notes, used
 
 
+def _probe_targets(files: list[Path]) -> tuple[list[str], list[str]]:
+    """(import names, PYTHONPATH dirs) for arm (ii), package-aware.
+
+    ARC 029: the order path acquired a PACKAGE home (`scripts/nixrisk`, the exit
+    half) alongside the FLAT `scripts/broker`. A file in a package imports as
+    `<pkg>.<stem>` with the package's OWN parent on the path — importing it by
+    bare stem is `No module named 'nixrisk'` the instant it runs a package-
+    relative `from nixrisk.seam import`. Walk up while each directory holds an
+    `__init__.py` so nested packages resolve; a flat directory keeps the bare-stem
+    form it always had. `_`-prefixed stems are excluded as before.
+    """
+    module_names: set[str] = set()
+    path_dirs: set[str] = set()
+    for src in files:
+        if src.stem.startswith("_"):
+            continue
+        parts = [src.stem]
+        root = src.parent
+        while (root / "__init__.py").is_file():
+            parts.append(root.name)
+            root = root.parent
+        module_names.add(".".join(reversed(parts)))
+        path_dirs.add(str(root))
+    return sorted(module_names), sorted(path_dirs)
+
+
 def import_arm(nix_home: Path, scope: Scope) -> tuple[list[tuple[str, str]], str]:
     """Arm (ii). Returns ([(site, why)], evidence-or-complaint).
 
     The second element is evidence on success and a CANNOT_MEASURE complaint
     prefixed 'cannot measure:' on failure — the two are never collapsed (§4.1).
     """
-    modules = sorted({p.stem for p in scope.files if not p.stem.startswith("_")})
+    modules, path_dirs = _probe_targets(scope.files)
     if not modules:
         return [], "cannot measure: no importable module names in scope"
     interpreter = _probe_interpreter(nix_home)
-    env_paths = ":".join(str(nix_home / rel) for rel in scope.dirs)
+    env_paths = ":".join(path_dirs)
     try:
         proc = subprocess.run(  # nosec B603 - fixed argv, shell=False
             [

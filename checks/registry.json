@@ -30,6 +30,7 @@
         "check_reservation_lifecycle",
         "check_risks_data_only",
         "check_spec_citations",
+        "check_synthetic_stop_only",
         "check_untracked_attribution",
         "check_verify_logging"
       ],

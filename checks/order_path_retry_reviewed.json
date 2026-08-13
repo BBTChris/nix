@@ -56,6 +56,16 @@
       "reviewed_in": "ARC 018 sub-agent C (D2.14); re-reviewed and re-signed ARC 020 Phase 4 after the send moved behind _emit_flatten_leg",
       "reviewed_on": "2026-08-11",
       "re_review_if": "the handler ever calls place_order or _emit_flatten_leg (that is shape except_reinvokes_send and this suppression does not cover it), or the loop bound stops being the position mirror, or _emit_flatten_leg acquires a loop of its own"
+    },
+    {
+      "file": "flatten.py",
+      "qualname": "ProtectiveFlatten.cancel_entries_on_onset",
+      "shape": "loop_contains_send",
+      "verb": "cancel_order",
+      "justification": "FAN-OUT, NOT RETRY. On blackout/HALT onset (§3, SPEC-A7) this cancels EVERY pending ENTRY order, one `cancel_order(entry.client_order_id)` per DISTINCT pending entry. The loop iterates the `pending` sequence handed in; each client_order_id is cancelled exactly once and no order is re-sent, so the loop's cardinality is the number of pending entries, not a retry budget. VERIFIED against the ARC 029 exit-half build: (1) the body calls `cancel_order` exactly once per entry and never re-invokes it — there is no except-reinvoke path; a ledger resolve refusal is collected into `refusals` and reported, never retried. (2) The loop bound is the caller-supplied pending set, not a counter. (3) `cancel_order` is a cancel, not a send of a new order — cancelling an un-filled entry is not opening or closing a position (exits are left untouched, §3). Fanning a cancel over the pending-entry set on onset is the specified behaviour. This is the same fan-out-not-retry shape already reviewed for broker_order_ibkr.py flatten.",
+      "reviewed_in": "ARC 029 (Stage 2 integration, sub-agent B's protective-flatten module brought into the order-path scan when scripts/nixrisk was confirmed as the order path's second home)",
+      "reviewed_on": "2026-08-13",
+      "re_review_if": "cancel_order is ever re-invoked on failure inside the loop (that is except_reinvokes_send, not covered here), or the loop bound stops being the caller-supplied pending set, or the body acquires a send of a NEW order rather than a cancel"
     }
   ]
 }

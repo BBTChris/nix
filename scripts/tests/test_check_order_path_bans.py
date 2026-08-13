@@ -278,24 +278,41 @@ def test_the_control_passes_and_its_evidence_names_what_it_read(
     evidence = result.evidence or ""
     assert "broker_order_ibkr.py" in evidence
     assert "send-path ['cancel_order', 'flatten', 'place_order']" in evidence
-    assert "arm(ii) imported 6 order-path module(s)" in evidence
+    # ARC 029: the order path acquired a package home (scripts/nixrisk, the exit
+    # half), so arm(ii) now imports the broker modules AND the nixrisk package
+    # modules — 15 in this tree. The literal is banked evidence; it moves when a
+    # module is added to either home, which is the point of asserting it.
+    assert "arm(ii) imported 15 order-path module(s)" in evidence, evidence
 
 
-def test_exactly_one_reviewed_suppression_exists_so_no_plant_is_pre_silenced(
+def test_the_reviewed_suppressions_are_the_two_known_fanouts_and_no_plant_is_pre_silenced(
     scratch: Path,
 ) -> None:
     """§7.12 answer 3 of this file: a grown registry would silence the plants.
 
-    The one entry is `IBKRBrokerOrder.flatten` / `loop_contains_send` /
-    `_emit_flatten_leg` — the ARC 018 fan-out review. Every shape plant below is
-    taken at `IBKRBrokerOrder._emit_flatten_leg`, which that key does not cover.
+    TWO fan-out reviews now exist, both `loop_contains_send`, both genuine:
+    `IBKRBrokerOrder.flatten` / `_emit_flatten_leg` (ARC 018, one close per
+    symbol) and, ARC 029, `ProtectiveFlatten.cancel_entries_on_onset` /
+    `cancel_order` (one entry-cancel per pending order). The property this test
+    guards is unchanged: NEITHER key covers `IBKRBrokerOrder._emit_flatten_leg`,
+    where every shape plant below is taken, so no plant is pre-silenced. A THIRD,
+    unexplained entry — the way a registry rots into a detector-silencer — still
+    fails here.
     """
     payload = json.loads((scratch / REGISTRY).read_text(encoding="utf-8"))
-    assert len(payload["reviewed"]) == 1
-    entry = payload["reviewed"][0]
-    assert entry["qualname"] == "IBKRBrokerOrder.flatten"
-    assert entry["shape"] == gate.SHAPE_LOOP
-    assert entry["verb"] == "_emit_flatten_leg"
+    keys = {(e["qualname"], e["shape"], e["verb"]) for e in payload["reviewed"]}
+    assert keys == {
+        ("IBKRBrokerOrder.flatten", gate.SHAPE_LOOP, "_emit_flatten_leg"),
+        ("ProtectiveFlatten.cancel_entries_on_onset", gate.SHAPE_LOOP, "cancel_order"),
+    }, keys
+    # The plant site is covered by NEITHER review, so the shape plants below still
+    # redden the gate rather than landing pre-silenced.
+    assert not any(
+        e["qualname"] == "IBKRBrokerOrder._emit_flatten_leg"
+        for e in payload["reviewed"]
+    )
+    for entry in payload["reviewed"]:
+        assert entry["justification"].strip() and entry["reviewed_in"].strip()
 
 
 def test_the_main_guard_discrimination_is_still_an_advisory_not_a_violation(
