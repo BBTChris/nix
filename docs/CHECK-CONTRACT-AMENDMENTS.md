@@ -612,3 +612,53 @@ withdraw it and nothing on disk could have contradicted it either.
 `nix_check_contract.md` and recorded here, or it does not bind. A brief may propose one; a brief is
 not where one lives. See `SPEC-A6`'s header note and `CHECK-A6` for the same collision class one
 level up, and `CHECK-DEBT.md` D3.81.
+
+---
+
+## CHECK-A8 — the declared exclusion: a guard with its re-owning ceiling lifted, and nothing else (ARC 029 / D3.104)
+
+| field | value |
+|---|---|
+| origin | Architect ruling on **CHECK-DEBT D3.104**, issued to ARC 029, recorded here in the same arc |
+| status | **LIVE, and explicitly a HOLDING mechanism.** The rule binds; this instance of it (thirteen artifacts) is temporary and owned by ARC 030 |
+| governs | `check_artifact_gate_coverage` — adds a verdict-deciding classification, so it is written into the check contract (`CLAUDE.md` rule 14) and recorded here, per **check-contract rule 13** |
+
+### What fired, and why the ceiling could not simply be obeyed
+
+`check_artifact_gate_coverage` carries an operator-ruled **re-owning ceiling of two** (`CHECK-A`-era
+D2.31, ARC 027): a guard's owner may be walked forward at most twice; the third re-owning escalates
+GUARDED to FAIL. ARC 029 / 0.5 re-pointed all sixteen `gate_coverage_baseline.json` owners off the
+**completed** `ARC 027` to `ARC 030` — the repair the gate's own CANNOT_MEASURE verdict had demanded
+(*"re-point the marker at a live arc or take the red"*). Thirteen of the sixteen were **already at the
+ceiling** (`the bulk check retrofit arc (ARC 025+)… -> ARC 025 -> ARC 027`), so the fourth owner was
+one re-owning too many and the gate went FAIL. The lineage is derived from committed blobs, so the
+red could not be edited away; reverting the owner to `ARC 027` restores a **completed arc as owner**,
+which is the masking doctrine B.3 exists to refuse. The ceiling was working; there was no compliant
+green available from inside the guard.
+
+### The rule
+
+A **declared exclusion** is an artifact moved out of the ratchet's `rows` (the ceiling-guarded set)
+into a top-level `exclusions` object in `gate_coverage_baseline.json`. An exclusion **escapes the
+re-owning ceiling and nothing else**:
+
+* it is still inside the **one-way ratchet** — `exclusions` is folded into the accepted set the
+  high-water mark judges, so a silent addition is an unadmitted-growth FAIL and an artifact that
+  acquires real coverage is a stale-baseline FAIL, wherever it sits;
+* it is still owned by a **live arc** — a completed owner is CANNOT_MEASURE (the honest "the holding
+  state expired" verdict), which is what stops the bucket outliving ARC 030;
+* it is still assigned under **§0g** — an owner naming the arc in flight is refused at write time;
+* and it **must carry a written `justification` and `temporary: true`** per entry.
+
+The one rule lifted is the ceiling, and it is lifted **only under this recorded amendment**. The gate
+cannot tell an authorized move from a laundering one — that is exactly why the authorization lives in
+this ledger and in the contract, not in the instrument (rule 13).
+
+### This instance, and its exit
+
+Thirteen ceiling-tripped artifacts are moved into `exclusions`, each justified, all owned by
+`ARC 030`. **ARC 030 is the committed bulk-retrofit arc:** it builds real per-artifact can-fail
+coverage for all thirteen, empties the exclusion, and drives `check_artifact_gate_coverage` green **by
+measurement**. The exclusion is temporary and `CHECK-DEBT.md` D3.104 says so. The three below-ceiling
+artifacts (`gitenv.py`, `measurement_path.py`, `registry.py`) are untouched and remain guarded rows.
+Verdict under this amendment: **GUARDED**, owner `ARC 030` — a withheld certification, never a pass.

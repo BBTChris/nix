@@ -212,3 +212,19 @@ fold reproduces that exactly. The collision is the architect's to rule on.
   carries the citation form. Enforced mechanically by `scripts/tests/test_amendment_ledgers.py`
   (prefix present, number unique **within** its ledger, prefixes disjoint, refinements excluded from
   the number space), driven red both ways against the real ledger and restored byte-identically.
+
+## ARC 029 — check-contract rule 14: the declared exclusion (D3.104 / CHECK-A8)
+
+- **Added check-contract rule 14** to `CLAUDE.md`: a declared EXCLUSION is a guard with its
+  re-owning ceiling lifted and nothing else lifted. `check_artifact_gate_coverage` may move an
+  artifact out of the ceiling-guarded `rows` into an `exclusions` bucket only under a recorded
+  `CHECK-A<n>` amendment, because the gate cannot tell an authorized move from a laundering one. An
+  exclusion stays inside the one-way ratchet, stays owned by a live arc (a completed owner is
+  Cannot-measure), stays assigned under §0g, and must justify itself and declare itself temporary.
+- **Origin:** architect ruling on CHECK-DEBT D3.104 — the re-owning ceiling (D2.31, ceiling of two)
+  fired when ARC 029 / 0.5 re-pointed thirteen already-at-ceiling artifacts to a fourth owner. The
+  ruling chose OPTION 3 as a HOLDING state for ARC 029 only; ARC 030 empties the exclusion with real
+  per-artifact coverage. Recorded as `CHECK-A8` in `docs/CHECK-CONTRACT-AMENDMENTS.md` and §19 of
+  `docs/nix_check_contract.md`; the current instance (thirteen artifacts, owner ARC 030, temporary)
+  is CHECK-DEBT D3.104. Enforced by `check_artifact_gate_coverage`'s exclusion arms, each planted and
+  driven red in `scripts/tests/test_check_artifact_gate_coverage.py`.

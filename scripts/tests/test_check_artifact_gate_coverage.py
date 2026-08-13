@@ -879,58 +879,69 @@ def test_a_TRUNCATED_history_ALREADY_over_the_ceiling_still_FAILS(
     assert "RE-OWNED" in result.detail, result.detail
 
 
-def test_the_LIVE_guard_on_the_real_tree_has_EXHAUSTED_its_ceiling() -> None:
-    """The finding, banked as an assertion so it cannot quietly stop being true.
+def test_the_REAL_TREES_THIRTEEN_ceiling_tripped_artifacts_are_the_D3104_EXCLUSION() -> (
+    None
+):
+    """The D3.104 disposition, banked so it cannot quietly stop being true.
 
-    This is not a hypothetical limit installed for a future offender. The one
-    live guard in this repository has been re-owned TWICE — `the bulk check
-    retrofit arc (ARC 025+)...` -> `ARC 025` -> `ARC 027` — and is therefore AT
-    the ceiling. ARC 028 cannot re-point it: that move is the third re-owning and
-    this gate now FAILs on it. The guard gets discharged or it goes red.
+    The finding, in its ARC 029 / 0.5–0.6 form: the re-owning ceiling fired.
+    Thirteen artifacts carried `... -> 'ARC 025' -> 'ARC 027'` and were AT the
+    ceiling; 0.5 re-pointed them to `ARC 030` (the repair the gate's own
+    CANNOT_MEASURE verdict demanded), making a FOURTH owner — three re-ownings,
+    one OVER — and the gate escalated GUARDED to FAIL. The marker could not be
+    walked forward (the ceiling) and could not be reverted (a completed arc as
+    owner is the masking doctrine B.3 refuses).
 
-    **ARC 029 / 0.5 MADE THAT MOVE, and this control now covers both states.**
-    Thirteen artifacts were re-pointed off the COMPLETED `ARC 027` to `ARC 030` —
-    which the gate's own CANNOT_MEASURE verdict had instructed — and the ceiling
-    fired: `... -> 'ARC 025' -> 'ARC 027' -> 'ARC 030'` is the fourth owner, three
-    re-ownings, one over. The red is KEPT (D3.104) rather than reverted, because
-    reverting restores a completed arc as owner and that is the masking this gate
-    exists to refuse. So the assertion is no longer "everything is exactly AT the
-    ceiling": it is that nothing has gone DOWN, and that anything OVER is already
-    reported as a defect rather than waiting for a further move.
+    **The architect ruled OPTION 3 as a HOLDING state (D3.104 / CHECK-A8):** move
+    the thirteen OUT of the guard into a declared, temporary exclusion owned by
+    ARC 030. So the assertion is no longer "everything is AT or OVER the ceiling
+    in `artifacts`". It is the disposition itself, in three parts that together
+    are the ruling:
+
+      * the thirteen are now in `exclusions`, and each one's COMMITTED lineage is
+        genuinely OVER the ceiling — proving these are the exhausted guards that
+        were moved, not an arbitrary set;
+      * every exclusion is owned by a LIVE arc, carries a justification and is
+        marked temporary — the ceiling is the ONE rule lifted;
+      * the three below-ceiling rows survive as rows, and the gate is GUARDED —
+        the ceiling escaped, but nothing was passed.
     """
-    from nixverify.contract import GUARD_REOWN_CEILING, reowning_defect
+    from nixverify.contract import (
+        GUARD_REOWN_CEILING,
+        completed_arcs,
+        guard_owner_defect,
+        reowning_defect,
+    )
 
     history = gate._committed_history(REPO)
     assert not history.error, history.error
     working = json.loads((REPO / gate.BASELINE).read_text(encoding="utf-8"))
-    exhausted = {
-        path: gate._row_lineage(history, path)
-        for path in working["artifacts"]
-        if len(gate._row_lineage(history, path)) - 1 >= GUARD_REOWN_CEILING
-    }
-    assert exhausted, (
-        "NO artifact is at the ceiling any more; if the counts went DOWN the "
-        "history was rewritten (CLAUDE.md directive 6) or the decomposition "
-        "laundered them, and either is the alarm this test exists to raise"
+    exclusions = working.get("exclusions", {})
+    assert len(exclusions) == 13, (
+        f"expected the thirteen ceiling-tripped artifacts in `exclusions`, found "
+        f"{len(exclusions)} — the D3.104 disposition has drifted"
     )
-    for path, lineage in exhausted.items():
+    completed, error = completed_arcs(REPO)
+    assert not error, error
+
+    for path, entry in exclusions.items():
+        lineage = gate._row_lineage(history, path)
         moves = len(lineage) - 1
-        if moves == GUARD_REOWN_CEILING:
-            assert reowning_defect(lineage) == "", "at the ceiling is not over it"
-            assert reowning_defect((*lineage, "ARC 999")) != "", (
-                f"{path}: the next re-owning must be a FAIL"
-            )
-        else:
-            # OVER the ceiling — measured in ARC 029 / 0.5, when thirteen of these
-            # were re-pointed off the completed ARC 027 to a fourth owner. The
-            # ruling's whole point is that this state is not tolerable, so the
-            # defect must already be reported rather than waiting for a next move.
-            assert moves > GUARD_REOWN_CEILING, (path, lineage)
-            assert reowning_defect(lineage) != "", (
-                f"{path}: {moves} re-ownings exceeds the ceiling of "
-                f"{GUARD_REOWN_CEILING} and the rule reported nothing — the "
-                "ceiling is off"
-            )
+        # The committed lineage proves these are the EXHAUSTED guards, not an
+        # arbitrary set an author widened the exclusion with.
+        assert moves > GUARD_REOWN_CEILING, (path, lineage)
+        assert reowning_defect(lineage) != "", (path, lineage)
+        # The one rule lifted is the ceiling. Everything else is still live.
+        assert guard_owner_defect(entry["owner"], completed) == "", (path, entry)
+        assert entry.get("temporary") is True, (path, entry)
+        assert entry.get("justification", "").strip(), (path, entry)
+
+    # The three below-ceiling artifacts survive as rows, at or under the ceiling.
+    for path in working["artifacts"]:
+        assert len(gate._row_lineage(history, path)) - 1 <= GUARD_REOWN_CEILING, path
+
+    # The ceiling escaped, but nothing was passed: the whole gate is GUARDED.
+    assert _run(REPO).status is Status.GUARDED, _run(REPO)
 
 
 # ===========================================================================
@@ -1157,10 +1168,17 @@ def test_NONVACUITY_the_classifier_DISCRIMINATES_on_the_real_tree() -> None:
     recorded as CHECK-DEBT D3.62.
     """
     payload = json.loads((REPO / gate.BASELINE).read_text(encoding="utf-8"))
-    named = gate._named_by_tests(REPO, sorted(payload["artifacts"]))
+    # ARC 029 (D3.104): the four artifacts the ARC 028 brief called named-by-
+    # nothing are now in the declared exclusion, not in `artifacts` — and ARC 029
+    # / 0.5's behavioural controls (test_zero_coverage_artifacts.py) now NAME every
+    # one of them, so the live tree no longer holds a `none` row at all. The
+    # discrimination proof therefore lives on the CONSTRUCTED tree below; the live
+    # arm keeps the weaker, always-meaningful invariant.
+    accepted = sorted({*payload["artifacts"], *payload.get("exclusions", {})})
+    named = gate._named_by_tests(REPO, accepted)
     unnamed = sorted(path for path, hits in named.items() if not hits)
 
-    # THE LIVE-TREE ARM: every row's stored classification agrees with what the
+    # THE LIVE-TREE ARM: every ROW's stored classification agrees with what the
     # classifier derives right now. This is the invariant that stays meaningful
     # however healthy the tree becomes.
     for path, row in payload["artifacts"].items():
@@ -1350,3 +1368,184 @@ def test_the_REAL_TREES_in_flight_arc_would_be_REFUSED_as_an_owner_TODAY() -> No
         assert "is the arc IN FLIGHT" in guard_owner_assignment_defect(
             f"ARC {live:03d}", completed, live
         ), f"ARC {live:03d} is in flight and naming it as an owner was permitted"
+
+
+# ===========================================================================
+# ARC 029 (D3.104 / CHECK-A8) — THE DECLARED EXCLUSION. ARCHITECT RULING.
+#
+# **A RETROFITTED CHECK IS A NEW CHECK** (check contract v2, rule 9). This arc
+# added a bucket the re-owning ceiling does not judge, so its can-fail is
+# re-established from scratch: the control, then every property that keeps the
+# bucket from being a silent suppression list planted and shown to redden, then
+# the one property it LIFTS (the ceiling) shown to be genuinely lifted — a row
+# over the ceiling FAILs; the same lineage in an exclusion is GUARDED.
+#
+# §7.12, asked of this section: what would let an exclusion "succeed" while
+# measuring nothing? The bucket could simply hold more paths. So no test here
+# counts exclusions: every one PERTURBS an exclusion and requires a named verdict.
+# No plant touches a production artifact (doctrine C.8): all land under tmp_path.
+# ===========================================================================
+
+
+def _exclusion(**extra: object) -> dict[str, object]:
+    """One declared-exclusion entry in the shipped schema (D3.104)."""
+    entry: dict[str, object] = {
+        "owner": _FIXTURE_LIVE_ARC,
+        "justification": "held pending ARC 030 per D3.104",
+        "temporary": True,
+    }
+    entry.update(extra)
+    return entry
+
+
+def _move_to_exclusions(
+    home: Path, paths: list[str], *, commit: bool = True, **entry: object
+) -> None:
+    """Move rows OUT of the guard into `exclusions`, the D3.104 move itself."""
+    payload = _read_baseline(home)
+    payload.setdefault("exclusions", {})
+    for path in paths:
+        payload["artifacts"].pop(path, None)
+        payload["exclusions"][path] = _exclusion(**entry)
+    _save_baseline(home, payload)
+    if commit:
+        _git(home, "add", "-A")
+        _git(home, "commit", "-qm", "move to declared exclusion")
+
+
+def test_CONTROL_a_well_formed_exclusion_is_GUARDED_and_prints_its_own_line(
+    repo: Path,
+) -> None:
+    """Step 1 and step 6 of §5.1: the healthy state every plant below perturbs."""
+    victim = min(_read_baseline(repo)["artifacts"])
+    _move_to_exclusions(repo, [victim])
+
+    result = _run(repo)
+    assert result.status is Status.GUARDED, result
+    assert f"{victim} EXCLUDED" in result.detail, result.detail
+    assert "declared exclusion(s)" in result.evidence, result.evidence
+    assert exit_code_for(result.status) == 3
+
+
+def test_PLANT_an_exclusion_with_NO_justification_FAILS_naming_it(repo: Path) -> None:
+    """*A silent exclusion is the suppression list the ratchet exists to refuse.*"""
+    victim = min(_read_baseline(repo)["artifacts"])
+    _move_to_exclusions(repo, [victim], commit=False, justification="   ")
+
+    result = _run(repo)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert f"{gate.BASELINE}:exclusions:{victim}" in result.site, result.site
+    assert "no `justification`" in result.detail, result.detail
+
+
+def test_PLANT_an_exclusion_not_marked_TEMPORARY_FAILS_naming_it(repo: Path) -> None:
+    """The D3.104 exclusion is a HOLDING state; a permanent one is another ruling."""
+    victim = min(_read_baseline(repo)["artifacts"])
+    _move_to_exclusions(repo, [victim], commit=False, temporary=False)
+
+    result = _run(repo)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert f"{gate.BASELINE}:exclusions:{victim}:temporary" in result.site, result.site
+    assert "`temporary` is not true" in result.detail, result.detail
+
+
+def test_an_exclusion_owned_by_a_COMPLETED_arc_DEFERS_while_ASSIGNING_one_now_FAILS(
+    repo: Path,
+) -> None:
+    """Owner-liveness is NOT lifted: the control that keeps a holding state from
+    outliving ARC 030. Same two-tense rule as a row owner, one bucket over."""
+    victim = min(_read_baseline(repo)["artifacts"])
+
+    _move_to_exclusions(repo, [victim], commit=False, owner="ARC 005")
+    assigning = _run(repo)
+    assert assigning.status is Status.FAIL_NEEDS_OPERATOR, assigning.detail
+    assert "ALREADY COMPLETED" in assigning.detail, assigning.detail
+    assert f"{gate.BASELINE}:exclusions:{victim}:owner" in assigning.site
+
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "commit the dead exclusion owner")
+    inherited = _run(repo)
+    assert inherited.status is Status.CANNOT_MEASURE, inherited.detail
+    assert "ALREADY COMPLETED" in inherited.detail, inherited.detail
+
+
+def test_PLANT_ASSIGNING_an_exclusion_to_the_ARC_IN_FLIGHT_is_REJECTED(
+    repo: Path,
+) -> None:
+    """§0g applies to exclusions too — an owner naming the arc in flight is dead
+    at that arc's own close-out (D3.40)."""
+    live = int(_FIXTURE_LIVE_ARC.split()[1])
+    _declare_in_flight(repo, live)
+    _move_to_exclusions(repo, [min(_read_baseline(repo)["artifacts"])], owner="ARC 022")
+    assert _run(repo).status is Status.GUARDED
+
+    payload = _read_baseline(repo)
+    victim = next(iter(payload["exclusions"]))
+    payload["exclusions"][victim]["owner"] = _FIXTURE_LIVE_ARC
+    _save_baseline(repo, payload)
+
+    result = _run(repo)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert f"{gate.BASELINE}:exclusions:{victim}:owner" in result.site, result.site
+    assert "is the arc IN FLIGHT" in result.detail, result.detail
+
+
+def test_a_STALE_exclusion_a_check_now_DECLARES_FAILS_to_tighten(repo: Path) -> None:
+    """An artifact that acquires real coverage may not keep hiding in the bucket."""
+    victim = min(_read_baseline(repo)["artifacts"])
+    _move_to_exclusions(repo, [victim])
+    assert _run(repo).status is Status.GUARDED
+
+    (repo / "checks" / "check_two.py").write_text(
+        f'DEPENDS_ON = ()\nRESOURCES = ()\nSUBJECTS = ("{victim}",)\n',
+        encoding="utf-8",
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "a check now declares the excluded path")
+
+    result = _run(repo)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert victim in result.site, result.site
+    assert "a ratchet may only shrink" in result.detail, result.detail
+
+
+def test_a_SILENT_addition_STRAIGHT_INTO_exclusions_beyond_the_mark_FAILS(
+    repo: Path,
+) -> None:
+    """The bucket is INSIDE the one-way ratchet: a new uncovered path dropped
+    into `exclusions` with no admitting arc is unadmitted growth, not a free pass."""
+    (repo / "scripts" / "brand_new.py").write_text("z = 3\n", encoding="utf-8")
+    payload = _read_baseline(repo)
+    payload.setdefault("exclusions", {})["scripts/brand_new.py"] = _exclusion()
+    _save_baseline(repo, payload)
+
+    result = _run(repo)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert "scripts/brand_new.py" in result.detail, result.detail
+    assert "ADDED to the accepted-uncovered set" in result.detail, result.detail
+
+
+def test_an_EXCLUSION_ESCAPES_the_ceiling_that_the_SAME_lineage_as_a_ROW_would_TRIP(
+    repo: Path,
+) -> None:
+    """**THE DISPOSITION ITSELF, DRIVEN.** The one rule an exclusion lifts is the
+    re-owning ceiling — and it is genuinely lifted, measured against the identical
+    committed lineage judged as a row.
+
+    Every owner in the drive is a single, well-formed, currently-open arc, so only
+    the ceiling can see the third re-owning: as ROWS the gate FAILs; the same paths
+    moved into the declared exclusion are GUARDED. Nothing else changed — that
+    single difference in verdict IS D3.104.
+    """
+    _reown(repo, "ARC 022")
+    _reown(repo, "ARC 023")
+    _reown(repo, "ARC 024")  # three re-ownings, one over the ceiling
+    as_rows = _run(repo)
+    assert as_rows.status is Status.FAIL_NEEDS_OPERATOR, as_rows
+    assert "RE-OWNED 3 times" in as_rows.detail, as_rows.detail
+
+    _move_to_exclusions(repo, sorted(_read_baseline(repo)["artifacts"]))
+    as_exclusions = _run(repo)
+    assert as_exclusions.status is Status.GUARDED, as_exclusions
+    assert "RE-OWNED" not in as_exclusions.detail, as_exclusions.detail
+    assert "EXCLUDED" in as_exclusions.detail, as_exclusions.detail

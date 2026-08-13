@@ -92,6 +92,22 @@ arc. Until then its green means *declared*, never *covered*.
    claim is compared against every module under `scripts/tests/`, in BOTH
    directions, and what that comparison can and cannot prove is stated in
    `_named_by_tests` and printed in the verdict.
+10. **ARC 029 — THE EXCLUSION BUCKET COULD BE THE SUPPRESSION LIST WEARING A NEW
+    NAME.** D3.104 / CHECK-A8 lifts the re-owning ceiling for thirteen artifacts
+    by moving them out of `rows` into `exclusions`. A bucket the ceiling does not
+    judge is exactly the "baseline absorbs everything forever" hazard of rule 3,
+    reached by a second door. *Closed by keeping every OTHER rule live on it:*
+    `uncovered` folds exclusions into the ONE ratcheted accepted set (a silent
+    addition is an unadmitted-growth FAIL; an acquired coverage is a
+    stale-baseline FAIL); `_exclusion_shape_defects` requires a written
+    justification and `temporary: true` per entry; `_exclusion_deferrals` requires
+    a LIVE owner, so ARC 030 completing without emptying the bucket turns it
+    CANNOT_MEASURE rather than leaving it a permanent green; and
+    `_exclusion_assignment_defects` applies §0g at assignment. The ONE thing
+    lifted is the ceiling, and it is lifted only under the architect ruling
+    recorded as CHECK-A8 — the gate cannot tell an authorized move from a
+    laundering one by itself, which is precisely why check-contract rule 13 puts
+    that authorization in the ledger and not in this file.
 
 ## Why GUARDED rather than FAIL today
 
@@ -101,12 +117,20 @@ owner PER ARTIFACT — which is precisely AMENDMENT 1's GUARDED (exit 3), not a
 failure. A *new* uncovered artifact is a regression and is a FAIL. So the
 instrument is a ratchet: existing debt is guarded and visible; new debt is red.
 
-**AND TODAY IT IS NOT GUARDED, IT IS CANNOT_MEASURE, PER ROW.** All sixteen rows
-name `ARC 027`, which has completed. The decomposition deliberately did NOT
-re-point them at a live arc: that is the third re-owning D2.31's ceiling forbids,
-and it is forbidden per artifact now rather than in aggregate. Nothing was forced
-green and nothing was discharged by being named (D3.19). CHECK-DEBT D3.40 stays
-open and is now stated per artifact.
+**ARC 029 (D3.104 / CHECK-A8) — THE THIRTEEN ARE NOW A DECLARED EXCLUSION, AND
+THE VERDICT IS GUARDED.** ARC 029 / 0.5 re-pointed all sixteen owners off the
+completed `ARC 027` to `ARC 030` — the repair the gate's own CANNOT_MEASURE
+verdict demanded — and the re-owning ceiling fired on thirteen of them (a fourth
+owner, three re-ownings, one over). The marker could not be walked forward and
+could not be reverted without naming a completed arc. The architect ruled OPTION
+3 as a HOLDING state for ARC 029 only: those thirteen move OUT of the guard into
+`exclusions`, each with a written justification, owned by `ARC 030`, which is
+committed to emptying the bucket with real per-artifact coverage. The three
+below-ceiling artifacts (`gitenv.py`, `measurement_path.py`, `registry.py`)
+remain legitimately owned rows. An exclusion escapes the ceiling and NOTHING
+else (rule 10 above), so the gate is GUARDED — a withheld certification with a
+live owner — not a pass. CHECK-DEBT D3.104 records the disposition and that the
+exclusion is temporary.
 """
 
 from __future__ import annotations
@@ -228,10 +252,51 @@ class Row:
 
 
 @dataclasses.dataclass(frozen=True)
+class Exclusion:
+    """ONE artifact moved OUT of the guard into a declared exclusion.
+
+    ARC 029 (D3.104 / CHECK-A8), ARCHITECT RULING. An exclusion is a guard with
+    its re-owning CEILING lifted — and nothing else lifted. The ceiling fired on
+    thirteen artifacts (three re-ownings, one over the operator's limit of two),
+    the marker could not be walked forward and could not be reverted without
+    naming a completed arc, and the architect ruled OPTION 3: move those thirteen
+    out of the guard into this bucket, as a HOLDING state for ARC 029 only. ARC
+    030 is committed to emptying it — real per-artifact coverage — and this is a
+    debt, not a resting place.
+
+    So an exclusion escapes ONE rule and keeps every other. It is still owned by
+    a LIVE arc (`_exclusion_deferrals` — a completed owner is CANNOT_MEASURE, the
+    honest "holding state expired" verdict), still assigned under §0g
+    (`_exclusion_assignment_defects`), still inside the one-way ratchet
+    (`uncovered` counts it, so a silent addition is a FAIL and an acquired
+    coverage is a stale-baseline FAIL), and it MUST carry a written justification
+    and declare itself `temporary` (`_exclusion_shape_defects`). What it does NOT
+    carry is the re-owning ceiling, because that is the one rule the ruling lifts.
+    """
+
+    #: The single LIVE arc that will discharge this exclusion. ARC 030.
+    owner: str = ""
+    #: Why this artifact is excluded rather than a ceiling-guarded row. Required,
+    #: non-empty — the ruling requires each entry to carry its own case.
+    justification: str = ""
+    #: The exclusion is a HOLDING state, never a permanent accept. Required True;
+    #: a permanent exclusion is a different ruling, not this arm.
+    temporary: bool = False
+    #: The arc that admitted this path to the accepted set, for the ratchet. A
+    #: RECEIPT, backward-looking — a completed arc is the normal value.
+    admitted: str = ""
+
+
+@dataclasses.dataclass(frozen=True)
 class Baseline:
     """The ratchet file, parsed. `error` non-empty means it could not be read."""
 
     rows: dict[str, Row] = dataclasses.field(default_factory=dict)
+    #: ARC 029 (D3.104 / CHECK-A8): artifacts moved OUT of the guard into a
+    #: declared, temporary exclusion. Historical revisions have none, so this is
+    #: `{}` for every committed revision before this arc — which is why the
+    #: high-water mark and the row ceiling read the SAME numbers they always did.
+    exclusions: dict[str, Exclusion] = dataclasses.field(default_factory=dict)
     #: 1 = the flat pre-ARC-028 shape, 2 = per-artifact. Recorded because the
     #: ratchet reads HISTORICAL revisions and most of them are schema 1.
     schema: int = 0
@@ -239,12 +304,33 @@ class Baseline:
 
     @property
     def uncovered(self) -> frozenset[str]:
-        """The accepted set — the quantity the ratchet has always judged."""
-        return frozenset(self.rows)
+        """The accepted set — rows AND exclusions, the quantity the ratchet judges.
+
+        Folding exclusions in here is deliberate and load-bearing: it keeps ONE
+        ratcheted accepted set, so moving the thirteen from rows to exclusions is
+        invisible to the high-water mark (the set of accepted paths is unchanged),
+        while a silent addition to EITHER bucket is still an unadmitted growth and
+        an artifact that acquires real coverage is still a stale-baseline FAIL
+        wherever it sits. A separate un-ratcheted `excluded` set would be the
+        suppression-list hole §7.12 rule 3 names.
+        """
+        return frozenset(self.rows) | frozenset(self.exclusions)
 
     def owner_of(self, path: str) -> str:
-        """This revision's owner for one artifact, or `''` if it held none."""
+        """This revision's ROW owner for one artifact, or `''` if it held none.
+
+        Rows only, by design: the lineage/ceiling walk reads this, and exclusions
+        are precisely the paths the ceiling no longer judges.
+        """
         return self.rows[path].owner if path in self.rows else ""
+
+    def admitted_of(self, path: str) -> str:
+        """The admitting arc for one accepted path, whichever bucket holds it."""
+        if path in self.rows:
+            return self.rows[path].admitted
+        if path in self.exclusions:
+            return self.exclusions[path].admitted
+        return ""
 
 
 def _parse_v1(payload: dict, where: str) -> Baseline:
@@ -278,7 +364,15 @@ def _parse_v1(payload: dict, where: str) -> Baseline:
 
 
 def _parse_v2(payload: dict, where: str) -> Baseline:
-    """The per-artifact shape. One row per artifact, each with its own owner."""
+    """The per-artifact shape. One row per artifact, each with its own owner.
+
+    ARC 029 (D3.104): a top-level `exclusions` object is read alongside
+    `artifacts`. It is optional — every historical revision lacks it — and a
+    present-but-malformed one is an ERROR rather than a silent empty, because an
+    unreadable exclusion bucket that read as "no exclusions" would drop thirteen
+    accepted paths out of the ratcheted set and turn the regression arm loud on
+    all of them, which is the opposite of quiet but is still a misread.
+    """
     artifacts = payload.get("artifacts")
     if not isinstance(artifacts, dict):
         return Baseline(error=f"{where}: `artifacts` is not a JSON object")
@@ -292,7 +386,20 @@ def _parse_v2(payload: dict, where: str) -> Baseline:
             measured_by=str(entry.get("measured_by", "")),
             reason=str(entry.get("reason", "")),
         )
-    return Baseline(rows=rows, schema=2)
+    exclusions: dict[str, Exclusion] = {}
+    raw_exclusions = payload.get("exclusions", {})
+    if not isinstance(raw_exclusions, dict):
+        return Baseline(error=f"{where}: `exclusions` is not a JSON object")
+    for path, entry in raw_exclusions.items():
+        if not isinstance(entry, dict):
+            return Baseline(error=f"{where}:exclusions:{path} is not a JSON object")
+        exclusions[str(path)] = Exclusion(
+            owner=str(entry.get("owner", "")),
+            justification=str(entry.get("justification", "")),
+            temporary=entry.get("temporary") is True,
+            admitted=str(entry.get("admitted", "")),
+        )
+    return Baseline(rows=rows, exclusions=exclusions, schema=2)
 
 
 def _parse_baseline(text: str, where: str) -> Baseline:
@@ -487,6 +594,20 @@ def _head_owners(history: History) -> dict[str, str]:
     return {path: row.owner.strip() for path, row in newest.rows.items()}
 
 
+def _head_exclusion_owners(history: History) -> dict[str, str]:
+    """Each EXCLUSION's owner as most recently COMMITTED. `{}` with no history.
+
+    The reference the exclusion §0g arm diffs the working tree against. Every
+    exclusion is new in this arc, so `HEAD` holds none of them and every one is
+    judged as an assignment happening now — which is exactly right, because it
+    is.
+    """
+    if not history.revisions:
+        return {}
+    _sha, newest = history.revisions[-1]
+    return {path: ex.owner.strip() for path, ex in newest.exclusions.items()}
+
+
 def _high_water_mark(home: Path) -> tuple[frozenset[str], str, str]:
     """The TIGHTEST accepted set this baseline has ever been COMMITTED with.
 
@@ -552,7 +673,7 @@ def _ratchet_defects(
         # completes, and the record stays true; passing the completion set here
         # would redden every honest `admitted` entry at the next arc boundary.
         # A guard owner is a promise, an admitting arc is a receipt.
-        defect = guard_owner_defect(baseline.rows[path].admitted)
+        defect = guard_owner_defect(baseline.admitted_of(path))
         if defect:
             defects.append(
                 (
@@ -797,6 +918,100 @@ def _owner_deferrals(
     ]
 
 
+# ===========================================================================
+# EXCLUSION ARMS. ARC 029 (D3.104 / CHECK-A8), ARCHITECT RULING. An exclusion is
+# a guard with its RE-OWNING CEILING lifted and nothing else lifted. These arms
+# assert everything the ceiling is not: a written justification, a `temporary`
+# flag, a live owner, and §0g at assignment. The ceiling itself is NOT applied to
+# `baseline.exclusions` — `_ceiling_defects` iterates `baseline.rows` only — and
+# that single omission IS the disposition.
+# ===========================================================================
+
+
+def _exclusion_shape_defects(baseline: Baseline) -> list[tuple[str, str]]:
+    """Every exclusion states its own case and declares itself TEMPORARY.
+
+    These are the two properties that keep a ceiling-exempt bucket from decaying
+    into the silent suppression list §7.12 rule 3 names. A justification is
+    required because the ruling requires each entry to carry its own written case;
+    `temporary` is required True because the D3.104 exclusion is a HOLDING state
+    owned by ARC 030, and an exclusion that will not say it is temporary is a
+    permanent accept wearing this arc's one-time authorization — which needs its
+    own architect ruling, not this arm.
+    """
+    defects: list[tuple[str, str]] = []
+    for path, ex in sorted(baseline.exclusions.items()):
+        site = f"{BASELINE}:exclusions:{path}"
+        if not ex.justification.strip():
+            defects.append(
+                (
+                    site,
+                    (
+                        "no `justification` — an exclusion escapes the re-owning "
+                        "ceiling (CHECK-A8) and must state, per entry, why it is "
+                        "out of the guard; a silent exclusion is the suppression "
+                        "list the ratchet exists to refuse"
+                    ),
+                )
+            )
+        if not ex.temporary:
+            defects.append(
+                (
+                    f"{site}:temporary",
+                    (
+                        "`temporary` is not true — the D3.104 exclusion is a "
+                        "HOLDING state owned by ARC 030, not a permanent accept. "
+                        "A permanent exclusion is a separate architect ruling, "
+                        "not this bucket"
+                    ),
+                )
+            )
+    return defects
+
+
+def _exclusion_assignment_defects(
+    baseline: Baseline,
+    head: dict[str, str],
+    completed: frozenset[int],
+    live: int | None,
+) -> list[tuple[str, str]]:
+    """§0g for exclusions — an owner ASSIGNED now must name an arc that can pay.
+
+    Identical rule to the row arm: an exclusion owner that differs from the value
+    committed at `HEAD` is an assignment happening in this working tree, and the
+    arc IN FLIGHT is refused because it is dead by its own close-out (D3.40). Every
+    exclusion is new in this arc, so every one is judged here — which is why ARC
+    030, a future arc, is the only owner that clears both this and the read rule.
+    """
+    defects: list[tuple[str, str]] = []
+    for path, ex in sorted(baseline.exclusions.items()):
+        if path in head and head[path] == ex.owner.strip():
+            continue
+        defect = guard_owner_assignment_defect(ex.owner, completed, live)
+        if defect:
+            defects.append((f"{BASELINE}:exclusions:{path}:owner", defect))
+    return defects
+
+
+def _exclusion_deferrals(
+    baseline: Baseline, completed: frozenset[int]
+) -> list[tuple[str, str]]:
+    """The READ rule for exclusion owners. A completed owner is CANNOT_MEASURE.
+
+    The ceiling is lifted; owner-LIVENESS is not, and it is the control that keeps
+    the holding state from outliving ARC 030. When ARC 030 completes without
+    emptying the exclusion, its owner is a completed arc and the gate goes
+    CANNOT_MEASURE naming the field — the honest "the holding state expired"
+    verdict, exactly as a stale ROW owner defers. An exclusion is not a way to
+    stop the clock; it is a way to stop the CEILING, and only that.
+    """
+    return [
+        (f"{BASELINE}:exclusions:{path}:owner", defect)
+        for path, ex in sorted(baseline.exclusions.items())
+        if (defect := guard_owner_defect(ex.owner, completed))
+    ]
+
+
 def _render(pairs: list[tuple[str, str]]) -> str:
     """`[(site, why)]` -> one detail line, IDENTICAL reasons grouped by site.
 
@@ -827,6 +1042,9 @@ def _guard_of_record(baseline: Baseline) -> str:
     read the owner off the summary line. CHECK-DEBT D3.63.
     """
     owners = {row.owner.strip() for row in baseline.rows.values() if row.owner.strip()}
+    owners |= {
+        ex.owner.strip() for ex in baseline.exclusions.values() if ex.owner.strip()
+    }
     return min(owners, default="")
 
 
@@ -912,16 +1130,18 @@ def _evidence_for(state: Measured) -> str:
         state.history,
         state.named,
     )
-    unnamed = sorted(path for path in baseline.rows if not named.get(path))
+    unnamed = sorted(path for path in baseline.uncovered if not named.get(path))
     return (
         f"{len(artifacts)} tracked artifact(s); {len(declared)} declared subject(s); "
         f"{len(uncovered)} uncovered; baseline schema v{baseline.schema} accepts "
-        f"{len(baseline.uncovered)} in {len(baseline.rows)} per-artifact row(s); "
+        f"{len(baseline.uncovered)} in {len(baseline.rows)} per-artifact row(s) + "
+        f"{len(baseline.exclusions)} declared exclusion(s) (D3.104/CHECK-A8, "
+        "ceiling-exempt, ARC 030); "
         f"ratchet high-water mark {len(mark[0])} at committed revision "
         f"{mark[1][:12]}; ceiling {GUARD_REOWN_CEILING} applied PER ARTIFACT over "
         f"{len(history.revisions)} committed revision(s)"
         f"{' (history TRUNCATED — a lower bound)' if history.truncated else ''}; "
-        f"{len(unnamed)} row(s) named by NOTHING under {_TEST_DIR}/ "
+        f"{len(unnamed)} accepted artifact(s) named by NOTHING under {_TEST_DIR}/ "
         f"({', '.join(unnamed) or 'none'}). "
         "UNBOUND (D3.10): proves an artifact is NAMED by a check — and, per row, "
         "MENTIONED by a test — never that it is MEASURED by either. Do not read "
@@ -953,7 +1173,7 @@ def run(  # pylint: disable=unused-argument,too-many-locals,too-many-return-stat
     declared = _declared_subjects(home)
     uncovered = {path for path in artifacts if path not in declared}
     mark, mark_sha, _ = _mark_from(history)
-    named = _named_by_tests(home, sorted(baseline.rows))
+    named = _named_by_tests(home, sorted(baseline.uncovered))
     evidence = _evidence_for(
         Measured(
             artifacts, declared, uncovered, baseline, (mark, mark_sha), history, named
@@ -979,6 +1199,12 @@ def run(  # pylint: disable=unused-argument,too-many-locals,too-many-return-stat
     defects.extend(
         _assignment_defects(baseline, _head_owners(history), completed, live)
     )
+    defects.extend(_exclusion_shape_defects(baseline))
+    defects.extend(
+        _exclusion_assignment_defects(
+            baseline, _head_exclusion_owners(history), completed, live
+        )
+    )
     ceiling_defects, deferrals = _ceiling_defects(baseline, history)
     defects.extend(ceiling_defects)
     if defects:
@@ -991,7 +1217,8 @@ def run(  # pylint: disable=unused-argument,too-many-locals,too-many-return-stat
         )
 
     deferrals.extend(_owner_deferrals(baseline, completed))
-    if live_error and baseline.rows:
+    deferrals.extend(_exclusion_deferrals(baseline, completed))
+    if live_error and (baseline.rows or baseline.exclusions):
         deferrals.append((f"{BASELINE}:artifacts", live_error))
     if deferrals:
         return CheckResult(
@@ -1001,22 +1228,32 @@ def run(  # pylint: disable=unused-argument,too-many-locals,too-many-return-stat
             detail=_render(deferrals),
         )
 
-    if baseline.rows:
+    if baseline.rows or baseline.exclusions:
         # AMENDMENT 1: measured subject, known-red marker, named owner — now one
         # marker per artifact, with `guard_owner` holding the arc that owes
         # soonest because the field can hold only one (see `_guard_of_record`).
+        # ARC 029 (D3.104/CHECK-A8): the exclusions are reported ALONGSIDE the
+        # rows — a ceiling-exempt holding state is still a withheld certification,
+        # never a durability loss, and it prints its own line so it can never be
+        # read off the summary as a pass.
+        row_lines = [
+            f"{path} -> {row.owner.strip()} "
+            f"({len(_row_lineage(history, path)) - 1} of "
+            f"{GUARD_REOWN_CEILING} re-owning(s) used, measured_by="
+            f"{row.measured_by})"
+            for path, row in sorted(baseline.rows.items())
+        ]
+        exclusion_lines = [
+            f"{path} EXCLUDED -> {ex.owner.strip()} "
+            "(D3.104/CHECK-A8 holding state, ceiling-exempt, temporary)"
+            for path, ex in sorted(baseline.exclusions.items())
+        ]
         return CheckResult(
             name=NAME,
             status=Status.GUARDED,
             evidence=evidence,
             guard_owner=_guard_of_record(baseline),
-            detail="; ".join(
-                f"{path} -> {row.owner.strip()} "
-                f"({len(_row_lineage(history, path)) - 1} of "
-                f"{GUARD_REOWN_CEILING} re-owning(s) used, measured_by="
-                f"{row.measured_by})"
-                for path, row in sorted(baseline.rows.items())
-            ),
+            detail="; ".join(row_lines + exclusion_lines),
         )
     return CheckResult(name=NAME, status=Status.PASS, evidence=evidence)
 

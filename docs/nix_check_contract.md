@@ -985,6 +985,27 @@ debt rather than blocking, per the same section.
 
 ---
 
+## 19. The declared exclusion — a guard with its re-owning ceiling lifted, and nothing else (CHECK-A8, ARC 029)
+
+`check_artifact_gate_coverage` carries an operator-ruled re-owning ceiling of two (D2.31): a guard's
+owner may be walked forward at most twice, and the third re-owning escalates GUARDED to FAIL. ARC 029
+walked into the state where that ceiling and doctrine B.3 leave no compliant green: thirteen artifacts
+were at the ceiling, the marker could not be walked to a fourth owner, and reverting names a completed
+arc as owner (the masking B.3 refuses). The architect ruled a **declared exclusion** (CHECK-A8,
+CHECK-DEBT D3.104).
+
+An exclusion is an artifact moved out of the ceiling-guarded `rows` into an `exclusions` object in
+`gate_coverage_baseline.json`. It escapes the re-owning ceiling and **nothing else**: it stays inside
+the one-way ratchet (silent growth and acquired coverage are still FAILs), stays owned by a **live
+arc** (a completed owner is CANNOT_MEASURE, so it cannot outlive its owner), stays assigned under
+§0g, and must carry a written `justification` and `temporary: true`. The one rule lifted is lifted
+only under the recorded amendment, because the gate cannot tell an authorized move from a laundering
+one — which is why the authorization lives in the ledger and the check contract (`CLAUDE.md` rule 14),
+not in the instrument. The current instance is thirteen artifacts owned by ARC 030, temporary; ARC 030
+empties the bucket with real per-artifact coverage and drives the gate green by measurement.
+
+---
+
 ## Changelog
 
 **v1.4.0 (ARC 025)** — **AMENDMENT 5**, three parts, all measured this arc.
