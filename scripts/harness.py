@@ -445,6 +445,11 @@ try:
                           for row in M.Renderer(False).render(s, 104, 30))
         chk("4J JOB left shows a time", "JOB left" in frame and "16h" in frame,
             [l for l in frame.splitlines() if "JOB" in l])
+        chk("4J tasks row rendered", "tasks" in frame and "30/61" in frame,
+            [l for l in frame.splitlines() if "tasks" in l])
+        chk("4J trio rendered (done/inprog/pending)",
+            all(str(n) in frame for n in (30, 7, 24)),
+            [l for l in frame.splitlines() if "30" in l or "24" in l])
     finally:
         proc.kill(); proc.wait()
     # completion => no ETA

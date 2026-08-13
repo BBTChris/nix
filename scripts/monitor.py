@@ -1010,6 +1010,7 @@ class Monitor:
         s["todos"] = todos
         s["agents"] = self.build_agents(todos, now, proc.get("start") if proc else None)
         s["has_sessions"] = bool(self.tx.sessions)
+        s["task_progress"] = self.slow_cache.get("task_progress")
         s["parse_errors"] = self.tx.parse_errors   # after ALL parsing
 
         # --- slow probes ---------------------------------------------------
@@ -1532,9 +1533,22 @@ class Renderer:
         else:
             out.append([(" gates    ", A_NORM), (self.bar(None, bw), A_DIM),
                         (" N/A no denominator", A_WARN)])
-        # todos
+        # tasks (Claude Code task-progress-bar) - authoritative; else plain todos
+        tp = s.get("task_progress")
         td, tt = p["todos"]
-        if tt:
+        if tp and tp.get("total"):
+            done, total = tp["done"], tp["total"]
+            frac = done / total if total else None
+            out.append([(" tasks    ", A_NORM), (self.bar(frac, bw), A_INFO),
+                        (f" {done}/{total}", A_NORM)])
+            ip = tp.get("in_progress")
+            pd = tp.get("pending")
+            if ip is not None and pd is not None:
+                out.append([("          ", A_NORM),
+                            (f"{self.b['chk']}{done} ", A_OK),
+                            (f"{self.b['arw']}{ip} ", A_INFO),
+                            (f"{self.b['e']}{pd}", A_DIM)])
+        elif tt:
             out.append([(" todos    ", A_NORM), (self.bar(td / tt, bw), A_INFO),
                         (f" {td}/{tt}", A_NORM)])
         # context
