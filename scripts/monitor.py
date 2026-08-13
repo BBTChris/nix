@@ -769,16 +769,40 @@ def git_probe(repo: Path) -> dict:
         return out
 
     def run(args, timeout=4):
+        # -c safe.directory=* lets the probe read a repo git would otherwise
+        # reject for "dubious ownership" (common when the monitor runs as a
+        # different user than the repo owner). Read-only; changes nothing.
+        base = ["git", "-c", "safe.directory=" + str(repo),
+                "-c", "safe.directory=*", "-C", str(repo)]
         try:
-            r = subprocess.run(["git", "-C", str(repo)] + args,
-                               capture_output=True, text=True, timeout=timeout)
-            return r.stdout if r.returncode == 0 else None
-        except (subprocess.SubprocessError, OSError):
+            r = subprocess.run(base + args, capture_output=True, text=True,
+                               timeout=timeout)
+            if r.returncode == 0:
+                return r.stdout
+            run.last_err = (r.stderr or "").strip().splitlines()
             return None
+        except (subprocess.SubprocessError, OSError) as e:
+            run.last_err = [str(e)]
+            return None
+    run.last_err = []
 
     st = run(["status", "--porcelain"])
     if st is None:
-        out["error"] = "git status failed"
+        # surface the actual reason (first line) instead of a blank failure
+        why = run.last_err[0] if run.last_err else "unknown error"
+        # Bare repo / no working tree is a distinct, actionable failure: the
+        # monitor is pointed at a .git dir or a bare mirror, not the checkout.
+        low = why.lower()
+        if "work tree" in low or "bare" in low:
+            bare = run(["rev-parse", "--is-bare-repository"])
+            top = run(["rev-parse", "--show-toplevel"])
+            if top and top.strip():
+                out["error"] = "repo has no worktree here; checkout at " + top.strip()
+            else:
+                out["error"] = ("BARE REPO at %s - point --repo at the working "
+                                "checkout, not the .git dir" % repo)
+        else:
+            out["error"] = "git status failed: " + why[:60]
         return out
     out["ok"] = True
     out["modified"] = len([l for l in st.splitlines() if l.strip()])
@@ -940,7 +964,8 @@ class Monitor:
         if not self.tx.events and not self.tx.discovery_error:
             s["discovery"].append(
                 f"transcript: 0 events from {self.tx.files_seen} jsonl file(s)")
-        self.harvest_calibration()
+        # self.harvest_calibration()  # DISABLED: misfires on non-lockout text,
+        # produces false "calibrated 5h denom from lockout" lines and a bogus %.
 
         last_ts = self.tx.last_event_ts()
         s["last_event_age"] = (now - last_ts) if last_ts else None
@@ -950,13 +975,19 @@ class Monitor:
         s["jsonl_files"] = self.tx.files_seen
 
         # --- context ------------------------------------------------------
+        # The main conversation holds the real context; sub-agent sidechains
+        # carry almost none. Selecting by newest-activity alone picks a tiny
+        # sub-agent; selecting by newest NON-sidechain skips CC's live session
+        # when it carries isSidechain records (observed: reported 50% vs the
+        # real 80%). So pick the recently-active session with the LARGEST ctx.
         main_sess = None
         if self.tx.sessions:
-            main_sess = max(
-                (v for v in self.tx.sessions.values() if not v["sidechain"]),
-                key=lambda v: v["last"], default=None)
-            if main_sess is None:
-                main_sess = max(self.tx.sessions.values(), key=lambda v: v["last"])
+            # Largest ctx = the main conversation. Sub-agent sidechains never
+            # accumulate meaningful context, so ctx is a reliable discriminator
+            # regardless of the sidechain flag or which session logged most
+            # recently. Tie-break on recency.
+            main_sess = max(self.tx.sessions.values(),
+                            key=lambda v: (v["ctx"], v["last"]))
         s["cur_session"] = main_sess["id"][:8] if main_sess else None
         s["cur_model"] = _model_family(
             next((e["model"] for e in reversed(self.tx.events)
@@ -1307,7 +1338,7 @@ def clip(text: str, width: int) -> str:
 
 BOX_U = {"h": "\u2500", "v": "\u2502", "tl": "\u250c", "tr": "\u2510",
          "bl": "\u2514", "br": "\u2518", "lt": "\u251c", "rt": "\u2524",
-         "f": "\u2593", "e": "\u2591", "dot": "\u25cf", "chk": "\u2713",
+         "f": "\u2588", "e": "\u2592", "dot": "\u25cf", "chk": "\u2713",
          "arw": "\u25b8", "warn": "\u26a0"}
 BOX_A = {"h": "-", "v": "|", "tl": "+", "tr": "+", "bl": "+", "br": "+",
          "lt": "+", "rt": "+", "f": "#", "e": ".", "dot": "*", "chk": "v",
@@ -1366,12 +1397,16 @@ class Renderer:
 
     # -- primitives --------------------------------------------------------
     def bar(self, frac: float | None, width: int) -> str:
-        if width <= 0:
+        # Splash-style: [████▒▒▒▒] - solid fill, medium-shade track, in brackets.
+        # Brackets consume 2 cols so the inner cell count is width-2.
+        if width <= 2:
             return ""
+        inner = width - 2
+        track = self.b["e"]           # medium shade so an unfilled bar is visible
         if frac is None:
-            return self.b["e"] * width
-        n = max(0, min(width, int(round(frac * width))))
-        return self.b["f"] * n + self.b["e"] * (width - n)
+            return "[" + track * inner + "]"
+        n = max(0, min(inner, int(round(frac * inner))))
+        return "[" + self.b["f"] * n + track * (inner - n) + "]"
 
     def rule(self, w: int, left: str, right: str, label: str = "",
              attr: str = A_DIM) -> list:
@@ -1419,7 +1454,7 @@ class Renderer:
         if r >= len(NIX_LOGO):
             return [(" " * _LOGO_W, A_NORM)]
         row = NIX_LOGO[r].ljust(_LOGO_W)
-        glyph = self.b["f"]        # U+2593 normally, "#" under --ascii
+        glyph = "\u2588" if not self.ascii else "#"  # solid block, matches banner
         segs = []
         for x, ch in enumerate(row):
             if ch == "\u2588" or ch == "#":
@@ -1515,20 +1550,7 @@ class Renderer:
                        (b["v"], A_DIM)] + rseg + [(" " * (rw - rused), A_NORM),
                        (b["v"], A_DIM)])
 
-        # collision warning ---------------------------------------------------
-        # Only meaningful against a CALIBRATED denominator. On a prior/uncalibrated
-        # gauge the cap is a guess, so we stay silent rather than cry wolf.
-        cap = s.get("cap_eta")
-        calib = s["g5"].calibrated or s["gw"].calibrated
-        if s.get("cap_over") and calib:
-            out.append(self.row(w, [(" " + b["warn"] + " ", A_CRIT),
-                                    ("USAGE CAP EXCEEDED (calibrated)", A_CRIT)]))
-        elif calib and cap is not None and cap < 3 * 3600:
-            # burn-rate projection to the USAGE cap (a limit warning, not a
-            # task-completion estimate) - checkpoint before a lockout
-            msg = f"APPROACHING USAGE CAP in ~{fmt_dur(cap, True)} - checkpoint soon"
-            out.append(self.row(w, [(" " + b["warn"] + " ", A_CRIT),
-                                    (msg, A_WARN)]))
+        # (no usage-cap collision banner: real cap state is not knowable locally)
 
         # agents ---------------------------------------------------------------
         out.append(self.rule(w, b["lt"], b["rt"], "AGENTS"))
@@ -1611,7 +1633,7 @@ class Renderer:
             pre = p.get("gates_pre") or 0
             out.append([(" gates    ", A_NORM),
                         (self.bar(gp / gt, bw), A_INFO),
-                        (f" {gp}/{gt} ", A_NORM),
+                        (f" {gp}/{gt} {gp / gt * 100:.0f}% ", A_NORM),
                         (f"{p['gate_basis']}", A_DIM),
                         (f" ({pre} pre)" if pre else "", A_DIM)])
         else:
@@ -1624,7 +1646,8 @@ class Renderer:
             done, total = tp["done"], tp["total"]
             frac = done / total if total else None
             out.append([(" tasks    ", A_NORM), (self.bar(frac, bw), A_INFO),
-                        (f" {done}/{total}", A_NORM)])
+                        (f" {done}/{total}" + (f" {frac * 100:.0f}%" if frac is not None else ""),
+                         A_NORM)])
             ip = tp.get("in_progress")
             pd = tp.get("pending")
             if ip is not None and pd is not None:
@@ -1634,13 +1657,14 @@ class Renderer:
                             (f"{self.b['e']}{pd}", A_DIM)])
         elif tt:
             out.append([(" todos    ", A_NORM), (self.bar(td / tt, bw), A_INFO),
-                        (f" {td}/{tt}", A_NORM)])
+                        (f" {td}/{tt} {td / tt * 100:.0f}%", A_NORM)])
         # context
         cu, cl = s["ctx_used"], s.get("ctx_limit") or CTX_LIMIT
         cf = cu / cl if cu else None
         cattr = A_CRIT if (cf or 0) > 0.9 else A_WARN if (cf or 0) > 0.75 else A_OK
         out.append([(" context  ", A_NORM), (self.bar(cf, bw), cattr),
-                    (f" {fmt_tok(cu)}/{fmt_tok(cl)}", cattr)])
+                    (f" {fmt_tok(cu)}/{fmt_tok(cl)}", cattr),
+                    (f" {cf * 100:.0f}%" if cf is not None else "", cattr)])
         # whole-job ETA (time remaining)
         if p["eta"]:
             out.append([(" JOB left ", A_NORM),
@@ -1676,30 +1700,13 @@ class Renderer:
                     ("  (usage: see CC statusline)" if w >= 44 else "", A_DIM)])
         for lab, g, reset in (("5h", s["g5"], s["reset5"]),
                               ("week", s["gw"], s["reset_week"])):
-            if g.calibrated:
-                pct = g.pct
-                frac = None if pct is None else min(1.0, pct / 100.0)
-                over = pct is not None and pct > 100.0
-                attr = (A_CRIT if (pct or 0) >= 90 else A_WARN if (pct or 0) >= 80
-                        else A_INFO if (pct or 0) >= 60 else A_OK)
-                tail = ">100%" if over else f"{pct:.0f}%"
-                out.append([(f" {lab:<5}", A_NORM), (self.bar(frac, bw), attr),
-                            (f" {tail:>5} ", attr),
-                            (g.basis_label(now), A_DIM)])
-            else:
-                # no real denominator -> no percentage, just the wtok burned
-                out.append([(f" {lab:<5}", A_NORM), (self.bar(None, bw), A_DIM),
-                            (f" {fmt_tok(g.used)}wt", A_DIM),
-                            ("  est. n/a", A_WARN)])
+            # Bar shown as an empty track (no honest denominator to fill it), so
+            # the layout matches the other rows without implying a usage level.
+            out.append([(f" {lab:<5}", A_NORM), (self.bar(None, bw), A_DIM),
+                        (f" {fmt_tok(g.used)}wt used", A_DIM)])
             if reset is not None:
                 out.append([("       reset ", A_DIM), (fmt_reset(reset, now), A_NORM)])
         out.append([(f" burn  {fmt_tok(s['burn'])}wt/h", A_DIM)])
-        # cap projection only meaningful with a calibrated denominator
-        if (s["g5"].calibrated or s["gw"].calibrated):
-            if s.get("cap_over"):
-                out.append([(" cap   ESTIMATE EXCEEDED", A_CRIT)])
-            elif s.get("cap_eta") is not None:
-                out.append([(f" cap in {fmt_dur(s['cap_eta'], True)}", A_WARN)])
         out.append([(" real 5h/weekly %: Claude Code statusline", A_DIM)])
         return [[(clip(t, w), a) for t, a in row] for row in out]
 
@@ -1723,7 +1730,7 @@ def run_tui(mon: Monitor, cfg: dict) -> int:
                 bg = -1
             except curses.error:
                 bg = curses.COLOR_BLACK
-            spec = [(A_NORM, curses.COLOR_WHITE), (A_DIM, curses.COLOR_WHITE),
+            spec = [(A_NORM, curses.COLOR_WHITE), (A_DIM, curses.COLOR_YELLOW),
                     (A_HDR, curses.COLOR_CYAN), (A_OK, curses.COLOR_GREEN),
                     (A_WARN, curses.COLOR_YELLOW), (A_CRIT, curses.COLOR_RED),
                     (A_INFO, curses.COLOR_CYAN), (A_ACCENT, curses.COLOR_MAGENTA)]
@@ -1733,7 +1740,6 @@ def run_tui(mon: Monitor, cfg: dict) -> int:
                     pairs[name] = curses.color_pair(i)
                 except curses.error:
                     pairs[name] = curses.A_NORMAL
-            pairs[A_DIM] |= curses.A_DIM
             pairs[A_HDR] |= curses.A_BOLD
             pairs[A_CRIT] |= curses.A_BOLD
         attr_of = lambda a: pairs.get(a, curses.A_NORMAL)
