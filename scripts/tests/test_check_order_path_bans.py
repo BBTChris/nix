@@ -280,9 +280,9 @@ def test_the_control_passes_and_its_evidence_names_what_it_read(
     assert "send-path ['cancel_order', 'flatten', 'place_order']" in evidence
     # ARC 029: the order path acquired a package home (scripts/nixrisk, the exit
     # half), so arm(ii) now imports the broker modules AND the nixrisk package
-    # modules — 15 in this tree. The literal is banked evidence; it moves when a
+    # modules — 16 in this tree. The literal is banked evidence; it moves when a
     # module is added to either home, which is the point of asserting it.
-    assert "arm(ii) imported 15 order-path module(s)" in evidence, evidence
+    assert "arm(ii) imported 16 order-path module(s)" in evidence, evidence
 
 
 def test_the_reviewed_suppressions_are_the_two_known_fanouts_and_no_plant_is_pre_silenced(

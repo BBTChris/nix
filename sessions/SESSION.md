@@ -2901,3 +2901,29 @@ the recommended durable follow-up, noted in RESULTS but left out of this arc's s
 SC-5 durable: HEAD `42fb3fd`; `git ls-files` lists all four; `git status --porcelain` is
 empty for them; the committed blobs still hash to the SC-0 md5s. Coverage proven by
 tracking, not naming — the ARC 014–016 lesson kept.
+
+## 2026-08-13 — ARC 029: R2-B, The Exit Half — COMPLETE (branch arc-029-convergence, pending operator merge)
+
+The Limiter can now exit. Built the protective half ARC 028 could not: synthetic stops (V33),
+protective flatten (§3/§14), net-liq survival watch (§6.5), cold-start reconciliation (V34), and
+idempotent execution handling (§4) — each measured against its §0a hypotheses, none assumed. Every
+protective path fired end-to-end in one composed simulation (test_exit_integration.py).
+
+Phase 0: D3.104 architect ruling — the declared exclusion (CHECK-A8, CLAUDE.md rule 14,
+nix_check_contract §19). Thirteen ceiling-tripped coverage artifacts moved out of the re-owning guard
+into a temporary, owner-live, justified exclusions bucket (owner ARC 030); the ceiling is the one rule
+lifted and only under the recorded ruling. Gate FAIL -> GUARDED. Stage 1: four modules, 93 can-fail
+tests, check_synthetic_stop_only shipped and BOUND. Stage 2: EventKind gained the five exit-half
+members (SPEC-A7 route) and flatten's interim event surface collapsed onto the real Plane 1; the
+integration simulation (10 tests) and idempotent ExecutionLedger (23 tests, position from a keyed set
+so immunity is structural). Stage 3: plan identical, binding 32 BOUND + 1 exercised-never-red, pytest
+1454 passed after one stale-figure fix (arm(ii) 15->16 for the added execution.py).
+
+Baseline: verify.py 28 pass / 2 fail / 2 cannot-measure / 1 guarded. The FAILs are check_ibgateway_service
+(the standing tap-session debt) and check_monitor (the concurrent ARC MON-1 arc's check, not this
+arc's); the GUARDED is check_artifact_gate_coverage (D3.104 working as ruled). CHECK-DEBT 145 -> 151.
+
+THE COLLISION: a second session ran a separate ARC MON-1 arc on this same branch and shared git index
+mid-flight, bundling commits and reverting uncommitted edits. No ARC 029 work was lost, but convergence
+needs a stable tree, so per operator decision the close-out was isolated onto branch arc-029-convergence.
+The operator merges it into arc-029-integration on /home/bbt/nix to land the arc on the canonical path.

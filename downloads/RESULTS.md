@@ -1,238 +1,161 @@
-# ARC MON-1 — RESULTS: monitor validation on node02 + verify.py gate
+# ARC 029 — R2-B: The Exit Half — **STATUS: COMPLETE (on branch `arc-029-convergence`, pending operator merge)**
 
-**Outcome: COMPLETE.** All success criteria met. `check_monitor` is a registered,
-non-vacuous verify.py gate; the monitor is proven to read the REAL `~/.claude`
-telemetry (footer count == independent disk count); the three script artifacts are
-tracked at their frozen md5s. HEAD `42fb3fd`, branch `arc-029-integration`.
-
----
-
-## SC-0 — Preconditions (md5, fail-loud) — PASS
-
-```
-$ cd ~/nix/scripts && md5sum monitor.py harness.py pty_test.py
-50cf4183ea053b132cd05cc3eb4fde5a  monitor.py
-857b4654fc55c80bf56a265a182ffa4b  harness.py
-54fb8594cab328f2e8eff97710bdff32  pty_test.py
-```
-All three match the architect's copies exactly. Proceeded.
+**Canonical path:** `/home/bbt/nix`. **Work branch:** `arc-029-convergence` (an isolated worktree at
+`/home/bbt/nix-wt-arc-029-convergence`, base `bafe6eb`). **The final merge to
+`arc-029-integration` on `/home/bbt/nix` is the operator's step** — see "The concurrent-session
+collision" below, which is why the arc was isolated onto its own branch to converge and close out.
 
 ---
 
-## SC-1 — Suites pass on node02 — PASS (raw, verbatim)
+## HEADLINE
+
+The Limiter can now **exit**. ARC 028 built a gate/reserve/publish/log spine that could not protect
+money once committed; this arc built the half that does: **synthetic stops, protective flatten,
+net-liq survival watch, cold-start reconciliation, and idempotent execution handling**, each measured
+against its own §0a hypotheses rather than assumed, and every protective path fired end-to-end in one
+composed simulation. The arc opened with an architect ruling (D3.104) and a mechanism to obey it, and
+it closed against a branch a second session was concurrently committing to — handled by isolating the
+convergence onto its own worktree.
 
 ```
-$ python3 monitor.py --selftest
-SELFTEST PASS
-(exit 0)
-
-$ python3 harness.py 2>&1 | tail -5
-  ok   perf render < 20ms
-  ok   6 events all ingested
-
-========================================================================
-RESULT: 0 failures
-
-$ python3 pty_test.py 2>&1 | tail -5
-  ok   --once width honoured
-  ok   piped stdout falls back
-  ok   bad --weekly rejected
-
-PTY RESULT: 0 failures
+verify.py    28 passed | 2 failed | 2 cannot measure | 0 skipped | 1 guarded    exit 1  (33 checks)
+pytest       1454 passed | 1 skipped | 2 xfailed   (worktree, after the convergence count fix)
+binding      32 BOUND | 1 EXERCISED-NEVER-RED  (883 observations)
+CHECK-DEBT   151 open (derived:ledger_rows == stated:series_table_latest_row)
+plan         --optimize membership IDENTICAL to committed (no drift)
 ```
+
+**The two FAILs, attributed:** `check_ibgateway_service` is the standing tap-session debt (owed by
+fourteen arcs, a hardware switch, not code). `check_monitor` is the **concurrent ARC MON-1 arc's**
+check, failing on its own harness — not ARC 029's, and on the shared branch only because that arc's
+work is interleaved here. The **one GUARDED** is `check_artifact_gate_coverage` — the D3.104
+disposition working exactly as ruled.
 
 ---
 
-## SC-2 — The monitor reads the REAL ~/.claude (non-vacuous) — PASS (raw, verbatim)
+## PHASE 0 — D3.104, the declared exclusion (committed `6eb4d88`)
 
-Independent count FIRST, then the monitor's own report. **They agree: 134 == 134.**
+The architect ruled OPTION 3 as a HOLDING state for ARC 029 only. The re-owning ceiling (operator
+ruling, ceiling of two) fired when 0.5 re-pointed thirteen already-at-ceiling artifacts to a fourth
+owner; the marker could not be walked forward and could not be reverted without naming a completed
+arc. Those thirteen moved OUT of the guard into a declared, temporary `exclusions` bucket, each with a
+written justification, all owned by ARC 030 (the committed bulk-retrofit arc that empties it).
 
-```
-$ find ~/.claude/projects -name '*.jsonl' | wc -l
-134
-$ find ~/.claude/todos -name '*.json' | wc -l
-0
-$ python3 monitor.py --once --width 110
-┌ NIX MONITOR v1.0.0 · node02 ───────────────────────────────────────────────────────────────────────────────┐
-│ ARC MON-1 monitor validate …   PID 1808359up 07:58:59 17:04:32 1s                                          │
-│ PHASE ▸ EXECUTING TOOL: 2.1.231: 2.1.231 ..Permissions --model claude-opus-4-8                             │
-├────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
-│ PROGRESS                                            │ LIMITS  (local est; excl. claude.ai)                 │
-│ declared ░░░░░░░░░░░░ 15m00s                        │ 5h   ▓▓░░░░░░░░░░   16% 16.1Mwt                      │
-│ gates    ░░░░░░░░░░░░ 0/1 warming (1 pre)           │       reset 21:41 (4h36m)  calib n=5                 │
-│ context  ▓▓▓▓▓░░░░░░░ 205.5k/500.0k                 │ week ▓▓▓▓▓▓▓▓▓▓▓▓ >100% 2.4Gwt                       │
-│ ETA      N/A (span < 120s)                          │       reset Fri 20:00 (26h55m)  PRIOR TOO LOW        │
-│ elapsed  0s [arc file]                              │ burn  41.4Mwt/h                                      │
-│                                                     │ cap   ESTIMATE EXCEEDED                              │
-│ ⚠ ESTIMATE EXCEEDED - past the calibrated denominator                                                      │
-├ AGENTS ────────────────────────────────────────────────────────────────────────────────────────────────────┤
-│ - e547ab36 17.2Mwt            103h33m ENDED 103h33m ago                                                    │
-│ - 4977e5cc 221.3Mwt            80h09m ENDED 80h09m ago                                                     │
-│ - d08f95df 52.6Mwt            67h59m ENDED 67h59m ago                                                     │
-│ - 981a9635 70.5Mwt            65h11m ENDED 65h11m ago                                                     │
-│ - 9712e026 127.5Mwt            63h47m ENDED 63h47m ago                                                     │
-│ - 336f84d6 87.8Mwt            56h27m ENDED 56h27m ago                                                      │
-│ - b03a5ba0 78.5Mwt            54h54m ENDED 54h54m ago                                                      │
-│ - c569f582 202.3Mwt            44h57m ENDED 44h57m ago                                                     │
-├ REPO / ARTIFACTS ──────────────────────────────────────────────────────────────────────────────────────────┤
-│   7 modified  +177/-360  [arc-029-integration]  last: ARC 029 / Stage 1: the exit half — synthetic stops, p│
-│ RESULTS.md    4h45m old    13386 B                                                                         │
-│ SESSION.md   21h08m old   209625 B                                                                         │
-│ * calibrated 5h denom from lockout @03:30                                                                  │
-│ * calibrated 5h denom from lockout @03:50                                                                  │
-└ q quit  +/- rate  p pause  r probe  a ascii  ·  jsonl 134 files, 0 parse err ──────────────────────────────┘
-(exit 0)
-```
-
-Assertions:
-- **Footer `jsonl 134 files` == `find … *.jsonl | wc -l` (134).** The instrument is
-  reading the real surface, not reporting a stale or empty green.
-- **DISCOVERY panel is ABSENT.** No missing-input failure; every gauge names a basis.
-- `todos` holds 0 `*.json` (this Claude Code build stores todo state elsewhere) — the
-  AGENTS panel is driven by transcript sidechains, which are present and rendered.
+**An exclusion escapes the re-owning ceiling and NOTHING else** (check-contract rule 10, new): still
+inside the one-way ratchet (silent growth and acquired coverage are FAILs), still owned by a live arc
+(a completed owner is CANNOT_MEASURE, so it cannot outlive ARC 030), still assigned under §0g, and
+required to justify itself and declare itself temporary. The ceiling is the one rule lifted, and only
+under the recorded ruling — the gate cannot tell an authorized move from a laundering one, which is
+why the authorization lives in the ledger (**CHECK-A8**, CHECK-DEBT D3.104) and the contract
+(**CLAUDE.md rule 14**, `nix_check_contract.md §19`), per rule 13. Verdict FAIL → GUARDED. Each
+exclusion arm planted and driven red on the shipped gate; the real-tree control re-aimed to bank the
+disposition.
 
 ---
 
-## SC-3 — Fix only real defects — NO DEFECT FOUND, NO monitor.py CHANGE
+## STAGE 1 — the exit half, four parallel sub-agents (committed `4bd425f`)
 
-SC-2 was clean: footer N (134) equals the independent find (134), no DISCOVERY panel,
-`--once` exited 0 without crashing. **No node02 defect surfaced, so monitor.py,
-harness.py, and pty_test.py are unchanged — committed byte-for-byte at their SC-0
-md5s.** No phantom fix was invented.
+Four modules built against the Phase-0.6 frozen seam (none modified it), 93 behavioural can-fail
+tests, each MEASURING its brief's hypotheses:
 
----
+* **`stops.py`** (V33) — `StopBook`: distance→price conversion once at fill; fixed and trailing modes;
+  the trailing activation latch proven to ratchet and never jump backward at the activation instant.
+  Covered by **`check_synthetic_stop_only`** (§12.1: AST-scans the stop path for any broker-native
+  stop order), which the binding census confirms **BOUND**.
+* **`flatten.py`** (§3/§14) — `ProtectiveFlatten`: zero-wire fire proven by REMOVING the wire;
+  dual-authority precedence proven under a CONSTRUCTED race; onset cancels pending entries under their
+  own TerminalPath cause (blackout vs HALT, SPEC-A7); reconcile-then-publish publishes the CONFIRMED
+  flat state.
+* **`survival.py`** (§6.5/§15 C2) — `SurvivalWatch`: net-liq and cash driven APART so the watch is
+  shown to track net-liq while sizing tracks cash; floor breach fires the flatten AND a Critical
+  alert; uniform broker-authoritative reconcile, broker-wins at WARNING tier (tiers do not collapse).
+* **`coldstart.py`** (V34) — `ColdStart`: the registration gate proven by a REFUSED attempt (not a
+  flag read); flatten-before-register; the market-tradable guard proven on BOTH halves (held-in-HALT
+  while shut, flattened on reopen); restart = flat even for a winning inherited position.
 
-## SC-4 — verify.py gate `checks/check_monitor.py` — BUILT, PROVEN ON EVERY BRANCH
-
-Read the ACTUAL `docs/VERIFY-AND-CHECKS.md` on the box (not the reference docstring).
-The architect's reference is a standalone exit-code script; its **logic is preserved
-verbatim**, its **packaging rebuilt to house style** after reconciling against the
-real contract and the existing checks:
-
-- Uses the `nixverify.contract` seam: `run(mode, ctx) -> CheckResult`, `Status`
-  (PASS / FAIL_NEEDS_OPERATOR / CANNOT_MEASURE), `standalone_main` for the CLI —
-  identical shape to `check_synthetic_stop_only`, `check_derived_claims`, etc.
-- Static orchestration declarations read by `--optimize`: `DEPENDS_ON=()`,
-  `RESOURCES=("subprocess:python3","subprocess:python")` (both basename spellings,
-  the `check_plane1_wal`/`check_feed_kill_drill` convention — the observer matches a
-  subprocess claim by BASENAME and `sys.executable` differs between runners),
-  `TIME_BOUND=True`, `CORRECTABLE=False` (editing the subject to satisfy the gate is
-  forbidden), and `SUBJECTS=(monitor.py, harness.py, pty_test.py)`.
-- CANNOT_MEASURE (not a bare exit 1) for every could-not-measure branch, per doctrine
-  B.2 — "could not run" (timeout/OSError) is held DISTINCT from "ran and failed".
-- **Not an extension of any existing gate:** no check owns the monitor tooling's
-  property (doctrine C.9 — one instrument per property), so a new gate is correct.
-  Checked `check_untracked_attribution` / `check_canonical_tree` first; neither covers it.
-
-Non-vacuity: the core assertion compares the monitor's REPORTED footer count against
-an INDEPENDENT `rglob` of the SAME telemetry root — two numbers that move together,
-never a fixed literal — so it cannot pass by coincidence nor rot as usage grows.
-
-Proven across every branch on the box:
-
-```
-$ python3 checks/check_monitor.py ; echo "PASS-path exit: $?"
-pass: monitor tooling self-consistent (selftest + harness + pty_test green) and
-NON-VACUOUS: its rendered footer reports 134 jsonl transcript(s), independently 134
-exist under /home/bbt/.claude/projects (two rglobs of the same root, matched -- not a
-fixed literal)
-PASS-path exit: 0
-
-$ CHECK_MONITOR_FORCE_FAIL=1 python3 checks/check_monitor.py ; echo "FAIL-path exit: $?"
-fail_needs_operator: forced-failure control (doctrine C.2): the FAIL branch is
-reachable and names its site, not a bare exit code
-  detail: CHECK_MONITOR_FORCE_FAIL=1 -- the demonstrated can-fail path, proving this
-  gate is not a constant PASS
-FAIL-path exit: 1
-
-$ python3 scripts/verify.py 2>&1 | grep -i monitor      # runner picks up the gate
-  [ok]   check_monitor
-```
-
-Registered via the sanctioned path (registry is DERIVED, never hand-edited):
-`verify.py --optimize --commit` re-derived the plan; `check_monitor` lands in the
-sequential level-0 block with its `subprocess:python{,3}` claims folded in. The
-derivation diff was minimal (the two claims + the check name) — the committed
-registry was already a clean derivation.
-
-**Declaration validated against reality** (the reason the observer study mattered):
-`check_observed_resource_claims`' observer re-ran `check_monitor` under its audit hook
-— observed claim `subprocess:/usr/bin/python3` (basename `python3`), declared
-`RESOURCES` covers it, UNDECLARED set is empty. No false declaration.
+**Integration findings the gates caught and I resolved by measurement:** `check_order_path_bans`
+self-healed its derived scope to `scripts/nixrisk` (the exit modules fire broker orders) — the second
+home confirmed in `ORDER_PATH_DIRS`, its scope claim reconciled 6→16; a genuine fan-out in
+`flatten.py`'s onset cancel loop reviewed-and-suppressed (broker precedent); its arm(ii) made
+package-aware to import the nixrisk package. `flatten/survival/coldstart` admitted to the coverage
+baseline as `measured_by=tests` (owner ARC 030), mirroring `gitenv.py` — gate GUARDED, not a proxy
+check.
 
 ---
 
-## SC-5 — Tracked in git (coverage proven by TRACKING, not naming) — PASS
+## STAGE 2 — integration (committed `6d014c8`, `eac5a00`, and — see collision — bundled into `ec03d06`)
 
-```
-$ git ls-files scripts/monitor.py scripts/harness.py scripts/pty_test.py checks/check_monitor.py
-checks/check_monitor.py
-scripts/harness.py
-scripts/monitor.py
-scripts/pty_test.py
-
-$ git status --porcelain scripts/monitor.py scripts/harness.py scripts/pty_test.py checks/check_monitor.py
-(empty)
-
-# committed blobs still frozen at the SC-0 md5s:
-$ git show HEAD:scripts/monitor.py  | md5sum  -> 50cf4183ea053b132cd05cc3eb4fde5a
-$ git show HEAD:scripts/harness.py  | md5sum  -> 857b4654fc55c80bf56a265a182ffa4b
-$ git show HEAD:scripts/pty_test.py | md5sum  -> 54fb8594cab328f2e8eff97710bdff32
-```
-
-All four files TRACKED, working tree clean for those paths, md5s preserved in the
-committed tree. This is the ARC 014–016 untracked-broker lesson honoured: coverage
-proven by tracking, not naming.
+* **2.2 EventKind amendment + Plane-1 collapse** (`6d014c8`). The frozen seam's `EventKind` gained the
+  five exit-half members (`PROTECTIVE_EXIT`, `EXIT_INTENT`, `CLOSED`, `CANCEL`, `COLD_START`) once the
+  mechanism existed — the SPEC-A7 route. `flatten.py`'s interim `ExitEventLog` was DELETED; every exit
+  row now enqueues through the real `Plane1Port` as an `EventRow`. §9 sole-writer holds. `coldstart`
+  books under `COLD_START` instead of borrowing `BOOT`.
+* **2.1 + 2.4 the integration simulation** (`eac5a00`). `test_exit_integration.py` (10 tests) composes
+  the four modules — one simulated broker, ONE Plane-1 writer — and drives each fireable trigger end
+  to end: synthetic-stop, net-liq-floor, uncertainty, onset (HALT + blackout, both the CANCEL and
+  RESERVATION_RELEASED rows on the one writer). §2.4 DRIVEN: `SESSION_CLOSE` and `SENTINEL` refused
+  loudly (R4); `STALE_PRICE`/`ORPHAN` detection declared, not driven. Also: filesystem-walking gates
+  taught to skip `.claude/` agent worktrees.
+* **2.3 idempotent execution handling** (`execution.py`, in `ec03d06`). Position = Σ signed_qty over
+  the SET of unique `(order_id, exec_id)` fills — immunity to duplicate AND out-of-order delivery is a
+  property of the type, not a discipline. 23 tests; the §0a hypothesis ("a dedup test that never
+  delivers a duplicate measures nothing") MEASURED with a planted dedup-less accumulator shown vacuous
+  on a clean stream and divergent on the same stream duplicated. Contradictory same-key re-deliveries
+  fail closed.
 
 ---
 
-## Two things surfaced (neither silently resolved)
+## STAGE 3 — convergence (this branch)
 
-1. **A surplus reference drop was on the box.** `scripts/check_monitor.py` (md5
-   `a9f2c28bc9b03c63ded531fd0e5c3d43`) — the architect's raw reference implementation,
-   byte-identical to the code block embedded in the arc file — was present, untracked.
-   I did NOT create it; the arc's target is `checks/check_monitor.py` (arc lines 11/74,
-   SC-5). Shipping it would duplicate the gate (doctrine C.9) and, as a tracked
-   `scripts/check_*.py`, would be an uncovered artifact tripping `check_artifact_gate_coverage`.
-   **Moved out of the repo tree** (to the session scratchpad; its content also lives in
-   the arc `.md`), NOT deleted, NOT committed.
-
-2. **The commit used `--no-verify`, deliberately.** The repo's pre-commit ruff-format
-   hook rewrites the three frozen artifacts (semicolons, `subprocess(..., check=)`,
-   `datetime(tz=)`), which would **break the SC-0 md5 contract permanently**. The frozen
-   files are external validated tooling (validate-only this arc); reformatting them is
-   exactly what SC-0 forbids. `check_monitor.py` itself IS ruff-clean (`ruff check` +
-   `ruff format --check` both pass; executable bit set to clear EXE001).
-   *Recommended follow-up (out of this arc's scope):* add `scripts/monitor.py`,
-   `scripts/harness.py`, `scripts/pty_test.py` to the ruff `exclude` in
-   `.pre-commit-config.yaml`, the same treatment `databases/schema/` already gets, so a
-   future edit cannot silently reformat them.
+* **3.1** plan `--optimize`: membership **IDENTICAL** to committed, 33 checks. No drift.
+* **3.4** binding census: **32 BOUND, 1 EXERCISED-NEVER-RED** (`check_untracked_attribution`), 883
+  observations. `check_synthetic_stop_only` BOUND; the retrofitted `check_order_path_bans` stayed
+  BOUND (its drive test still exercises it to RED). The standing figure moved 30→32 BOUND, explained
+  by the two new bound checks (`check_synthetic_stop_only` this arc, `check_monitor` from ARC MON-1).
+* full pytest surfaced ONE stale banked figure — `test_the_control_passes...` asserted `arm(ii)
+  imported 15`, now **16** because Stage 2.3 added `execution.py` to the nixrisk package the
+  order-path gate scans. Corrected; suite green.
 
 ---
 
-## Post-commit standing-gate state (unchanged baselines, no regressions)
+## CHECK-DEBT — 145 → 151 this arc
 
-- `check_monitor` — **PASS** (exit 0); FORCE_FAIL — **FAIL** (exit 1); runner picks it up.
-- `check_untracked_attribution` — **PASS** (0 untracked): committing the four files +
-  the arc brief cleared the pre-commit red it (correctly) raised.
-- `check_artifact_gate_coverage` — **GUARDED** (exit 3) at its PRE-EXISTING ARC 030
-  baseline (D3.104 / CHECK-A8). The three new scripts are COVERED by `check_monitor`'s
-  SUBJECTS — they do not appear in the uncovered rows or exclusions. No coverage
-  regression introduced.
+Opened D3.101–D3.104 (Phase 0), D3.105–D3.108 (Stage 1: the three admitted exit modules' owed checks +
+the stale-worktree-base provisioning finding), D3.109–D3.110 (Stage 2: the execution ledger's owed
+check + two seam questions; the filesystem-walking-gate class vs `.claude` worktrees and AppleDouble
+sidecars). Discharged D3.55 (SPEC-A7). `check_derived_claims`' `derived:ledger_rows` == `stated`.
 
-## Files changed this arc
+---
 
-- `checks/check_monitor.py` — NEW gate (tracked, 100755, ruff-clean).
-- `scripts/monitor.py`, `scripts/harness.py`, `scripts/pty_test.py` — NEW, tracked at
-  frozen md5s (validate-only; unchanged).
-- `checks/registry.json` — re-derived to register `check_monitor`.
-- `downloads/ARC_MON_1_monitor_validate_and_gate.md` — arc brief, tracked (design authority).
-- `sessions/SESSION.md`, `downloads/RESULTS.md` — standing-requirement updates.
+## THE CONCURRENT-SESSION COLLISION — why this arc is on its own branch
 
-## Progress
+Mid-arc, a **second Claude session ran a separate "ARC MON-1" arc on the same branch and shared git
+index** (monitor tooling: `monitor.py`, `harness.py`, `check_monitor`, its own SESSION/RESULTS
+write-back). The two sessions collided: Stage 2.3's staged work landed inside the other session's
+commit `ec03d06` rather than its own message; pre-commit stashes reverted the other's uncommitted
+edits (restored from patch each time); commit gates timed out. **No ARC 029 work was lost** — every
+artifact is durable in the shared history — but convergence needs a STABLE tree to measure against, so
+per the operator's decision the remaining Stage 3 + Phase 4 was moved onto an **isolated worktree
+branch** (`arc-029-convergence`), where the measurements above are stable. The other session
+meanwhile advanced `arc-029-integration` to `ba41431+`.
 
-- **check_monitor module / observability tooling:** ~90% — the gate is built,
-  registered, non-vacuous, and its declaration validated against the observer. Residual:
-  the CANNOT_MEASURE branch (no-telemetry host) awaits a box that lacks Claude Code
-  history to exercise live, and the recommended ruff-exclude follow-up.
-- **Whole Nix project:** ~1% (orthogonal to the ARC 017 broker stage; observability tooling).
+Two junk classes the collision surfaced were cleaned/hardened: 45 macOS AppleDouble `._*` sidecars a
+Mac/Samba transfer dropped (they crash `rglob`-walking gates on non-UTF-8 bytes), and `.claude/`
+worktree pollution of filesystem-walking gates. `check_price_ring`, `check_datafeed_granted_mode` and
+`check_datafeed_bar_seal` were hardened; the broader class is CHECK-DEBT D3.110.
+
+---
+
+## OPEN TO THE OPERATOR / ARCHITECT
+
+1. **MERGE `arc-029-convergence` into `arc-029-integration` on `/home/bbt/nix`.** This is the step that
+   lands ARC 029 on the canonical path; it was isolated to keep convergence measurements stable while a
+   second session held the branch. Expect a SESSION.md / RESULTS.md merge with ARC MON-1's write-back.
+2. **`check_monitor` is FAILING** (harness exited 1) — that is ARC MON-1's check, surfaced here only
+   because its work shares the branch. Its arc owns it.
+3. **The tap session** — still the standing `check_ibgateway_service` FAIL, owed by fourteen arcs.
+4. **D3.104 exclusion is TEMPORARY**, owned by ARC 030 (the bulk-retrofit arc: real per-artifact
+   coverage for the thirteen, empty the bucket, drive the gate green by measurement).
+5. **Seam questions (D3.109):** does `ExecutionReport`/`ExecutionLedgerPort` belong in the frozen seam
+   by the `reservations.py` precedent; is `PositionRow.size` signed. And v1.4 remains deliberately not
+   authority (D3.33), now also carrying the Stage-2.2 EventKind additions as an implementation fact.
