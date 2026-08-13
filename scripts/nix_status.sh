@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Name:     nix_status.sh
-# Version:  1.2.0
+# Version:  1.3.0
 # Objective: At-a-glance health dashboard for Nix, built on top of verify.py's
 #            own plugin checks. Unlike titan_status.sh (which probes Titan's
 #            subsystems directly), nix_status.sh does NOT reimplement checks —
@@ -18,6 +18,15 @@
 #     bash ~/nix/scripts/nix_status.sh --no-color   # Strip ANSI
 #     bash ~/nix/scripts/nix_status.sh --no-splash  # Skip the SSH splash header
 #     bash ~/nix/scripts/nix_status.sh --raw FILE   # Also save verify.py's raw output
+#
+# Live output (v1.3.0):
+#     Verdicts are printed AS THEY LAND, under the banner, in the order the
+#     checks actually completed:
+#         ●   12/30  check_ibgateway_service        4.10s
+#     The grouped/sorted dashboard and the SUMMARY still follow at the end. The
+#     durations are verify.py's own per-check measurements (engine._timed,
+#     perf_counter), never re-derived here; this script recolours them and adds
+#     nothing to them.
 #
 # Checks (each produces a bubble):
 #     1. verify.py present + executable
@@ -56,6 +65,68 @@
 #     2 = failed     (at least one FAIL, or verify.py could not be run at all)
 #
 # Changelog:
+#   v1.3.0  2026-08-12  LIVE OUTPUT. Every verdict now reaches the screen the
+#                         moment it is reached, instead of the whole dashboard
+#                         appearing after the last check.
+#                         The old behaviour was not a rendering choice, it was
+#                         verify.py's shape: `main()` ran every block and only
+#                         then printed, so a wrapper capturing its output had
+#                         nothing to show until the run ended. Measured on this
+#                         tree that is ~70s of blank screen, one check alone
+#                         accounting for 36s of it.
+#                         Three changes, in dependency order:
+#                         (1) verify.py grew `--stream` (render.StreamProgress):
+#                         one flushed line per verdict, `>>`-prefixed, carrying
+#                         the check's name, the registry-derived n/total counter
+#                         and the duration the ENGINE measured. It ADDS output —
+#                         the end-of-run registry-order block (§6) still prints
+#                         unchanged, so nothing that parsed verify.py before
+#                         parses differently now.
+#                         (2) The banner and the header box are printed BEFORE
+#                         the run rather than after it. A header rendered after
+#                         the body is not a header, and with live output there
+#                         is now a body to head.
+#                         (3) This script reads verify.py through a FIFO rather
+#                         than a temp file, repainting each `>>` line as a
+#                         bubble as it arrives, and echoes its own four wrapper
+#                         verdicts as they are recorded. The grouped, sorted
+#                         dashboard and the SUMMARY still print at the end, and
+#                         are still derived from verify.py's own end block — so
+#                         v1.2.0's grouping, its alphabetical secondary key, the
+#                         byte-identical re-run property, the duplicate-name
+#                         guard and the exit-code reconciliation are all
+#                         untouched by the live path.
+#                         `--stream` is PROVEN in `verify.py --help` before it
+#                         is passed, exactly as the verify-only invocation is
+#                         (check 3's doctrine, applied to the second flag). A
+#                         verify.py without it degrades to v1.2.0 behaviour and
+#                         SAYS so in one line, rather than silently showing
+#                         nothing for a minute.
+#                         (4) WARNING AND ERROR TEXT IS NEON ORANGE (#FF6600,
+#                         the banner's own accent). It was `${DIM}` and nothing
+#                         else — and `\033[2m` sets faintness, not colour, so
+#                         the text wore the terminal's default foreground. On a
+#                         green-on-black profile that made every failure detail
+#                         FAINT GREEN: the hardest text on screen to read, in
+#                         the colour that means "fine". Verdict bubbles were
+#                         always explicit; the messages were not, and inherited
+#                         text is unreadable on precisely the profiles nobody
+#                         tested. Passes stay dim — a reassurance nobody needs
+#                         to read should not compete with a failure that must be.
+#                         The orange is TIERED, and that is a fix for the first
+#                         attempt at this fix. Written as a bare 24-bit SGR it
+#                         made every warning and error message VANISH on this
+#                         node's own terminal — TERM=xterm-256color, COLORTERM
+#                         unset, no RGB in terminfo, i.e. a 256-colour terminal
+#                         that does not parse a truecolor sequence and swallowed
+#                         the text behind it. The bytes were there the whole
+#                         time; nothing could paint them. Same fault as the
+#                         faint green, one costume along: legibility resting on
+#                         an untested property of the terminal. The tier is now
+#                         derived (COLORTERM, then `tput colors`) with real
+#                         fallbacks — #FF6600, xterm-256 208, or bright 93 —
+#                         never a degradation to nothing. Force one with
+#                         NIX_STATUS_COLOR_TIER where the advertisement lies.
 #   v1.2.0  2026-08-12  Three operator-facing changes, no change to how any
 #                         verdict is DERIVED:
 #                         (1) The SSH splash is rendered at the top, by EXECUTING
@@ -165,10 +236,63 @@ YELLOW="\033[93m"
 GREEN="\033[92m"
 RESET="\033[0m"
 
+# Neon orange — #FF6600, the same value the MOTD banner uses for its own accent
+# (`C_PINK`, /etc/update-motd.d/99-nix-banner). Warning and error MESSAGE TEXT is
+# painted with it.
+#
+# THREE TIERS, DETECTED, because the 24-bit form is not universally safe and this
+# was measured the hard way. Written first as a bare `\033[1;38;2;255;102;0m`, it
+# made every warning and error message VANISH on this node's own terminal:
+# `TERM=xterm-256color`, `COLORTERM` unset, no `RGB`/`setrgbf` in terminfo — a
+# 256-colour terminal, which does not parse a truecolor SGR and swallowed the
+# text that followed it. The bytes were present the whole time (`cat -v` showed
+# them); nothing could paint them.
+#
+# That is the same fault as the faint green one directory up in this comment, in
+# a new costume: text whose legibility depends on an untested property of the
+# terminal. So the tier is DERIVED from what the terminal advertises —
+# `COLORTERM` first, `tput colors` second — and the fallbacks are real colours
+# rather than a silent degradation to nothing. `NIX_STATUS_COLOR_TIER` forces one
+# where the advertisement is wrong in either direction.
+#
+# What it replaces, and why the old rendering was a real defect rather than a
+# taste question: detail text was printed as `${DIM}` and NOTHING ELSE. `\033[2m`
+# sets faintness, not a colour, so the text came out in the terminal's default
+# foreground — which on this operator's profile is green. The dimmed detail of a
+# FAIL therefore rendered as FAINT GREEN: the least legible colour on the screen
+# carrying the most urgent text, in the one hue that reads as "fine".
+#
+# The general fault is inheritance. A line that says something is broken must
+# state its own colour, or it wears whichever palette the terminal happened to
+# be holding — and the message is unreadable on exactly the profiles nobody
+# tested. Verdict colours were always explicit; the message text was not.
+case "${NIX_STATUS_COLOR_TIER:-auto}" in
+    truecolor) ORANGE="\033[1;38;2;255;102;0m" ;;   # #FF6600 exactly
+    256)       ORANGE="\033[1;38;5;208m" ;;         # xterm-256 nearest neon orange
+    16)        ORANGE="\033[1;93m" ;;               # bright yellow/orange, 16-colour safe
+    *)
+        _tput_colors="$(tput colors 2>/dev/null || echo 0)"
+        [[ "$_tput_colors" =~ ^[0-9]+$ ]] || _tput_colors=0
+        if [[ "${COLORTERM:-}" == "truecolor" || "${COLORTERM:-}" == "24bit" ]]; then
+            ORANGE="\033[1;38;2;255;102;0m"
+        elif (( _tput_colors >= 256 )); then
+            ORANGE="\033[1;38;5;208m"
+        else
+            ORANGE="\033[1;93m"
+        fi
+        unset _tput_colors
+        ;;
+esac
+
 # ─── ARG PARSING ────────────────────────────────────────────────────
 WATCH=0
 WATCH_INTERVAL=5
 BRIEF=0
+# Live output. Default ON; NIX_STATUS_LIVE=0 or --no-live turns it off and
+# restores v1.2.0's behaviour exactly (silence during the run, everything at the
+# end). --brief forces it off further down: a single-line summary exists to be
+# grepped, and thirty progress lines above it would defeat that.
+LIVE=${NIX_STATUS_LIVE:-1}
 # The SSH splash. Default ON; NIX_STATUS_SPLASH=0 or --no-splash turns it off.
 # --brief never renders it: a single-line summary exists to be grepped and piped,
 # and eleven lines of logo above it would defeat the only reason it exists.
@@ -198,11 +322,15 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --no-color)
-            BOLD=""; DIM=""; RED=""; YELLOW=""; GREEN=""; RESET=""
+            BOLD=""; DIM=""; RED=""; YELLOW=""; GREEN=""; RESET=""; ORANGE=""
             shift
             ;;
         --no-splash)
             SPLASH=0
+            shift
+            ;;
+        --no-live)
+            LIVE=0
             shift
             ;;
         --raw)
@@ -217,7 +345,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         -h|--help)
             cat <<EOF
-nix_status.sh v1.1.0 — verify.py verify-only wrapper + health dashboard
+nix_status.sh v1.3.0 — verify.py verify-only wrapper + health dashboard
 
 Usage:
     bash nix_status.sh              Snapshot, exit
@@ -226,6 +354,7 @@ Usage:
     bash nix_status.sh --brief      Single-line summary
     bash nix_status.sh --no-color   Strip ANSI
     bash nix_status.sh --no-splash  Skip the SSH splash header
+    bash nix_status.sh --no-live    Don't print verdicts as they land
     bash nix_status.sh --raw FILE   Also save verify.py's raw output to FILE
 
 Exit codes:
@@ -246,6 +375,9 @@ Environment overrides:
     NIX_STATUS_LOCK          lock file path (default /tmp/nix_status.<uid>.lock)
     NIX_STATUS_SPLASH        0 = never render the SSH splash header
     NIX_STATUS_SPLASH_SCRIPT path to the splash (default the MOTD banner)
+    NIX_STATUS_LIVE          0 = never print verdicts as they land
+    NIX_STATUS_COLOR_TIER    auto (default) | truecolor | 256 | 16 — which
+                             orange is emitted for warning/error text
 EOF
             exit 0
             ;;
@@ -260,6 +392,7 @@ EOF
     esac
 done
 [[ "$TIMEOUT_S" =~ ^[0-9]+$ ]] || { echo "nix_status: --timeout must be an integer" >&2; exit 2; }
+(( BRIEF == 1 )) && LIVE=0
 
 # ─── STATUS TRACKING ────────────────────────────────────────────────
 WORST_STATUS=0
@@ -279,16 +412,32 @@ STATUS_RANK=([0]=0 [2]=1 [1]=2)
 # exactly the defect class this tree sweeps for. One increment, one source.
 STATUS_COUNT=([0]=0 [1]=0 [2]=0)
 
+# Live echo. While this is 1, `record` prints the bubble it just appended as
+# well as banking it — so the four wrapper verdicts appear as they are reached
+# rather than after verify.py's run.
+#
+# It is turned OFF before `parse_and_record_checks`, and that is the whole
+# subtlety of the live path: those bubbles were ALREADY shown live, streamed
+# from verify.py as each check finished. Leaving the echo on would print the
+# same thirty verdicts a second time, and the second copy would be the sorted
+# one — which reads as a second, disagreeing run rather than a recap.
+LIVE_ECHO=0
+
 record() {
-    local st="$1" label="$2" detail="$3" bubble
+    local st="$1" label="$2" detail="$3" bubble msg
+    # The BUBBLE keeps the three-colour verdict language (green/yellow/red) —
+    # that is the thing an operator scans. The MESSAGE is what changed: dim for a
+    # pass, where the text is a reassurance nobody needs to read, and neon orange
+    # for a warning or a failure, where the text is the entire point of the line.
     case "$st" in
-        0) bubble="${GREEN}●${RESET}" ;;
-        1) bubble="${YELLOW}●${RESET}" ;;
-        2) bubble="${RED}●${RESET}" ;;
+        0) bubble="${GREEN}●${RESET}";  msg="${DIM}${detail}${RESET}" ;;
+        1) bubble="${YELLOW}●${RESET}"; msg="${ORANGE}${detail}${RESET}" ;;
+        2) bubble="${RED}●${RESET}";    msg="${ORANGE}${detail}${RESET}" ;;
     esac
     local label_fmt
     label_fmt="$(printf '%-28s' "$label")"
-    RESULTS+=("  ${bubble}  ${BOLD}${label_fmt}${RESET}  ${DIM}${detail}${RESET}")
+    RESULTS+=("  ${bubble}  ${BOLD}${label_fmt}${RESET}  ${msg}")
+    (( LIVE_ECHO == 1 )) && echo -e "${RESULTS[-1]}"
     STATUS_COUNT[$st]=$(( STATUS_COUNT[$st] + 1 ))
     (( st > WORST_STATUS )) && WORST_STATUS="$st"
 }
@@ -307,6 +456,7 @@ pick_python() {
 _TMPDIR=""
 _PYBIN=""
 _VERIFY_ARGV=()     # the proven verify-only invocation, as ARGV (may be 2 tokens)
+_STREAM_ARGV=()     # `--stream`, only once PROVEN present in --help
 _RUN_TXT=""
 _RUN_RC=""
 
@@ -372,6 +522,22 @@ check_verify_only_flag() {
     help_plain="$(strip_ansi <"$help_txt")"
     help_flat="$(tr '\n' ' ' <<<"$help_plain" | tr -s ' ')"
 
+    # The live-output flag is DERIVED from the same --help text, on the same
+    # terms as the verify-only invocation below: proven present or not passed.
+    # An assumed `--stream` would make verify.py exit 2 on an unknown argument
+    # and this script would report the node as unmeasurable — a wrapper's guess
+    # about its instrument masquerading as a verdict about the machine.
+    #
+    # Its absence is not a failure of anything. It costs the live rendering and
+    # nothing else, so it says so in one dim line and the run proceeds.
+    if (( LIVE == 1 )); then
+        if grep -qw -- '--stream' <<<"$help_plain"; then
+            _STREAM_ARGV=(--stream)
+        else
+            echo -e "  ${ORANGE}(live: this verify.py has no --stream — verdicts will appear together when the run ends)${RESET}"
+        fi
+    fi
+
     # Explicit override. Accepts multiple tokens ("--mode verify"); its FIRST
     # token is what must be provable in --help.
     if [[ -n "$FORCE_FLAG" ]]; then
@@ -412,6 +578,35 @@ check_verify_only_flag() {
     return 1
 }
 
+# Repaints one streamed verdict as a bubble, the moment it arrives.
+#
+# The line is verify.py's, and every FACT on it is verify.py's: the status
+# marker, the check name, the n/total counter (derived from its registry) and
+# the duration (measured by its engine with perf_counter). This function maps
+# the marker to a colour and re-columnises. It computes no timing of its own —
+# a second stopwatch here would be a second authority on the same number, and
+# the two would disagree the moment either changed.
+#
+# Anything that is not a `>>` line is verify.py's ordinary output (the
+# end-of-run block, warnings, tracebacks) and is banked to `_RUN_TXT` for the
+# real parse without being painted twice.
+render_live_line() {
+    local plain sentinel marker name counter dur bubble
+    plain="$(strip_ansi <<<"$1")"
+    read -r sentinel marker name counter dur _ <<<"$plain"
+    [[ "$sentinel" == ">>" ]] || return 0
+    local text
+    case "$marker" in
+        '[ok]'|'✔')   bubble="${GREEN}●${RESET}";  text="${DIM}" ;;
+        '[FAIL]'|'✖') bubble="${RED}●${RESET}";    text="${ORANGE}" ;;
+        '[??]'|'⚠'|'[--]'|'·'|'[GRD]'|'◐') bubble="${YELLOW}●${RESET}"; text="${ORANGE}" ;;
+        *) return 0 ;;
+    esac
+    # Same rule as `record`: a live line that is not a pass names its own colour
+    # rather than inheriting the terminal's.
+    printf '  %b  %b%7s  %-30s %8s%b\n' "$bubble" "$text" "$counter" "$name" "$dur" "$RESET"
+}
+
 # 4. Run verify.py and parse its checks into dynamic bubbles
 check_verify_run() {
     _RUN_TXT="$(mktemp "${_TMPDIR}/run.XXXXXX")"
@@ -426,8 +621,44 @@ check_verify_run() {
 
     local start end elapsed rc=0
     start=$(date -u +%s)
-    timeout -k 10 "$TIMEOUT_S" "$_PYBIN" "$VERIFY_PY" "${_VERIFY_ARGV[@]}" \
-        </dev/null >"$_RUN_TXT" 2>&1 || rc=$?
+
+    if (( LIVE == 1 && ${#_STREAM_ARGV[@]} > 0 )); then
+        # Read verify.py through a FIFO rather than a file, so every line can be
+        # acted on the instant it is written while the complete output still
+        # lands in `_RUN_TXT` for the end-of-run parse. Both consumers see every
+        # byte; neither waits for the other.
+        #
+        # The rc goes through a FILE, not a pipeline. `cmd | while read` would
+        # put the loop in a subshell and lose both the exit status and every
+        # variable the loop set — the classic bash trap, and here it would cost
+        # the exit-code reconciliation that decides the overall verdict.
+        local fifo="${_TMPDIR}/stream.fifo" rcf="${_TMPDIR}/rc"
+        mkfifo "$fifo" 2>/dev/null || {
+            record 2 "verify.py run" "cannot create FIFO in ${_TMPDIR}"
+            return 1
+        }
+        (
+            timeout -k 10 "$TIMEOUT_S" "$_PYBIN" "$VERIFY_PY" \
+                "${_VERIFY_ARGV[@]}" "${_STREAM_ARGV[@]}" </dev/null >"$fifo" 2>&1
+            echo $? >"$rcf"
+        ) &
+        local raw
+        while IFS= read -r raw; do
+            printf '%s\n' "$raw" >>"$_RUN_TXT"
+            render_live_line "$raw"
+        done <"$fifo"
+        wait
+        # A missing rc file means the subshell died before it could write one —
+        # unmeasurable, not zero. Failing closed here matters: an rc silently
+        # defaulted to 0 would reconcile as "healthy" against whatever was
+        # parsed.
+        rc="$(cat "$rcf" 2>/dev/null)"
+        [[ "$rc" =~ ^[0-9]+$ ]] || rc=2
+    else
+        timeout -k 10 "$TIMEOUT_S" "$_PYBIN" "$VERIFY_PY" "${_VERIFY_ARGV[@]}" \
+            </dev/null >"$_RUN_TXT" 2>&1 || rc=$?
+    fi
+
     end=$(date -u +%s)
     elapsed=$(( end - start ))
     _RUN_RC="$rc"
@@ -441,6 +672,9 @@ check_verify_run() {
 
     record 0 "verify.py run" "${VERIFY_PY} ${_VERIFY_ARGV[*]} — ${elapsed}s, rc=${rc}"
 
+    # Everything below was already on screen, live. The grouped dashboard is a
+    # recap, not a second announcement — see LIVE_ECHO's note.
+    LIVE_ECHO=0
     parse_and_record_checks
 }
 
@@ -568,12 +802,21 @@ parse_and_record_checks() {
 run_all_checks() {
     WORST_STATUS=0
     RESULTS=()
+    STATUS_COUNT=([0]=0 [1]=0 [2]=0)
+    _STREAM_ARGV=()
+    # Live from the first wrapper verdict, not merely from verify.py's first
+    # check: checks 1-3 are the ones that decide whether verify.py runs at all,
+    # so on a broken node they are the ONLY verdicts there will ever be. Holding
+    # them back until the end would keep the screen blank in exactly the case
+    # where something is already known to be wrong.
+    LIVE_ECHO=$LIVE
     _TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/nix_status.XXXXXX")"
 
     if check_verify_binary && check_python && check_verify_only_flag; then
         check_verify_run
     fi
 
+    LIVE_ECHO=0
     rm -rf "$_TMPDIR" 2>/dev/null
 }
 
@@ -596,13 +839,13 @@ render_splash() {
     SPLASH_RENDERED=0
     (( SPLASH == 1 )) || return 0
     if [[ ! -x "$SPLASH_SCRIPT" ]]; then
-        echo -e "  ${DIM}(splash: ${SPLASH_SCRIPT} not present or not executable — header skipped)${RESET}"
+        echo -e "  ${ORANGE}(splash: ${SPLASH_SCRIPT} not present or not executable — header skipped)${RESET}"
         return 0
     fi
     local out rc=0
     out="$(timeout -k 2 "${SPLASH_TIMEOUT_S}" "$SPLASH_SCRIPT" 2>/dev/null)" || rc=$?
     if [[ -z "${out//[[:space:]]/}" ]]; then
-        echo -e "  ${DIM}(splash: ${SPLASH_SCRIPT} produced no output (rc=${rc}) — header skipped)${RESET}"
+        echo -e "  ${ORANGE}(splash: ${SPLASH_SCRIPT} produced no output (rc=${rc}) — header skipped)${RESET}"
         return 0
     fi
     # --no-color empties RESET; that is the signal to strip the banner's own
@@ -616,7 +859,15 @@ render_splash() {
     fi
 }
 
-render_full() {
+# The banner and the header box, printed BEFORE the checks run.
+#
+# v1.2.0 rendered these at the end, with everything else, because there was
+# nothing to head — the screen stayed empty until the run finished and then
+# filled in one motion. With live verdicts there IS a body, and a header printed
+# after its body is not a header. Its timestamp is now the run's START, which is
+# also the more useful of the two: it is the time the measurements were taken
+# from, not the time the last one happened to return.
+render_header() {
     local ts
     ts="$(date '+%Y-%m-%d %H:%M:%S')"
     echo ""
@@ -627,6 +878,16 @@ render_full() {
     echo -e "${BOLD}  NIX — STATUS  ${DIM}${ts}${RESET}"
     echo -e "${BOLD}═══════════════════════════════════════════════════════════${RESET}"
     echo ""
+}
+
+# The grouped dashboard and the tally, printed after the run.
+#
+# Under live output this is a RECAP: every verdict in it has already been on
+# screen once, in completion order. It earns its place by being the sorted,
+# grouped view — PASS/FAIL/WARNING, alphabetical within each group — which
+# completion order cannot give and which is what makes two runs over an
+# unchanged tree comparable line by line.
+render_body() {
     for line in "${RESULTS[@]}"; do
         echo -e "$line"
     done
@@ -652,31 +913,44 @@ render_full() {
 
 render_brief() {
     local bubble label
+    # Same rule as everywhere else: the two words that report trouble state their
+    # own colour. HEALTHY stays unpainted — it is the only one that may safely
+    # look like whatever the terminal looks like.
     case "$WORST_STATUS" in
         0) bubble="${GREEN}●${RESET}"; label="HEALTHY" ;;
-        1) bubble="${YELLOW}●${RESET}"; label="DEGRADED" ;;
-        2) bubble="${RED}●${RESET}"; label="FAILED" ;;
+        1) bubble="${YELLOW}●${RESET}"; label="${ORANGE}DEGRADED${RESET}" ;;
+        2) bubble="${RED}●${RESET}"; label="${ORANGE}FAILED${RESET}" ;;
     esac
     echo -e "NIX ${bubble} ${label}"
 }
 
 # ─── MAIN ───────────────────────────────────────────────────────────
 if (( WATCH == 1 )); then
+    # The cursor is hidden for the WHOLE cycle, live output included. It is a
+    # scrolling log now rather than an in-place repaint, and a block cursor
+    # trailing each line as it lands is the one thing that would make it read as
+    # an editor rather than a report.
     trap 'tput cnorm 2>/dev/null; echo ""; exit 0' INT TERM
     tput civis 2>/dev/null
     while true; do
         clear
+        render_header
         run_all_checks
-        render_full
+        render_body
         echo -e "  ${DIM}refreshing every ${WATCH_INTERVAL}s — Ctrl+C to exit${RESET}"
         sleep "$WATCH_INTERVAL"
     done
 else
-    run_all_checks
     if (( BRIEF == 1 )); then
+        # Nothing is printed before the summary line. `LIVE` is already 0 here,
+        # so the run is silent and the single line is the entire output — which
+        # is the only reason --brief exists.
+        run_all_checks
         render_brief
     else
-        render_full
+        render_header
+        run_all_checks
+        render_body
     fi
     exit "$WORST_STATUS"
 fi

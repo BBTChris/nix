@@ -32,6 +32,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest  # pylint: disable=import-error
@@ -109,8 +110,16 @@ def _write_stub(tmp_path: Path, roster, rc: int) -> tuple[Path, Path]:
     return stub, argv_log
 
 
-def _run_status(stub: Path, *args: str, expect_rc: int | None = None):
-    """Run nix_status.sh against the stub. Colour left ON so verdicts are visible."""
+def _run_status(
+    stub: Path, *args: str, expect_rc: int | None = None, env: dict | None = None
+):
+    """Run nix_status.sh against the stub. Colour left ON so verdicts are visible.
+
+    `env` ADDS to the fixed environment rather than replacing it. Terminal
+    capability is part of that environment now (the orange tier is derived from
+    `COLORTERM`/`tput colors`), so a test that cares about which escape is
+    emitted has to be able to state the terminal it is testing.
+    """
     proc = subprocess.run(  # nosec B603,B607 - fixed argv, test-local paths
         ["bash", str(STATUS_SH), *args],
         capture_output=True,
@@ -123,6 +132,7 @@ def _run_status(stub: Path, *args: str, expect_rc: int | None = None):
             "NIX_VERIFY_PY": str(stub),
             "NIX_PYTHON": sys.executable,
             "NIX_STATUS_LOCK": str(stub.parent / "lock"),
+            **(env or {}),
         },
     )
     if expect_rc is not None:
@@ -459,3 +469,307 @@ def test_NO_SPLASH_suppresses_it_entirely(tmp_path: Path) -> None:
     )
     assert "SPLASH-MARKER-7f3a" not in proc.stdout, proc.stdout
     assert "splash:" not in proc.stdout, proc.stdout
+
+
+# --------------------------------------------------------------------------
+# v1.3.0 — live output
+#
+# The wrapper's half of `--stream`. The property is TEMPORAL, so the tests below
+# are too: an assertion made only on the finished stdout cannot tell a live
+# surface from a batched one, which is precisely how the original defect went
+# unnoticed — every verdict was present, all of them arriving at once after 70
+# seconds of blank screen.
+# --------------------------------------------------------------------------
+
+# A stub that streams. It advertises `--stream` in --help and, when given it,
+# emits one `>>` line per check through the REAL StreamProgress, sleeping
+# between them so "live" is measurable rather than asserted. Without the flag it
+# behaves exactly like the plain stub — which is how the fallback path is
+# exercised by every test above this section, for free.
+_STREAM_STUB = """\
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, {nixverify!r})
+from nixverify.contract import CheckResult, Status  # noqa: E402
+from nixverify.render import (  # noqa: E402
+    StreamProgress,
+    render_results,
+    render_summary,
+    theme_for,
+)
+
+ROSTER = {roster!r}
+ARGV_LOG = Path({argv_log!r})
+DELAY = {delay!r}
+
+if "--help" in sys.argv[1:]:
+    print("usage: verify.py [-h] [--mode {{verify,correct,install}}] [--stream]")
+    print()
+    print("options:")
+    print("  -h, --help            show this help message and exit")
+    print("  --mode {{verify,correct,install}}")
+    print("  --stream              print each check's verdict as it lands")
+    print("  --verbose")
+    sys.exit(0)
+
+ARGV_LOG.write_text("\\n".join(sys.argv[1:]), encoding="utf-8")
+
+theme = theme_for(sys.stdout, {{}})
+results = []
+progress = StreamProgress(sys.stdout, theme, len(ROSTER))
+for n, s, site, detail in ROSTER:
+    time.sleep(DELAY)
+    result = CheckResult(name=n, status=Status[s], site=site, detail=detail)
+    result.duration_s = DELAY
+    results.append(result)
+    if "--stream" in sys.argv[1:]:
+        progress.check_verdict(result)
+
+print(render_results(results, theme, False))
+print(render_summary(results, 0, theme))
+sys.exit({rc})
+"""
+
+
+def _write_stream_stub(
+    tmp_path: Path, roster, rc: int, delay: float = 0.0
+) -> tuple[Path, Path]:
+    """A fake verify.py that STREAMS `roster` through the real StreamProgress."""
+    argv_log = tmp_path / "argv.txt"
+    stub = tmp_path / "verify.py"
+    stub.write_text(
+        _STREAM_STUB.format(
+            nixverify=str(NIX_HOME / "scripts"),
+            roster=list(roster),
+            argv_log=str(argv_log),
+            rc=rc,
+            delay=delay,
+        ),
+        encoding="utf-8",
+    )
+    return stub, argv_log
+
+
+def test_a_verdict_REACHES_THE_SCREEN_before_the_run_ends(tmp_path: Path) -> None:
+    """The defect, stated as a test — and it is a test about TIME.
+
+    Four checks, one second apart. The first verdict must be readable on stdout
+    while the run is still going; v1.2.0 produced nothing until the process
+    exited, four seconds later. Read incrementally from a live pipe, because
+    reading to EOF is exactly the measurement that cannot tell the two apart.
+    """
+    roster = [(f"check_{i}", "PASS", "", "") for i in range(4)]
+    stub, _ = _write_stream_stub(tmp_path, roster, rc=0, delay=1.0)
+
+    with subprocess.Popen(  # nosec B603,B607 - fixed argv, test-local paths
+        ["bash", str(STATUS_SH), "--no-color", "--no-splash"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        bufsize=1,
+        env={
+            "PATH": "/usr/bin:/bin:/usr/local/bin",
+            "HOME": str(Path.home()),
+            "NIX_VERIFY_PY": str(stub),
+            "NIX_PYTHON": sys.executable,
+            "NIX_STATUS_LOCK": str(tmp_path / "lock"),
+        },
+    ) as proc:
+        try:
+            assert proc.stdout is not None
+            first_verdict_at = None
+            started = time.monotonic()
+            for line in proc.stdout:
+                if "check_0" in line:
+                    first_verdict_at = time.monotonic() - started
+                    break
+            assert first_verdict_at is not None, "no verdict was ever printed"
+            # The run cannot finish before ~4s (4 checks x 1s). A first verdict
+            # at ~1s is live; one at ~4s is the old batch wearing a new order.
+            # Measured both ways before this test was kept: 1.19s with live
+            # output, 4.32s with --no-live. The gate discriminates.
+            assert first_verdict_at < 3.0, (
+                f"first verdict took {first_verdict_at:.2f}s — that is batch "
+                "timing, not live output"
+            )
+            assert proc.poll() is None, "the run had already finished; nothing was live"
+        finally:
+            proc.kill()
+            proc.wait(timeout=30)
+
+
+def test_the_HEADER_is_printed_before_any_verdict(tmp_path: Path) -> None:
+    """A header rendered after its body is not a header."""
+    roster = [("check_alpha", "PASS", "", ""), ("check_bravo", "PASS", "", "")]
+    stub, _ = _write_stream_stub(tmp_path, roster, rc=0)
+    lines = _run_status(stub, "--no-color", "--no-splash", expect_rc=0).stdout
+    header = lines.index("NIX — STATUS", 0) if "NIX — STATUS" in lines else -1
+    first_check = lines.index("check_alpha")
+    assert header != -1 and header < first_check, lines
+
+
+def test_streamed_lines_are_NOT_counted_as_extra_bubbles(tmp_path: Path) -> None:
+    """Every check is shown twice — live, then in the recap — and tallied ONCE.
+
+    The live path prints and the recap prints, but only `record` counts. A tally
+    that double-counted would be the summary disagreeing with the list above it,
+    which is the exact defect class the v1.2.0 counter was built to avoid.
+    """
+    roster = [(f"check_{i:02d}", "PASS", "", "") for i in range(6)]
+    stub, _ = _write_stream_stub(tmp_path, roster, rc=0)
+    out = _run_status(stub, "--no-color", "--no-splash", expect_rc=0).stdout
+
+    # 6 checks + the 4 wrapper verdicts (verify.py, interpreter, mode, run).
+    total_line = [ln for ln in out.splitlines() if "TOTAL" in ln]
+    assert total_line, out
+    assert total_line[0].split()[-1] == "10", f"{total_line[0]}\n{out}"
+    # Each check really did appear twice: once live, once in the recap.
+    assert out.count("check_00") == 2, out
+
+
+def test_stream_is_passed_ONLY_when_help_proves_it(tmp_path: Path) -> None:
+    """Same doctrine as check 3, applied to the second flag: prove, never assume.
+
+    An assumed `--stream` reaches an older verify.py as an unknown argument,
+    which argparse exits 2 on — and this script would then report the NODE as
+    unmeasurable on the strength of its own guess about its instrument.
+    """
+    # Two stubs, two directories: each writes its own argv log, and the two must
+    # not overwrite one another's.
+    streaming_dir, plain_dir = tmp_path / "streaming", tmp_path / "plain"
+    streaming_dir.mkdir()
+    plain_dir.mkdir()
+    roster = [("check_alpha", "PASS", "", "")]
+    streaming, stream_argv = _write_stream_stub(streaming_dir, roster, rc=0)
+    plain, plain_argv = _write_stub(plain_dir, roster, rc=0)
+
+    _run_status(streaming, "--no-color", "--no-splash", expect_rc=0)
+    assert "--stream" in stream_argv.read_text(encoding="utf-8").split("\n")
+
+    proc = _run_status(plain, "--no-color", "--no-splash", expect_rc=0)
+    assert "--stream" not in plain_argv.read_text(encoding="utf-8").split("\n")
+    assert "has no --stream" in proc.stdout, (
+        "a verify.py without --stream must SAY the live view is unavailable, "
+        "not silently show nothing"
+    )
+
+
+def test_NO_LIVE_restores_the_v120_behaviour(tmp_path: Path) -> None:
+    """The escape hatch: no `>>`, no --stream, everything at the end."""
+    roster = [("check_alpha", "PASS", "", "")]
+    stub, argv_log = _write_stream_stub(tmp_path, roster, rc=0)
+    out = _run_status(
+        stub, "--no-color", "--no-splash", "--no-live", expect_rc=0
+    ).stdout
+    assert "--stream" not in argv_log.read_text(encoding="utf-8").split("\n")
+    assert out.count("check_alpha") == 1, out
+
+
+def test_BRIEF_prints_one_line_and_no_live_output(tmp_path: Path) -> None:
+    """--brief exists to be grepped; six progress lines above it would end that."""
+    roster = [(f"check_{i}", "PASS", "", "") for i in range(6)]
+    stub, _ = _write_stream_stub(tmp_path, roster, rc=0)
+    out = _run_status(stub, "--no-color", "--brief", expect_rc=0).stdout
+    assert out.strip() == "NIX ● HEALTHY", out
+
+
+# -- colour: warning and error text names its own colour -------------------
+#
+# Two ways for a message to be unreadable, and this section holds one test for
+# each because the second was introduced BY the fix for the first:
+#
+#   1. no colour at all — `${DIM}` sets faintness, so the text wore the
+#      terminal's default foreground (faint green on this operator's profile);
+#   2. a colour the terminal cannot parse — a 24-bit SGR sent to a 256-colour
+#      terminal, which swallowed the message that followed it. Measured on this
+#      node: TERM=xterm-256color, COLORTERM unset, no RGB in terminfo.
+#
+# Both are the same underlying fault — legibility resting on an untested
+# property of the terminal — so both are pinned.
+
+_ORANGE_TRUECOLOR = "\x1b[1;38;2;255;102;0m"
+_ORANGE_256 = "\x1b[1;38;5;208m"
+_ORANGE_16 = "\x1b[1;93m"
+
+
+def test_failure_text_is_NEON_ORANGE_and_never_merely_dim(tmp_path: Path) -> None:
+    """`\\033[2m` sets faintness, not colour — dim text wears the terminal's own.
+
+    On a green-on-black profile that rendered every failure detail as faint
+    green: the least legible colour on screen carrying the most urgent text, in
+    the hue that means "fine". A line that reports trouble states its colour.
+    """
+    roster = [
+        ("check_alpha", "FAIL_REPAIRABLE", "127.0.0.1:4002", "endpoint unreachable"),
+        ("check_bravo", "CANNOT_MEASURE", "", "subject unavailable"),
+        ("check_charlie", "PASS", "", "all good"),
+    ]
+    stub, _ = _write_stream_stub(tmp_path, roster, rc=1)
+    out = _run_status(
+        stub,
+        "--no-splash",
+        expect_rc=2,
+        env={"NIX_STATUS_COLOR_TIER": "truecolor"},
+    ).stdout
+
+    for line in out.splitlines():
+        if "endpoint unreachable" in line or "subject unavailable" in line:
+            assert _ORANGE_TRUECOLOR in line, (
+                f"warning/error text was not orange: {line!r}"
+            )
+    # A pass keeps the quiet treatment: reassurance must not compete with alarm.
+    pass_lines = [ln for ln in out.splitlines() if "all good" in ln]
+    assert pass_lines and all(_ORANGE_TRUECOLOR not in ln for ln in pass_lines), (
+        pass_lines
+    )
+
+
+@pytest.mark.parametrize(
+    ("env", "expected", "forbidden"),
+    [
+        # This node, and the regression: 256 colours, no COLORTERM. A 24-bit
+        # sequence here made every warning and error message disappear.
+        ({"TERM": "xterm-256color"}, _ORANGE_256, _ORANGE_TRUECOLOR),
+        # A terminal that says it means it.
+        (
+            {"TERM": "xterm-256color", "COLORTERM": "truecolor"},
+            _ORANGE_TRUECOLOR,
+            _ORANGE_256,
+        ),
+        # Neither advertisement: fall all the way back to a 16-colour value that
+        # every terminal since the 1980s renders. Never to nothing.
+        ({"TERM": "vt100"}, _ORANGE_16, _ORANGE_TRUECOLOR),
+        # No TERM at all — `tput` cannot answer, and the answer must still be a
+        # colour rather than an empty string or a crash.
+        ({}, _ORANGE_16, _ORANGE_TRUECOLOR),
+    ],
+    ids=["256-colour", "truecolor", "16-colour", "no-TERM"],
+)
+def test_the_orange_TIER_matches_what_the_terminal_advertises(
+    tmp_path: Path, env: dict, expected: str, forbidden: str
+) -> None:
+    """Derived from the terminal, never assumed — and never degraded to nothing.
+
+    The 24-bit form is not universally renderable. Sent to a 256-colour terminal
+    it is not merely approximated, it is mis-parsed, and the text after it is
+    swallowed — which turned "the most urgent line on screen is hard to read"
+    into "the most urgent line on screen is absent".
+    """
+    roster = [("check_alpha", "FAIL_REPAIRABLE", "site", "endpoint unreachable")]
+    stub, _ = _write_stream_stub(tmp_path, roster, rc=1)
+    out = _run_status(stub, "--no-splash", expect_rc=2, env=env).stdout
+
+    detail = [ln for ln in out.splitlines() if "endpoint unreachable" in ln]
+    assert detail, out
+    assert all(expected in ln for ln in detail), detail
+    assert all(forbidden not in ln for ln in detail), detail
+
+
+def test_NO_COLOR_strips_the_orange_too(tmp_path: Path) -> None:
+    """A colour added is a colour --no-color must be able to remove."""
+    roster = [("check_alpha", "FAIL_REPAIRABLE", "site", "endpoint unreachable")]
+    stub, _ = _write_stream_stub(tmp_path, roster, rc=1)
+    out = _run_status(stub, "--no-color", "--no-splash", expect_rc=2).stdout
+    assert "\x1b[" not in out, out

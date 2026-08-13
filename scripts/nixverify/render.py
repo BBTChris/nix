@@ -271,6 +271,94 @@ class LiveProgress:  # pylint: disable=too-many-instance-attributes
             self._erase()
 
 
+class StreamProgress:
+    """One line per verdict, printed the moment the verdict lands (`--stream`).
+
+    ## Why this exists alongside `LiveProgress`
+
+    `LiveProgress` is a TTY-only, in-place repaint: it writes `\\r` + clear-line
+    and keeps ONE line on screen. That is the right surface for an operator
+    watching a terminal, and the wrong one for anything reading verify.py through
+    a pipe — `theme.colour` is `isatty()`, so a pipe silences it completely, and
+    the only output a pipe ever saw was the final block after the last check.
+
+    `nix_status.sh` is exactly that reader. It captured a run and could not show
+    a single verdict until the whole run finished. This class is the pipe-facing
+    half of the same fact: append-only, one flushed line per completed check,
+    identical whether the destination is a terminal or a FIFO.
+
+    ## What is measured and what is merely counted
+
+    - `result.duration_s` is stamped by `engine._timed` off `perf_counter`. It is
+      a MEASUREMENT of the check that just ran, not an estimate, and nothing here
+      recomputes it — this class formats a number the engine already produced.
+    - `n/total` counts completed checks against the registry's own total, the
+      same derived denominator `LiveProgress` uses. Add a check and the
+      denominator moves in the same motion; nothing is typed.
+
+    No remaining-time prediction appears here, for the reason `LiveProgress`
+    documents at length: the only available denominators for one would be last
+    run's timing (a moving anchor, §7.4) or a hand-typed constant (a restated
+    mutable fact, directive 3).
+
+    ## The `>>` sentinel, and why the final block is left alone
+
+    Every line starts with `>>`, a token `render_results` never emits. That keeps
+    the streamed lines and the end-of-run registry-order block (§6) mutually
+    unambiguous in one stream: a consumer that wants live output reads `>>`
+    lines, a consumer that wants the ordered block reads what it always read, and
+    neither has to know about the other. `--stream` therefore ADDS output and
+    removes none — nothing that parsed verify.py before parses differently now.
+    """
+
+    #: Name column width. Matches `_line()`'s 22 plus room for the longer
+    #: `check_*` names, so live lines and the final block read as one column.
+    _NAME_W = 30
+
+    def __init__(self, stream: IO[str], theme: Theme, total: int) -> None:
+        self._stream = stream
+        self._theme = theme
+        self._total = total
+        self._done = 0
+        # Parallel blocks call `check_verdict` from worker threads. The lock
+        # covers the counter increment AND the write, so two verdicts landing
+        # together can neither share a number nor interleave mid-line.
+        self._lock = threading.Lock()
+
+    def start(self) -> None:
+        """No-op. Nothing is animated; there is no thread to start."""
+
+    def check_start(self, name: str) -> None:
+        """No-op. A started check has no verdict yet, and only verdicts print.
+
+        Deliberate: announcing starts as well would double the line count and,
+        in a parallel block, interleave starts and verdicts into an order that
+        reads as though checks finished in an order they did not.
+        """
+
+    def check_verdict(self, result: CheckResult) -> None:
+        """Print this verdict now. Flushed, because a pipe is block-buffered.
+
+        The flush is the entire feature. Python buffers stdout in ~8 KiB blocks
+        when it is not a TTY, so an unflushed write would sit in userspace until
+        the run ended — reproducing, through a pipe, precisely the batch-at-the-
+        end behaviour this class exists to remove.
+        """
+        with self._lock:
+            self._done += 1
+            done = self._done
+            marker = self._theme.paint(result.status, self._theme.glyph(result.status))
+            counter = f"{done}/{self._total}"
+            self._stream.write(
+                f"  >> {marker} {result.name:<{self._NAME_W}} "
+                f"{counter:>7}  {result.duration_s:6.2f}s\n"
+            )
+            self._stream.flush()
+
+    def stop(self) -> None:
+        """No-op. Nothing was left half-painted; every line ended in a newline."""
+
+
 def render_summary(results: list[CheckResult], exit_code: int, theme: Theme) -> str:
     """Counts per state plus the process exit code."""
     counts = {status: 0 for status in Status}

@@ -49,6 +49,7 @@ from nixverify.registry import (  # pylint: disable=wrong-import-position
 )
 from nixverify.render import (  # pylint: disable=wrong-import-position
     LiveProgress,
+    StreamProgress,
     render_results,
     render_summary,
     theme_for,
@@ -73,7 +74,7 @@ class _RunObserver:
     anyone else's handlers.
     """
 
-    def __init__(self, plane2: Plane2, progress: LiveProgress) -> None:
+    def __init__(self, plane2: Plane2, progress: LiveProgress | StreamProgress) -> None:
         self._plane2 = plane2
         self._progress = progress
 
@@ -120,6 +121,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="permit INTERACTIVE checks — install.sh only, never a unit (§9.2)",
     )
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        help=(
+            "print each check's verdict and duration the moment it lands, "
+            "instead of only the block at the end; survives a pipe"
+        ),
+    )
     parser.add_argument(
         "--registry", default=str(NIX_HOME / "checks" / "registry.json")
     )
@@ -226,7 +235,15 @@ def main(argv: list[str] | None = None) -> int:
         allow_interactive=args.allow_interactive,
     )
     total = sum(len(block.checks) for block in blocks)
-    progress = LiveProgress(sys.stdout, theme, total)
+    # One progress surface, never two. `--stream` and the spinner are two
+    # renderings of the same fact — running both would put an append-only log and
+    # an in-place repaint on the same terminal, where the repaint's `\r` would
+    # overwrite whatever line the log had just committed.
+    progress: LiveProgress | StreamProgress = (
+        StreamProgress(sys.stdout, theme, total)
+        if args.stream
+        else LiveProgress(sys.stdout, theme, total)
+    )
     observer = _RunObserver(plane2, progress)
     progress.start()
     try:
