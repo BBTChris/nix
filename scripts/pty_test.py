@@ -99,7 +99,10 @@ r = subprocess.run([sys.executable, str(MON), "--once",
 chk("--once exit 0", r.returncode == 0, r.stderr[-300:])
 chk("--once frame", "NIX MONITOR" in r.stdout, r.stdout[:120])
 chk("--once no stderr", not r.stderr.strip(), r.stderr[-300:])
-maxlen = max(len(l) for l in r.stdout.splitlines())
+import re as _re
+_ansi = _re.compile(r"\x1b\[[0-9;]*m")
+def _vis(s): return len(_ansi.sub("", s))
+maxlen = max(_vis(l) for l in r.stdout.splitlines())
 chk("--once width honoured", maxlen == 100, maxlen)
 
 # piped stdout must auto-fall back to --once, never hang

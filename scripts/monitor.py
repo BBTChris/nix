@@ -769,16 +769,40 @@ def git_probe(repo: Path) -> dict:
         return out
 
     def run(args, timeout=4):
+        # -c safe.directory=* lets the probe read a repo git would otherwise
+        # reject for "dubious ownership" (common when the monitor runs as a
+        # different user than the repo owner). Read-only; changes nothing.
+        base = ["git", "-c", "safe.directory=" + str(repo),
+                "-c", "safe.directory=*", "-C", str(repo)]
         try:
-            r = subprocess.run(["git", "-C", str(repo)] + args,
-                               capture_output=True, text=True, timeout=timeout)
-            return r.stdout if r.returncode == 0 else None
-        except (subprocess.SubprocessError, OSError):
+            r = subprocess.run(base + args, capture_output=True, text=True,
+                               timeout=timeout)
+            if r.returncode == 0:
+                return r.stdout
+            run.last_err = (r.stderr or "").strip().splitlines()
             return None
+        except (subprocess.SubprocessError, OSError) as e:
+            run.last_err = [str(e)]
+            return None
+    run.last_err = []
 
     st = run(["status", "--porcelain"])
     if st is None:
-        out["error"] = "git status failed"
+        # surface the actual reason (first line) instead of a blank failure
+        why = run.last_err[0] if run.last_err else "unknown error"
+        # Bare repo / no working tree is a distinct, actionable failure: the
+        # monitor is pointed at a .git dir or a bare mirror, not the checkout.
+        low = why.lower()
+        if "work tree" in low or "bare" in low:
+            bare = run(["rev-parse", "--is-bare-repository"])
+            top = run(["rev-parse", "--show-toplevel"])
+            if top and top.strip():
+                out["error"] = "repo has no worktree here; checkout at " + top.strip()
+            else:
+                out["error"] = ("BARE REPO at %s - point --repo at the working "
+                                "checkout, not the .git dir" % repo)
+        else:
+            out["error"] = "git status failed: " + why[:60]
         return out
     out["ok"] = True
     out["modified"] = len([l for l in st.splitlines() if l.strip()])
@@ -940,7 +964,8 @@ class Monitor:
         if not self.tx.events and not self.tx.discovery_error:
             s["discovery"].append(
                 f"transcript: 0 events from {self.tx.files_seen} jsonl file(s)")
-        self.harvest_calibration()
+        # self.harvest_calibration()  # DISABLED: misfires on non-lockout text,
+        # produces false "calibrated 5h denom from lockout" lines and a bogus %.
 
         last_ts = self.tx.last_event_ts()
         s["last_event_age"] = (now - last_ts) if last_ts else None
@@ -950,13 +975,19 @@ class Monitor:
         s["jsonl_files"] = self.tx.files_seen
 
         # --- context ------------------------------------------------------
+        # The main conversation holds the real context; sub-agent sidechains
+        # carry almost none. Selecting by newest-activity alone picks a tiny
+        # sub-agent; selecting by newest NON-sidechain skips CC's live session
+        # when it carries isSidechain records (observed: reported 50% vs the
+        # real 80%). So pick the recently-active session with the LARGEST ctx.
         main_sess = None
         if self.tx.sessions:
-            main_sess = max(
-                (v for v in self.tx.sessions.values() if not v["sidechain"]),
-                key=lambda v: v["last"], default=None)
-            if main_sess is None:
-                main_sess = max(self.tx.sessions.values(), key=lambda v: v["last"])
+            # Largest ctx = the main conversation. Sub-agent sidechains never
+            # accumulate meaningful context, so ctx is a reliable discriminator
+            # regardless of the sidechain flag or which session logged most
+            # recently. Tie-break on recency.
+            main_sess = max(self.tx.sessions.values(),
+                            key=lambda v: (v["ctx"], v["last"]))
         s["cur_session"] = main_sess["id"][:8] if main_sess else None
         s["cur_model"] = _model_family(
             next((e["model"] for e in reversed(self.tx.events)
@@ -1307,7 +1338,7 @@ def clip(text: str, width: int) -> str:
 
 BOX_U = {"h": "\u2500", "v": "\u2502", "tl": "\u250c", "tr": "\u2510",
          "bl": "\u2514", "br": "\u2518", "lt": "\u251c", "rt": "\u2524",
-         "f": "\u2593", "e": "\u2591", "dot": "\u25cf", "chk": "\u2713",
+         "f": "\u2588", "e": "\u2592", "dot": "\u25cf", "chk": "\u2713",
          "arw": "\u25b8", "warn": "\u26a0"}
 BOX_A = {"h": "-", "v": "|", "tl": "+", "tr": "+", "bl": "+", "br": "+",
          "lt": "+", "rt": "+", "f": "#", "e": ".", "dot": "*", "chk": "v",
@@ -1315,6 +1346,48 @@ BOX_A = {"h": "-", "v": "|", "tl": "+", "tr": "+", "bl": "+", "br": "+",
 
 A_DIM, A_NORM, A_HDR = "dim", "norm", "hdr"
 A_OK, A_WARN, A_CRIT, A_INFO, A_ACCENT = "ok", "warn", "crit", "info", "accent"
+# NIX wordmark, transcribed verbatim from /etc/update-motd.d/99-nix-banner
+# (U+2588 FULL BLOCK glyphs, exact spacing). 24 cols x 6 rows.
+NIX_LOGO = [
+    '██      ██ ██ ██      ██',
+    '████    ██ ██   ██  ██  ',
+    '██  ██  ██ ██     ██    ',
+    '██    ████ ██     ██    ',
+    '██      ██ ██   ██  ██  ',
+    '██      ██ ██ ██      ██',
+]
+_LOGO_W = max(len(r) for r in NIX_LOGO)
+# Per-column gradient stops sampled off the reference artwork (pos%, R, G, B),
+# copied from the banner's GRAD_STOPS. Amber -> orange -> pink -> magenta.
+_LOGO_STOPS = [
+    (0, 240, 144, 32), (18, 240, 112, 32), (50, 240, 64, 112),
+    (68, 240, 64, 160), (85, 240, 64, 208), (100, 240, 64, 240),
+]
+
+
+def _logo_rgb(pos):
+    """Interpolate the banner gradient at pos (0..100) -> (r,g,b)."""
+    pos = max(0, min(100, pos))
+    stops = _LOGO_STOPS
+    pp, pr, pg, pb = stops[0]
+    for sp, sr, sg, sb in stops:
+        if pos <= sp:
+            span = sp - pp
+            if span <= 0:
+                return sr, sg, sb
+            f = pos - pp
+            return (pr + (sr - pr) * f // span,
+                    pg + (sg - pg) * f // span,
+                    pb + (sb - pb) * f // span)
+        pp, pr, pg, pb = sp, sr, sg, sb
+    return stops[-1][1:]
+
+
+# Precompute one truecolor SGR per column (logo width is fixed).
+_LOGO_COL_SGR = []
+for _c in range(_LOGO_W):
+    _r, _g, _b = _logo_rgb(_c * 100 // (_LOGO_W - 1) if _LOGO_W > 1 else 0)
+    _LOGO_COL_SGR.append("\033[1;38;2;{};{};{}m".format(_r, _g, _b))
 
 
 class Renderer:
@@ -1324,12 +1397,16 @@ class Renderer:
 
     # -- primitives --------------------------------------------------------
     def bar(self, frac: float | None, width: int) -> str:
-        if width <= 0:
+        # Splash-style: [████▒▒▒▒] - solid fill, medium-shade track, in brackets.
+        # Brackets consume 2 cols so the inner cell count is width-2.
+        if width <= 2:
             return ""
+        inner = width - 2
+        track = self.b["e"]           # medium shade so an unfilled bar is visible
         if frac is None:
-            return self.b["e"] * width
-        n = max(0, min(width, int(round(frac * width))))
-        return self.b["f"] * n + self.b["e"] * (width - n)
+            return "[" + track * inner + "]"
+        n = max(0, min(inner, int(round(frac * inner))))
+        return "[" + self.b["f"] * n + track * (inner - n) + "]"
 
     def rule(self, w: int, left: str, right: str, label: str = "",
              attr: str = A_DIM) -> list:
@@ -1370,6 +1447,30 @@ class Renderer:
                 [(" " * (inner - used), A_NORM), (self.b["v"], A_DIM)])
 
     # -- panels ------------------------------------------------------------
+    def logo_row(self, r: int) -> list:
+        """One row of the NIX wordmark. Block cells carry a per-column raw SGR
+        (truecolor gradient from the banner); the char used is the box "fill"
+        glyph so it also degrades under --ascii. Empty rows pad to logo width."""
+        if r >= len(NIX_LOGO):
+            return [(" " * _LOGO_W, A_NORM)]
+        row = NIX_LOGO[r].ljust(_LOGO_W)
+        glyph = "\u2588" if not self.ascii else "#"  # solid block, matches banner
+        segs = []
+        for x, ch in enumerate(row):
+            if ch == "\u2588" or ch == "#":
+                segs.append((glyph, ("\x1b" + _LOGO_COL_SGR[x][1:]) if not self.ascii
+                             else A_ACCENT))
+            else:
+                segs.append((" ", A_NORM))
+        # coalesce spaces for compactness
+        out, run = [], ""
+        for txt, attr in segs:
+            if attr == A_NORM and out and out[-1][1] == A_NORM:
+                out[-1] = (out[-1][0] + txt, A_NORM)
+            else:
+                out.append((txt, attr))
+        return out
+
     def render(self, s: dict, w: int, h: int) -> list:
         w = max(60, w)
         b, out = self.b, []
@@ -1385,30 +1486,49 @@ class Renderer:
         out.append(self.rule(w, b["tl"], b["tr"], f"{title} \u00b7 {host}"))
         arc = s["arc"]
         pid_s = f"PID {s['pid']}" if s["pid"] else "PID --"
-        out.append(self.row(w, [
-            (" ", A_NORM), (clip(arc.get("name") or "no arc", 24), A_ACCENT),
-            ("  ", A_NORM), (f"{pid_s:<11}", A_NORM),
-            (f"up {fmt_dur(s.get('uptime')):<9}", A_NORM),
-            (right, A_DIM),
-        ]))
-        # current live session line - this is THIS session, not history
         sess_id = s.get("cur_session")
-        if sess_id:
-            model = s.get("cur_model") or "?"
-            out.append(self.row(w, [
-                (" session ", A_DIM), (sess_id, A_ACCENT),
-                ("  model ", A_DIM), (model, A_INFO),
-                ("  ", A_NORM),
-                (f"ctx {fmt_tok(s['ctx_used'])}/{fmt_tok(s.get('ctx_limit') or CTX_LIMIT)}", A_DIM),
-            ]))
+        model = s.get("cur_model") or "?"
         ph, why = s["phase"]
         pattr = {PHASE_STALL: A_CRIT, PHASE_DEAD: A_CRIT, PHASE_NOPROC: A_CRIT,
                  PHASE_DONE: A_OK, PHASE_IDLE: A_WARN,
                  PHASE_COMPACT: A_WARN}.get(ph, A_INFO)
-        out.append(self.row(w, [
-            (" PHASE ", A_DIM), (b["arw"] + " ", pattr), (f"{ph}", pattr),
-            (": ", A_DIM), (clip(why, max(0, w - 22 - len(ph))), A_NORM),
-        ]))
+
+        # The header text lines (built once), placed to the RIGHT of the logo.
+        text_rows = [
+            [(clip(arc.get("name") or "no arc", 24), A_ACCENT),
+             ("  ", A_NORM), (f"{pid_s:<11}", A_NORM),
+             (f"up {fmt_dur(s.get('uptime')):<9}", A_NORM), (right, A_DIM)],
+        ]
+        if sess_id:
+            text_rows.append([
+                ("session ", A_DIM), (sess_id, A_ACCENT),
+                ("  model ", A_DIM), (model, A_INFO), ("  ", A_NORM),
+                (f"ctx {fmt_tok(s['ctx_used'])}/{fmt_tok(s.get('ctx_limit') or CTX_LIMIT)}", A_DIM)])
+        text_rows.append([
+            ("PHASE ", A_DIM), (b["arw"] + " ", pattr), (f"{ph}", pattr),
+            (": ", A_DIM), (why, A_NORM)])
+
+        # Logo occupies the left gutter; header text sits beside it. Only when
+        # the terminal is wide enough (else fall back to plain stacked header).
+        logo_cols = _LOGO_W + 2   # glyph width + a small gutter
+        if w >= 92:
+            nrows = max(len(NIX_LOGO), len(text_rows))
+            # vertically center the (shorter) text block against the logo
+            pad_top = (len(NIX_LOGO) - len(text_rows)) // 2
+            for i in range(len(NIX_LOGO)):
+                lseg = self.logo_row(i)
+                ti = i - pad_top
+                tseg = text_rows[ti] if 0 <= ti < len(text_rows) else []
+                lseg_fit, lused = self.fit([(" ", A_NORM)] + lseg, logo_cols)
+                gap = logo_cols - lused
+                inner = max(0, w - 2)
+                body, bused = self.fit(lseg_fit + [(" " * (gap + 1), A_NORM)] + tseg,
+                                       inner)
+                out.append([(b["v"], A_DIM)] + body
+                           + [(" " * (inner - bused), A_NORM), (b["v"], A_DIM)])
+        else:
+            for tr in text_rows:
+                out.append(self.row(w, [(" ", A_NORM)] + tr))
 
         # discovery failures --------------------------------------------------
         if s["discovery"]:
@@ -1430,21 +1550,7 @@ class Renderer:
                        (b["v"], A_DIM)] + rseg + [(" " * (rw - rused), A_NORM),
                        (b["v"], A_DIM)])
 
-        # collision warning ---------------------------------------------------
-        cap = s.get("cap_eta")
-        if s.get("cap_over"):
-            calib = s["g5"].calibrated or s["gw"].calibrated
-            msg = ("ESTIMATE EXCEEDED - past the "
-                   + ("calibrated denominator" if calib
-                      else "PRIOR (prior is unreliable, not necessarily the cap)"))
-            out.append(self.row(w, [(" " + b["warn"] + " ", A_CRIT),
-                                    (msg, A_CRIT if calib else A_WARN)]))
-        elif cap is not None and cap < 3 * 3600:
-            # burn-rate projection to the USAGE cap (a limit warning, not a
-            # task-completion estimate) - checkpoint before a lockout
-            msg = f"APPROACHING USAGE CAP in ~{fmt_dur(cap, True)} - checkpoint soon"
-            out.append(self.row(w, [(" " + b["warn"] + " ", A_CRIT),
-                                    (msg, A_WARN)]))
+        # (no usage-cap collision banner: real cap state is not knowable locally)
 
         # agents ---------------------------------------------------------------
         out.append(self.rule(w, b["lt"], b["rt"], "AGENTS"))
@@ -1527,7 +1633,7 @@ class Renderer:
             pre = p.get("gates_pre") or 0
             out.append([(" gates    ", A_NORM),
                         (self.bar(gp / gt, bw), A_INFO),
-                        (f" {gp}/{gt} ", A_NORM),
+                        (f" {gp}/{gt} {gp / gt * 100:.0f}% ", A_NORM),
                         (f"{p['gate_basis']}", A_DIM),
                         (f" ({pre} pre)" if pre else "", A_DIM)])
         else:
@@ -1540,7 +1646,8 @@ class Renderer:
             done, total = tp["done"], tp["total"]
             frac = done / total if total else None
             out.append([(" tasks    ", A_NORM), (self.bar(frac, bw), A_INFO),
-                        (f" {done}/{total}", A_NORM)])
+                        (f" {done}/{total}" + (f" {frac * 100:.0f}%" if frac is not None else ""),
+                         A_NORM)])
             ip = tp.get("in_progress")
             pd = tp.get("pending")
             if ip is not None and pd is not None:
@@ -1550,13 +1657,14 @@ class Renderer:
                             (f"{self.b['e']}{pd}", A_DIM)])
         elif tt:
             out.append([(" todos    ", A_NORM), (self.bar(td / tt, bw), A_INFO),
-                        (f" {td}/{tt}", A_NORM)])
+                        (f" {td}/{tt} {td / tt * 100:.0f}%", A_NORM)])
         # context
         cu, cl = s["ctx_used"], s.get("ctx_limit") or CTX_LIMIT
         cf = cu / cl if cu else None
         cattr = A_CRIT if (cf or 0) > 0.9 else A_WARN if (cf or 0) > 0.75 else A_OK
         out.append([(" context  ", A_NORM), (self.bar(cf, bw), cattr),
-                    (f" {fmt_tok(cu)}/{fmt_tok(cl)}", cattr)])
+                    (f" {fmt_tok(cu)}/{fmt_tok(cl)}", cattr),
+                    (f" {cf * 100:.0f}%" if cf is not None else "", cattr)])
         # whole-job ETA (time remaining)
         if p["eta"]:
             out.append([(" JOB left ", A_NORM),
@@ -1578,35 +1686,29 @@ class Renderer:
         return [[(clip(t, w), a) for t, a in row] for row in out]
 
     def _limits_col(self, s: dict, w: int, now: float) -> list:
+        # Claude Code does not persist its real 5h/weekly usage anywhere the
+        # monitor can read (verified: not in transcript, cache, daemon, or CLI).
+        # A percentage bar here would be a guess against a placeholder prior and
+        # would silently disagree with Claude Code's own statusline. Per the
+        # vacuous-pass rule we DO NOT show a confident wrong number: a %% is
+        # shown ONLY when calibrated from an observed lockout (real denominator).
+        # Otherwise we show the honest measurables (burn rate, reset clocks) and
+        # point at the statusline for the authoritative figure.
         out = []
         bw = max(6, min(12, w - 30))
-        note = "  (local est; excl. claude.ai)" if w >= 46 else "  (local est)"
-        out.append([(" LIMITS", A_HDR), (note if w >= 28 else "", A_DIM)])
+        out.append([(" LIMITS", A_HDR),
+                    ("  (usage: see CC statusline)" if w >= 44 else "", A_DIM)])
         for lab, g, reset in (("5h", s["g5"], s["reset5"]),
                               ("week", s["gw"], s["reset_week"])):
-            pct = g.pct
-            frac = None if pct is None else min(1.0, pct / 100.0)
-            attr = (A_DIM if pct is None else
-                    A_CRIT if pct >= 90 else A_WARN if pct >= 80 else
-                    A_INFO if pct >= 60 else A_OK)
-            overrun = pct is not None and pct > 100.0
-            tail = "UNCAL" if pct is None else (
-                ">100%" if overrun else f"{pct:.0f}%")
-            out.append([(f" {lab:<5}", A_NORM), (self.bar(frac, bw), attr),
-                        (f" {tail:>5} ", attr),
-                        (f"{fmt_tok(g.used)}wt", A_DIM)])
-            if overrun and g.basis == "prior":
-                basis = ("PRIOR TOO LOW", A_CRIT)
-            else:
-                basis = (g.basis_label(now),
-                         A_DIM if g.calibrated else A_WARN)
-            out.append([("       reset ", A_DIM), (fmt_reset(reset, now), A_NORM),
-                        ("  ", A_NORM), basis])
-        out.append([(f" burn  {fmt_tok(s['burn'])}wt/h", A_NORM)])
-        if s.get("cap_over"):
-            out.append([(" cap   ESTIMATE EXCEEDED", A_CRIT)])
-        elif s.get("cap_eta") is not None:
-            out.append([(f" cap in {fmt_dur(s['cap_eta'], True)}", A_WARN)])
+            # No bar for 5h/week: the real usage % lives only in Claude Code's
+            # process (see CC statusline). We show the measured token burn and
+            # the reset clock — no empty/fabricated bar.
+            out.append([(f" {lab:<5}", A_NORM),
+                        (f" {fmt_tok(g.used)}wt used", A_DIM)])
+            if reset is not None:
+                out.append([("       reset ", A_DIM), (fmt_reset(reset, now), A_NORM)])
+        out.append([(f" burn  {fmt_tok(s['burn'])}wt/h", A_DIM)])
+        out.append([(" real 5h/weekly %: Claude Code statusline", A_DIM)])
         return [[(clip(t, w), a) for t, a in row] for row in out]
 
 
@@ -1629,7 +1731,7 @@ def run_tui(mon: Monitor, cfg: dict) -> int:
                 bg = -1
             except curses.error:
                 bg = curses.COLOR_BLACK
-            spec = [(A_NORM, curses.COLOR_WHITE), (A_DIM, curses.COLOR_WHITE),
+            spec = [(A_NORM, curses.COLOR_WHITE), (A_DIM, curses.COLOR_YELLOW),
                     (A_HDR, curses.COLOR_CYAN), (A_OK, curses.COLOR_GREEN),
                     (A_WARN, curses.COLOR_YELLOW), (A_CRIT, curses.COLOR_RED),
                     (A_INFO, curses.COLOR_CYAN), (A_ACCENT, curses.COLOR_MAGENTA)]
@@ -1639,10 +1741,38 @@ def run_tui(mon: Monitor, cfg: dict) -> int:
                     pairs[name] = curses.color_pair(i)
                 except curses.error:
                     pairs[name] = curses.A_NORMAL
-            pairs[A_DIM] |= curses.A_DIM
             pairs[A_HDR] |= curses.A_BOLD
             pairs[A_CRIT] |= curses.A_BOLD
         attr_of = lambda a: pairs.get(a, curses.A_NORMAL)
+        # Dynamic truecolor for logo gradient. Attr strings that start with ESC
+        # are raw SGR ("\x1b[1;38;2;R;G;Bm"); map each unique color to its own
+        # curses pair when the terminal can do it, else fall back to magenta.
+        _dyn = {}
+        _can_rgb = curses.has_colors() and getattr(curses, "can_change_color", lambda: False)() and curses.COLORS >= 256
+        import re as _re
+        _rgb_re = _re.compile(r"38;2;(\d+);(\d+);(\d+)")
+        _next_slot = [max(1, len(pairs)) + 1]
+
+        def _attr_for(a):
+            if not (isinstance(a, str) and a.startswith("\x1b")):
+                return pairs.get(a, curses.A_NORMAL)
+            if a in _dyn:
+                return _dyn[a]
+            m = _rgb_re.search(a)
+            if not m or not _can_rgb:
+                _dyn[a] = pairs.get(A_ACCENT, curses.A_NORMAL) | curses.A_BOLD
+                return _dyn[a]
+            r, g, b = (int(v) for v in m.groups())
+            try:
+                slot = _next_slot[0]; _next_slot[0] += 1
+                if slot >= curses.COLORS or slot >= curses.COLOR_PAIRS:
+                    raise curses.error
+                curses.init_color(slot, r * 1000 // 255, g * 1000 // 255, b * 1000 // 255)
+                curses.init_pair(slot, slot, bg)
+                _dyn[a] = curses.color_pair(slot) | curses.A_BOLD
+            except curses.error:
+                _dyn[a] = pairs.get(A_ACCENT, curses.A_NORMAL) | curses.A_BOLD
+            return _dyn[a]
 
         rend = Renderer(bool(cfg["ascii"]))
         paused = False
@@ -1680,7 +1810,8 @@ def run_tui(mon: Monitor, cfg: dict) -> int:
                         if x >= w - 1:
                             break
                         try:
-                            stdscr.addnstr(y, x, text, max(0, w - 1 - x), attr_of(a))
+                            stdscr.addnstr(y, x, text, max(0, w - 1 - x),
+                                           _attr_for(a))
                         except curses.error:
                             pass
                         x += len(text)
@@ -1736,7 +1867,13 @@ def run_once(mon: Monitor, cfg: dict, width: int | None = None) -> int:
     w = width or shutil.get_terminal_size((100, 40)).columns
     rend = Renderer(bool(cfg["ascii"]))
     for segs in rend.render(s, w, 10_000):
-        sys.stdout.write("".join(t for t, _ in segs) + "\n")
+        parts = []
+        for txt, a in segs:
+            if isinstance(a, str) and a.startswith("\x1b"):
+                parts.append(a + txt + "\x1b[0m")
+            else:
+                parts.append(txt)
+        sys.stdout.write("".join(parts) + "\n")
     return 0
 
 
