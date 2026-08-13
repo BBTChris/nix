@@ -22,6 +22,7 @@ only READ it.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -648,13 +649,31 @@ def test_NONVACUITY_the_real_trees_owner_lineage_is_derived_from_COMMITTED_blobs
     history = gate._committed_history(REPO)
     assert not history.error, history.error
     assert len(history.revisions) > 1, "the ratchet's own file has a history"
+    # COMMITTED vs COMMITTED, and the asymmetry is ARC 029 / 0.5's finding. This
+    # read the WORKING baseline and compared its owner to the last COMMITTED one,
+    # which makes any re-owning unlandable: the assertion is false from the moment
+    # the file is edited until the commit that would make it true, and pre-commit
+    # runs the suite before that commit exists. 0.5 re-pointed sixteen owners off
+    # a completed arc — the repair the gate's own verdict demanded — and could not
+    # commit it. The lineage is derived from history, so the value it is held
+    # against must come from history too.
+    head_blob, head_error = gate._git(  # pylint: disable=protected-access
+        REPO, "show", f"HEAD:{gate.BASELINE}"
+    )
+    assert not head_error, head_error
+    committed = json.loads(head_blob)
     working = json.loads((REPO / gate.BASELINE).read_text(encoding="utf-8"))
     lengths = []
-    for path, row in working["artifacts"].items():
+    for path, row in committed["artifacts"].items():
         lineage = gate._row_lineage(history, path)
         assert lineage, f"{path}: no committed lineage at all"
         assert lineage[-1] == row["owner"], (path, lineage, row["owner"])
         lengths.append(len(lineage))
+    # The WORKING tree is still held to the shape rule — one arc identifier, never
+    # a range and never a phrase — which is the property `guard_owner_defect`
+    # enforces and which must hold whether or not an edit is in flight.
+    for path, row in working["artifacts"].items():
+        assert re.fullmatch(r"ARC \d+", row["owner"]), (path, row["owner"])
     assert max(lengths) > 1, (
         "no row's lineage exceeds one value, so the derivation is reading the "
         "working tree rather than committed blobs and the ceiling arm is off"
@@ -1096,11 +1115,48 @@ def test_NONVACUITY_the_classifier_DISCRIMINATES_on_the_real_tree() -> None:
     payload = json.loads((REPO / gate.BASELINE).read_text(encoding="utf-8"))
     named = gate._named_by_tests(REPO, sorted(payload["artifacts"]))
     unnamed = sorted(path for path, hits in named.items() if not hits)
-    assert unnamed, "no row is named by nothing — the classifier says yes to all"
-    assert len(unnamed) < len(named), "no row is named by anything — it says no to all"
+
+    # THE LIVE-TREE ARM: every row's stored classification agrees with what the
+    # classifier derives right now. This is the invariant that stays meaningful
+    # however healthy the tree becomes.
     for path, row in payload["artifacts"].items():
         expected = "none" if path in unnamed else "tests"
         assert row["measured_by"] == expected, (path, row["measured_by"], expected)
+
+
+def test_NONVACUITY_the_classifier_DISCRIMINATES_on_a_CONSTRUCTED_tree(
+    tmp_path: Path,
+) -> None:
+    """The discrimination proof, moved off the live tree — ARC 029 / 0.5.
+
+    **This control used to assert that the REAL baseline contained at least one
+    row named by nothing, and 0.5 broke it by covering the last one.** That is
+    the wrong dependency: a non-vacuity arm anchored to a DEFECT in the live tree
+    dies exactly when the tree improves, so the suite would have punished the
+    repair and the cheapest way back to green would have been to un-cover an
+    artifact. Measured, in this arc, by it happening.
+
+    The property — the classifier answers differently for a named path and an
+    unnamed one, so the field carries information — is proven here against a
+    CONSTRUCTED tree that holds both cases by construction. D3.100's rule again:
+    an instrument whose input is the ambient state measures the ambient state.
+    """
+    tests_dir = tmp_path / "scripts" / "tests"
+    tests_dir.mkdir(parents=True)
+    (tmp_path / "some_module.py").parent.mkdir(parents=True, exist_ok=True)
+    (tests_dir / "test_names_one.py").write_text(
+        '"""A control that names some_module.py and nothing else."""\n',
+        encoding="utf-8",
+    )
+
+    named = gate._named_by_tests(  # pylint: disable=protected-access
+        tmp_path, ["some_module.py", "never_mentioned_anywhere.py"]
+    )
+    assert named["some_module.py"], "a path a test module names read as unnamed"
+    assert not named["never_mentioned_anywhere.py"], (
+        "a path NO test module mentions read as named — the classifier says yes "
+        "to everything and the field carries no information"
+    )
 
 
 def test_PLANT_assigning_the_guard_to_the_ARC_IN_FLIGHT_is_REJECTED_naming_the_row(
