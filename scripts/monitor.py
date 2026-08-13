@@ -1315,18 +1315,48 @@ BOX_A = {"h": "-", "v": "|", "tl": "+", "tr": "+", "bl": "+", "br": "+",
 
 A_DIM, A_NORM, A_HDR = "dim", "norm", "hdr"
 A_OK, A_WARN, A_CRIT, A_INFO, A_ACCENT = "ok", "warn", "crit", "info", "accent"
-# NIX wordmark gradient columns (orange -> red -> magenta), from the SSH splash
-A_LOGO1, A_LOGO2, A_LOGO3, A_LOGO4 = "logo1", "logo2", "logo3", "logo4"
-# 5-row block glyphs; '#'=cell. Compact so it sits beside the header in <=100 cols.
+# NIX wordmark, transcribed verbatim from /etc/update-motd.d/99-nix-banner
+# (U+2588 FULL BLOCK glyphs, exact spacing). 24 cols x 6 rows.
 NIX_LOGO = [
-    "#   # ### #   #",
-    "##  #  #   # # ",
-    "# # #  #   ##  ",
-    "#  ##  #   # # ",
-    "#   # ### #   #",
+    '██      ██ ██ ██      ██',
+    '████    ██ ██   ██  ██  ',
+    '██  ██  ██ ██     ██    ',
+    '██    ████ ██     ██    ',
+    '██      ██ ██   ██  ██  ',
+    '██      ██ ██ ██      ██',
 ]
 _LOGO_W = max(len(r) for r in NIX_LOGO)
-_LOGO_ATTRS = (A_LOGO1, A_LOGO2, A_LOGO3, A_LOGO4)
+# Per-column gradient stops sampled off the reference artwork (pos%, R, G, B),
+# copied from the banner's GRAD_STOPS. Amber -> orange -> pink -> magenta.
+_LOGO_STOPS = [
+    (0, 240, 144, 32), (18, 240, 112, 32), (50, 240, 64, 112),
+    (68, 240, 64, 160), (85, 240, 64, 208), (100, 240, 64, 240),
+]
+
+
+def _logo_rgb(pos):
+    """Interpolate the banner gradient at pos (0..100) -> (r,g,b)."""
+    pos = max(0, min(100, pos))
+    stops = _LOGO_STOPS
+    pp, pr, pg, pb = stops[0]
+    for sp, sr, sg, sb in stops:
+        if pos <= sp:
+            span = sp - pp
+            if span <= 0:
+                return sr, sg, sb
+            f = pos - pp
+            return (pr + (sr - pr) * f // span,
+                    pg + (sg - pg) * f // span,
+                    pb + (sb - pb) * f // span)
+        pp, pr, pg, pb = sp, sr, sg, sb
+    return stops[-1][1:]
+
+
+# Precompute one truecolor SGR per column (logo width is fixed).
+_LOGO_COL_SGR = []
+for _c in range(_LOGO_W):
+    _r, _g, _b = _logo_rgb(_c * 100 // (_LOGO_W - 1) if _LOGO_W > 1 else 0)
+    _LOGO_COL_SGR.append("\033[1;38;2;{};{};{}m".format(_r, _g, _b))
 
 
 class Renderer:
@@ -1383,27 +1413,28 @@ class Renderer:
 
     # -- panels ------------------------------------------------------------
     def logo_row(self, r: int) -> list:
-        """One row of the NIX wordmark as colored segments (empty if out of range)."""
+        """One row of the NIX wordmark. Block cells carry a per-column raw SGR
+        (truecolor gradient from the banner); the char used is the box "fill"
+        glyph so it also degrades under --ascii. Empty rows pad to logo width."""
         if r >= len(NIX_LOGO):
-            return [("              ", A_NORM)]
+            return [(" " * _LOGO_W, A_NORM)]
         row = NIX_LOGO[r].ljust(_LOGO_W)
-        segs, run, run_attr = [], "", None
+        glyph = self.b["f"]        # U+2593 normally, "#" under --ascii
+        segs = []
         for x, ch in enumerate(row):
-            if ch == "#":
-                idx = min(len(_LOGO_ATTRS) - 1, int(x / _LOGO_W * len(_LOGO_ATTRS)))
-                a = _LOGO_ATTRS[idx]
-                glyph = self.b["f"]
+            if ch == "\u2588" or ch == "#":
+                segs.append((glyph, ("\x1b" + _LOGO_COL_SGR[x][1:]) if not self.ascii
+                             else A_ACCENT))
             else:
-                a, glyph = A_NORM, " "
-            if a == run_attr:
-                run += glyph
+                segs.append((" ", A_NORM))
+        # coalesce spaces for compactness
+        out, run = [], ""
+        for txt, attr in segs:
+            if attr == A_NORM and out and out[-1][1] == A_NORM:
+                out[-1] = (out[-1][0] + txt, A_NORM)
             else:
-                if run:
-                    segs.append((run, run_attr))
-                run, run_attr = glyph, a
-        if run:
-            segs.append((run, run_attr))
-        return segs
+                out.append((txt, attr))
+        return out
 
     def render(self, s: dict, w: int, h: int) -> list:
         w = max(60, w)
@@ -1445,7 +1476,7 @@ class Renderer:
         # Logo occupies the left gutter; header text sits beside it. Only when
         # the terminal is wide enough (else fall back to plain stacked header).
         logo_cols = _LOGO_W + 2   # glyph width + a small gutter
-        if w >= 88:
+        if w >= 92:
             nrows = max(len(NIX_LOGO), len(text_rows))
             # vertically center the (shorter) text block against the logo
             pad_top = (len(NIX_LOGO) - len(text_rows)) // 2
@@ -1692,15 +1723,10 @@ def run_tui(mon: Monitor, cfg: dict) -> int:
                 bg = -1
             except curses.error:
                 bg = curses.COLOR_BLACK
-            has256 = curses.COLORS >= 256
-            L1, L2, L3, L4 = ((208, 202, 199, 201) if has256
-                              else (curses.COLOR_YELLOW, curses.COLOR_RED,
-                                    curses.COLOR_MAGENTA, curses.COLOR_MAGENTA))
             spec = [(A_NORM, curses.COLOR_WHITE), (A_DIM, curses.COLOR_WHITE),
                     (A_HDR, curses.COLOR_CYAN), (A_OK, curses.COLOR_GREEN),
                     (A_WARN, curses.COLOR_YELLOW), (A_CRIT, curses.COLOR_RED),
-                    (A_INFO, curses.COLOR_CYAN), (A_ACCENT, curses.COLOR_MAGENTA),
-                    (A_LOGO1, L1), (A_LOGO2, L2), (A_LOGO3, L3), (A_LOGO4, L4)]
+                    (A_INFO, curses.COLOR_CYAN), (A_ACCENT, curses.COLOR_MAGENTA)]
             for i, (name, col) in enumerate(spec, start=1):
                 try:
                     curses.init_pair(i, col, bg)
@@ -1711,6 +1737,35 @@ def run_tui(mon: Monitor, cfg: dict) -> int:
             pairs[A_HDR] |= curses.A_BOLD
             pairs[A_CRIT] |= curses.A_BOLD
         attr_of = lambda a: pairs.get(a, curses.A_NORMAL)
+        # Dynamic truecolor for logo gradient. Attr strings that start with ESC
+        # are raw SGR ("\x1b[1;38;2;R;G;Bm"); map each unique color to its own
+        # curses pair when the terminal can do it, else fall back to magenta.
+        _dyn = {}
+        _can_rgb = curses.has_colors() and getattr(curses, "can_change_color", lambda: False)() and curses.COLORS >= 256
+        import re as _re
+        _rgb_re = _re.compile(r"38;2;(\d+);(\d+);(\d+)")
+        _next_slot = [max(1, len(pairs)) + 1]
+
+        def _attr_for(a):
+            if not (isinstance(a, str) and a.startswith("\x1b")):
+                return pairs.get(a, curses.A_NORMAL)
+            if a in _dyn:
+                return _dyn[a]
+            m = _rgb_re.search(a)
+            if not m or not _can_rgb:
+                _dyn[a] = pairs.get(A_ACCENT, curses.A_NORMAL) | curses.A_BOLD
+                return _dyn[a]
+            r, g, b = (int(v) for v in m.groups())
+            try:
+                slot = _next_slot[0]; _next_slot[0] += 1
+                if slot >= curses.COLORS or slot >= curses.COLOR_PAIRS:
+                    raise curses.error
+                curses.init_color(slot, r * 1000 // 255, g * 1000 // 255, b * 1000 // 255)
+                curses.init_pair(slot, slot, bg)
+                _dyn[a] = curses.color_pair(slot) | curses.A_BOLD
+            except curses.error:
+                _dyn[a] = pairs.get(A_ACCENT, curses.A_NORMAL) | curses.A_BOLD
+            return _dyn[a]
 
         rend = Renderer(bool(cfg["ascii"]))
         paused = False
@@ -1748,7 +1803,8 @@ def run_tui(mon: Monitor, cfg: dict) -> int:
                         if x >= w - 1:
                             break
                         try:
-                            stdscr.addnstr(y, x, text, max(0, w - 1 - x), attr_of(a))
+                            stdscr.addnstr(y, x, text, max(0, w - 1 - x),
+                                           _attr_for(a))
                         except curses.error:
                             pass
                         x += len(text)
@@ -1804,7 +1860,13 @@ def run_once(mon: Monitor, cfg: dict, width: int | None = None) -> int:
     w = width or shutil.get_terminal_size((100, 40)).columns
     rend = Renderer(bool(cfg["ascii"]))
     for segs in rend.render(s, w, 10_000):
-        sys.stdout.write("".join(t for t, _ in segs) + "\n")
+        parts = []
+        for txt, a in segs:
+            if isinstance(a, str) and a.startswith("\x1b"):
+                parts.append(a + txt + "\x1b[0m")
+            else:
+                parts.append(txt)
+        sys.stdout.write("".join(parts) + "\n")
     return 0
 
 
