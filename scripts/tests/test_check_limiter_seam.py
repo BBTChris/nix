@@ -462,3 +462,129 @@ def test_an_ABSENT_LEDGER_is_CANNOT_MEASURE_never_a_PASS(home: Path) -> None:
     result = _run(home)
     assert result.status is Status.CANNOT_MEASURE, result
     assert "SPEC-AMENDMENTS" in result.detail, result.detail
+
+
+# --------------------------------------------------------------------------
+# ARC 029 / 0.6 — THE EXIT SEAM, and one plant per DECLARED PROPERTY.
+#
+# The brief required this explicitly, because ARC 028 measured the gap: that
+# arc's seam gate PASSED on all four ledger verbs rewritten `async def` and on a
+# DELETED FIELD. A frozen declaration nothing can falsify is documentation.
+#
+# Every case below mutates the seam in the copied tree and asserts the gate goes
+# red naming the thing that moved. A property with no row here is a property this
+# gate does not actually hold.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "expected"),
+    [
+        # ARM 4 — the §3 exit-trigger set, both directions.
+        ('    ORPHAN = "orphan"\n', "", "ORPHAN"),
+        (
+            '    SENTINEL = "sentinel"\n',
+            '    SENTINEL = "sentinel"\n    INVENTED = "invented"\n',
+            "INVENTED",
+        ),
+        # ARM 5 — a required field deleted. ARC 028's exact blind spot.
+        ("    net_liq: float\n", "", "net_liq"),
+        ("    cash: float\n", "", "cash"),
+        ("    initial_distance_ticks: int\n", "", "initial_distance_ticks"),
+        ("    trail_distance_ticks: int\n", "", "trail_distance_ticks"),
+        ("    anchor: float\n", "", "anchor"),
+        ("    activated: bool\n", "", "activated"),
+        (
+            (
+                "    positions: tuple[PositionRow, ...]\n    balance: float\n"
+                "    polled_at: float\n"
+            ),
+            "    balance: float\n    polled_at: float\n",
+            "positions",
+        ),
+        (
+            "    balance: float\n    polled_at: float\n",
+            "    polled_at: float\n",
+            "balance",
+        ),
+        # ARM 5 over the PRE-EXISTING atomic snapshot — §3 enumerates these, and
+        # until 0.6 deleting one was silent.
+        ("    sum_open_margin: float\n", "", "sum_open_margin"),
+        ("    sum_reservations: float\n", "", "sum_reservations"),
+        ("    deployable: float\n", "", "deployable"),
+        # ARM 3 — an exit-path verb rewritten asynchronous, one per new port.
+        (
+            "    def maintain(self, symbol: str, price: float)",
+            "    async def maintain(self, symbol: str, price: float)",
+            "maintain",
+        ),
+        (
+            "    def read(self) -> SurvivalReading:",
+            "    async def read(self) -> SurvivalReading:",
+            "read",
+        ),
+        (
+            "    def query_truth(self) -> BrokerTruth:",
+            "    async def query_truth(self) -> BrokerTruth:",
+            "query_truth",
+        ),
+        (
+            "    def registration_admitted(self) -> bool:",
+            "    async def registration_admitted(self) -> bool:",
+            "registration_admitted",
+        ),
+    ],
+    ids=[
+        "trigger-deleted",
+        "trigger-unspecced",
+        "field-net_liq",
+        "field-cash",
+        "field-initial_distance",
+        "field-trail_distance",
+        "field-anchor",
+        "field-activated",
+        "field-positions",
+        "field-balance",
+        "picture-sum_open_margin",
+        "picture-sum_reservations",
+        "picture-deployable",
+        "async-StopBookPort.maintain",
+        "async-SurvivalWatchPort.read",
+        "async-ColdStartPort.query_truth",
+        "async-ColdStartPort.registration_admitted",
+    ],
+)
+def test_EVERY_DECLARED_EXIT_PROPERTY_reddens_the_gate(
+    home: Path, old: str, new: str, expected: str
+) -> None:
+    """One plant per declared property; each must be NAMED in the verdict.
+
+    Naming matters as much as reddening: a gate that says "something changed"
+    sends a reader to diff a 700-line file, and the value of this instrument is
+    that it says WHICH member, WHICH field, WHICH verb (doctrine C.2).
+    """
+    seam = _seam(home)
+    source = seam.read_text(encoding="utf-8")
+    assert old in source, f"the plant anchor {old!r} is not in the seam"
+    seam.write_text(source.replace(old, new, 1), encoding="utf-8")
+
+    result = _run(home)
+
+    assert result.status is not Status.PASS, (
+        f"the seam gate PASSED with {expected} changed — this declared property "
+        "is not held by any arm, which is ARC 028's finding recurring"
+    )
+    assert expected in (result.site + result.detail), (
+        f"the gate reddened without naming {expected}: {result.site} {result.detail}"
+    )
+
+
+def test_the_UNPLANTED_copy_is_GREEN_so_the_matrix_measures_the_plants(
+    home: Path,
+) -> None:
+    """The control for the matrix above: the same tree, unmutated, passes.
+
+    Without it every row could be reddening on something the copy does to the
+    tree rather than on the plant — the matrix would be measuring the fixture.
+    """
+    assert _run(home).status is Status.PASS, _run(home)

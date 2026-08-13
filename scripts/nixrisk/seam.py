@@ -45,6 +45,21 @@ opposite, and it is not a style choice.**
   `enqueue` returning without durability is what §12.4 needs in order to keep
   trading through a Postgres outage.
 
+* **`StopBookPort` — SYNCHRONOUS.** Per-tick stop maintenance is §11's hot path:
+  cache reads and arithmetic. An awaitable `maintain` puts a suspension point
+  between reading a price and ratcheting the stop that price implies, so a fill
+  could be serviced in between and the stop would ratchet against a position that
+  no longer exists — the fill-vs-tick race again, one layer out.
+* **`SurvivalWatchPort` — SYNCHRONOUS.** The net-liq watch fires a protective
+  flatten, and §14 gives the protective path ZERO wire dependency. A coroutine
+  needs a running loop to make progress; a synchronous read needs nothing, which
+  is what lets the exit fire when the bus is down.
+* **`ColdStartPort` — SYNCHRONOUS, and here it is an ORDERING property.** No
+  strategy may register until the provably-flat assertion has passed (§4, V34).
+  An awaitable admission gate is a window during which a registration can
+  interleave, which would admit a strategy against unproven state — and `restart
+  = flat, always` is not a preference that tolerates a race.
+
 The one asynchronous surface the Limiter owns is **outbound send**, and it is
 already declared elsewhere: §10's "outbound exit connectivity cannot [be a
 separate process] ⇒ broker-order in-process, async sender", satisfied by
@@ -439,3 +454,199 @@ class Plane1Port(Protocol):
 
     def pending(self) -> int:
         """Rows enqueued but not yet durable. A §12.4 disk-critical input."""
+
+
+# ---------------------------------------------------------------------------
+# THE EXIT HALF — declarations only (ARC 029 / 0.6)
+#
+# §14's locked invariants this section is accountable to:
+#   * every uncertainty resolves toward FLAT; known state beats optimal state;
+#   * the exit/protective path has ZERO wire/delivery dependency;
+#   * restart = flat, ALWAYS;
+#   * detection may live anywhere, EXECUTION of any flatten is Limiter-only;
+#   * survival is watched on NET-LIQ, sizing is computed on CASH. Never conflate.
+#
+# **These stops are SYNTHETIC and that is not a limitation to be discovered
+# later.** §12.1: this is our software, not a broker-side stop, and that
+# prohibition stands. A synthetic stop dies with the process holding it. The
+# Sentinel is what covers that gap and the Sentinel is R4 — so until it exists, a
+# killed Risk Engine is an unprotected position, and nothing declared here may be
+# read as implying otherwise.
+#
+# NOTHING BELOW CARRIES BEHAVIOUR. Every callable is a Protocol method with no
+# body or a property over its own fields; `check_limiter_seam` ARM 2 fails this
+# file the moment that stops being true.
+# ---------------------------------------------------------------------------
+
+
+class FlattenTrigger(enum.Enum):
+    """§3's protective-exit trigger set, TRANSCRIBED and closed.
+
+    Verbatim, §3:169: "Limiter (synthetic stop / stale price / net-liq floor /
+    session close / uncertainty / orphan / sentinel)".
+
+    Like `TerminalPath` this is the SPEC's list and not the implementation's. A
+    trigger the implementation reaches that §3 does not name is a finding about
+    the spec to be reported — the rule ARC 028 obeyed for `HALT_ONSET` and the
+    architect then ratified as SPEC-A7 rather than a member quietly added.
+
+    Two members are declared and deliberately NOT built in this arc, which is
+    stated here so a reader cannot mistake declaration for capability:
+    `SESSION_CLOSE` needs the session calendar (R4) and `SENTINEL` needs the
+    Sentinel (R4). Declaring the trigger fixes the vocabulary; it does not claim
+    the mechanism.
+    """
+
+    SYNTHETIC_STOP = "synthetic_stop"
+    STALE_PRICE = "stale_price"
+    NET_LIQ_FLOOR = "net_liq_floor"
+    SESSION_CLOSE = "session_close"
+    UNCERTAINTY = "uncertainty"
+    ORPHAN = "orphan"
+    SENTINEL = "sentinel"
+
+
+@dataclass(frozen=True)
+class StopState:
+    """One synthetic stop, as the Limiter holds it in memory (§4, V33).
+
+    **`initial_distance_ticks` and `trail_distance_ticks` are DISTANCES; `level`
+    is the only price.** The GO carries intent as a tick distance because the
+    strategy signals before it knows its fill (§4), so a distance stays valid
+    through slippage where an absolute price would land on the wrong side of
+    entry. Conversion happens ONCE, at confirmed fill, and `anchor` records the
+    fill it was converted against — without it a re-conversion could silently use
+    a different price and no field would disagree.
+
+    `activated` is the trailing-mode latch and it is a FIELD rather than a
+    derived predicate on purpose: §4's activation rule is that a trailing stop
+    holds at its initial level until price advances far enough that the trail
+    distance would sit TIGHTER than the initial stop, and only then begins
+    trailing. A stop that recomputed activation from the current price each tick
+    could de-activate on a retrace and give ground back, which is the one thing a
+    ratchet must never do.
+    """
+
+    client_order_id: str
+    symbol: str
+    side: Side
+    mode: StopMode
+    initial_distance_ticks: int
+    trail_distance_ticks: int
+    anchor: float
+    level: float
+    high_water: float
+    activated: bool
+
+
+class StopBookPort(Protocol):
+    """Where synthetic stops live. SYNCHRONOUS — see the module docstring.
+
+    Per-tick maintenance is §11's hot path: cache reads and arithmetic. An
+    `async def` here would put a suspension point between reading a price and
+    ratcheting the stop that price implies, which is the fill-vs-tick race §5
+    eliminates by construction.
+    """
+
+    def arm(self, fill_price: float, order: ProposedOrder) -> StopState:
+        """Convert distance -> price ONCE, at confirmed fill (§4)."""
+
+    def maintain(self, symbol: str, price: float) -> tuple[StopState, ...]:
+        """Ratchet every stop this price moves. Never logged per tick (§12.10)."""
+
+    def breached(self, symbol: str, price: float) -> tuple[StopState, ...]:
+        """Stops this price has taken out. Reading, never firing."""
+
+    def forget(self, client_order_id: str) -> None:
+        """Drop a stop whose position is closed."""
+
+
+@dataclass(frozen=True)
+class SurvivalReading:
+    """§6.5's net-liq watch, and §15 C2's rule made structural.
+
+    **`net_liq` and `cash` are separate fields because conflating them is the
+    defect.** Survival is watched on net-liq — the broker liquidates on net-liq,
+    and net-liq erodes with price while cash does not — but sizing is computed on
+    cash. A single "equity" field would let one be read where the other was meant
+    and nothing would disagree. `unrealized` is carried so the two can be shown
+    to differ, which is the only way a test can prove the watch tracks the right
+    one (a reading where net_liq == cash proves nothing about the distinction).
+    """
+
+    net_liq: float
+    cash: float
+    unrealized: float
+    floor: float
+    taken_at: float
+
+    @property
+    def breached(self) -> bool:
+        """Is the survival floor breached? Net-liq against the floor, never cash."""
+        return self.net_liq < self.floor
+
+
+class SurvivalWatchPort(Protocol):
+    """The standing watch on the open book (§6.5). SYNCHRONOUS.
+
+    Not the pre-trade headroom rule — that is Phase B's, already built. This is
+    the watch that fires a protective flatten on a breach, and it is synchronous
+    for the same reason the rest of the gate path is: it runs inside §5's single
+    authoritative pass.
+    """
+
+    def read(self) -> SurvivalReading:
+        """The current reading. Broker-authoritative, per §4."""
+
+    def floor(self) -> float:
+        """The configured survival floor (§12A tunable, boot-loaded)."""
+
+
+@dataclass(frozen=True)
+class BrokerTruth:
+    """What the broker says is true, at cold start (§4, V34).
+
+    At cold start local state is empty and TRUSTLESS: the broker's answer IS the
+    record, not a reconciliation against one. Both halves are pulled in the same
+    motion — §4 requires balance AND positions from one poll, because a balance
+    read at one instant against positions read at another is exactly the stale
+    -balance tear §3's atomicity rule exists to prevent.
+    """
+
+    positions: tuple[PositionRow, ...]
+    balance: float
+    polled_at: float
+
+    @property
+    def is_flat(self) -> bool:
+        """Provably flat means NO open position, not a small one."""
+        return not self.positions
+
+
+class ColdStartPort(Protocol):
+    """§4's cold-start reconciliation. SYNCHRONOUS — and it GATES registration.
+
+    Synchronous because the property is an ordering one: no strategy may register
+    until a provably-flat assertion has passed, and an awaitable admission gate is
+    a suspension point during which a registration could interleave. `restart =
+    flat, always` (§14) is not a preference — an inherited position is never
+    adopted and never reasoned about, however profitable.
+
+    **`flatten_to_flat` is declared and its MARKET-TRADABLE guard is declared with
+    it.** Flatten fires market orders; if the box comes up to an open position
+    while the market is closed or halted, the system does not fire into a shut
+    market — it holds in HALT with a loud alert and flattens the instant the
+    market is tradable (§4, D4).
+    """
+
+    def query_truth(self) -> BrokerTruth:
+        """Poll the broker for the true position set and balance, together."""
+
+    def market_tradable(self) -> bool:
+        """May a market order be fired right now? Closed/halted ⇒ False."""
+
+    def flatten_to_flat(self, truth: BrokerTruth) -> tuple[FlattenTrigger, ...]:
+        """Flatten every inherited position. Never adopt, never reason about."""
+
+    def registration_admitted(self) -> bool:
+        """Has the provably-flat assertion passed? Gates every registration."""

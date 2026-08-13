@@ -37,6 +37,7 @@ implementation obeys it.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import re
 from pathlib import Path
 from typing import NamedTuple
@@ -458,6 +459,343 @@ def _module_scope_async(
     ]
 
 
+#: The §3 line naming the protective-exit trigger set, ARC 029 / 0.6. Anchored on
+#: "Limiter (" at the head of §3's EXIT / PROTECTIVE PATH block so a renamed or
+#: moved block is a complaint rather than an empty expected set.
+_EXIT_TRIGGER_LINE = re.compile(r"^Limiter \((?P<triggers>[^)]*)\)", re.MULTILINE)
+
+#: ARM 5's reference, and the honest note that goes with it.
+#:
+#: **This IS a constant in the gate, unlike ARM 1's roster, and the difference is
+#: stated rather than glossed.** §3 enumerates its release paths and its exit
+#: triggers in sentences a parser can read, so those arms derive. It does NOT
+#: enumerate the fields of a stop record or a survival reading — no sentence
+#: exists to parse — so the requirement below is HUMAN-DERIVED from the cited
+#: invariant and carries that citation in its own text.
+#:
+#: It earns its place because ARC 028 measured the gap it closes: the seam gate
+#: passed on a DELETED FIELD. Every entry names the invariant that would be
+#: unprovable if the field vanished, so a reader can check the derivation rather
+#: than trust it.
+_REQUIRED_FIELDS: tuple[tuple[str, str, str], ...] = (
+    (
+        "SurvivalReading",
+        "net_liq",
+        "§15 C2 — survival is watched on NET-LIQ; the broker liquidates on it",
+    ),
+    (
+        "SurvivalReading",
+        "cash",
+        (
+            "§15 C2 — sizing is computed on CASH, and conflating the two is the "
+            "defect the two fields exist to make impossible"
+        ),
+    ),
+    (
+        "StopState",
+        "initial_distance_ticks",
+        "§4 — the GO carries stop intent as a tick DISTANCE, never a price",
+    ),
+    (
+        "StopState",
+        "trail_distance_ticks",
+        "§4 — trailing needs a second distance, or activation cannot be computed",
+    ),
+    (
+        "StopState",
+        "anchor",
+        (
+            "§4 — conversion happens ONCE at confirmed fill; without the anchor a "
+            "re-conversion could use a different price and no field would disagree"
+        ),
+    ),
+    (
+        "StopState",
+        "activated",
+        (
+            "§4 — the trailing latch. Recomputed each tick it could de-activate on "
+            "a retrace and give ground back, which a ratchet must never do"
+        ),
+    ),
+    # §3's FULL FINANCIAL-PICTURE PUBLISH enumerates these by name, and ARC 029 /
+    # 0.6 measured that deleting one was SILENT — the plant matrix aimed at
+    # BrokerTruth.positions hit FinancialPicture.positions first and NOTHING
+    # reddened. That is ARC 028's deleted-field gap living in the type this seam
+    # has carried since it was written, not just in the exit half added today.
+    (
+        "FinancialPicture",
+        "balance",
+        (
+            "§3 — the picture publishes account BALANCE (live) as part of ONE "
+            "atomic snapshot; without it a consumer computes headroom off a "
+            "balance it fetched separately, which the atomicity rule forbids"
+        ),
+    ),
+    (
+        "FinancialPicture",
+        "positions",
+        (
+            "§3 — per-position rows keyed by trade_id, every position in whatever "
+            "state it is in, are half of what makes the snapshot complete"
+        ),
+    ),
+    (
+        "FinancialPicture",
+        "sum_open_margin",
+        "§3 — Σ open margin is published, never recomputed by a consumer",
+    ),
+    (
+        "FinancialPicture",
+        "sum_reservations",
+        "§3 — Σ reservations is a §11.3 running aggregate the Allocator mirrors",
+    ),
+    (
+        "FinancialPicture",
+        "committed",
+        "§3 — committed liquidity is published as a field",
+    ),
+    (
+        "FinancialPicture",
+        "deployable",
+        "§3 — uncommitted (deployable) liquidity is the figure sizing reads",
+    ),
+    (
+        "BrokerTruth",
+        "positions",
+        "§4 — cold start pulls the true open-position SET as ground truth",
+    ),
+    (
+        "BrokerTruth",
+        "balance",
+        (
+            "§4 — balance and positions come from ONE poll; two reads is the "
+            "stale-balance tear §3's atomicity rule forbids"
+        ),
+    ),
+)
+
+
+def spec_exit_triggers(home: Path) -> tuple[frozenset[str], str]:
+    """§3's protective-exit trigger set, parsed from the frozen spec (ARM 4)."""
+    spec = home / SPEC
+    if not spec.is_file():
+        return frozenset(), f"{SPEC} is not on disk — the reference side is absent"
+    match = _EXIT_TRIGGER_LINE.search(spec.read_text(encoding="utf-8"))
+    if match is None:
+        return frozenset(), (
+            f"{SPEC}: §3's EXIT / PROTECTIVE PATH line was renamed or moved, so "
+            "this arm has no reference side and an empty expected set would "
+            "compare green against anything"
+        )
+    parts = [part for part in match.group("triggers").split("/") if part.strip()]
+    return frozenset(_phrase_to_member(part) for part in parts), ""
+
+
+def exit_trigger_defects(
+    expected: frozenset[str], declared: frozenset[str]
+) -> list[tuple[str, str]]:
+    """ARM 4's comparison, both directions, each naming the member."""
+    defects = [
+        (
+            f"{SEAM}:FlattenTrigger",
+            (
+                f"§3 names a protective-exit trigger {missing} that the seam "
+                "does not declare — a trigger the spec requires and the Limiter "
+                "cannot name"
+            ),
+        )
+        for missing in sorted(expected - declared)
+    ]
+    defects.extend(
+        (f"{SEAM}:FlattenTrigger.{extra}", _UNSPECCED_PATH)
+        for extra in sorted(declared - expected)
+    )
+    return defects
+
+
+def required_field_defects(tree: ast.Module) -> list[tuple[str, str]]:
+    """ARM 5: a declared type is missing a field its invariant needs.
+
+    ARC 028's measured gap — the seam gate passed on a DELETED FIELD — and the
+    reason this arm exists at all. A field removed from a frozen value type is a
+    silent change: nothing fails to import, no verdict changes shape, and the
+    invariant it carried simply stops being expressible.
+    """
+    present: dict[str, set[str]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            present[node.name] = {
+                item.target.id
+                for item in node.body
+                if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name)
+            }
+    defects: list[tuple[str, str]] = []
+    for cls, field_name, citation in _REQUIRED_FIELDS:
+        if cls not in present:
+            defects.append((f"{SEAM}:{cls}", f"declared type is GONE — {citation}"))
+        elif field_name not in present[cls]:
+            defects.append(
+                (
+                    f"{SEAM}:{cls}.{field_name}",
+                    f"required field is absent — {citation}",
+                )
+            )
+    return defects
+
+
+# Eight fields because five arms measured eight things. The threshold is about
+# behavioural classes accreting state; this is a frozen record with no behaviour,
+# and dropping a field to satisfy a count would LOSE A MEASUREMENT from the
+# verdict's evidence — the same reasoning seam.py carries for its value types.
+@dataclasses.dataclass(frozen=True)
+class SeamReading:  # pylint: disable=too-many-instance-attributes
+    """Everything the five arms measured, in one record.
+
+    A record rather than seven arguments threaded through `run`: the arms grew
+    from three to five in ARC 029 / 0.6 and both the argument count and the local
+    count went over their ceilings in the same motion. Those ceilings are a real
+    constraint on how much one function may hold, and the honest answer to
+    "too many locals" is fewer things, not a wider limit.
+    """
+
+    expected: frozenset[str]
+    declared: frozenset[str]
+    triggers: frozenset[str]
+    declared_triggers: frozenset[str]
+    classified: int
+    behaviour: list[tuple[str, str]]
+    verbs: int
+    synchrony: list[tuple[str, str]]
+
+
+def _measure(
+    home: Path, sides: tuple[ast.Module, frozenset[str], frozenset[str]]
+) -> tuple[list[tuple[str, str]], SeamReading | None, CheckResult | None]:
+    """Run all five arms. `(defects, reading, refusal)`; one of the last two is set.
+
+    Extracted from `run` in ARC 029 / 0.6. Five arms produce eight measurements,
+    and `run` went over the complexity, local-variable and return-count ceilings
+    as they landed. The honest response to "too many locals" is fewer things in
+    one place, not a wider limit.
+    """
+    tree, expected, declared = sides
+    defects = terminal_path_defects(expected, declared)
+
+    exit_defects, counts, exit_refusal = exit_arms(home, tree)
+    if exit_refusal is not None:
+        return defects, None, exit_refusal
+    defects.extend(exit_defects)
+
+    behaviour, classified = behaviour_defects(tree)
+    defects.extend(behaviour)
+    synchrony, verbs = synchrony_defects(tree)
+    defects.extend(synchrony)
+
+    floor = _floor_refusal(classified, verbs, defects)
+    if floor is not None:
+        return defects, None, floor
+
+    return (
+        defects,
+        SeamReading(
+            expected=expected,
+            declared=declared,
+            triggers=counts[0],
+            declared_triggers=counts[1],
+            classified=classified,
+            behaviour=behaviour,
+            verbs=verbs,
+            synchrony=synchrony,
+        ),
+        None,
+    )
+
+
+def _floor_refusal(
+    classified: int, verbs: int, defects: list[tuple[str, str]]
+) -> CheckResult | None:
+    """The two non-vacuity floors, or `None`. Extracted in ARC 029 / 0.6.
+
+    **The verb floor fires ONLY when nothing was positively observed**, and that
+    condition is load-bearing rather than cosmetic: §17 says a positively-observed
+    defect outranks masking, and the first spelling of this rule returned
+    CANNOT_MEASURE while THROWING AWAY defects arms 1 and 2 had already found —
+    a gate discarding its own measurement in order to report that it could not
+    measure.
+    """
+    if classified < MIN_CALLABLES:
+        return _cannot_measure(
+            f"{SEAM}: classified only {classified} callable(s), below the "
+            f"floor of {MIN_CALLABLES} — the AST walk found almost nothing, "
+            "so a clean sheet here would be about an empty scan"
+        )
+    if verbs < MIN_DECLARED_VERBS and not defects:
+        return _cannot_measure(
+            f"{SEAM}: the sync/async declaration reached only {verbs} verb(s), "
+            f"below the floor of {MIN_DECLARED_VERBS} — the docstring's "
+            "declaration section was renamed or the ports are gone, and a "
+            "clean sheet would be about an empty reading"
+        )
+    return None
+
+
+def _evidence(reading: SeamReading) -> str:
+    """The verdict's evidence line, built in one place.
+
+    Extracted from `run` in ARC 029 / 0.6 to keep it under the complexity and
+    local-variable ceilings — the arms grew from three to five and the line
+    naming what each measured grew with them.
+
+    **The relation is COMPUTED, never spelled.** ARC 029 / 0.4 measured this line
+    printing `6 == TerminalPath members 5` on a run that was RED for exactly that
+    inequality — a verdict's own evidence asserting the agreement the verdict was
+    denying, in the one place a reader looks when told something is wrong.
+    """
+    relation = "==" if len(reading.expected) == len(reading.declared) else "!="
+    return (
+        f"§3 release paths {len(reading.expected)} {relation} TerminalPath members "
+        f"{len(reading.declared)} [{', '.join(sorted(reading.expected))}]; "
+        f"{reading.classified} callable(s) classified, "
+        f"{len(reading.behaviour)} carrying behaviour; "
+        f"{reading.verbs} verb(s) held against the seam's own sync/async "
+        f"declaration, {len(reading.synchrony)} disagreeing; "
+        f"§3 exit triggers {len(reading.triggers)} vs FlattenTrigger "
+        f"{len(reading.declared_triggers)}; {len(_REQUIRED_FIELDS)} required field(s) "
+        "held against their cited invariants; "
+        f"parsed at run time from {SPEC} unioned with {AMENDMENTS}, not from "
+        "a constant in this gate"
+    )
+
+
+def exit_arms(
+    home: Path, tree: ast.Module
+) -> tuple[
+    list[tuple[str, str]], tuple[frozenset[str], frozenset[str]], CheckResult | None
+]:
+    """ARM 4 and ARM 5 together. `(defects, (expected, declared), refusal)`.
+
+    One helper for two arms because they share a refusal shape: either can find
+    its reference side missing, and in both cases the honest verdict is
+    CANNOT_MEASURE rather than a comparison against an empty set.
+    """
+    triggers, complaint = spec_exit_triggers(home)
+    if complaint:
+        return [], (frozenset(), frozenset()), _cannot_measure(complaint)
+    declared = _enum_members(tree, "FlattenTrigger")
+    if not declared:
+        return (
+            [],
+            (frozenset(), frozenset()),
+            _cannot_measure(
+                f"{SEAM}: no FlattenTrigger enum — §3's protective-exit trigger "
+                "set has no measured side"
+            ),
+        )
+    defects = exit_trigger_defects(triggers, declared)
+    defects.extend(required_field_defects(tree))
+    return defects, (triggers, declared), None
+
+
 def terminal_path_defects(
     expected: frozenset[str], declared: frozenset[str]
 ) -> list[tuple[str, str]]:
@@ -492,50 +830,14 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
                 f"{SEAM}: neither a reading nor a refusal — the gate's own "
                 "pre-flight returned nothing, which is never a verdict"
             )
-        tree, expected, declared = sides
-
-        defects = terminal_path_defects(expected, declared)
-
-        behaviour, classified = behaviour_defects(tree)
-        if classified < MIN_CALLABLES:
+        defects, reading, refusal = _measure(ctx.nix_home, sides)
+        if refusal is not None:
+            return refusal
+        if reading is None:  # pragma: no cover - `_measure` sets exactly one
             return _cannot_measure(
-                f"{SEAM}: classified only {classified} callable(s), below the "
-                f"floor of {MIN_CALLABLES} — the AST walk found almost nothing, "
-                "so a clean sheet here would be about an empty scan"
+                f"{SEAM}: measurement returned neither a reading nor a refusal"
             )
-        defects.extend(behaviour)
-
-        synchrony, verbs = synchrony_defects(tree)
-        defects.extend(synchrony)
-        if verbs < MIN_DECLARED_VERBS and not defects:
-            # The floor fires ONLY when there is nothing positively observed to
-            # report. §17: a positively-observed defect outranks masking -- the
-            # first spelling returned CANNOT_MEASURE here and THREW AWAY defects
-            # arms 1 and 2 had already found, which is a gate discarding its own
-            # measurement to report that it could not measure.
-            return _cannot_measure(
-                f"{SEAM}: the sync/async declaration reached only {verbs} verb(s), "
-                f"below the floor of {MIN_DECLARED_VERBS} — the docstring's "
-                "declaration section was renamed or the ports are gone, and a "
-                "clean sheet would be about an empty reading"
-            )
-
-        # The relation is COMPUTED, never spelled. ARC 029 / 0.4 measured this
-        # line printing `6 == TerminalPath members 5` on a run that was RED for
-        # exactly that inequality — a verdict's own evidence asserting the
-        # agreement the verdict was denying. A hardcoded operator in an evidence
-        # string is a restated fact (directive 3) in the one place a reader looks
-        # when the gate has just told them something is wrong.
-        relation = "==" if len(expected) == len(declared) else "!="
-        evidence = (
-            f"§3 release paths {len(expected)} {relation} TerminalPath members "
-            f"{len(declared)} [{', '.join(sorted(expected))}]; "
-            f"{classified} callable(s) classified, {len(behaviour)} carrying behaviour; "
-            f"{verbs} verb(s) held against the seam's own sync/async declaration, "
-            f"{len(synchrony)} disagreeing; "
-            f"parsed at run time from {SPEC} unioned with {AMENDMENTS}, not from "
-            "a constant in this gate"
-        )
+        evidence = _evidence(reading)
         if defects:
             return CheckResult(
                 name=NAME,
