@@ -466,9 +466,31 @@ def test_the_REAL_baselines_owner_is_a_single_arc_AND_THE_GATE_AGREES_WITH_THE_R
             assert f"{gate.BASELINE}:artifacts:{path}:owner" in result.detail, path
         assert "ALREADY COMPLETED" in result.detail, result.detail
     else:
-        assert result.status in (Status.GUARDED, Status.PASS), result
-        if result.status is Status.GUARDED:
-            assert result.guard_owner in set(owners.values()), result
+        # ARC 029 / 0.5: a live owner is necessary and no longer sufficient. The
+        # re-owning CEILING can escalate GUARDED to FAIL even when every owner is
+        # a live arc, so the expected verdict is DERIVED from the committed
+        # lineage rather than assumed to be the healthy one.
+        from nixverify.contract import (  # pylint: disable=import-outside-toplevel
+            GUARD_REOWN_CEILING,
+        )
+
+        history = gate._committed_history(REPO)  # pylint: disable=protected-access
+        assert not history.error, history.error
+        over = {
+            path
+            for path in owners
+            if len(gate._row_lineage(history, path)) - 1  # pylint: disable=protected-access
+            > GUARD_REOWN_CEILING
+        }
+        if over:
+            assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+            assert "ceiling" in result.detail, result.detail
+            for path in over:
+                assert path in result.detail, path
+        else:
+            assert result.status in (Status.GUARDED, Status.PASS), result
+            if result.status is Status.GUARDED:
+                assert result.guard_owner in set(owners.values()), result
 
 
 def test_PLANT_a_baseline_owner_that_has_ALREADY_COMPLETED_is_CANNOT_MEASURE(
@@ -865,6 +887,16 @@ def test_the_LIVE_guard_on_the_real_tree_has_EXHAUSTED_its_ceiling() -> None:
     retrofit arc (ARC 025+)...` -> `ARC 025` -> `ARC 027` — and is therefore AT
     the ceiling. ARC 028 cannot re-point it: that move is the third re-owning and
     this gate now FAILs on it. The guard gets discharged or it goes red.
+
+    **ARC 029 / 0.5 MADE THAT MOVE, and this control now covers both states.**
+    Thirteen artifacts were re-pointed off the COMPLETED `ARC 027` to `ARC 030` —
+    which the gate's own CANNOT_MEASURE verdict had instructed — and the ceiling
+    fired: `... -> 'ARC 025' -> 'ARC 027' -> 'ARC 030'` is the fourth owner, three
+    re-ownings, one over. The red is KEPT (D3.104) rather than reverted, because
+    reverting restores a completed arc as owner and that is the masking this gate
+    exists to refuse. So the assertion is no longer "everything is exactly AT the
+    ceiling": it is that nothing has gone DOWN, and that anything OVER is already
+    reported as a defect rather than waiting for a further move.
     """
     from nixverify.contract import GUARD_REOWN_CEILING, reowning_defect
 
@@ -882,11 +914,23 @@ def test_the_LIVE_guard_on_the_real_tree_has_EXHAUSTED_its_ceiling() -> None:
         "laundered them, and either is the alarm this test exists to raise"
     )
     for path, lineage in exhausted.items():
-        assert len(lineage) - 1 == GUARD_REOWN_CEILING, (path, lineage)
-        assert reowning_defect(lineage) == "", "at the ceiling is not over it"
-        assert reowning_defect((*lineage, "ARC 029")) != "", (
-            f"{path}: the next re-owning must be a FAIL"
-        )
+        moves = len(lineage) - 1
+        if moves == GUARD_REOWN_CEILING:
+            assert reowning_defect(lineage) == "", "at the ceiling is not over it"
+            assert reowning_defect((*lineage, "ARC 999")) != "", (
+                f"{path}: the next re-owning must be a FAIL"
+            )
+        else:
+            # OVER the ceiling — measured in ARC 029 / 0.5, when thirteen of these
+            # were re-pointed off the completed ARC 027 to a fourth owner. The
+            # ruling's whole point is that this state is not tolerable, so the
+            # defect must already be reported rather than waiting for a next move.
+            assert moves > GUARD_REOWN_CEILING, (path, lineage)
+            assert reowning_defect(lineage) != "", (
+                f"{path}: {moves} re-ownings exceeds the ceiling of "
+                f"{GUARD_REOWN_CEILING} and the rule reported nothing — the "
+                "ceiling is off"
+            )
 
 
 # ===========================================================================
