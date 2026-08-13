@@ -216,7 +216,55 @@ def test_real_verify_py_mode_is_discoverable() -> None:
         timeout=60,
         check=True,
     )
-    assert re.search(r"--mode\s+\{[^}]*\bverify\b[^}]*\}", proc.stdout), proc.stdout
+    # ANSI is STRIPPED FIRST, exactly as `nix_status.sh` strips it before
+    # deriving — this asserts the property the wrapper actually relies on.
+    #
+    # ARC 029 / 0.3. Python 3.14's argparse COLOURISES help, and it honours
+    # FORCE_COLOR even when stdout is a pipe. This environment sets FORCE_COLOR=3,
+    # under which the real output reads
+    # `[36m--mode [33m{verify,correct,install}[0m` — so a regex anchored on
+    # `--mode\s+\{` matched on the runner that happened not to export the variable
+    # and failed on the one that did. Same bytes, same commit, verdict decided by
+    # an environment variable: the class 0.1 opened, in a third instrument.
+    #
+    # The WRAPPER was never at risk and that was measured rather than assumed:
+    # `check_verify_only_flag` builds `help_plain` through `strip_ansi` before
+    # `derive_mode_invocation` ever sees it. Stripping here makes the test measure
+    # the same text the shipped derivation reads.
+    plain = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", proc.stdout)
+    assert re.search(r"--mode\s+\{[^}]*\bverify\b[^}]*\}", plain), plain
+
+
+def test_the_WRAPPER_derives_its_invocation_from_COLOURISED_help() -> None:
+    """The end-to-end property, driven under the environment that breaks a parser.
+
+    Pinned separately from the test above because the two can fail for different
+    reasons: that one asks whether verify.py still OFFERS `--mode verify`, this
+    one asks whether the wrapper can still FIND it when argparse paints the text.
+    A `nix_status.sh` that could not would refuse to invoke verify.py at all and
+    report a dashboard over a run that never happened — check 3 failing closed,
+    which is safe and still wrong.
+    """
+    stub_free_env = {
+        "PATH": "/usr/bin:/bin:/usr/local/bin",
+        "HOME": str(Path.home()),
+        "NIX_PYTHON": sys.executable,
+        "FORCE_COLOR": "3",
+    }
+    proc = subprocess.run(  # nosec B603 - fixed argv, repo-local path
+        [sys.executable, str(VERIFY_PY), "--help"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+        env=stub_free_env,
+    )
+    assert "\x1b[" in proc.stdout, (
+        "argparse did not colourise under FORCE_COLOR=3, so this control is no "
+        "longer exercising the condition it was written for"
+    )
+    plain = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", proc.stdout)
+    assert re.search(r"--mode\s+\{[^}]*\bverify\b[^}]*\}", plain)
 
 
 def test_all_registered_checks_are_covered(tmp_path: Path) -> None:
