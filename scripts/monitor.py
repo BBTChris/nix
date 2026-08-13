@@ -141,7 +141,9 @@ def _parse_tpb_eta(txt):
 USAGE_SNAPSHOT_DEFAULT = os.path.expanduser("~/.claude/nix-usage.json")
 # Mirror the plugin's own freshness gate (externalUsageFreshnessMs default 5min):
 # a stale snapshot is worse than none, so we ignore anything older than this.
-USAGE_SNAPSHOT_MAX_AGE = 300.0
+USAGE_SNAPSHOT_MAX_AGE = 300.0     # <= this: shown live, no tag
+USAGE_SNAPSHOT_STALE_MAX = 3600.0  # 5min..1hr: shown with a stale age tag;
+#                                    older than this the value is dropped entirely.
 
 
 def read_usage_snapshot(path=None, now=None):
@@ -174,8 +176,8 @@ def read_usage_snapshot(path=None, now=None):
             return None
 
     ua = _epoch(d.get("updated_at"))
-    if ua is None or (now - ua) > USAGE_SNAPSHOT_MAX_AGE:
-        return None  # missing or stale -> caller falls back to statusline pointer
+    if ua is None or (now - ua) > USAGE_SNAPSHOT_STALE_MAX:
+        return None  # missing, unparseable, or too old to trust even labeled
 
     def _win(w):
         if not isinstance(w, dict):
@@ -1756,8 +1758,19 @@ class Renderer:
         out = []
         bw = max(6, min(12, w - 30))
         snap = s.get("usage_snapshot")
-        src = "  (usage: claude-hud snapshot)" if snap else "  (usage: see CC statusline)"
+        fresh = snap and snap.get("age", 0) <= USAGE_SNAPSHOT_MAX_AGE
+        if snap and fresh:
+            src = "  (usage: claude-hud snapshot)"
+        elif snap:
+            src = "  (usage: snapshot, stale)"
+        else:
+            src = "  (usage: see CC statusline)"
         out.append([(" LIMITS", A_HDR), (src if w >= 44 else "", A_DIM)])
+        # a dim age tag appended to a stale bar so the number is never mistaken
+        # for live; percentages here move slowly so a labelled 60% ·12m is useful.
+        stale_tag = ""
+        if snap and not fresh:
+            stale_tag = " \u00b7" + fmt_dur(snap.get("age", 0), True)
         for lab, g, reset, pct, sreset in (
                 ("5h", s["g5"], s["reset5"],
                  snap["five_pct"] if snap else None, snap and snap["five_reset"]),
@@ -1765,10 +1778,11 @@ class Renderer:
                  snap["seven_pct"] if snap else None, snap and snap["seven_reset"])):
             if pct is not None:
                 frac = min(1.0, pct / 100.0)
-                attr = (A_CRIT if pct >= 90 else A_WARN if pct >= 80
+                base = (A_CRIT if pct >= 90 else A_WARN if pct >= 80
                         else A_INFO if pct >= 60 else A_OK)
+                attr = base if fresh else A_DIM   # dim the whole row when stale
                 out.append([(f" {lab:<5}", A_NORM), (self.bar(frac, bw), attr),
-                            (f" {pct:.0f}%", attr)])
+                            (f" {pct:.0f}%{stale_tag}", attr)])
                 r = sreset if sreset else reset
                 if r is not None:
                     out.append([("       reset ", A_DIM), (fmt_reset(r, now), A_NORM)])
@@ -1781,8 +1795,6 @@ class Renderer:
         out.append([(f" burn  {fmt_tok(s['burn'])}wt/h", A_DIM)])
         if not snap:
             out.append([(" real 5h/weekly %: Claude Code statusline", A_DIM)])
-        elif snap.get("age", 0) > 60:
-            out.append([(f" snapshot {int(snap['age'])}s old", A_DIM)])
         return [[(clip(t, w), a) for t, a in row] for row in out]
 
 

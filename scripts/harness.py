@@ -523,13 +523,22 @@ chk("4O reader parses 5h", d and d["five_pct"] == 60.0, d)
 chk("4O reader parses 7d", d and d["seven_pct"] == 86.0, d)
 # stale snapshot is rejected
 stale = _tf.mktemp(suffix=".json")
-_old = _dt.fromtimestamp(_now.timestamp() - 3600, _tz.utc)
+_old = _dt.fromtimestamp(_now.timestamp() - 7200, _tz.utc)  # >1hr -> rejected
 _j.dump({"updated_at": _old.isoformat(),
     "five_hour": {"used_percentage": 60, "resets_at": _old.isoformat()},
     "seven_day": {"used_percentage": 86, "resets_at": _old.isoformat()}}, open(stale, "w"))
 chk("4O stale snapshot rejected", M.read_usage_snapshot(stale) is None, "should be None")
 # missing file -> None (fallback)
 chk("4O missing snapshot -> None", M.read_usage_snapshot("/nonexistent.json") is None)
+# 12-min-old snapshot is retained (shown with a stale tag), not rejected
+_mid = _tf.mktemp(suffix=".json")
+_midt = _dt.fromtimestamp(_now.timestamp() - 720, _tz.utc)
+_j.dump({"updated_at": _midt.isoformat(),
+    "five_hour": {"used_percentage": 60, "resets_at": None},
+    "seven_day": {"used_percentage": 86, "resets_at": None}}, open(_mid, "w"))
+_dmid = M.read_usage_snapshot(_mid)
+chk("4O 12min snapshot retained", _dmid is not None and 700 < _dmid["age"] < 740, _dmid)
+_os.unlink(_mid)
 # render shows real bars + percentages
 root, repo, ch, dl = build(n_msgs=30)
 cfg = mk_cfg(repo, ch, dl); proc = subprocess.Popen(["sleep", "300"])
