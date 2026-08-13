@@ -492,6 +492,21 @@ chk("4K no cap-exceeded banner", "CAP EXCEEDED" not in frame and "APPROACHING" n
 print()
 print()
 print()
+print()
+print("=" * 72)
+print("SCENARIO 4P: argparse help strings are format-safe (no stray %)")
+print("=" * 72)
+import argparse as _ap
+try:
+    # invoke the same parser main() builds; --help must not raise
+    import subprocess as _sp, sys as _sys
+    r = _sp.run([_sys.executable, "/home/claude/work/monitor.py", "--help"],
+                capture_output=True, text=True, timeout=15)
+    chk("4P --help exits cleanly", r.returncode == 0, r.stderr[-200:])
+    chk("4P --help lists usage-snapshot", "usage-snapshot" in r.stdout, r.stdout[:300])
+except Exception as _e:
+    chk("4P --help runs", False, str(_e))
+
 print("=" * 72)
 print("SCENARIO 4O: claude-hud usage snapshot -> real 5h/weekly bars")
 print("=" * 72)

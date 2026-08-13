@@ -2051,7 +2051,7 @@ def main(argv=None) -> int:
     ap.add_argument("--arc-dir", help="arc/RESULTS dir (default ~/nix/downloads)")
     ap.add_argument("--claude-home", help="default ~/.claude")
     ap.add_argument("--usage-snapshot",
-                    help="claude-hud external usage json (real 5h/7d %)")
+                    help="claude-hud external usage json (real 5h/7d usage)")
     ap.add_argument("--weekly", help="weekly reset, e.g. 'Fri 20:00'")
     ap.add_argument("--seed-5h", type=float, metavar="PCT",
                     help="anchor the 5h denominator from a /usage reading "
