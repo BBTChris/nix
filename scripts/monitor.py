@@ -55,6 +55,7 @@ DEFAULT_CONFIG = {
     "repo": "~/nix",
     "arc_dir": "~/nix/downloads",
     "claude_home": "~/.claude",
+    "usage_snapshot": "~/.claude/nix-usage.json",
     "stall_seconds": 90,
     "ascii": False,
     # Calibration: high-water weighted-token marks observed at lockout.
@@ -133,6 +134,63 @@ def _parse_tpb_eta(txt):
         u = unit.lower()
         total += int(num) * (3600 if u == 'h' else 60 if u == 'm' else 1)
     return float(total) if total else None
+
+
+# Default location the claude-hud plugin writes its usage snapshot to, if the
+# user set display.externalUsageWritePath. Overridable via --usage-snapshot.
+USAGE_SNAPSHOT_DEFAULT = os.path.expanduser("~/.claude/nix-usage.json")
+# Mirror the plugin's own freshness gate (externalUsageFreshnessMs default 5min):
+# a stale snapshot is worse than none, so we ignore anything older than this.
+USAGE_SNAPSHOT_MAX_AGE = 300.0
+
+
+def read_usage_snapshot(path=None, now=None):
+    """Read claude-hud's external usage snapshot (real 5h/7d subscriber %).
+
+    The snapshot is written by the claude-hud plugin from Claude Code's own
+    stdin rate_limits (the authoritative server-computed numbers). We only read
+    it - never write, never call the API - so there is zero quota cost. Returns
+    a dict with fivehour/sevenday percentages + reset epochs, or None if the
+    file is missing, malformed, or staler than the plugin's freshness window.
+    Never raises.
+    """
+    import json as _json
+    path = path or USAGE_SNAPSHOT_DEFAULT
+    now = now if now is not None else time.time()
+    try:
+        with open(path, "r") as fh:
+            d = _json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+    def _epoch(s):
+        # ISO-8601 -> epoch seconds; tolerate trailing Z.
+        if not isinstance(s, str) or not s:
+            return None
+        try:
+            from datetime import datetime
+            return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+
+    ua = _epoch(d.get("updated_at"))
+    if ua is None or (now - ua) > USAGE_SNAPSHOT_MAX_AGE:
+        return None  # missing or stale -> caller falls back to statusline pointer
+
+    def _win(w):
+        if not isinstance(w, dict):
+            return (None, None)
+        p = w.get("used_percentage")
+        pct = float(p) if isinstance(p, (int, float)) else None
+        return (pct, _epoch(w.get("resets_at")))
+
+    fh_pct, fh_reset = _win(d.get("five_hour"))
+    sd_pct, sd_reset = _win(d.get("seven_day"))
+    if fh_pct is None and sd_pct is None:
+        return None
+    return {"five_pct": fh_pct, "five_reset": fh_reset,
+            "seven_pct": sd_pct, "seven_reset": sd_reset,
+            "updated_at": ua, "age": now - ua}
 
 
 def read_task_progress(tasks_dir=None):
@@ -862,6 +920,8 @@ class Monitor:
         self.repo = Path(os.path.expanduser(cfg["repo"])).resolve(strict=False)
         self.arc_dir = Path(os.path.expanduser(cfg["arc_dir"]))
         self.claude_home = Path(os.path.expanduser(cfg["claude_home"]))
+        self.usage_snapshot_path = os.path.expanduser(
+            getattr(args, "usage_snapshot", None) or cfg["usage_snapshot"])
         self.tx = Transcript(self.claude_home)
         self.pid: int | None = args.pid
         self.pinned = args.pid is not None
@@ -1042,6 +1102,7 @@ class Monitor:
         s["agents"] = self.build_agents(todos, now, proc.get("start") if proc else None)
         s["has_sessions"] = bool(self.tx.sessions)
         s["task_progress"] = self.slow_cache.get("task_progress")
+        s["usage_snapshot"] = self.slow_cache.get("usage_snapshot")
         s["parse_errors"] = self.tx.parse_errors   # after ALL parsing
 
         # --- slow probes ---------------------------------------------------
@@ -1050,6 +1111,7 @@ class Monitor:
         if force_slow or self.slow_tick % every == 1 or not self.slow_cache:
             self.slow_cache = {
                 "task_progress": read_task_progress(),
+                "usage_snapshot": read_usage_snapshot(self.usage_snapshot_path),
                 "git": git_probe(self.repo),
                 "arc": read_arc(self.arc_dir),
                 "results": file_stat(self.arc_dir / "RESULTS.md"),
@@ -1686,29 +1748,41 @@ class Renderer:
         return [[(clip(t, w), a) for t, a in row] for row in out]
 
     def _limits_col(self, s: dict, w: int, now: float) -> list:
-        # Claude Code does not persist its real 5h/weekly usage anywhere the
-        # monitor can read (verified: not in transcript, cache, daemon, or CLI).
-        # A percentage bar here would be a guess against a placeholder prior and
-        # would silently disagree with Claude Code's own statusline. Per the
-        # vacuous-pass rule we DO NOT show a confident wrong number: a %% is
-        # shown ONLY when calibrated from an observed lockout (real denominator).
-        # Otherwise we show the honest measurables (burn rate, reset clocks) and
-        # point at the statusline for the authoritative figure.
+        # Real 5h/weekly subscriber usage comes ONLY from the claude-hud plugin
+        # snapshot (it persists Claude Code's own stdin rate_limits). When that
+        # snapshot is present and fresh we show real, server-computed bars. When
+        # it isn't, we show the measured token burn + reset clock and point at
+        # CC's statusline - never a fabricated percentage.
         out = []
         bw = max(6, min(12, w - 30))
-        out.append([(" LIMITS", A_HDR),
-                    ("  (usage: see CC statusline)" if w >= 44 else "", A_DIM)])
-        for lab, g, reset in (("5h", s["g5"], s["reset5"]),
-                              ("week", s["gw"], s["reset_week"])):
-            # No bar for 5h/week: the real usage % lives only in Claude Code's
-            # process (see CC statusline). We show the measured token burn and
-            # the reset clock — no empty/fabricated bar.
-            out.append([(f" {lab:<5}", A_NORM),
-                        (f" {fmt_tok(g.used)}wt used", A_DIM)])
-            if reset is not None:
-                out.append([("       reset ", A_DIM), (fmt_reset(reset, now), A_NORM)])
+        snap = s.get("usage_snapshot")
+        src = "  (usage: claude-hud snapshot)" if snap else "  (usage: see CC statusline)"
+        out.append([(" LIMITS", A_HDR), (src if w >= 44 else "", A_DIM)])
+        for lab, g, reset, pct, sreset in (
+                ("5h", s["g5"], s["reset5"],
+                 snap["five_pct"] if snap else None, snap and snap["five_reset"]),
+                ("week", s["gw"], s["reset_week"],
+                 snap["seven_pct"] if snap else None, snap and snap["seven_reset"])):
+            if pct is not None:
+                frac = min(1.0, pct / 100.0)
+                attr = (A_CRIT if pct >= 90 else A_WARN if pct >= 80
+                        else A_INFO if pct >= 60 else A_OK)
+                out.append([(f" {lab:<5}", A_NORM), (self.bar(frac, bw), attr),
+                            (f" {pct:.0f}%", attr)])
+                r = sreset if sreset else reset
+                if r is not None:
+                    out.append([("       reset ", A_DIM), (fmt_reset(r, now), A_NORM)])
+            else:
+                # no snapshot value -> honest token count, no fabricated bar
+                out.append([(f" {lab:<5}", A_NORM),
+                            (f" {fmt_tok(g.used)}wt used", A_DIM)])
+                if reset is not None:
+                    out.append([("       reset ", A_DIM), (fmt_reset(reset, now), A_NORM)])
         out.append([(f" burn  {fmt_tok(s['burn'])}wt/h", A_DIM)])
-        out.append([(" real 5h/weekly %: Claude Code statusline", A_DIM)])
+        if not snap:
+            out.append([(" real 5h/weekly %: Claude Code statusline", A_DIM)])
+        elif snap.get("age", 0) > 60:
+            out.append([(f" snapshot {int(snap['age'])}s old", A_DIM)])
         return [[(clip(t, w), a) for t, a in row] for row in out]
 
 
@@ -1976,6 +2050,8 @@ def main(argv=None) -> int:
     ap.add_argument("--repo", help="repo root (default ~/nix)")
     ap.add_argument("--arc-dir", help="arc/RESULTS dir (default ~/nix/downloads)")
     ap.add_argument("--claude-home", help="default ~/.claude")
+    ap.add_argument("--usage-snapshot",
+                    help="claude-hud external usage json (real 5h/7d %)")
     ap.add_argument("--weekly", help="weekly reset, e.g. 'Fri 20:00'")
     ap.add_argument("--seed-5h", type=float, metavar="PCT",
                     help="anchor the 5h denominator from a /usage reading "

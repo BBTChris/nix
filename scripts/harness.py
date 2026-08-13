@@ -491,6 +491,57 @@ chk("4K no cap-exceeded banner", "CAP EXCEEDED" not in frame and "APPROACHING" n
 
 print()
 print()
+print()
+print("=" * 72)
+print("SCENARIO 4O: claude-hud usage snapshot -> real 5h/weekly bars")
+print("=" * 72)
+import json as _j, tempfile as _tf, os as _os
+from datetime import datetime as _dt, timezone as _tz
+snap = _tf.mktemp(suffix=".json")
+_now = _dt.now(_tz.utc)
+_j.dump({"updated_at": _now.isoformat(),
+    "five_hour": {"used_percentage": 60, "resets_at": _now.isoformat()},
+    "seven_day": {"used_percentage": 86, "resets_at": _now.isoformat()}}, open(snap, "w"))
+# reader parses it
+d = M.read_usage_snapshot(snap)
+chk("4O reader parses 5h", d and d["five_pct"] == 60.0, d)
+chk("4O reader parses 7d", d and d["seven_pct"] == 86.0, d)
+# stale snapshot is rejected
+stale = _tf.mktemp(suffix=".json")
+_old = _dt.fromtimestamp(_now.timestamp() - 3600, _tz.utc)
+_j.dump({"updated_at": _old.isoformat(),
+    "five_hour": {"used_percentage": 60, "resets_at": _old.isoformat()},
+    "seven_day": {"used_percentage": 86, "resets_at": _old.isoformat()}}, open(stale, "w"))
+chk("4O stale snapshot rejected", M.read_usage_snapshot(stale) is None, "should be None")
+# missing file -> None (fallback)
+chk("4O missing snapshot -> None", M.read_usage_snapshot("/nonexistent.json") is None)
+# render shows real bars + percentages
+root, repo, ch, dl = build(n_msgs=30)
+cfg = mk_cfg(repo, ch, dl); proc = subprocess.Popen(["sleep", "300"])
+try:
+    class _A:
+        pid = proc.pid
+        usage_snapshot = snap
+    mon = M.Monitor(cfg, _A()); s = mon.collect(force_slow=True)
+    frame = "\n".join("".join(t for t, _ in row)
+                      for row in M.Renderer(False).render(s, 104, 30))
+    chk("4O renders 60%", "60%" in frame, [l for l in frame.splitlines() if "5h" in l])
+    chk("4O renders 86%", "86%", "86%" in frame)
+    chk("4O labels snapshot source", "claude-hud snapshot" in frame, frame[:400])
+finally:
+    proc.kill(); proc.wait()
+    _os.unlink(snap); _os.unlink(stale)
+# without snapshot -> honest fallback, no fabricated %
+root, repo, ch, dl = build(n_msgs=30)
+cfg = mk_cfg(repo, ch, dl)
+class _B:
+    pid = None
+    usage_snapshot = "/definitely/not/here.json"
+mon = M.Monitor(cfg, _B()); s = mon.collect(force_slow=True)
+frame = "\n".join("".join(t for t, _ in row) for row in M.Renderer(False).render(s, 104, 30))
+chk("4O fallback: statusline pointer", "statusline" in frame.lower(), frame[:400])
+chk("4O fallback: no fabricated usage %", ">100%" not in frame and "PRIOR" not in frame)
+
 print("=" * 72)
 print("SCENARIO 4N: large ctx (cache_read) picks 1M window -> matches CC 80%")
 print("=" * 72)
