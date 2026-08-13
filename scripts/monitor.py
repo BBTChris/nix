@@ -1410,6 +1410,7 @@ BOX_A = {"h": "-", "v": "|", "tl": "+", "tr": "+", "bl": "+", "br": "+",
 
 A_DIM, A_NORM, A_HDR = "dim", "norm", "hdr"
 A_OK, A_WARN, A_CRIT, A_INFO, A_ACCENT = "ok", "warn", "crit", "info", "accent"
+A_NEON = "neon"   # bright neon orange - the LIMITS usage bars
 # NIX wordmark, transcribed verbatim from /etc/update-motd.d/99-nix-banner
 # (U+2588 FULL BLOCK glyphs, exact spacing). 24 cols x 6 rows.
 NIX_LOGO = [
@@ -1722,13 +1723,6 @@ class Renderer:
         elif tt:
             out.append([(" todos    ", A_NORM), (self.bar(td / tt, bw), A_INFO),
                         (f" {td}/{tt} {td / tt * 100:.0f}%", A_NORM)])
-        # context
-        cu, cl = s["ctx_used"], s.get("ctx_limit") or CTX_LIMIT
-        cf = cu / cl if cu else None
-        cattr = A_CRIT if (cf or 0) > 0.9 else A_WARN if (cf or 0) > 0.75 else A_OK
-        out.append([(" context  ", A_NORM), (self.bar(cf, bw), cattr),
-                    (f" {fmt_tok(cu)}/{fmt_tok(cl)}", cattr),
-                    (f" {cf * 100:.0f}%" if cf is not None else "", cattr)])
         # whole-job ETA (time remaining)
         if p["eta"]:
             out.append([(" JOB left ", A_NORM),
@@ -1766,11 +1760,12 @@ class Renderer:
         else:
             src = "  (usage: see CC statusline)"
         out.append([(" LIMITS", A_HDR), (src if w >= 44 else "", A_DIM)])
-        # a dim age tag appended to a stale bar so the number is never mistaken
-        # for live; percentages here move slowly so a labelled 60% ·12m is useful.
-        stale_tag = ""
-        if snap and not fresh:
-            stale_tag = " \u00b7" + fmt_dur(snap.get("age", 0), True)
+        # context moved here, above the 5h row (neon bar to match the usage bars)
+        cu, cl = s["ctx_used"], s.get("ctx_limit") or CTX_LIMIT
+        cf = cu / cl if cu else None
+        out.append([(" ctx  ", A_NORM), (self.bar(cf, bw), A_NEON),
+                    (f" {fmt_tok(cu)}/{fmt_tok(cl)}", A_NORM),
+                    (f" {cf * 100:.0f}%" if cf is not None else "", A_NORM)])
         for lab, g, reset, pct, sreset in (
                 ("5h", s["g5"], s["reset5"],
                  snap["five_pct"] if snap else None, snap and snap["five_reset"]),
@@ -1778,11 +1773,9 @@ class Renderer:
                  snap["seven_pct"] if snap else None, snap and snap["seven_reset"])):
             if pct is not None:
                 frac = min(1.0, pct / 100.0)
-                base = (A_CRIT if pct >= 90 else A_WARN if pct >= 80
-                        else A_INFO if pct >= 60 else A_OK)
-                attr = base if fresh else A_DIM   # dim the whole row when stale
+                attr = A_NEON if fresh else A_DIM   # neon orange bars; dim if stale
                 out.append([(f" {lab:<5}", A_NORM), (self.bar(frac, bw), attr),
-                            (f" {pct:.0f}%{stale_tag}", attr)])
+                            (f" {pct:.0f}%", A_NORM if fresh else A_DIM)])
                 r = sreset if sreset else reset
                 if r is not None:
                     out.append([("       reset ", A_DIM), (fmt_reset(r, now), A_NORM)])
@@ -1793,7 +1786,12 @@ class Renderer:
                 if reset is not None:
                     out.append([("       reset ", A_DIM), (fmt_reset(reset, now), A_NORM)])
         out.append([(f" burn  {fmt_tok(s['burn'])}wt/h", A_DIM)])
-        if not snap:
+        if snap and not fresh:
+            # one global note that the reading is aged (it's a single snapshot,
+            # not a per-window value), so it never reads like a reset time.
+            out.append([(f" reading {fmt_dur(snap.get('age', 0), True)} old"
+                         " - refreshes when CC is active", A_DIM)])
+        elif not snap:
             out.append([(" real 5h/weekly %: Claude Code statusline", A_DIM)])
         return [[(clip(t, w), a) for t, a in row] for row in out]
 
@@ -1820,7 +1818,8 @@ def run_tui(mon: Monitor, cfg: dict) -> int:
             spec = [(A_NORM, curses.COLOR_WHITE), (A_DIM, curses.COLOR_YELLOW),
                     (A_HDR, curses.COLOR_CYAN), (A_OK, curses.COLOR_GREEN),
                     (A_WARN, curses.COLOR_YELLOW), (A_CRIT, curses.COLOR_RED),
-                    (A_INFO, curses.COLOR_CYAN), (A_ACCENT, curses.COLOR_MAGENTA)]
+                    (A_INFO, curses.COLOR_CYAN), (A_ACCENT, curses.COLOR_MAGENTA),
+                    (A_NEON, 208 if curses.COLORS >= 256 else curses.COLOR_YELLOW)]
             for i, (name, col) in enumerate(spec, start=1):
                 try:
                     curses.init_pair(i, col, bg)

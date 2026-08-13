@@ -555,6 +555,28 @@ try:
 finally:
     proc.kill(); proc.wait()
     _os.unlink(snap); _os.unlink(stale)
+# stale snapshot (13min): shows dimmed bars + ONE "reading .. old" line, no per-row tag
+_staleS = _tf.mktemp(suffix=".json")
+_st = _dt.fromtimestamp(_now.timestamp() - 800, _tz.utc)
+_j.dump({"updated_at": _st.isoformat(),
+    "five_hour": {"used_percentage": 60, "resets_at": None},
+    "seven_day": {"used_percentage": 86, "resets_at": None}}, open(_staleS, "w"))
+_p2 = subprocess.Popen(["sleep", "300"])
+try:
+    class _AS:
+        pid = _p2.pid
+        usage_snapshot = _staleS
+    _m2 = M.Monitor(mk_cfg(*build(n_msgs=20)[1:]), _AS())
+    _s2 = _m2.collect(force_slow=True)
+    _f2 = "\n".join("".join(t for t, _ in row)
+                    for row in M.Renderer(False).render(_s2, 104, 30))
+    chk("4O stale shows one reading-age line", _f2.count("reading ") == 1
+        and "old" in _f2, [l for l in _f2.splitlines() if "reading" in l])
+    chk("4O stale has no per-row age tag",
+        "60% \u00b7" not in _f2 and "86% \u00b7" not in _f2, _f2[:300])
+    chk("4O stale still shows the real %", "60%" in _f2 and "86%" in _f2)
+finally:
+    _p2.kill(); _p2.wait(); _os.unlink(_staleS)
 # without snapshot -> honest fallback, no fabricated %
 root, repo, ch, dl = build(n_msgs=30)
 cfg = mk_cfg(repo, ch, dl)
@@ -609,7 +631,7 @@ try:
     if cu:
         frame = "\n".join("".join(t for t, _ in row)
                           for row in M.Renderer(False).render(s, 104, 30))
-        ctx_line = [l for l in frame.splitlines() if "context" in l][0]
+        ctx_line = [l for l in frame.splitlines() if " ctx  [" in l or "ctx  [" in l][0]
         exp = f"{cu/cl*100:.0f}%"
         chk("4M context shows percent", "%" in ctx_line, ctx_line)
         chk("4M context percent matches fraction", exp in ctx_line, (exp, ctx_line))
