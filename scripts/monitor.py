@@ -1700,9 +1700,10 @@ class Renderer:
                     ("  (usage: see CC statusline)" if w >= 44 else "", A_DIM)])
         for lab, g, reset in (("5h", s["g5"], s["reset5"]),
                               ("week", s["gw"], s["reset_week"])):
-            # Bar shown as an empty track (no honest denominator to fill it), so
-            # the layout matches the other rows without implying a usage level.
-            out.append([(f" {lab:<5}", A_NORM), (self.bar(None, bw), A_DIM),
+            # No bar for 5h/week: the real usage % lives only in Claude Code's
+            # process (see CC statusline). We show the measured token burn and
+            # the reset clock — no empty/fabricated bar.
+            out.append([(f" {lab:<5}", A_NORM),
                         (f" {fmt_tok(g.used)}wt used", A_DIM)])
             if reset is not None:
                 out.append([("       reset ", A_DIM), (fmt_reset(reset, now), A_NORM)])
