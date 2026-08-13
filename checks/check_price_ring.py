@@ -158,7 +158,14 @@ ALLOWED = frozenset(
 )
 
 #: Directories the sweep does not enter, each for a stated reason.
-_SKIP_DIRS = frozenset({".venv", ".git", "__pycache__", "graphify-out", "node_modules"})
+_SKIP_DIRS = frozenset(
+    # `.claude` holds agent WORKTREES — full copies of this repo the harness
+    # checks out for sub-agents. A filesystem sweep that walked into them would
+    # scan (and flag) the price ring's OWN legitimate `shared_memory` use in every
+    # live worktree copy, which is the tree scanning itself. ARC 029: measured, a
+    # sub-agent worktree drove this gate to FAIL on `.claude/worktrees/*/price_ring`.
+    {".venv", ".git", ".claude", "__pycache__", "graphify-out", "node_modules"}
+)
 
 #: Module names whose import IS a shared-memory claim.
 _SHM_MODULES = frozenset(
