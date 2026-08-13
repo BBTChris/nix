@@ -88,6 +88,8 @@ CTX_TIERS = (200_000, 500_000, 1_000_000)
 FIVE_HOURS = 5 * 3600
 MIN_SPAN = 120.0        # s; below this no rate-derived ETA is credible
 AGENT_IDLE_CUTOFF = 900.0   # s; sidechains quieter than this are shown ENDED
+AGENT_SHOW_WINDOW = 1800.0  # s; agents with no activity in this window are
+                            # HISTORY, not current — dropped from the panel
 
 
 def load_config() -> dict:
@@ -116,6 +118,60 @@ def save_config(cfg: dict) -> None:
 # ---------------------------------------------------------------------------
 # /proc probes  (no external deps; ps/ss not required)
 # ---------------------------------------------------------------------------
+
+# task-progress-bar --status-line emits e.g.:
+#   Tasks [████░░░░░░] 30/61 (~16h 19m left) | ✓30 ⟳7 ○24
+_TPB_COUNT = re.compile(r'(\d+)\s*/\s*(\d+)')
+_TPB_ETA = re.compile(r'~\s*([0-9hms\s]+?)\s+left', re.I)
+_TPB_TRIO = re.compile(r'\u2713\s*(\d+).*?\u27f3\s*(\d+).*?\u25cb\s*(\d+)')
+_ETA_UNIT = re.compile(r'(\d+)\s*([hms])', re.I)
+
+
+def _parse_tpb_eta(txt):
+    total = 0
+    for num, unit in _ETA_UNIT.findall(txt):
+        u = unit.lower()
+        total += int(num) * (3600 if u == 'h' else 60 if u == 'm' else 1)
+    return float(total) if total else None
+
+
+def read_task_progress(tasks_dir=None):
+    """Read done/total/eta from `task-progress-bar --status-line`.
+
+    This is Claude Code's own zero-token progress tracker (a PostToolUse hook on
+    TodoWrite/TaskUpdate). It already computes done/total and an EMA-based ETA,
+    so the monitor reads it rather than reconstructing a rate. Returns a dict or
+    None if the tool is absent / emits nothing parseable. Never raises.
+    """
+    exe = shutil.which('task-progress-bar')
+    if not exe:
+        return None
+    cmd = [exe, '--status-line']
+    if tasks_dir:
+        cmd += ['--tasks-dir', tasks_dir]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+    except (subprocess.SubprocessError, OSError):
+        return None
+    line = (r.stdout or '').strip()
+    if not line:
+        return None
+    m = _TPB_COUNT.search(line)
+    if not m:
+        return None
+    done, total = int(m.group(1)), int(m.group(2))
+    out = {'done': done, 'total': total, 'raw': line[:200], 'eta': None,
+           'in_progress': None, 'pending': None}
+    me = _TPB_ETA.search(line)
+    if me:
+        out['eta'] = _parse_tpb_eta(me.group(1))
+    mt = _TPB_TRIO.search(line)
+    if mt:
+        out['done'] = int(mt.group(1))
+        out['in_progress'] = int(mt.group(2))
+        out['pending'] = int(mt.group(3))
+    return out
+
 
 CLOCK_TICKS = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
 PAGE_SIZE = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
@@ -769,6 +825,10 @@ PHASE_DONE = "ARC COMPLETE"
 
 INTERESTING = ("pytest", "python", "python3", "git", "ruff", "mypy", "bandit",
                "npm", "node", "rg", "grep", "make", "verify.py", "pip", "sh", "bash")
+# Short-lived helpers spawned by Claude Code hooks/statusline. They flit in and
+# out every keystroke and must never be reported as the active tool (this is why
+# PHASE showed "task-progress-bar"/"2.1.231" garbage).
+NOISE_PROCS = ("task-progress-bar", "statusline", "status-line")
 
 
 class Monitor:
@@ -787,6 +847,7 @@ class Monitor:
         self.prev_io: dict = {}
         self.prev_cpu: tuple[float, float] | None = None
         self.agent_done: dict[str, float] = {}   # stem -> elapsed at completion
+        self.agent_first_seen: dict[str, float] = {}  # stem -> first observed ts
         self.seen_limit_hits: set[int] = {
             int(v) for v in (cfg.get("seen_lockouts") or [])
             if isinstance(v, (int, float))}
@@ -854,10 +915,15 @@ class Monitor:
             self.prev_cpu = cpu_now
             kids = descendants(table, self.pid)
             s["children"] = kids
+            def _noise(k):
+                blob = (k["cmd"] + " " + k["comm"]).lower()
+                return any(n in blob for n in NOISE_PROCS)
+            real_kids = [k for k in kids if not _noise(k)]
             s["active_child"] = next(
-                (k for k in reversed(kids)
+                (k for k in reversed(real_kids)
                  if any(tok in k["cmd"].split(" ")[0] or tok in k["comm"]
-                        for tok in INTERESTING)), kids[-1] if kids else None)
+                        for tok in INTERESTING)),
+                real_kids[-1] if real_kids else None)
             s["sock"] = socket_state(self.pid)
             io = io_counters(self.pid)
             pio = self.prev_io.get(self.pid, {})
@@ -891,6 +957,11 @@ class Monitor:
                 key=lambda v: v["last"], default=None)
             if main_sess is None:
                 main_sess = max(self.tx.sessions.values(), key=lambda v: v["last"])
+        s["cur_session"] = main_sess["id"][:8] if main_sess else None
+        s["cur_model"] = _model_family(
+            next((e["model"] for e in reversed(self.tx.events)
+                  if e.get("model") and e["session"] == (main_sess["id"] if main_sess else None)),
+                 None)) if main_sess else None
         s["ctx_used"] = main_sess["ctx"] if main_sess else 0
         # Never render a >100% context bar: if observed usage exceeds the
         # assumed tier, the assumption is wrong, not the measurement.
@@ -937,7 +1008,8 @@ class Monitor:
         # --- todos / agents -----------------------------------------------
         todos = self.tx.read_todos()
         s["todos"] = todos
-        s["agents"] = self.build_agents(todos, now)
+        s["agents"] = self.build_agents(todos, now, proc.get("start") if proc else None)
+        s["has_sessions"] = bool(self.tx.sessions)
         s["parse_errors"] = self.tx.parse_errors   # after ALL parsing
 
         # --- slow probes ---------------------------------------------------
@@ -945,6 +1017,7 @@ class Monitor:
         every = max(1, int(self.cfg["slow_probe_every"]))
         if force_slow or self.slow_tick % every == 1 or not self.slow_cache:
             self.slow_cache = {
+                "task_progress": read_task_progress(),
                 "git": git_probe(self.repo),
                 "arc": read_arc(self.arc_dir),
                 "results": file_stat(self.arc_dir / "RESULTS.md"),
@@ -964,27 +1037,57 @@ class Monitor:
         return s
 
     # -- agents ------------------------------------------------------------
-    def build_agents(self, todos: list[dict], now: float) -> list[dict]:
+    def build_agents(self, todos: list[dict], now: float,
+                     proc_start: float | None = None) -> list[dict]:
+        # Horizon: an agent is "current" only if it was active within
+        # AGENT_SHOW_WINDOW. A running process cannot own a sidechain that last
+        # logged before the process itself started, so floor the horizon at
+        # proc_start. Without this, every historical Task session across the
+        # whole transcript surfaces here as a days-old ENDED "agent".
+        horizon = now - AGENT_SHOW_WINDOW
+        if proc_start is not None and proc_start > horizon:
+            horizon = proc_start
         rows = []
-        sidechains = {k: v for k, v in self.tx.sessions.items() if v["sidechain"]}
         for t in todos:
+            if t["mtime"] < horizon:
+                continue
             elapsed = now - t["mtime"]
             complete = t["total"] > 0 and t["done"] == t["total"]
             if complete and t["stem"] not in self.agent_done:
                 self.agent_done[t["stem"]] = elapsed
+            # first time we ever saw this agent's todo: anchor its elapsed. This
+            # under-measures if it began before the monitor started, so the
+            # per-agent ETA is "since observed", not claimed exact.
+            seen = self.agent_first_seen.setdefault(t["stem"], now)
+            worked = now - seen
+            eta = None
+            if t["total"] and 0 < t["done"] < t["total"] and worked >= MIN_SPAN:
+                eta = (t["total"] - t["done"]) / (t["done"] / worked)
             rows.append({
                 "id": t["stem"][:8], "done": t["done"], "total": t["total"],
                 "active": t["active"], "idle": elapsed, "complete": complete,
                 "ended": False, "last_tool": None, "kind": "todo",
+                "eta": eta, "worked": worked,
             })
-        for sid, sess in sorted(sidechains.items(), key=lambda kv: kv[1]["first"]):
+        sidechains = [v for v in self.tx.sessions.values()
+                      if v["sidechain"] and v["last"] >= horizon]
+        # most-recent activity first, so live agents lead and stale ones are gone
+        for sess in sorted(sidechains, key=lambda v: v["last"], reverse=True):
             idle = now - sess["last"]
+            # sibling-prior ETA: once >=1 parallel agent has finished, the median
+            # finished runtime predicts a still-running opaque sub-agent.
+            sib = sorted(self.agent_done.values())
+            eta = None
+            if idle <= AGENT_IDLE_CUTOFF and sib:
+                med = sib[len(sib) // 2]
+                eta = max(0.0, med - (sess["last"] - sess["first"]))
             rows.append({
-                "id": sid[:8], "done": 0, "total": 0, "active": None,
+                "id": sess["id"][:8], "done": 0, "total": 0, "active": None,
                 "idle": idle, "complete": False,
                 "ended": idle > AGENT_IDLE_CUTOFF,
                 "last_tool": sess["last_tool"], "kind": "sidechain",
                 "elapsed": sess["last"] - sess["first"], "wtok": sess["wtok"],
+                "eta": eta, "worked": sess["last"] - sess["first"],
             })
         return rows[:8]
 
@@ -1051,13 +1154,30 @@ class Monitor:
         elif total_gates and not credible:
             p["gate_basis"] = "warming" if s.get("proc") else "no proc"
 
-        # Clock 3: todo burn-down (denominator may grow)
-        done = sum(t["done"] for t in s["todos"])
-        total = sum(t["total"] for t in s["todos"])
-        p["todos"] = (done, total)
-        p["todo_eta"] = None
-        if total and done and done < total and credible:
-            p["todo_eta"] = (total - done) / (done / elapsed)
+        # Clock 3: todo burn-down over the CURRENT job's real span. The span is
+        # measured from the earliest agent we have observed (self-scoped to this
+        # run), NOT from the arc-file mtime, which can be stale or point at the
+        # wrong arc. This is what makes a whole-job ETA actually appear.
+        # Prefer Claude Code's own task-progress-bar hook (done/total + EMA ETA).
+        # It is the authoritative, zero-token source and needs no rate warmup.
+        tp = s.get("task_progress")
+        if tp and tp.get("total"):
+            done, total = tp["done"], tp["total"]
+            p["todos"] = (done, total)
+            p["todo_eta"] = tp.get("eta") if done < total else None
+            p["job_span"] = MIN_SPAN  # source is authoritative; not span-gated
+            p["eta_source"] = "task-progress-bar"
+        else:
+            done = sum(t["done"] for t in s["todos"])
+            total = sum(t["total"] for t in s["todos"])
+            p["todos"] = (done, total)
+            p["todo_eta"] = None
+            seens = [v for v in self.agent_first_seen.values()]
+            job_span = (now - min(seens)) if seens else 0.0
+            p["job_span"] = job_span
+            if total and done and done < total and job_span >= MIN_SPAN:
+                p["todo_eta"] = (total - done) / (done / job_span)
+            p["eta_source"] = "observed"
 
         # Clock 4: sibling prior across finished parallel agents
         finished = sorted(self.agent_done.values())
@@ -1069,15 +1189,19 @@ class Monitor:
                 p["sibling_eta"] = max(0.0, med - min(a["idle"] for a in running))
         p["sibling_n"] = len(finished)
 
-        # headline = the tightest measured clock we actually have
-        cands = [(v, k) for k, v in (("gates", p["gate_eta"]),
-                                     ("todos", p["todo_eta"]),
-                                     ("siblings", p["sibling_eta"])) if v]
-        if cands:
-            v, k = min(cands)
-            p["eta"], p["eta_basis"] = v, k
+        # headline = todos (self-authored denominator) if we have it, else the
+        # tightest of the remaining measured clocks
+        if p["todo_eta"]:
+            src = "tpb" if p.get("eta_source") == "task-progress-bar" else "obs"
+            p["eta"], p["eta_basis"] = p["todo_eta"], "%s %d/%d" % (src, done, total)
         else:
-            p["eta"], p["eta_basis"] = None, None
+            cands = [(v, k) for k, v in (("gates", p["gate_eta"]),
+                                         ("siblings", p["sibling_eta"])) if v]
+            if cands:
+                v, k = min(cands)
+                p["eta"], p["eta_basis"] = v, k
+            else:
+                p["eta"], p["eta_basis"] = None, None
         return p
 
     # -- phase -------------------------------------------------------------
@@ -1261,11 +1385,21 @@ class Renderer:
         arc = s["arc"]
         pid_s = f"PID {s['pid']}" if s["pid"] else "PID --"
         out.append(self.row(w, [
-            (" ", A_NORM), (clip(arc.get("name") or "no arc", 28), A_ACCENT),
-            ("   ", A_NORM), (f"{pid_s:<11}", A_NORM),
+            (" ", A_NORM), (clip(arc.get("name") or "no arc", 24), A_ACCENT),
+            ("  ", A_NORM), (f"{pid_s:<11}", A_NORM),
             (f"up {fmt_dur(s.get('uptime')):<9}", A_NORM),
             (right, A_DIM),
         ]))
+        # current live session line - this is THIS session, not history
+        sess_id = s.get("cur_session")
+        if sess_id:
+            model = s.get("cur_model") or "?"
+            out.append(self.row(w, [
+                (" session ", A_DIM), (sess_id, A_ACCENT),
+                ("  model ", A_DIM), (model, A_INFO),
+                ("  ", A_NORM),
+                (f"ctx {fmt_tok(s['ctx_used'])}/{fmt_tok(s.get('ctx_limit') or CTX_LIMIT)}", A_DIM),
+            ]))
         ph, why = s["phase"]
         pattr = {PHASE_STALL: A_CRIT, PHASE_DEAD: A_CRIT, PHASE_NOPROC: A_CRIT,
                  PHASE_DONE: A_OK, PHASE_IDLE: A_WARN,
@@ -1296,7 +1430,7 @@ class Renderer:
                        (b["v"], A_DIM)])
 
         # collision warning ---------------------------------------------------
-        cap, eta = s.get("cap_eta"), s["progress"].get("eta")
+        cap = s.get("cap_eta")
         if s.get("cap_over"):
             calib = s["g5"].calibrated or s["gw"].calibrated
             msg = ("ESTIMATE EXCEEDED - past the "
@@ -1305,18 +1439,19 @@ class Renderer:
             out.append(self.row(w, [(" " + b["warn"] + " ", A_CRIT),
                                     (msg, A_CRIT if calib else A_WARN)]))
         elif cap is not None and cap < 3 * 3600:
-            danger = eta is None or cap < eta
-            msg = (f"CAP IN {fmt_dur(cap, True)}"
-                   + (f" < ARC ETA {fmt_dur(eta, True)} - CHECKPOINT NOW"
-                      if danger and eta else " - budget the remaining work"))
+            # burn-rate projection to the USAGE cap (a limit warning, not a
+            # task-completion estimate) - checkpoint before a lockout
+            msg = f"APPROACHING USAGE CAP in ~{fmt_dur(cap, True)} - checkpoint soon"
             out.append(self.row(w, [(" " + b["warn"] + " ", A_CRIT),
-                                    (msg, A_CRIT if danger else A_WARN)]))
+                                    (msg, A_WARN)]))
 
         # agents ---------------------------------------------------------------
         out.append(self.rule(w, b["lt"], b["rt"], "AGENTS"))
         agents = s["agents"]
         if not agents:
-            out.append(self.row(w, [(" no todo/sidechain state found", A_DIM)]))
+            msg = (" no agents active in this run"
+                   if s.get("has_sessions") else " no todo/sidechain state found")
+            out.append(self.row(w, [(msg, A_DIM)]))
         for a in agents[: max(1, h - 22)]:
             ended = a.get("ended")
             mark = b["chk"] if a["complete"] else ("-" if ended else b["dot"])
@@ -1331,9 +1466,15 @@ class Renderer:
                 mid = " " * 10
             stalled = (not a["complete"] and not ended and
                        a["idle"] > float(s["cfg"]["stall_seconds"]))
-            tail = ("ENDED " + fmt_dur(a["idle"], True) + " ago" if ended
-                    else f"STALL {fmt_dur(a['idle'], True)}" if stalled
-                    else clip(a["active"] or a["last_tool"] or "-", 26))
+            eta = a.get("eta")
+            if ended:
+                tail = "ENDED " + fmt_dur(a["idle"], True) + " ago"
+            elif stalled:
+                tail = f"STALL {fmt_dur(a['idle'], True)}"
+            else:
+                label = clip(a["active"] or a["last_tool"] or "-", 18)
+                tail = (f"~{fmt_dur(eta, True)} left  {label}" if eta is not None
+                        else f"running  {label}")
             out.append(self.row(w, [
                 (f" {mark} ", mattr), (f"{a['id']:<9}", A_NORM),
                 (f"{cnt:>7} ", A_NORM), (mid, A_INFO),
@@ -1379,18 +1520,6 @@ class Renderer:
         p, out = s["progress"], []
         bw = max(6, min(12, w - 26))
         out.append([(" PROGRESS", A_HDR)])
-        # declared budget
-        if p["budget"]:
-            frac = min(1.0, p["elapsed"] / p["budget"])
-            over = p["over_budget"]
-            out.append([(" declared ", A_NORM),
-                        (self.bar(frac, bw), A_CRIT if over else A_INFO),
-                        (" ", A_NORM),
-                        (("OVER +" + fmt_dur(p["elapsed"] - p["budget"], True))
-                         if over else fmt_dur(p["budget_rem"], True), A_CRIT if over else A_NORM)])
-        else:
-            out.append([(" declared ", A_NORM), (self.bar(None, bw), A_DIM),
-                        (" N/A no budget", A_WARN)])
         # gates
         gp, gt = p["gates"]
         if gt:
@@ -1414,16 +1543,22 @@ class Renderer:
         cattr = A_CRIT if (cf or 0) > 0.9 else A_WARN if (cf or 0) > 0.75 else A_OK
         out.append([(" context  ", A_NORM), (self.bar(cf, bw), cattr),
                     (f" {fmt_tok(cu)}/{fmt_tok(cl)}", cattr)])
-        # eta
+        # whole-job ETA (time remaining)
         if p["eta"]:
-            out.append([(" ETA      ", A_NORM),
+            out.append([(" JOB left ", A_NORM),
                         (f"{fmt_dur(p['eta'], True)} ", A_ACCENT),
-                        (f"[{p['eta_basis']}/{p['gate_basis']}]", A_DIM)])
+                        (f"[{p['eta_basis']}]", A_DIM)])
         else:
-            why = {"warming": "N/A (span < %ds)" % int(MIN_SPAN),
-                   "no proc": "N/A (no process)"}.get(
-                       p["gate_basis"], "N/A (no denominator)")
-            out.append([(" ETA      ", A_NORM), (why, A_WARN)])
+            reason = ("N/A (span < %ds)" % int(MIN_SPAN)
+                      if p.get("job_span", 0) < MIN_SPAN
+                      else "N/A (no progress signal)")
+            out.append([(" JOB left ", A_NORM), (reason, A_WARN)])
+        # declared budget from the arc file, shown as a secondary reference
+        if p.get("budget"):
+            rem = p["budget"] - p["elapsed"]
+            out.append([("  vs arc  ", A_DIM),
+                        (("OVER +" + fmt_dur(-rem, True)) if rem < 0
+                         else fmt_dur(rem, True) + " of budget", A_DIM)])
         out.append([(f" elapsed  {fmt_dur(p['elapsed'])} ", A_DIM),
                     (f"[{p.get('elapsed_basis', '?')}]", A_DIM)])
         return [[(clip(t, w), a) for t, a in row] for row in out]

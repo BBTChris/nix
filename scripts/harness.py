@@ -335,7 +335,7 @@ chk("4e cap not over", not s2["cap_over"], (s2["g5"].used, s2["g5"].denom))
 chk("4e cap_eta finite", 0 < (s2["cap_eta"] or 0) < 4 * 3600, s2["cap_eta"])
 txt2 = "\n".join("".join(t for t, _ in row)
                  for row in M.Renderer(False).render(s2, 100, 60))
-chk("4e CAP IN banner", "CAP IN" in txt2, txt2[:700])
+chk("4e cap banner", "APPROACHING USAGE CAP" in txt2, txt2[:700])
 
 # 4d: weekly boundary sanity across a whole year
 bad = []
@@ -414,6 +414,176 @@ finally:
     old.kill(); old.wait()
 
 print()
+print()
+print()
+print()
+print()
+print("=" * 72)
+print("SCENARIO 4J: ETA from task-progress-bar --status-line (real CC source)")
+print("=" * 72)
+# Stub the reader to return what `task-progress-bar --status-line` really emits.
+_real_reader = M.read_task_progress
+M.read_task_progress = lambda tasks_dir=None: {
+    "done": 30, "total": 61, "eta": 16 * 3600 + 19 * 60,
+    "in_progress": 7, "pending": 24,
+    "raw": "Tasks [....] 30/61 (~16h 19m left) | ok30 ip7 pend24"}
+try:
+    root, repo, ch, dl = build(n_msgs=30)
+    cfg = mk_cfg(repo, ch, dl)
+    proc = subprocess.Popen(["sleep", "300"])
+    try:
+        mon, s = collect(cfg, pid=proc.pid)
+        chk("4J task_progress read", s.get("task_progress") is not None, s.get("task_progress"))
+        chk("4J job todos from tpb", s["progress"]["todos"] == (30, 61), s["progress"]["todos"])
+        chk("4J job ETA from tpb", abs((s["progress"]["eta"] or 0) - (16*3600+19*60)) < 1,
+            s["progress"]["eta"])
+        chk("4J eta basis names tpb", "tpb" in (s["progress"]["eta_basis"] or ""),
+            s["progress"]["eta_basis"])
+        chk("4J no span warmup needed (authoritative)",
+            s["progress"]["eta_source"] == "task-progress-bar", s["progress"].get("eta_source"))
+        frame = "\n".join("".join(t for t, _ in row)
+                          for row in M.Renderer(False).render(s, 104, 30))
+        chk("4J JOB left shows a time", "JOB left" in frame and "16h" in frame,
+            [l for l in frame.splitlines() if "JOB" in l])
+    finally:
+        proc.kill(); proc.wait()
+    # completion => no ETA
+    M.read_task_progress = lambda tasks_dir=None: {"done": 61, "total": 61, "eta": 0,
+        "in_progress": 0, "pending": 0, "raw": "done"}
+    mon, s = collect(cfg)
+    chk("4J complete -> no job eta", s["progress"]["eta"] is None, s["progress"]["eta"])
+    # tool absent => graceful fallback, no crash
+    M.read_task_progress = lambda tasks_dir=None: None
+    mon, s = collect(cfg)
+    chk("4J tool absent -> fallback", s["progress"].get("eta_source") == "observed",
+        s["progress"].get("eta_source"))
+finally:
+    M.read_task_progress = _real_reader
+
+print("=" * 72)
+print("SCENARIO 4I: whole-job + per-agent ETA appear with sane numbers")
+print("=" * 72)
+root, repo, ch, dl = build(n_msgs=40)
+cfg = mk_cfg(repo, ch, dl)
+proc = subprocess.Popen(["sleep", "300"])
+try:
+    a = Args(); a.pid = proc.pid
+    mon = M.Monitor(cfg, a)
+    # backdate first_seen so the job has a real 10-min span (as if monitor has
+    # been observing these agents for 600s). agents: 20/27 done aggregate.
+    s = mon.collect(force_slow=True)
+    for stem in list(mon.agent_first_seen):
+        mon.agent_first_seen[stem] = time.time() - 600
+    s = mon.collect(force_slow=True)
+    je = s["progress"]["eta"]
+    chk("4I whole-job ETA present", je is not None, je)
+    # 20/27 done in 600s -> ~7 remaining at 30s each -> ~210s
+    chk("4I whole-job ETA sane", 60 < (je or 0) < 900, je)
+    chk("4I eta basis names obs", "obs" in (s["progress"]["eta_basis"] or ""),
+        s["progress"]["eta_basis"])
+    todo_agents = [x for x in s["agents"] if x["kind"] == "todo" and not x["complete"]]
+    chk("4I per-agent ETA present",
+        any(x.get("eta") is not None for x in todo_agents),
+        [(x["id"], x["done"], x["total"], x.get("eta")) for x in todo_agents])
+    frame = "\n".join("".join(t for t, _ in row)
+                      for row in M.Renderer(False).render(s, 104, 30))
+    chk("4I JOB left row rendered", "JOB left" in frame,
+        [l for l in frame.splitlines() if "JOB" in l])
+    chk("4I per-agent 'left' rendered", "left" in frame.split("AGENTS")[1] if "AGENTS" in frame else False,
+        frame.split("AGENTS")[1][:200] if "AGENTS" in frame else "no agents section")
+    # completed agent shows no ETA, running one does
+    chk("4I completed agent no eta",
+        all(x.get("eta") is None for x in s["agents"] if x["complete"]))
+    # a fresh agent (just observed, span<MIN_SPAN) yields no fabricated eta
+    (ch / "todos" / "fresh-0000-9.json").write_text(_j.dumps(
+        [{"content":"a","status":"completed"},{"content":"b","status":"in_progress"},
+         {"content":"c","status":"pending"}]))
+    import json as _jj
+    s2 = mon.collect(force_slow=True)
+    fresh = [x for x in s2["agents"] if x["id"].startswith("fresh")]
+    chk("4I fresh agent no fabricated eta",
+        all(x.get("eta") is None for x in fresh), [(x["id"], x.get("worked")) for x in fresh])
+finally:
+    proc.kill(); proc.wait()
+
+print("=" * 72)
+print("SCENARIO 4H: no completion-ETA shown; current session identified")
+print("=" * 72)
+root, repo, ch, dl = build(n_msgs=40)
+cfg = mk_cfg(repo, ch, dl)
+proc = subprocess.Popen(["sleep", "300"])
+try:
+    mon, s = collect(cfg, pid=proc.pid)
+    frame = "\n".join("".join(t for t, _ in row)
+                      for row in M.Renderer(False).render(s, 104, 30))
+    chk("4H no ETA row", "ETA" not in frame, [l for l in frame.splitlines() if "ETA" in l])
+    chk("4H no declared-budget row", "declared" not in frame,
+        [l for l in frame.splitlines() if "declared" in l])
+    chk("4H no 'ARC ETA' collision text", "ARC ETA" not in frame)
+    chk("4H current session identified", s.get("cur_session") is not None, s.get("cur_session"))
+    chk("4H session line rendered", "session " in frame,
+        [l for l in frame.splitlines() if "session" in l][:2])
+    chk("4H elapsed still shown (actual)", "elapsed" in frame)
+    chk("4H gates still shown (actual)", "gates" in frame)
+    chk("4H limits resets still shown", "reset" in frame)
+finally:
+    proc.kill(); proc.wait()
+
+print("=" * 72)
+print("SCENARIO 4G: stale historical agents dropped (screenshot regression)")
+print("=" * 72)
+# Reproduce the node02 frame: a FRESH process, but the transcript history holds
+# sidechains that last logged 45-104h ago. They must NOT appear as agents.
+root, repo, ch, dl = build(n_msgs=20, sidechains=0)
+proj = ch / "projects" / "-home-bbt-nix"; proj.mkdir(parents=True, exist_ok=True)
+nowt = time.time()
+import json as _j
+# 8 ancient sidechains, last activity 45h..104h ago
+for k, hrs in enumerate([104, 81, 68, 66, 64, 57, 55, 45]):
+    last = nowt - hrs * 3600
+    recs = []
+    for i in range(4):
+        recs.append(_j.dumps({"type": "assistant", "isSidechain": True,
+            "timestamp": iso(last - (3 - i) * 60), "sessionId": f"ancient-{k}",
+            "message": {"role": "assistant", "model": "claude-opus-4-1",
+                        "usage": {"input_tokens": 2000, "output_tokens": 1500},
+                        "content": [{"type": "tool_use", "name": "Edit", "input": {}}]}}))
+    (proj / f"ancient-{k}.jsonl").write_text("\n".join(recs) + "\n")
+# one sidechain active RIGHT NOW (should show)
+recs = [_j.dumps({"type": "assistant", "isSidechain": True,
+        "timestamp": iso(nowt - 20 - (3 - i) * 5), "sessionId": "live-agent",
+        "message": {"role": "assistant", "model": "claude-sonnet-4-5",
+                    "usage": {"input_tokens": 100, "output_tokens": 50},
+                    "content": [{"type": "tool_use", "name": "Bash", "input": {}}]}})
+        for i in range(4)]
+(proj / "live-agent.jsonl").write_text("\n".join(recs) + "\n")
+
+# fresh process, started 3 min ago (like a just-launched arc, not 9h old)
+proc = subprocess.Popen(["sleep", "600"])
+try:
+    fresh_start = nowt - 180
+    real_tab = M.proc_table
+    def _pt():
+        tab = real_tab()
+        if proc.pid in tab:
+            tab[proc.pid] = dict(tab[proc.pid], start=fresh_start)
+        return tab
+    M.proc_table = _pt
+    mon, s = collect(cfg=mk_cfg(repo, ch, dl), pid=proc.pid)
+    ids = [a["id"] for a in s["agents"]]
+    idles = [a["idle"] for a in s["agents"]]
+    chk("4G no ancient agents shown", all(i < 3600 for i in idles),
+        [(a["id"], round(a["idle"]/3600, 1)) for a in s["agents"]])
+    chk("4G live agent present", any("live-age" in i for i in ids), ids)
+    chk("4G max idle under window",
+        (max(idles) if idles else 0) <= M.AGENT_SHOW_WINDOW, max(idles) if idles else 0)
+    # with proc_start floor: even within 30min window, nothing before proc_start
+    chk("4G agent count sane (1 live)", len([a for a in s["agents"]
+        if a["kind"] == "sidechain"]) == 1, ids)
+finally:
+    M.proc_table = real_tab
+    proc.kill(); proc.wait()
+
 print("=" * 72)
 print("SCENARIO 5: incremental tail + rotation")
 print("=" * 72)
