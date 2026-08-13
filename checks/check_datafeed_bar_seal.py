@@ -385,8 +385,16 @@ def _walk(home: Path) -> list[Path]:
         if not base.is_dir():
             continue
         for path in sorted(base.rglob("*.py")):
-            if not any(part in SKIP_DIRS for part in path.parts):
-                out.append(path)
+            # Skip SKIP_DIRS and macOS AppleDouble sidecars (`._name.py`): the
+            # latter are a sibling's resource fork, raw bytes, not Python, and the
+            # Samba-share canonical tree drops them routinely — `ast.parse`-ing one
+            # drives the gate to CANNOT_MEASURE on a non-code file (ARC 029,
+            # CHECK-DEBT D3.110). Excluded by NAME class, not tracking state.
+            if any(part in SKIP_DIRS for part in path.parts):
+                continue
+            if path.name.startswith("._"):
+                continue
+            out.append(path)
     return out
 
 

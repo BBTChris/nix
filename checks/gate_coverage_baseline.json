@@ -82,6 +82,12 @@
       "measured_by": "tests",
       "reason": "the cold-start reconciliation (ColdStart): registration gate, flatten-before-register, market-tradable guard, restart=flat. ARC 029 sub-agent D. Measured by scripts/tests/coldstart behavioural suite; no check declares it YET. Admitted rather than covered by a proxy check (D3.19: naming is not measuring, and a shallow check would land UNBOUND). Its driving check (check_coldstart or equivalent) is owed by ARC 030, recorded in CHECK-DEBT; this mirrors the gitenv.py admission (ARC 026)."
     },
+    "scripts/nixrisk/execution.py": {
+      "owner": "ARC 030",
+      "admitted": "ARC 029",
+      "measured_by": "tests",
+      "reason": "the idempotent execution ledger (ExecutionLedger): dedup by (order_id, exec_id), position = Σ signed_qty over the unique-key SET, cumulative kept as an independent audit cross-check. ARC 029 Stage 2.3. Measured by scripts/tests/test_execution.py (23 tests incl. permutation-invariance under duplication); no check declares it yet. Admitted as measured_by=tests (owner ARC 030) rather than a proxy check, mirroring the other exit-half modules; its driving check is owed in CHECK-DEBT."
+    },
     "scripts/nixrisk/flatten.py": {
       "owner": "ARC 030",
       "admitted": "ARC 029",

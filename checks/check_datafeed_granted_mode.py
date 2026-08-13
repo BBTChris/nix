@@ -485,6 +485,15 @@ def _walk(home: Path) -> list[Path]:
         for path in sorted(base.rglob("*.py")):
             if any(part in SKIP_DIRS for part in path.parts):
                 continue
+            # macOS AppleDouble sidecars (`._name.py`) are the resource fork of a
+            # sibling, raw bytes with a NUL/0xb0 at offset 0 — not Python (PEP 263).
+            # The canonical tree is a Samba share, so they land as a matter of
+            # course; `ast.parse`-ing one raises UnicodeDecodeError and drives the
+            # whole gate to CANNOT_MEASURE on a file that is not code (ARC 029,
+            # measured — CHECK-DEBT D3.110). Excluded by NAME class, not tracking
+            # state, which is the distinction that matters (§7.12 / D2.15).
+            if path.name.startswith("._"):
+                continue
             out.append(path)
     return out
 
