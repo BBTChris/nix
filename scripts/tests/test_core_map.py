@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import os
+import select
 import subprocess
 import sys
 import time
@@ -310,6 +311,51 @@ def test_slice_cpuset_returns_EITHER_cores_OR_a_reason_never_a_silent_empty() ->
 #: absence is under test.
 _BARE_CHILD = "import time; time.sleep(float(__import__('sys').argv[1]))"
 
+#: A child that ANNOUNCES itself before sleeping. The announcement is the
+#: synchronisation: a byte on stdout can only be written by a process that has
+#: already exec'd and started running, so a reader that has it holds proof of
+#: both — no polling, no deadline, nothing to flip under scheduler noise.
+_READY_CHILD = (
+    "import sys, time; sys.stdout.write('R'); sys.stdout.flush(); "
+    "time.sleep(float(sys.argv[1]))"
+)
+
+
+def _await_ready(child: subprocess.Popen[bytes]) -> None:
+    """Block until the child has exec'd AND started running, on its own word.
+
+    **`_await_exec` cannot answer this question when the child's image equals the
+    parent's, and that is ARC 029 / 0.1's second finding.** Its docstring already
+    names the window — `Popen` returns between the fork and the exec, and in that
+    window `/proc/<pid>/exe` is still the PARENT's image — but it treats the image
+    as a discriminator. For a venv-interpreter child spawned by a venv-interpreter
+    test runner the two images are THE SAME FILE, so the wait is satisfied before
+    the fork has finished and every `/proc` read that follows may land in the
+    pre-exec window.
+
+    MEASURED, and it is not theoretical: the new complementary control read
+    `/proc/<pid>/cmdline` as `''` in 4 of 5 full-file runs while passing in
+    isolation. The same window makes the neighbouring venv control pass for the
+    WRONG REASON — its premise is `_mentions_home(...) is False`, and an empty
+    cmdline satisfies that vacuously, which is a premise that cannot fail.
+
+    A byte on stdout removes the race rather than widening a timeout: only a
+    process that has replaced its image and begun executing can write it.
+    """
+    assert child.stdout is not None, "the child was not given a stdout pipe"
+    readable, _, _ = select.select([child.stdout], [], [], CHILD_TIMEOUT_S)
+    if not readable:
+        raise AssertionError(
+            f"child {child.pid} never announced itself within {CHILD_TIMEOUT_S}s "
+            f"(rc={child.poll()})"
+        )
+    token = child.stdout.read(1)
+    if token != b"R":
+        raise AssertionError(
+            f"child {child.pid} announced {token!r}, not b'R' — it did not reach "
+            "the program it was given"
+        )
+
 
 def _venv_python() -> Path:
     python = REPO / ".venv" / "bin" / "python"
@@ -356,19 +402,28 @@ def test_a_VENV_CHILD_with_NO_PATH_TOKEN_in_argv_is_STILL_attributed_to_nix() ->
     env = dict(os.environ)
     env["VIRTUAL_ENV"] = str(REPO / ".venv")
     with subprocess.Popen(  # nosec - literal argv, explicit executable, no shell
-        ["python", "-c", _BARE_CHILD, "30"],
+        ["python", "-c", _READY_CHILD, "30"],
         executable=str(python),
         env=env,
         cwd="/",
-        stdout=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
     ) as child:
         try:
-            _await_exec(child, expected_image)
+            # `_await_ready`, not `_await_exec`: this child's image is the SAME
+            # FILE as the test runner's, so the image wait is satisfied in the
+            # pre-exec window and the premise below could read an empty cmdline
+            # and pass vacuously (ARC 029 / 0.1, measured).
+            _await_ready(child)
+            assert core_map._image_of(child.pid) == expected_image, (  # pylint: disable=protected-access
+                "the child is not running the venv interpreter"
+            )
             cmdline = core_map._cmdline_of(child.pid)  # pylint: disable=protected-access
 
             # The premise of the test, asserted rather than assumed: this child
-            # really is invisible to the argv predicate.
+            # really is invisible to the argv predicate — and it is a REAL argv,
+            # not an unreadable one.
+            assert cmdline, "cmdline read back empty — the premise below is vacuous"
             assert (
                 core_map._mentions_home(  # pylint: disable=protected-access
                     child.pid, cmdline, REPO
@@ -397,21 +452,135 @@ def test_the_PROC_EXE_predicate_does_NOT_cover_the_venv_and_that_is_MEASURED() -
     interpreter and `_image_under` is False for every Python process in the
     tree. Without this control, a later reader would delete `_runs_tree_venv` as
     redundant with `_image_under` and re-open the defect silently.
+
+    **DRIVEN AGAINST A CONSTRUCTED CHILD, and the previous spelling is ARC 029 /
+    0.1's opening finding.** It read the AMBIENT process — `os.getpid()` — and so
+    asked its question of whatever interpreter happened to be running the suite.
+    `_runs_tree_venv` is defined on `VIRTUAL_ENV`, which the ambient process
+    carries only when the venv was ACTIVATED, while the test's own precondition
+    was `sys.executable.startswith(REPO)`, which does not imply it. MEASURED,
+    byte-identical tree, same commit:
+
+        source .venv/bin/activate && python -m pytest   ->  PASSES
+        ./.venv/bin/python -m pytest                    ->  FAILS
+
+    **That is the ARC 028 defect this very predicate was written to remove — a
+    verdict that is a function of the invocation spelling — reintroduced in the
+    control rather than in the code.** And it failed on the spelling where the
+    census is perfectly healthy: with an absolute-path argv, `_mentions_home`
+    attributes the process and `nix_processes` sees itself. Measured, all three
+    spellings, against the union:
+
+        absolute path, unactivated   mentions_home=True   venv=False   SEEN
+        activated, bare `python`     mentions_home=False  venv=True    SEEN
+        venv on PATH, unactivated    mentions_home=False  venv=False   BLIND
+
+    The third row is a real residual blindness and is recorded as CHECK-DEBT
+    D3.101 rather than repaired here — no `/proc` fact distinguishes it, which is
+    why D1.42 (join the units to `nix-trading.slice`) is its honest closure.
+
+    Every other control in this file already drives a constructed child with an
+    explicit environment; this one was the exception. D3.100's general rule, one
+    layer along: an instrument whose input is the ambient state measures the
+    ambient state, not the property.
     """
-    image = core_map._image_of(os.getpid())  # pylint: disable=protected-access
-    assert image is not None, "/proc/self/exe could not be read"
+    python = _venv_python()
+    expected_image = python.resolve(strict=True)
+    env = dict(os.environ)
+    # The activated spelling, CONSTRUCTED rather than inherited — this is the
+    # whole repair. The predicate's precondition is now stated by the test that
+    # depends on it, instead of being borrowed from how pytest was launched.
+    env["VIRTUAL_ENV"] = str(REPO / ".venv")
+    with subprocess.Popen(  # nosec - literal argv, explicit executable, no shell
+        ["python", "-c", _READY_CHILD, "30"],
+        executable=str(python),
+        env=env,
+        cwd="/",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    ) as child:
+        try:
+            _await_ready(child)
 
-    if not sys.executable.startswith(str(REPO)):
-        pytest.skip(f"this runner is not the tree's venv ({sys.executable})")
+            # The disproof itself: the kernel's image for a venv interpreter is
+            # the SYSTEM binary, outside the tree, so `_image_under` cannot see
+            # this process and `_runs_tree_venv` is not redundant with it.
+            image = core_map._image_of(child.pid)  # pylint: disable=protected-access
+            assert image is not None, "/proc/<pid>/exe could not be read"
+            assert image == expected_image, (
+                f"the child's image is {image}, not the {expected_image} the venv "
+                "interpreter resolves to — this control is measuring something else"
+            )
+            assert image.is_relative_to(REPO) is False, (
+                f"/proc/<pid>/exe is {image}, INSIDE {REPO} — the venv "
+                "interpreter has stopped being a symlink out of the tree, so "
+                "this disproof no longer holds and _runs_tree_venv should be "
+                "re-examined"
+            )
+            assert (
+                core_map._image_under(child.pid, REPO)  # pylint: disable=protected-access
+                is False
+            ), "the image predicate claimed a process it is documented to miss"
 
-    assert image.is_relative_to(REPO) is False, (
-        f"/proc/self/exe is {image}, INSIDE {REPO} — the venv interpreter has "
-        "stopped being a symlink out of the tree, so this disproof no longer "
-        "holds and _runs_tree_venv should be re-examined"
-    )
-    assert core_map._runs_tree_venv(  # pylint: disable=protected-access
-        os.getpid(), REPO
-    ), "the predicate that is supposed to cover this case does not"
+            assert core_map._runs_tree_venv(  # pylint: disable=protected-access
+                child.pid, REPO
+            ), "the predicate that is supposed to cover this case does not"
+        finally:
+            child.kill()
+
+
+def test_the_VENV_PREDICATE_needs_VIRTUAL_ENV_and_the_ARGV_ONE_COVERS_ITS_GAP() -> None:
+    """The two predicates are COMPLEMENTARY, and that is asserted, not assumed.
+
+    ARC 029 / 0.1. `_runs_tree_venv` returns False for the tree's own interpreter
+    invoked by absolute path without activation — correctly, since `VIRTUAL_ENV`
+    is how it distinguishes the tree's venv from any other process sharing the
+    system image. What makes that safe is `_mentions_home` catching the same
+    process by its argv, and the census unioning the two.
+
+    Pinned because the repair above could otherwise be read as "the venv
+    predicate is unreliable" and reverted toward something that attributes on the
+    shared system image alone — which would sweep every unrelated `python3.14` on
+    the node into a core census.
+    """
+    python = _venv_python()
+    expected_image = python.resolve(strict=True)
+    env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
+    with subprocess.Popen(  # nosec - literal argv, absolute path, no shell
+        [str(python), "-c", _READY_CHILD, "30"],
+        env=env,
+        cwd="/",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    ) as child:
+        try:
+            _await_ready(child)
+            assert core_map._image_of(child.pid) == expected_image, (  # pylint: disable=protected-access
+                "the child is not running the venv interpreter"
+            )
+            cmdline = core_map._cmdline_of(child.pid)  # pylint: disable=protected-access
+            assert cmdline, "cmdline read back empty — the assertions below are vacuous"
+
+            assert (
+                core_map._runs_tree_venv(  # pylint: disable=protected-access
+                    child.pid, REPO
+                )
+                is False
+            ), (
+                "the venv predicate claimed a process with no VIRTUAL_ENV — it "
+                "has degraded to attributing on the shared system image"
+            )
+            assert core_map._mentions_home(  # pylint: disable=protected-access
+                child.pid, cmdline, REPO
+            ), f"the argv predicate lost {cmdline!r}, which names a path in the tree"
+
+            found, _ = core_map.nix_processes(REPO)
+            assert child.pid in {process.pid for process in found}, (
+                f"pid {child.pid} is the tree's own interpreter and the census "
+                "did not attribute it — the union has lost a member"
+            )
+        finally:
+            child.kill()
 
 
 def test_VIRTUAL_ENV_ALONE_does_NOT_make_a_SHELL_a_nix_process() -> None:
