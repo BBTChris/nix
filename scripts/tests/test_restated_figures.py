@@ -8,6 +8,11 @@ it is a list of numbers with a green tick painted on.
 Every assertion keys on the REASON — the verdict token, the derived value, the
 refusal text — never on a bare exit code.
 """
+# pylint: disable=invalid-name,use-implicit-booleaness-not-comparison
+# Test names SHOUT the property under test, as in every other suite here;
+# `== []` is asserted rather than `not x` because pytest prints the offending
+# defects on failure and a bare truthiness check prints only `False` — the
+# same trade `test_status_contract.py` documents.
 
 from __future__ import annotations
 
@@ -214,3 +219,244 @@ def test_every_arc_brief_is_history_throughout() -> None:
     assert not rf._is_historical(  # pylint: disable=protected-access
         rf.REPO, rf.REPO / "docs" / "CHECK-DEBT.md"
     )
+
+
+# ---------------------------------------------------------------------------
+# ARC 029 / 0.2 — D3.82's own blind spot, in both halves.
+#
+# D3.82 recorded that this auditor's extractor is measurably blind to counts
+# spelled in words, and the class then recurred TWICE MORE inside the documents
+# reporting the finding. The two arms below are what closes it: worded numerals,
+# and a stated total reconciled against an enumeration in the SAME passage.
+#
+# The second arm reaches a class `cross_document` cannot see by construction —
+# that group needs a figure restated in ANOTHER FILE, and a row that contradicts
+# ITSELF never leaves the line it is written on.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "figure"),
+    [
+        ("thirty-seven rows opened", "37"),
+        ("forty-one findings", "41"),
+        ("twenty-nine claims", "29"),
+        ("nine checks", "9"),
+        ("ninety-nine tests", "99"),
+    ],
+)
+def test_worded_counts_are_extracted_and_NORMALISED_TO_DIGITS(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str, figure: str
+) -> None:
+    """A worded figure must arrive as its VALUE, not as its spelling.
+
+    Normalisation is the whole point: it is what lets `thirty-seven opened` in
+    one document and `37 rows` in another land in a single `cross_document`
+    group instead of passing each other unseen.
+    """
+    (tmp_path / "CLAUDE.md").write_text(text + "\n", encoding="utf-8")
+    monkeypatch.setattr(rf, "SCOPE", ("CLAUDE.md",))
+    assert figure in {occurrence.figure for occurrence in rf.figures(tmp_path)}
+
+
+@pytest.mark.parametrize(
+    "text", ["Thirty opened", "the thirty-six new rows", "thirty-six of them"]
+)
+def test_the_NOUN_ADJACENCY_RULE_is_pinned_for_worded_counts_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str
+) -> None:
+    """The worded arm obeys `_COUNT`'s rule exactly: number, then a closed noun.
+
+    So `Thirty opened` (a verb), `thirty-six new rows` (an adjective in the way)
+    and `thirty-six of them` (no noun at all) are NOT figures to this extractor,
+    and that boundary is asserted rather than left to be discovered.
+
+    **It is also why the second arm exists.** Every one of these shapes appears
+    in the measured defect, and the intra-sentence reconciliation reads them
+    through `_STATED_OPENED` / `_STATED_OF_THE` — which key on the words that say
+    what is being counted, not on a noun table. The two arms are complementary,
+    and neither alone would have found the ARC 028 row.
+    """
+    (tmp_path / "CLAUDE.md").write_text(text + "\n", encoding="utf-8")
+    monkeypatch.setattr(rf, "SCOPE", ("CLAUDE.md",))
+    assert [o for o in rf.figures(tmp_path) if o.figure in {"30", "36"}] == []
+
+
+def test_a_WORDED_and_a_DIGIT_restatement_land_in_ONE_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The measured defect, as a test: one figure, two spellings, two files."""
+    (tmp_path / "CLAUDE.md").write_text("thirty-seven rows\n", encoding="utf-8")
+    (tmp_path / "SESSION.md").write_text("37 rows in the ledger\n", encoding="utf-8")
+    monkeypatch.setattr(rf, "SCOPE", ("CLAUDE.md", "SESSION.md"))
+    groups = rf.cross_document(rf.figures(tmp_path))
+    assert ("37", "row") in groups, groups
+    assert len({row.path for row in groups[("37", "row")]}) == 2
+
+
+def test_the_WORD_CEILING_is_stated_and_measured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ninety-nine is the documented ceiling, so the boundary is pinned.
+
+    A reader must not have to discover the limit by being wrong about it: above
+    the ceiling the extractor is blind, which is the very property this arm
+    exists to remove, so the edge is asserted rather than described.
+    """
+    (tmp_path / "CLAUDE.md").write_text(
+        "ninety-nine rows and one hundred rows\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(rf, "SCOPE", ("CLAUDE.md",))
+    figures = {occurrence.figure for occurrence in rf.figures(tmp_path)}
+    assert "99" in figures
+    assert "100" not in figures
+
+
+# -- the intra-sentence arithmetic arm --------------------------------------
+
+_ROW = (
+    "| 2026-08-12 | ARC 099 | 50 | **{delta}** — {narration}. "
+    "Opened: D3.41-D3.47 (A) · D3.51-D3.56 (B) · D3.99 (late). "
+    "**Discharged: D3.29, D3.30 and D3.39, each re-measured.** Commentary "
+    "mentioning D3.12 and D3.13 after the fact.\n"
+)
+
+
+#: The same row with its discharges narrated in PROSE instead of enumerated —
+#: the shape that produced three false positives before `discharged_count` knew
+#: how to read it.
+_ROW_NO_LIST = (
+    "| 2026-08-12 | ARC 099 | 50 | **{delta}** — {narration}. "
+    "Opened: D3.41-D3.47 (A) · D3.51-D3.56 (B) · D3.99 (late). Commentary.\n"
+)
+
+
+def _defects(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, row: str) -> list:
+    (tmp_path / "CHECK-DEBT.md").write_text(row, encoding="utf-8")
+    monkeypatch.setattr(rf, "SCOPE", ("CHECK-DEBT.md",))
+    return rf.enumeration_defects(tmp_path)
+
+
+def test_a_stated_total_its_own_enumeration_REFUTES_is_found(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """14 ids enumerated, `thirteen opened` narrated. One passage, both facts."""
+    row = _ROW.format(delta="+11", narration="thirteen opened, three discharged")
+    found = _defects(tmp_path, monkeypatch, row)
+    opened = [d for d in found if d.kind == "opened"]
+    assert opened, found
+    assert (opened[0].stated, opened[0].derived) == (13, 14)
+
+
+def test_the_enumeration_STOPS_at_its_own_sentence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ids mentioned in later commentary are not openings.
+
+    Measured: without the sentence stop, the `Opened:` segment ran on through the
+    row's closing prose and swept up every id there — ARC 020's three openings
+    read as seven, and the arm reported a defect in a correct row.
+    """
+    row = _ROW.format(delta="+11", narration="fourteen opened, three discharged")
+    assert _defects(tmp_path, monkeypatch, row) == []
+
+
+def test_the_SUBSET_numerator_is_never_reconciled_as_a_total(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`N of the M new rows` states one total and one subset.
+
+    Reconciling the subset would manufacture a finding out of a sentence telling
+    the truth — which is how the first spelling of this arm behaved.
+    """
+    row = _ROW.format(
+        delta="+11", narration="nine of the fourteen new rows came from an instrument"
+    )
+    assert _defects(tmp_path, monkeypatch, row) == []
+
+
+def test_the_SUBSET_DENOMINATOR_is_reconciled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The M in `N of the M new rows` IS a total claim, and is checked."""
+    row = _ROW.format(
+        delta="+11", narration="nine of the twelve new rows came from an instrument"
+    )
+    found = [d for d in _defects(tmp_path, monkeypatch, row) if d.kind == "opened"]
+    assert found and (found[0].stated, found[0].derived) == (12, 14)
+
+
+def test_ADJACENCY_keeps_a_distant_number_from_answering_for_the_noun(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A loose window let any number on a 400-character row be the total.
+
+    Measured with a thirty-character window: `**-1** — four discharged, three
+    opened` was read as a claim that ONE row was opened.
+    """
+    row = _ROW.format(delta="+11", narration="four discharged, fourteen opened")
+    assert _defects(tmp_path, monkeypatch, row) == []
+
+
+@pytest.mark.parametrize(
+    "narration",
+    [
+        "fourteen opened, three discharged",
+        "fourteen opened, none discharged",
+        "fourteen opened and no rows were discharged",
+    ],
+)
+def test_the_DISCHARGE_COUNT_is_read_in_every_shape_these_rows_use(
+    narration: str,
+) -> None:
+    """Three shapes, one derivation — and the false positives they caused.
+
+    A derivation that knew only the enumerated `Discharged:` list read `ten
+    opened, one discharged` as ZERO discharges and reported a delta defect in a
+    row whose arithmetic was correct: three false positives (ARC 022, ARC 025,
+    ARC 027) against one true one.
+    """
+    line = _ROW_NO_LIST.format(delta="+0", narration=narration)
+    count = rf.discharged_count(line)
+    assert count is not None
+    assert count == (3 if "three" in narration else 0)
+
+
+def test_a_discharge_count_that_CANNOT_be_derived_ABSTAINS(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`None` is a first-class answer: a count that cannot be read is not zero.
+
+    The delta arm must stay silent rather than invent a derivation, because a
+    confident wrong answer here is worse than an admitted gap.
+    """
+    row = (
+        "| 2026-08-12 | ARC 099 | 50 | **+99** — some rows moved. "
+        "Opened: D3.41-D3.47 (A) · D3.51-D3.56 (B) · D3.99 (late). Commentary.\n"
+    )
+    assert rf.discharged_count(row) is None
+    assert [d for d in _defects(tmp_path, monkeypatch, row) if d.kind == "delta"] == []
+
+
+def test_a_stated_DELTA_its_enumerations_refute_is_found(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """14 opened - 3 discharged = +11, and the row claims +9."""
+    row = _ROW.format(delta="+9", narration="fourteen opened, three discharged")
+    found = [d for d in _defects(tmp_path, monkeypatch, row) if d.kind == "delta"]
+    assert found and (found[0].stated, found[0].derived) == (9, 11)
+
+
+def test_the_LIVE_LEDGER_no_longer_contradicts_itself() -> None:
+    """The regression control for ARC 029 / 0.2's correction.
+
+    The ARC 028 series row narrated `+36` and `thirty-six new rows` while its own
+    enumeration gives 41 opened and 3 discharged — 41 - 3 = 38. Both were
+    corrected in place WITH the correction annotated, and this test is what stops
+    the class recurring for a fourth time.
+    """
+    defects = rf.enumeration_defects(rf.REPO)
+    assert defects == [], [
+        f"{d.path}:{d.line} [{d.kind}] stated {d.stated}, enumeration {d.derived}"
+        for d in defects
+    ]

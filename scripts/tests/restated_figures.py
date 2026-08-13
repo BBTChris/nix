@@ -130,6 +130,73 @@ _COUNT = re.compile(
     r"hooks?|controls?|elements?|probes?)\b"
 )
 
+#: Numerals SPELLED IN WORDS, normalised to their value. ARC 029 / 0.2.
+#:
+#: D3.82 named this as the extractor's own blind spot and the class then recurred
+#: twice more, both times inside the document reporting the finding. `_COUNT`
+#: requires digits, so *"Thirty-seven opened"* and *"Twenty-nine of the thirty-six
+#: new rows"* were invisible to a sweep whose whole subject is restated figures —
+#: and the numbers that get NARRATED are precisely the ones a reader believes.
+#:
+#: Closed at ninety-nine on purpose. Every figure this project narrates in words
+#: is a count of rows, checks or findings and lives well below it; admitting
+#: "hundred" forms would buy one hypothetical case and cost a combinatorial
+#: parser whose failures would be silent. A worded figure above the ceiling is
+#: simply not extracted, which is the same blindness this comment is closing, so
+#: `test_the_WORD_CEILING_is_stated_and_measured` pins the boundary rather than
+#: leaving a reader to discover it.
+_UNITS = [
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+]
+_TENS = {
+    "twenty": 20,
+    "thirty": 30,
+    "forty": 40,
+    "fifty": 50,
+    "sixty": 60,
+    "seventy": 70,
+    "eighty": 80,
+    "ninety": 90,
+}
+_WORD_VALUE: dict[str, int] = {word: value for value, word in enumerate(_UNITS)}
+for _ten, _base in _TENS.items():
+    _WORD_VALUE[_ten] = _base
+    for _unit, _extra in zip(_UNITS[1:10], range(1, 10)):
+        _WORD_VALUE[f"{_ten}-{_unit}"] = _base + _extra
+
+#: The same closed noun set `_COUNT` uses, so a worded figure and a digit figure
+#: of the SAME THING land in one `cross_document` group. That is where the power
+#: is: the sweep can now see *"thirty-seven opened"* in one document and *"41
+#: rows"* in another as one disputed figure rather than as two unrelated tokens.
+_NOUNS = (
+    r"(checks?|gates?|rows?|claims?|sources?|bindings?|amendments?|tests?|"
+    r"test functions?|findings?|paths?|modules?|files?|objectives?|insertions?|"
+    r"hooks?|controls?|elements?|probes?)"
+)
+_WORD_COUNT = re.compile(
+    r"\b(" + "|".join(sorted(_WORD_VALUE, key=len, reverse=True)) + r")\s+" + _NOUNS,
+    re.IGNORECASE,
+)
+
 #: Token shapes that are never a project count: a version, a section reference,
 #: a line reference, an ARC number, a debt-row id, an exit code, a port.
 #: Every alternative here is exercised by a case in
@@ -250,6 +317,19 @@ def _line_figures(
             context=_window(line, match.start()),
             historical=classify_occurrence(line, whole),
         )
+    # Worded numerals, normalised to digits so they group with their digit
+    # restatements rather than beside them (ARC 029 / 0.2, D3.82's own class).
+    for match in _WORD_COUNT.finditer(line):
+        if _noisy(line, match):
+            continue
+        yield Occurrence(
+            figure=str(_WORD_VALUE[match.group(1).lower()]),
+            noun=_singular(match.group(2)),
+            path=relative,
+            line=number,
+            context=_window(line, match.start()),
+            historical=classify_occurrence(line, whole),
+        )
 
 
 #: How far either side of a match the noise rules may look. TIGHT on purpose:
@@ -279,6 +359,203 @@ def _singular(noun: str) -> str:
 def _window(line: str, at: int) -> str:
     """120 characters around a match, for a human to adjudicate."""
     return line[max(0, at - 55) : at + 65].strip()
+
+
+# ---------------------------------------------------------------------------
+# INTRA-SENTENCE ARITHMETIC — a stated total against the enumeration beside it.
+# ---------------------------------------------------------------------------
+#
+# ARC 029 / 0.2, and the second half of D3.82's named blind spot. `cross_document`
+# can only see a figure that is restated in ANOTHER FILE; it is structurally blind
+# to a passage that contradicts ITSELF. The measured instance is a ledger row that
+# enumerates its own openings — `D3.41-D3.47 · D3.51-D3.56 · … · D3.100` — and then
+# narrates a total that the enumeration does not support. One passage, both facts,
+# no second document involved, and therefore no cross-document group to notice it.
+#
+# The enumeration is the derivation and the narration is the restatement: this
+# arm never needs another source, which is exactly why it reaches a class the
+# rest of the module cannot.
+
+#: `D3.41-D3.47`, `D3.41–47`, and the bare `D3.99`. The second id in a range may
+#: drop its series prefix, which is how these rows are actually written.
+_ID_RANGE = re.compile(r"\bD([123])\.(\d+)\s*[-–—]\s*(?:D\1\.)?(\d+)\b")
+_ID_SINGLE = re.compile(r"\bD([123])\.(\d+)\b")
+
+#: The two closed shapes in which these rows state an OPENED TOTAL. Both require
+#: the count to sit immediately against its noun.
+#:
+#: **Adjacency is the whole design, and a loose window was measured to be wrong.**
+#: A first spelling allowed thirty characters between the number and `opened`,
+#: and on a four-hundred-character ledger row that let any number answer for any
+#: noun: it read *"| ARC 020 | 40 | **-1** — four discharged, three opened"* as a
+#: claim that ONE row was opened. Every arm below fires only on a shape that
+#: cannot mean anything else.
+#:
+#: `N of the M new rows` is deliberately captured on M and never on N. *"Twenty-
+#: nine of the thirty-six new rows were opened by an instrument"* states one
+#: total (thirty-six) and one SUBSET (twenty-nine); reconciling the subset would
+#: manufacture a finding out of a sentence that is telling the truth.
+_NUMBER = r"(\d{1,4}|" + "|".join(sorted(_WORD_VALUE, key=len, reverse=True)) + r")"
+_STATED_OPENED = re.compile(rf"\b{_NUMBER}\s+opened\b", re.IGNORECASE)
+_STATED_OF_THE = re.compile(rf"\bof the\s+{_NUMBER}\s+new rows\b", re.IGNORECASE)
+_STATED_DISCHARGED = re.compile(rf"\b{_NUMBER}\s+discharged\b", re.IGNORECASE)
+#: An explicit ZERO, which is a derivation and not an absence of one. Bounded at
+#: two intervening words so `none discharged`, `none were discharged` and `no
+#: rows were discharged` all read, while a `no` elsewhere in a long row cannot
+#: reach a `discharged` at the other end of it.
+_NONE_DISCHARGED = re.compile(
+    r"\b(?:none|no)\b(?:\s+\w+){0,2}\s+discharg", re.IGNORECASE
+)
+_STATED_DELTA = re.compile(r"\*\*([+-]\d{1,4})\b")
+
+#: Below this an "enumeration" is a mention, not a list, and reconciling against
+#: it would manufacture findings out of prose that names one or two rows.
+MIN_ENUMERATED_IDS = 4
+
+
+@dataclasses.dataclass(frozen=True)
+class EnumerationDefect:
+    """A passage whose stated total disagrees with its own enumeration."""
+
+    path: str
+    line: int
+    kind: str
+    stated: int
+    derived: int
+    context: str
+
+
+def enumerated_ids(text: str) -> set[str]:
+    """Every debt-row id a passage names, ranges expanded. Deduplicated.
+
+    A set rather than a count: `D3.41-D3.47` and a later bare `D3.41` name the
+    same row, and a passage that mentions a row twice has not opened it twice.
+    """
+    found: set[str] = set()
+    for series, first, last in _ID_RANGE.findall(text):
+        start, end = int(first), int(last)
+        if end < start or end - start > 200:
+            continue
+        found.update(f"D{series}.{n}" for n in range(start, end + 1))
+    for series, number in _ID_SINGLE.findall(text):
+        found.add(f"D{series}.{number}")
+    return found
+
+
+def _segment(text: str, start_marker: str, *stop_markers: str) -> str:
+    """The passage introduced by `start_marker`, up to the first stop marker.
+
+    Segmenting matters: a row states its openings AND its discharges, and a
+    reconciliation that read the whole line would count every id under both
+    headings and agree with nothing. Measured: without the `". "` stop, the
+    `Opened:` segment ran on through the row's closing commentary and swept up
+    every id mentioned there — ARC 020's three openings read as seven.
+    """
+    at = text.find(start_marker)
+    if at < 0:
+        return ""
+    rest = text[at + len(start_marker) :]
+    cuts = [rest.find(marker) for marker in stop_markers if rest.find(marker) > 0]
+    return rest[: min(cuts)] if cuts else rest
+
+
+def _value(token: str) -> int:
+    """A count token — digits or a word — as an integer."""
+    return int(token) if token.isdigit() else _WORD_VALUE[token.lower()]
+
+
+def discharged_count(line: str) -> int | None:
+    """How many rows a passage says it discharged, or `None` if it does not say.
+
+    **`None` is a first-class answer and the arm ABSTAINS on it.** These rows
+    record discharges in three different shapes, and a derivation that knew only
+    the enumerated one read *"ten opened, one discharged"* as zero discharges and
+    reported a delta defect in a row whose arithmetic is correct. Measured: that
+    spelling produced three false positives (ARC 022, ARC 025, ARC 027) against
+    one true one. A count that cannot be derived is not a count of zero.
+    """
+    enumerated = enumerated_ids(_segment(line, "Discharged:", ". ", "**"))
+    if enumerated:
+        return len(enumerated)
+    stated = _STATED_DISCHARGED.search(line)
+    if stated:
+        return _value(stated.group(1))
+    if _NONE_DISCHARGED.search(line):
+        return 0
+    return None
+
+
+def enumeration_defects(home: Path) -> list[EnumerationDefect]:
+    """Every passage whose narrated total its own enumeration refutes.
+
+    Two arms, because a ledger row states two totals and they fail differently:
+
+    * **opened** — the narrated count of rows opened, against the ids enumerated
+      under `Opened:`;
+    * **delta** — the narrated `**+n**`, against `opened - discharged` derived
+      from the two enumerations in the same row.
+
+    Both are derived from the passage itself. Nothing here reads another file, a
+    registry, or a previous measurement — which is the property that lets this
+    arm see a self-contradicting sentence at all.
+    """
+    out: list[EnumerationDefect] = []
+    for path in scope_paths(home):
+        relative = path.relative_to(home).as_posix()
+        for number, line in enumerate(
+            path.read_text(encoding="utf-8", errors="replace").splitlines(), start=1
+        ):
+            out.extend(_passage_defects(relative, number, line))
+    return out
+
+
+def _passage_defects(
+    relative: str, number: int, line: str
+) -> Iterator[EnumerationDefect]:
+    """Both reconciliations for one passage, or nothing if it enumerates none."""
+    opened = enumerated_ids(_segment(line, "Opened:", ". ", "Discharged"))
+    if len(opened) < MIN_ENUMERATED_IDS:
+        return
+    yield from _opened_defects(relative, number, line, len(opened))
+    yield from _delta_defects(relative, number, line, len(opened))
+
+
+def _opened_defects(
+    relative: str, number: int, line: str, opened: int
+) -> Iterator[EnumerationDefect]:
+    """Narrated opened-totals against the enumeration, in both stated shapes."""
+    for pattern in (_STATED_OPENED, _STATED_OF_THE):
+        for match in pattern.finditer(line):
+            stated = _value(match.group(1))
+            if stated != opened:
+                yield EnumerationDefect(
+                    relative,
+                    number,
+                    "opened",
+                    stated,
+                    opened,
+                    _window(line, match.start()),
+                )
+
+
+def _delta_defects(
+    relative: str, number: int, line: str, opened: int
+) -> Iterator[EnumerationDefect]:
+    """The narrated `**+n**` against `opened - discharged`. Abstains on None."""
+    delta = _STATED_DELTA.search(line)
+    discharged = discharged_count(line)
+    if delta is None or discharged is None:
+        return
+    derived = opened - discharged
+    if int(delta.group(1)) != derived:
+        yield EnumerationDefect(
+            relative,
+            number,
+            "delta",
+            int(delta.group(1)),
+            derived,
+            _window(line, delta.start()),
+        )
 
 
 def cross_document(
@@ -590,6 +867,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"{MIN_CREDIBLE_FIGURES} — these documents are thick with counts, so "
                 "that is the signature of an extractor that stopped matching"
             )
+        defects = enumeration_defects(home)
         verifications = verify_all(home)
     except RefusedError as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
@@ -597,7 +875,27 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.sweep:
         render_sweep(groups, len(occurrences), args.limit)
-    return render_adjudication(verifications)
+    return max(render_enumeration(defects), render_adjudication(verifications))
+
+
+def render_enumeration(defects: list[EnumerationDefect]) -> int:
+    """Print the self-contradicting passages and return the exit code.
+
+    Unlike the cross-document sweep, there is nothing to adjudicate here: the
+    enumeration IS the derivation, so a disagreement is a defect in the passage
+    rather than a figure awaiting an owner. It is red.
+    """
+    print("\nINTRA-SENTENCE ARITHMETIC — stated totals against their own enumerations")
+    if not defects:
+        print("  no passage contradicts its own enumeration")
+        return 0
+    for defect in defects:
+        print(
+            f"  {defect.path}:{defect.line} [{defect.kind}] "
+            f"stated {defect.stated}, enumeration gives {defect.derived}"
+        )
+        print(f"      {defect.context[:110]}")
+    return 1
 
 
 def render_sweep(
