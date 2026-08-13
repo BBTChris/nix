@@ -23,6 +23,7 @@
         "check_ibgateway_service",
         "check_limiter_gate",
         "check_limiter_seam",
+        "check_monitor",
         "check_name_coherence",
         "check_node_identity",
         "check_observed_resource_claims",
@@ -46,6 +47,8 @@
         "subprocess:blkid",
         "subprocess:findmnt",
         "subprocess:git",
+        "subprocess:python",
+        "subprocess:python3",
         "subprocess:systemctl",
         "subprocess:xdpyinfo"
       ]
