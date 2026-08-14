@@ -507,6 +507,30 @@ try:
 except Exception as _e:
     chk("4P --help runs", False, str(_e))
 
+print()
+print("=" * 72)
+print("SCENARIO 4Q: no-process state -> no job, no live agents, blank-track bars")
+print("=" * 72)
+root, repo, ch, dl = build(n_msgs=20)
+cfg = mk_cfg(repo, ch, dl)
+class _NP:
+    pid = None
+    usage_snapshot = None
+mon = M.Monitor(cfg, _NP()); s = mon.collect(force_slow=True)
+s["phase"] = (M.PHASE_NOPROC, "no Claude Code process found")
+frame = "\n".join("".join(t for t, _ in row)
+                  for row in M.Renderer(False).render(s, 104, 30))
+chk("4Q JOB shows 'no job running'", "no job running" in frame,
+    [l for l in frame.splitlines() if "JOB" in l])
+chk("4Q agents: no live agents", "no live agents" in frame,
+    [l for l in frame.splitlines() if "agent" in l.lower()])
+chk("4Q no phantom STALL agent", "STALL" not in frame,
+    [l for l in frame.splitlines() if "STALL" in l])
+# bars have blank track, not the old shade glyph
+chk("4Q bars blank-track (no shade glyph)", "\u2592" not in frame
+    and "\u2591" not in frame, [l for l in frame.splitlines() if "[" in l][:3])
+chk("4Q bars still bracketed+filled", "[" in frame and "\u2588" in frame)
+
 print("=" * 72)
 print("SCENARIO 4O: claude-hud usage snapshot -> real 5h/weekly bars")
 print("=" * 72)

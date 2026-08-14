@@ -1462,16 +1462,15 @@ class Renderer:
 
     # -- primitives --------------------------------------------------------
     def bar(self, frac: float | None, width: int) -> str:
-        # Splash-style: [████▒▒▒▒] - solid fill, medium-shade track, in brackets.
+        # [████    ] - solid fill, blank track (no dotted background), bracketed.
         # Brackets consume 2 cols so the inner cell count is width-2.
         if width <= 2:
             return ""
         inner = width - 2
-        track = self.b["e"]           # medium shade so an unfilled bar is visible
         if frac is None:
-            return "[" + track * inner + "]"
+            return "[" + " " * inner + "]"
         n = max(0, min(inner, int(round(frac * inner))))
-        return "[" + self.b["f"] * n + track * (inner - n) + "]"
+        return "[" + self.b["f"] * n + " " * (inner - n) + "]"
 
     def rule(self, w: int, left: str, right: str, label: str = "",
              attr: str = A_DIM) -> list:
@@ -1620,7 +1619,12 @@ class Renderer:
         # agents ---------------------------------------------------------------
         out.append(self.rule(w, b["lt"], b["rt"], "AGENTS"))
         agents = s["agents"]
-        if not agents:
+        no_proc = s["phase"][0] == PHASE_NOPROC
+        if no_proc:
+            # process is gone -> nothing is live; don't show phantom stalled agents
+            out.append(self.row(w, [(" no live agents (no Claude Code process)", A_DIM)]))
+            agents = []
+        if not agents and not no_proc:
             msg = (" no agents active in this run"
                    if s.get("has_sessions") else " no todo/sidechain state found")
             out.append(self.row(w, [(msg, A_DIM)]))
@@ -1697,7 +1701,7 @@ class Renderer:
         if gt:
             pre = p.get("gates_pre") or 0
             out.append([(" gates    ", A_NORM),
-                        (self.bar(gp / gt, bw), A_INFO),
+                        (self.bar(gp / gt, bw), A_NORM),
                         (f" {gp}/{gt} {gp / gt * 100:.0f}% ", A_NORM),
                         (f"{p['gate_basis']}", A_DIM),
                         (f" ({pre} pre)" if pre else "", A_DIM)])
@@ -1710,7 +1714,7 @@ class Renderer:
         if tp and tp.get("total"):
             done, total = tp["done"], tp["total"]
             frac = done / total if total else None
-            out.append([(" tasks    ", A_NORM), (self.bar(frac, bw), A_INFO),
+            out.append([(" tasks    ", A_NORM), (self.bar(frac, bw), A_NORM),
                         (f" {done}/{total}" + (f" {frac * 100:.0f}%" if frac is not None else ""),
                          A_NORM)])
             ip = tp.get("in_progress")
@@ -1721,10 +1725,12 @@ class Renderer:
                             (f"{self.b['arw']}{ip} ", A_INFO),
                             (f"{self.b['e']}{pd}", A_DIM)])
         elif tt:
-            out.append([(" todos    ", A_NORM), (self.bar(td / tt, bw), A_INFO),
+            out.append([(" todos    ", A_NORM), (self.bar(td / tt, bw), A_NORM),
                         (f" {td}/{tt} {td / tt * 100:.0f}%", A_NORM)])
         # whole-job ETA (time remaining)
-        if p["eta"]:
+        if s["phase"][0] == PHASE_NOPROC:
+            out.append([(" JOB left ", A_NORM), ("no job running", A_DIM)])
+        elif p["eta"]:
             out.append([(" JOB left ", A_NORM),
                         (f"{fmt_dur(p['eta'], True)} ", A_ACCENT),
                         (f"[{p['eta_basis']}]", A_DIM)])
