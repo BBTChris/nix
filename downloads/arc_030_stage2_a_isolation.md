@@ -190,7 +190,7 @@ whole object store. Recorded, not built around.
 ## A4 — gate the isolation mechanism itself
 
 **A live collision this arc did not plan, and recovered from — the single strongest piece of
-evidence in this writeup (CHECK-DEBT D3.117).** While comparing before/after test behavior, this
+evidence in this writeup (CHECK-DEBT D3.119).** While comparing before/after test behavior, this
 sub-agent ran `git stash` in its own worktree at the same moment sub-agent B ran `git stash -u` in
 `nix-wt-stage2-b`. `refs/stash` is **one ref in the shared common `.git` dir, not per-worktree** —
 immediately afterward, `git stash list` showed exactly ONE entry, `WIP on arc-030-stage2-b`, and
@@ -203,7 +203,7 @@ actually lost, but only because this was independently verified rather than trus
 that checked only `git stash pop`'s exit code would have silently discarded real, uncommitted work,
 exactly as ARC 029 did, one layer lower: a git REF race instead of a shared INDEX. This directly
 confirms Stage 2's premise — worktree/index isolation (A1) does NOT cover every shared git surface
-— with a real incident rather than a constructed one, and is recorded as D3.117 alongside D3.115
+— with a real incident rather than a constructed one, and is recorded as D3.119 alongside D3.115
 (`.git/config`/`.git/hooks`) as a second, independently-discovered instance of the same class of
 residual: **`.git`'s common directory holds more shared, non-per-worktree state than the index and
 HEAD alone.**
@@ -241,7 +241,7 @@ adopted (A3).
 | D3.114 | detached-HEAD-then-removed-worktree commits are invisible to `--all`-based attribution | unassigned |
 | D3.115 | `.git/config`/`.git/hooks` are shared across worktrees, unexercised but real | unassigned |
 | D3.116 | pre-commit's own per-hook venvs are a third, ungated environment surface | unassigned |
-| D3.117 | `git stash`'s `refs/stash` is shared, not per-worktree — MEASURED LIVE (see A4), not simulated | unassigned |
+| D3.119 | `git stash`'s `refs/stash` is shared, not per-worktree — MEASURED LIVE (see A4), not simulated | unassigned |
 
 ## Files
 
@@ -284,7 +284,7 @@ named, tracked finding, not a regression).
 ## Full test-suite regression check (independent of verify.py)
 
 Ran the complete `scripts/tests/` suite (minus 8 files with pre-existing collection errors,
-confirmed byte-identical before/after via a git-stash comparison — see D3.117 for how that
+confirmed byte-identical before/after via a git-stash comparison — see D3.119 for how that
 comparison itself produced a live demonstration of a DIFFERENT shared-git-surface hazard) twice:
 once against this stage's code (`1214 passed, 183 failed, 9 skipped, 2 xfailed, 9 errors`), once
 against the unmodified baseline (`1201 passed, 184 failed, 9 skipped, 2 xfailed, 9 errors`).

@@ -735,9 +735,16 @@ def _named_by_tests(home: Path, paths: list[str]) -> dict[str, list[str]]:
     """
     sources: dict[str, str] = {}
     for module in sorted((home / _TEST_DIR).glob("*.py")):
+        # macOS AppleDouble sidecars (`._name.py`) match `*.py`, are not UTF-8,
+        # and land on this Samba-share tree as a matter of course — `read_text`
+        # raising UnicodeDecodeError on one drove this gate to an unhandled
+        # traceback rather than a verdict (ARC 030, CHECK-DEBT D3.110).
+        # Excluded by NAME class, same discipline as check_datafeed_bar_seal.
+        if module.name.startswith("._"):
+            continue
         try:
             sources[f"{_TEST_DIR}/{module.name}"] = module.read_text(encoding="utf-8")
-        except OSError:  # pragma: no cover - a file that vanished mid-run
+        except OSError, UnicodeDecodeError:  # pragma: no cover - vanished/binary
             continue
     found: dict[str, list[str]] = {}
     for path in paths:

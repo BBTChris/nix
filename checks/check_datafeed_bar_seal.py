@@ -313,7 +313,21 @@ SUBJECTS: tuple[str, ...] = (
 NAME = "check_datafeed_bar_seal"
 
 SCAN_ROOTS: tuple[str, ...] = ("scripts",)
-SKIP_DIRS: frozenset[str] = frozenset({".venv", "__pycache__", ".git", "graphify-out"})
+#: `.claude`/`.venv-dev`/`node_modules` are not reachable under SCAN_ROOTS
+#: ("scripts") today — both are siblings of scripts/, not nested inside it —
+#: but are listed for the same reason check_price_ring's SKIP_DIRS lists them:
+#: correctness if SCAN_ROOTS ever widens (ARC 030, CHECK-DEBT D3.110).
+SKIP_DIRS: frozenset[str] = frozenset(
+    {
+        ".venv",
+        ".venv-dev",
+        "__pycache__",
+        ".git",
+        "graphify-out",
+        ".claude",
+        "node_modules",
+    }
+)
 
 ROSTER_CONST = "DATAFEED_PORT_VERBS"
 EVENTS_CONST = "DATAFEED_EVENTS"

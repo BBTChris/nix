@@ -915,6 +915,18 @@ def test_the_REAL_TREES_THIRTEEN_ceiling_tripped_artifacts_are_the_D3104_EXCLUSI
     (no laundering a new artifact in through this door), every survivor is a
     MEMBER of the original thirteen (a SUBSET, not a swapped-in set), and every
     survivor still satisfies the D3.104 disposition's three parts below.
+
+    Landed this arc (Stage 2, real per-artifact coverage, DELETED from
+    `exclusions` entirely — the way `check_order_path_bans.py`'s three ARC 027
+    SHRINKs left the guard before it): sub-agent B retired `checks/
+    ibgateway_expected.json`, `risks/broker_order.config.json`, `databases/
+    schema/extract_sources.py`, `scripts/d1_12_reboot_capture.py` and `scripts/
+    runtime_gate.py` (five); sub-agent C retired `checks/_preamble.py` and
+    `scripts/nixverify/__init__.py` (`check_preamble_shim`, `check_nixverify_
+    init` — structural AST scans with plant/restore drives) (two). Thirteen
+    minus seven leaves six, and the assertion below derives that from the file
+    rather than restating it, so the next artifact that lands doesn't need this
+    docstring edited to stay true.
     """
     from nixverify.contract import (
         GUARD_REOWN_CEILING,
@@ -1183,6 +1195,28 @@ def test_the_classifier_matches_by_IMPORTABLE_NAME_and_never_by_a_PACKAGE(
     named = gate._named_by_tests(repo, ["scripts/module_07.py", "scripts/module_08.py"])
     assert named["scripts/module_07.py"] == ["scripts/tests/test_imports.py"]
     assert named["scripts/module_08.py"] == []
+
+
+def test_named_by_tests_survives_an_appledouble_sidecar(repo: Path) -> None:
+    """CHECK-DEBT D3.110. `_named_by_tests` globs `scripts/tests/*.py` and
+    `read_text(encoding="utf-8")`s every match; a `._name.py` AppleDouble
+    sidecar matches the glob and is not UTF-8. Before this arc the `except`
+    caught only `OSError`, and `UnicodeDecodeError` (raised by `read_text`) is
+    a `ValueError`, not an `OSError` — CONFIRMED reproducible on this exact
+    tree with this exact plant before the fix: an unhandled traceback, the
+    worst verdict shape per doctrine, on a gate this arc otherwise drives to
+    GUARDED.
+    """
+    tests = repo / "scripts" / "tests"
+    tests.mkdir(parents=True, exist_ok=True)
+    (tests / "test_imports.py").write_text(
+        '"""x."""\n\nfrom module_07 import thing\n', encoding="utf-8"
+    )
+    (tests / "._test_imports.py").write_bytes(
+        bytes([0x00, 0x05, 0x16, 0x07, 0xB0, 0x41, 0x54, 0x54, 0x52])
+    )
+    named = gate._named_by_tests(repo, ["scripts/module_07.py"])
+    assert named["scripts/module_07.py"] == ["scripts/tests/test_imports.py"]
 
 
 def test_NONVACUITY_the_classifier_DISCRIMINATES_on_the_real_tree() -> None:

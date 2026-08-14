@@ -660,7 +660,20 @@ def _p_order_path_anchor_files(home: Path) -> tuple[int, str]:
     dirs = _module_tuples(home, rel, ("ORDER_PATH_DIRS",))["ORDER_PATH_DIRS"]
     if not dirs:
         raise ProbeError(f"{rel}: ORDER_PATH_DIRS is empty")
-    files = sorted({p for d in dirs for p in (home / d).rglob("*.py") if p.is_file()})
+    # AppleDouble sidecars (`._name.py`, ARC 030 CHECK-DEBT D3.110) match
+    # `*.py` and would inflate this DERIVED count against a sidecar that is not
+    # code — the exact "tree scanning itself" class D3.110 names, one layer
+    # over from a crash: this site never parses content, so it would not
+    # crash, but it would silently miscount. Excluded by NAME, matching
+    # check_order_path_bans.py's own scan of the same anchor.
+    files = sorted(
+        {
+            p
+            for d in dirs
+            for p in (home / d).rglob("*.py")
+            if p.is_file() and not p.name.startswith("._")
+        }
+    )
     return len(files), f"anchor {list(dirs)}: " + ", ".join(p.name for p in files)
 
 

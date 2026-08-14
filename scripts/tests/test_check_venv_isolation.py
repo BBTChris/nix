@@ -63,13 +63,29 @@ def test_a_clean_split_PASSES_and_names_what_it_measured(tmp_path: Path) -> None
     assert "0 of 4 dev-only marker(s)" in result.evidence
 
 
-@pytest.mark.parametrize("marker", sorted(gate.DEV_ONLY_MARKERS))
+@pytest.mark.parametrize(
+    "marker",
+    (
+        "exchange_calendars",
+        "korean_lunar_calendar",
+        "pandas_market_calendars",
+        "pyluach",
+    ),
+)
 def test_a_LEAKED_dev_only_marker_reddens_naming_the_package(
     tmp_path: Path, marker: str
 ) -> None:
     """The measured D3.111 shape, replayed as a plant: one of the calendar
     generator's own four exclusive dependency names, present in the RUNTIME
     venv — exactly what a wrong `--python .venv/bin/python` install would do.
+
+    The parametrize list is a LITERAL, not `sorted(gate.DEV_ONLY_MARKERS)`:
+    `check_derived_claims`' AST-based `pytest_collected_tests` probe requires
+    a literal `List`/`Tuple` argvalues to count parametrized cases without
+    importing the module under test (Stage 3 integration, ARC 030 — a
+    non-literal argvalues raised `ProbeError` on the real tree). A test right
+    below asserts this list is exactly `DEV_ONLY_MARKERS`, so a future add to
+    the marker set fails LOUD here rather than silently under-parametrizing.
     """
     _fake_venv(tmp_path, ".venv", ["ib_async", marker])
     _fake_venv(tmp_path, ".venv-dev", ["pandas_market_calendars"])
@@ -77,6 +93,30 @@ def test_a_LEAKED_dev_only_marker_reddens_naming_the_package(
     assert result.status is Status.FAIL_NEEDS_OPERATOR
     assert marker in result.site
     assert "re-merged in substance" in result.detail
+
+
+def test_the_LITERAL_parametrize_list_above_still_equals_DEV_ONLY_MARKERS() -> None:
+    """Guards the drift the literal-list rewrite (Stage 3 integration) invites.
+
+    `test_a_LEAKED_dev_only_marker_reddens_naming_the_package` parametrizes
+    over a hand-written literal tuple, not `gate.DEV_ONLY_MARKERS` itself,
+    because `check_derived_claims`' AST probe cannot count a non-literal
+    argvalues. That trade needs its own can-fail: if `DEV_ONLY_MARKERS` ever
+    gains or loses a name and this literal is not updated in lockstep, the
+    plant coverage above silently under- or over-covers the real marker set.
+    This assertion fails LOUD in that case instead.
+    """
+    literal = {
+        "exchange_calendars",
+        "korean_lunar_calendar",
+        "pandas_market_calendars",
+        "pyluach",
+    }
+    assert literal == set(gate.DEV_ONLY_MARKERS), (
+        f"the hand-written parametrize list above ({sorted(literal)}) has "
+        f"drifted from gate.DEV_ONLY_MARKERS ({sorted(gate.DEV_ONLY_MARKERS)}) "
+        "— update both together"
+    )
 
 
 def test_a_COLLAPSED_split_symlink_reddens_before_querying_packages(
