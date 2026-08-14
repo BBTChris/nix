@@ -313,8 +313,25 @@ NAME = "check_spec_citations"
 # SCOPE — the tree, not the git index (failure mode #14 / CHECK-DEBT D1.16).
 # --------------------------------------------------------------------------
 SCAN_ROOTS: tuple[str, ...] = (".",)
+#: `.claude` (ARC 030, CHECK-DEBT D3.110): holds agent WORKTREES — full repo
+#: copies the harness checks out for sub-agents. SCAN_ROOTS is "." (the whole
+#: tree), so unlike a check scoped under scripts/ this gate WOULD walk into a
+#: live sub-agent's `.claude/worktrees/<name>/docs/*.md` and double-count (or
+#: misattribute) citations out of a copy that is not the canonical tree — the
+#: same class check_price_ring's own D3.110 fix names. `.venv-dev`
+#: (ARC CRUCIBLE-DEPSPLIT): the second, dev-only venv; never Nix's own source.
 SKIP_DIRS: frozenset[str] = frozenset(
-    {".git", ".venv", "__pycache__", ".mypy_cache", ".ruff_cache", "graphify-out"}
+    {
+        ".git",
+        ".venv",
+        ".venv-dev",
+        "__pycache__",
+        ".mypy_cache",
+        ".ruff_cache",
+        "graphify-out",
+        ".claude",
+        "node_modules",
+    }
 )
 SCAN_SUFFIXES: frozenset[str] = frozenset(
     {".py", ".md", ".yaml", ".yml", ".toml", ".sh", ".cfg", ".txt"}

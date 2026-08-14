@@ -494,8 +494,23 @@ ORDER_PATH_DIRS: tuple[str, ...] = ("scripts/broker", "scripts/nixrisk")
 # residual: code outside these roots is not walked.
 SCAN_ROOTS: tuple[str, ...] = ("scripts",)
 
-# Directory names never walked, whatever they contain.
-SKIP_DIRS: frozenset[str] = frozenset({".venv", "__pycache__", ".git", "graphify-out"})
+# Directory names never walked, whatever they contain. `.claude` (agent
+# worktrees) and `.venv-dev` are not reachable under SCAN_ROOTS/ORDER_PATH_DIRS
+# today (both are siblings of scripts/, not nested inside it), but are listed
+# here so the set stays correct if either anchor ever widens (ARC 030,
+# CHECK-DEBT D3.110 — the shared skip vocabulary applied wherever a check
+# walks the filesystem).
+SKIP_DIRS: frozenset[str] = frozenset(
+    {
+        ".venv",
+        ".venv-dev",
+        "__pycache__",
+        ".git",
+        "graphify-out",
+        ".claude",
+        "node_modules",
+    }
+)
 
 # The module-level constant that identifies the seam's own roster declaration.
 ROSTER_CONST = "ORDER_PORT_VERBS"
@@ -1048,8 +1063,15 @@ def _candidate_files(nix_home: Path) -> list[Path]:
         if not base.is_dir():
             continue
         for path in base.rglob("*.py"):
-            if SKIP_DIRS.isdisjoint(part for part in path.parts):
-                out.append(path)
+            if not SKIP_DIRS.isdisjoint(part for part in path.parts):
+                continue
+            # AppleDouble sidecars (`._name.py`) match `*.py` and are not code
+            # (ARC 030, CHECK-DEBT D3.110); `_parse_all` below already survives
+            # one via its SyntaxError/UnicodeDecodeError catch, but excluding
+            # by NAME here keeps this scope list itself honest.
+            if path.name.startswith("._"):
+                continue
+            out.append(path)
     return sorted(set(out))
 
 
@@ -1167,7 +1189,11 @@ def _files_under(nix_home: Path, dirs: list[str]) -> list[Path]:
     for rel in dirs:
         root = nix_home / rel
         if root.is_dir():
-            files.extend(p for p in root.rglob("*.py") if p.is_file())
+            files.extend(
+                p
+                for p in root.rglob("*.py")
+                if p.is_file() and not p.name.startswith("._")
+            )
     return sorted(set(files))
 
 

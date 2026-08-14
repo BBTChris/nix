@@ -533,3 +533,54 @@ def test_correct_and_install_refuse_and_name_the_declared_reason() -> None:
         assert f"refuses {verb}" in proc.stderr, proc.stderr
         assert reason in proc.stderr, proc.stderr
         assert "manufacturing" in proc.stderr, proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# ARC 030 Stage 2 / sub-agent C — CHECK-DEBT D3.110: AppleDouble sidecars and
+# `.claude`-style worktree pollution must not crash or double-scan a
+# filesystem-walking gate. Planted in a SCRATCH tree, never the live repo.
+# ---------------------------------------------------------------------------
+
+
+def test_scan_tree_survives_an_appledouble_sidecar(tmp_path: Path) -> None:
+    """A real AppleDouble sidecar (non-UTF-8 bytes) in SCAN_ROOTS must not
+    raise — SCAN_ROOTS is `(".",)`, the whole tree, so this is the gate's
+    real exposure, not a hypothetical one.
+    """
+    (tmp_path / "checks").mkdir()
+    (tmp_path / "checks" / "check_something.py").write_text(
+        "# a real module, no citations here\n", encoding="utf-8"
+    )
+    # AppleDouble magic (0x00 0x05 0x16 0x07) followed by a non-UTF-8 byte —
+    # matches `*.py`'s suffix filter and is not code.
+    (tmp_path / "checks" / "._check_something.py").write_bytes(
+        bytes([0x00, 0x05, 0x16, 0x07, 0xB0, 0x41, 0x54, 0x54, 0x52])
+    )
+    citations = gate.scan_tree(tmp_path, {})
+    assert not citations
+
+
+def test_scan_tree_skips_claude_worktree_pollution(tmp_path: Path) -> None:
+    """A live sub-agent worktree under `.claude/worktrees/*` must not be
+    double-scanned for citations — the exact class `check_price_ring` was
+    measured failing on in ARC 029 (CHECK-DEBT D3.110).
+    """
+    real_docs = tmp_path / "docs"
+    real_docs.mkdir()
+    (real_docs / "debug.md").write_text(
+        "## §7.12 the standing question\n", encoding="utf-8"
+    )
+    (tmp_path / "checks").mkdir()
+    (tmp_path / "checks" / "real.py").write_text(
+        "# cites debug.md §7.12\n", encoding="utf-8"
+    )
+    pollution = tmp_path / ".claude" / "worktrees" / "agent-x" / "checks"
+    pollution.mkdir(parents=True)
+    (pollution / "copy.py").write_text(
+        "# cites debug.md §7.12 -- a stale worktree copy of the same citation\n",
+        encoding="utf-8",
+    )
+    citations = gate.scan_tree(tmp_path, {})
+    sites = {c.file for c in citations}
+    assert not any(".claude" in site for site in sites), sites
+    assert any("checks/real.py" in site for site in sites), sites

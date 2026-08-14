@@ -905,6 +905,16 @@ def test_the_REAL_TREES_THIRTEEN_ceiling_tripped_artifacts_are_the_D3104_EXCLUSI
         marked temporary — the ceiling is the ONE rule lifted;
       * the three below-ceiling rows survive as rows, and the gate is GUARDED —
         the ceiling escaped, but nothing was passed.
+
+    **ARC 030 Stage 2 / sub-agent C: TWO of the thirteen were RETIRED, not
+    widened.** `checks/_preamble.py` and `scripts/nixverify/__init__.py` gained
+    real per-artifact can-fail coverage this arc (`check_preamble_shim`,
+    `check_nixverify_init` — both structural AST scans with plant/restore
+    drives in their own test modules) and were DELETED from `exclusions`
+    entirely, the way `check_order_path_bans.py`'s three ARC 027 SHRINKs left
+    the guard before it (comment block, `gate_coverage_baseline.json`). The
+    count below is 11, not 13, and this is the ratchet paying for itself, not
+    drifting.
     """
     from nixverify.contract import (
         GUARD_REOWN_CEILING,
@@ -917,9 +927,11 @@ def test_the_REAL_TREES_THIRTEEN_ceiling_tripped_artifacts_are_the_D3104_EXCLUSI
     assert not history.error, history.error
     working = json.loads((REPO / gate.BASELINE).read_text(encoding="utf-8"))
     exclusions = working.get("exclusions", {})
-    assert len(exclusions) == 13, (
-        f"expected the thirteen ceiling-tripped artifacts in `exclusions`, found "
-        f"{len(exclusions)} — the D3.104 disposition has drifted"
+    assert len(exclusions) == 11, (
+        f"expected 11 of the original thirteen ceiling-tripped artifacts still in "
+        f"`exclusions` (two retired with real coverage this arc — see the "
+        f"docstring above), found {len(exclusions)} — the D3.104 disposition has "
+        f"drifted"
     )
     completed, error = completed_arcs(REPO)
     assert not error, error
@@ -1152,6 +1164,28 @@ def test_the_classifier_matches_by_IMPORTABLE_NAME_and_never_by_a_PACKAGE(
     named = gate._named_by_tests(repo, ["scripts/module_07.py", "scripts/module_08.py"])
     assert named["scripts/module_07.py"] == ["scripts/tests/test_imports.py"]
     assert named["scripts/module_08.py"] == []
+
+
+def test_named_by_tests_survives_an_appledouble_sidecar(repo: Path) -> None:
+    """CHECK-DEBT D3.110. `_named_by_tests` globs `scripts/tests/*.py` and
+    `read_text(encoding="utf-8")`s every match; a `._name.py` AppleDouble
+    sidecar matches the glob and is not UTF-8. Before this arc the `except`
+    caught only `OSError`, and `UnicodeDecodeError` (raised by `read_text`) is
+    a `ValueError`, not an `OSError` — CONFIRMED reproducible on this exact
+    tree with this exact plant before the fix: an unhandled traceback, the
+    worst verdict shape per doctrine, on a gate this arc otherwise drives to
+    GUARDED.
+    """
+    tests = repo / "scripts" / "tests"
+    tests.mkdir(parents=True, exist_ok=True)
+    (tests / "test_imports.py").write_text(
+        '"""x."""\n\nfrom module_07 import thing\n', encoding="utf-8"
+    )
+    (tests / "._test_imports.py").write_bytes(
+        bytes([0x00, 0x05, 0x16, 0x07, 0xB0, 0x41, 0x54, 0x54, 0x52])
+    )
+    named = gate._named_by_tests(repo, ["scripts/module_07.py"])
+    assert named["scripts/module_07.py"] == ["scripts/tests/test_imports.py"]
 
 
 def test_NONVACUITY_the_classifier_DISCRIMINATES_on_the_real_tree() -> None:
