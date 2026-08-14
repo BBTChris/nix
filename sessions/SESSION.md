@@ -3047,3 +3047,78 @@ A6 governed the rest. Actual cost roughly 1h05m against a ~42 min estimate — t
 check-integration constant held for the new check itself, but did not fold in a second full-suite-run
 cycle for the adversarial pass a dependency-set change forced on two *existing* checks
 (`check_price_ring`, `check_derived_claims`); logged for A5 coefficient tuning.
+
+## ARC 030 — Trunk Reconciliation, Enforced Isolation, and the Coverage Close (2026-08-14)
+
+**Canonical path:** `/home/bbt/nix` (absolute, unmoved). **Final HEAD:** `9858b37`.
+
+**Phase 0 (measured, changed nothing):** the brief's assumed topology was wrong, per §0a — `main`
+already had ARC 022–025 merged (PR #25, `0f9c5b9`). The real unmerged column started at ARC 026, not
+022: a clean, single-parent, 81-commit linear chain `main → 026 → 027 → 028 → 029-integration →
+calendar-infra → depsplit`, no forks to reconcile. Only one worktree existed (canonical); no live
+parallel arc. Baseline `verify.py`: 29 passed | 3 failed | 2 cannot-measure | 1 guarded (16-artifact
+D3.104 GUARDED state). Operator confirmed: proceed on the measured topology; delete incidental
+untracked cruft (`.ua/` graphify cache, `scripts/m.sh`) before gating.
+
+**Phase 1 — reconciled, on canonical `/home/bbt/nix`:** six clean fast-forwards (no rebase, §0h),
+each gated with `verify.py` + `pytest` (full suite at checkpoints; intermediate-commit runs showed
+real environment confounds — AppleDouble sidecars gitignored per D3.103, `.venv-dev` visible to a
+not-yet-`.venv-dev`-aware `check_price_ring` — documented rather than treated as regressions, and
+fed forward as direct evidence for Stage 2 A2/C3). `main` landed at `6c7e9c9` after **MON-1
+disposition (1.2)**: `check_monitor` (deprecated, consistently FAILING) removed from the registry
+and codebase in a **forward** commit — its history (`42fb3fd`, `b7f5b79`) rode the ordinary
+fast-forward chain intact. Its three orphaned scripts admitted honestly to the coverage ratchet
+(CHECK-DEBT D3.113, opened and discharged in the same motion). **1.3 confirmed:** unmerged set `0`,
+all six branches ancestors of `main`, final full pytest 1498 passed / 2 skipped / 2 xfailed, exit 0.
+
+**Stage 2 — three parallel sub-agents, provisioned worktrees off the reconciled trunk:**
+- **A (isolation):** proved `git worktree add` gives per-worktree index/HEAD (A1), but found `.git/config`/`.git/hooks` are NOT per-worktree (D3.115) and, live and unplanned, that `refs/stash` is a single shared ref that raced a concurrent `git stash` from sub-agent B (D3.119, recovered via `git fsck` + verified byte-identical — the single strongest confirmation of Stage 2's own premise). Built `scripts/nixverify/venv_lock.py` (flock-based mutation lock, A2), proved the CRUCIBLE-DEPSPLIT half-rebuilt-venv hazard directly, wired it into three checks, and built `checks/check_venv_isolation.py` gating the `.venv`/`.venv-dev` split against silent re-merge. Extended `check_untracked_attribution` with a foreign-commit arm (A3) — found and GUARDED two real, pre-existing, never-merged stray branches (`docs/arc002-results`, `docs/arc005-writeback`) via `checks/foreign_branch_exceptions.json`; named the honest limit for a detached-HEAD commit whose worktree is later removed (D3.114, unassigned — no git fact recovers it). Found a third ungated environment surface, `pre-commit`'s own per-hook venvs (D3.116).
+- **B (coverage, 8 of 16):** built real per-artifact coverage for all eight of its partition — `flatten.py`/`survival.py`/`coldstart.py` (discharging D3.105–107) plus `ibgateway_expected.json`, `broker_order.config.json`, `extract_sources.py`, `d1_12_reboot_capture.py`, `runtime_gate.py`. Zero honest exclusions needed. Opened D3.118 (a real `nixverify.observe` `dir_fd`-resolution gap causing two false resource-claim positives, correctly left unassigned rather than papered over with a literal-token anchor doctrine C.4 forbids).
+- **C (coverage, 8 of 16, + filesystem-walk hardening):** built real coverage for 2 of its 8 (`checks/_preamble.py`, `scripts/nixverify/__init__.py`); the other 6 (`scripts/nixverify/{actuation,contract,engine,loader,optimize,render}.py`) honestly stay excluded — already thoroughly test-covered, a duplicate check would violate doctrine C.9, not add coverage. Audited all 14 filesystem-walking checks for the AppleDouble/`.claude` class (D3.110, discharged): two real gaps found and fixed (`check_spec_citations`, `check_artifact_gate_coverage`'s `_named_by_tests`), the rest confirmed already safe by construction.
+
+**Stage 3 — convergence:** merged all three branches into `main` (JSON-object auto-merges clean;
+hand-spliced two additive `comment`-array conflicts and one genuine cross-worktree CHECK-DEBT
+numbering COLLISION — both A and B independently opened "D3.117" from separate worktrees with no
+visibility into each other; caught and renumbered A's to D3.119 at integration, the exact class of
+hazard Stage 2 A exists to name). Fixed a real AST-probe break from a non-literal `parametrize` in
+A's new test file (literal-ized it, added a drift guard). Re-derived `registry.json`
+(`--optimize --commit`, clean). **Proactively re-pointed ten legacy `ARC 030`-owned coverage rows to
+`ARC 031`** before this arc's own close-out could strand them under `guard_owner_defect`'s read-time
+completed-arc check (D3.40's mechanism) — nine landed safely; **one, `measurement_path.py`, was
+already AT its re-owning ceiling with zero headroom, and the re-point burned a third, irreversible
+re-owning into committed history (§0h: cannot be un-made). Taken as a genuine, self-caused, named
+FAIL (CHECK-DEBT D3.120, `owner: unassigned`)** rather than hidden or reverted (reverting the
+working value doesn't repair committed lineage and additionally trips the in-flight-arc rule).
+Also caught and reverted `pre-commit run --all-files` silently rewriting MON-1's three byte-frozen
+architect artifacts (`scripts/{monitor,harness,pty_test}.py`) via `ruff-format` — restored to `HEAD`
+before it landed in any commit. Real binding census (`scripts/tests/binding_census.py`, traced full
+suite, 1068 observations): **43 BOUND / 2 EXERCISED-NEVER-RED / 0 UNBOUND** of 45 registered checks.
+CHECK-DEBT series row re-derived twice as new debt landed (153 → 154 → 155), each time reconciling a
+hand-tally against the tool's own `derived:ledger_rows` rather than typing a number (one hand-tally
+error caught and corrected in place, matching D3.82's own warning).
+
+**Coverage disposition, the sixteen:** 10 of 16 now bound to real per-artifact checks (B: 8/8; C:
+2/8). 6 remain honestly excluded (all C's, all justified — already test-covered, a second check
+would be doctrine C.9's forbidden duplicate instrument — all `owner: ARC 031`, `temporary: true`).
+`check_artifact_gate_coverage`'s exclusion bucket: 13 → 6.
+
+**Final `verify.py` on trunk (`9858b37`):** 40 passed | 3 failed | 1 cannot-measure | 0 skipped |
+1 guarded, exit 1. FAILs: `check_ibgateway_service` (pre-existing, tap session); `check_observed_resource_claims`
+(D3.118, understood, unassigned); `check_artifact_gate_coverage` (D3.120, self-caused this arc,
+unassigned — real discharge needs per-artifact coverage for `measurement_path.py` or a new
+`CHECK-A<n>` exclusion ruling). CANNOT-MEASURE: `check_ibgateway_config` (same tap-session root
+cause). GUARDED: `check_untracked_attribution`, owner recorded per-branch in
+`foreign_branch_exceptions.json` (both `ARC 031`), an operator decision to delete/merge the two
+stray branches discharges it. `check_monitor`: gone, not failing. Final full `pytest`: 1620 passed,
+2 skipped, 2 xfailed, exit 0.
+
+**Durability:** `main` HEAD `9858b37`, `origin/main` still at `0f9c5b9` (not pushed — outward-facing,
+left for explicit operator confirmation). Unmerged set from the six-branch stack: empty, verified.
+Three Stage 2 worktrees and their branches removed after merge (`arc-030-stage2-{a,b,c}`).
+
+**Approx. progress:** trunk reconciliation is complete and durable — the single biggest blocker
+this project had (eight-plus arcs of unlanded work) is closed. Isolation is real, not aspirational
+(A1–A4 measured, one mechanism built and gated). Coverage moved from 0/16 real to 10/16 real, the
+remaining 6 honestly excluded rather than gamed. Estimate this arc moves the check-subsystem module
+roughly 25–30%, and the whole project meaningfully forward by clearing the "no authoritative trunk"
+blocker that every subsequent arc (starting with R3, the Allocator) depended on.
