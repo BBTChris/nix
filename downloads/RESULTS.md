@@ -1,9 +1,13 @@
-# ARC 029 — R2-B: The Exit Half — **STATUS: COMPLETE (on branch `arc-029-convergence`, pending operator merge)**
+# ARC 029 — R2-B: The Exit Half — **STATUS: COMPLETE, LANDED on `/home/bbt/nix`**
 
-**Canonical path:** `/home/bbt/nix`. **Work branch:** `arc-029-convergence` (an isolated worktree at
-`/home/bbt/nix-wt-arc-029-convergence`, base `bafe6eb`). **The final merge to
-`arc-029-integration` on `/home/bbt/nix` is the operator's step** — see "The concurrent-session
-collision" below, which is why the arc was isolated onto its own branch to converge and close out.
+**Canonical path:** `/home/bbt/nix`, branch `arc-029-integration`. The arc converged and closed out
+on an isolated worktree branch (`arc-029-convergence`, base `bafe6eb`) to keep its measurements stable
+while a second session concurrently held the shared branch — then that branch was **merged and
+fast-forwarded onto `arc-029-integration`** (merge `fcb2779`, a conflict-free superset because the two
+arcs touched disjoint files; `--ff-only` guaranteed nothing was clobbered). ARC 029 and all of the
+concurrent arc's work coexist; the second session has since committed further monitor work on top. The
+isolation worktree and the throwaway sub-agent branches have been removed. See "The concurrent-session
+collision" below for the full account.
 
 ---
 
@@ -148,9 +152,10 @@ worktree pollution of filesystem-walking gates. `check_price_ring`, `check_dataf
 
 ## OPEN TO THE OPERATOR / ARCHITECT
 
-1. **MERGE `arc-029-convergence` into `arc-029-integration` on `/home/bbt/nix`.** This is the step that
-   lands ARC 029 on the canonical path; it was isolated to keep convergence measurements stable while a
-   second session held the branch. Expect a SESSION.md / RESULTS.md merge with ARC MON-1's write-back.
+1. **DONE — ARC 029 is landed on `/home/bbt/nix`.** The convergence branch was merged and
+   fast-forwarded onto `arc-029-integration` (merge `fcb2779`); the isolation worktree and the
+   throwaway sub-agent branches were removed. This item remains recorded so the isolation-and-merge
+   path is legible in the close-out, not because anything is owed.
 2. **`check_monitor` is FAILING** (harness exited 1) — that is ARC MON-1's check, surfaced here only
    because its work shares the branch. Its arc owns it.
 3. **The tap session** — still the standing `check_ibgateway_service` FAIL, owed by fourteen arcs.
