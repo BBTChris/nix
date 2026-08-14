@@ -46,8 +46,8 @@
         "check_verify_logging"
       ],
       "claims": [
+        "file-write:/tmp",
         "file-write:checks",
-        "filesystem:tempdir",
         "interpreter:sys.modules",
         "interpreter:sys.path",
         "journal",
@@ -58,6 +58,7 @@
         "subprocess:blkid",
         "subprocess:findmnt",
         "subprocess:git",
+        "subprocess:python",
         "subprocess:systemctl",
         "subprocess:xdpyinfo"
       ]
