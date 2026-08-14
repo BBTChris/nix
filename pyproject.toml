@@ -6,6 +6,16 @@ exclude_dirs = [".venv", "graphify-out", "databases/schema"]
 [tool.ruff]
 target-version = "py314"
 
+[tool.ty.src]
+# ARC CRUCIBLE-DEPSPLIT: the tree now has TWO python environments. ty resolves
+# third-party imports against exactly one at a time (--python), so the default
+# invocation (implicitly .venv, matching every other checked file) cannot also
+# resolve scripts/crucible/calendar_gen.py's pandas/pandas_market_calendars
+# imports -- those live only in .venv-dev, by design (docs/CHECK-DEBT.md
+# D3.111). Excluded here and checked separately:
+#   ty check scripts/crucible/calendar_gen.py --python .venv-dev
+exclude = ["scripts/crucible/calendar_gen.py"]
+
 [tool.mypy]
 python_version = "3.14"
 ignore_missing_imports = true

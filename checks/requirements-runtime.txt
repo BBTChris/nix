@@ -1,0 +1,33 @@
+# Runtime venv (.venv) general dev-tooling — ARC CRUCIBLE-DEPSPLIT.
+#
+# NOT a restatement of checks/pinned_deps.json. The three exact-pinned,
+# drift-repaired runtime packages (ib_async, pytest-asyncio, pyzmq) are NOT
+# listed here — install.sh reads them from pinned_deps.json (the one source
+# of truth, CLAUDE.md directive 3) and check_python_deps.py repairs drift
+# against them forever. Restating their versions in a second file would be
+# exactly the restatement directive 3 forbids.
+#
+# This file is a THIRD, separate tier: general-purpose runtime dev-tooling
+# that predates this arc, was already installed in the shared .venv, but was
+# NEVER tracked anywhere (not in pinned_deps.json, not in install.sh) --
+# .pre-commit-config.yaml's local "pytest-affected" hook (Stage 3 runtime
+# pass, entry `./.venv/bin/python scripts/runtime_gate.py`, language: system)
+# depends on pytest-testmon and coverage being present in THIS venv; pre-commit
+# itself is invoked from here too. None of the three is calendar-related and
+# none is pinned exactly -- like `cryptography` (install.sh, unpinned float),
+# these are dev tooling, not the order-placing library check_python_deps.py's
+# drift-repair protects (§7 comment in that file).
+#
+# Installed via `uv pip install -r checks/requirements-runtime.txt --python
+# .venv/bin/python` (Success #7: uv tooling, not an ad-hoc pip call) --
+# install.sh runs this alongside its existing pins step.
+#
+# Explicitly EXCLUDED, on purpose: pandas_market_calendars, exchange_calendars,
+# and their exclusive transitives (pandas, korean_lunar_calendar, pyluach,
+# toolz, python-dateutil, six). Those are the Crucible calendar GENERATOR's
+# dev-only dependency tree -- see scripts/crucible/generator-requirements.txt
+# -- and belong in the separate .venv-dev venv only, never here. This is the
+# split D3.111 exists to enforce (docs/CHECK-DEBT.md).
+coverage
+pre-commit
+pytest-testmon

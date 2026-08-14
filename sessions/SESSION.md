@@ -2985,3 +2985,61 @@ PRE-FLIGHT asked one clarification question (branch strategy, given the ARC 029/
 same log records above) rather than assuming; operator chose a new branch off arc-029-integration.
 Actual cost ~64 min against a ~35 min estimate, logged for A5 coefficient tuning — dominated by
 source-verification and the check-contract integration tax, not the calendar build itself.
+
+## 2026-08-14 — ARC CRUCIBLE-DEPSPLIT — COMPLETE (branch arc-crucible-depsplit, off arc-crucible-calendar-infra)
+
+Resolved CHECK-DEBT D3.111 in mechanism (the generator's `tzdata` transitive bump outside
+`ib_async`'s declared range — row left counted OPEN, not ledger-discharged; see below) and taught
+the tree to notice a future recurrence. Split the single shared `.venv` into two:
+`.venv` (runtime, `install.sh`-managed — `checks/pinned_deps.json`'s 3 exact pins plus new
+`checks/requirements-runtime.txt` for previously-untracked dev tooling `pytest-testmon`/`pre-commit`/
+`coverage`) and new `.venv-dev` (build-only — `scripts/crucible/generator-requirements.txt`'s
+`pandas_market_calendars` plus new `generator-test-requirements.txt`'s `pytest`). `uv pip install`
+throughout, not ad-hoc `pip` — no `[project]`/dependency-groups added to `pyproject.toml` (none
+existed; `.venv`'s own path and activation stay exactly as Chris already uses them). D3.111 RESOLVED,
+not reported: the real `.venv`, rebuilt from the runtime requirement set alone, carries no calendar
+library and `tzdata` is `2025.3` — back inside `ib_async`'s `>=2025.2,<2026.0`. `calendar_gen.py`
+gained a wrong-venv guard (resolved `sys.prefix` vs `.venv-dev`'s absolute path, mirrors
+`check_venv.py`'s own pattern) that fails loudly naming the fix rather than half-working, ahead of
+the calendar-library imports.
+
+New verify.py gate `check_python_transitive_deps` (level-2, registered via `verify.py --optimize
+--commit`) inspects every installed package's own declared requirement ranges against what's
+actually installed — the gap D3.111 fell through, since `check_python_deps` only ever compared its
+three declared top-level pins to themselves. `CORRECTABLE = False` (no single safe automatic repair
+exists; `ib_async` is live-broker-adjacent). Violations may be tracked as a named, justified exception
+(`checks/transitive_deps_exceptions.json`, matched on the full (consumer, dependency, declared_range)
+triple so a stale exception can't cover a different future drift) — ships empty, since D3.111 was
+resolved rather than reported. Real can-fail proof, not a mental walkthrough: a disposable venv with
+`ib_async==2.1.0` plus a `--no-deps`-forced `tzdata==2026.3` reproduces D3.111's exact shape and the
+check goes RED naming both packages and both versions; restored.
+
+Adversarial debug pass (full-suite run, not a walkthrough) found and fixed three real regressions,
+two the split itself caused and one found while banking: `check_price_ring`'s filesystem sweep
+didn't exclude the new `.venv-dev` and flagged `numpy`/`pandas`/`pip`'s own vendored `mmap` use as
+spec violations (fixed: `.venv-dev` added to `_SKIP_DIRS`, same reasoning as `.venv`);
+`check_derived_claims`' `pytest_collected_tests` claim's AST-based `source_ast` probe couldn't
+predict that a firing `pytest.importorskip` collapses pytest's own `--collect-only` count — latent
+since CALENDAR-INFRA wrote `test_crucible_calendar_gen.py`'s guard, which never actually fired until
+this arc made `pandas_market_calendars` genuinely absent from `.venv` (fixed: the probe now asks the
+real venv interpreter whether the guarded module imports; empirically measured, not assumed, that a
+firing guard contributes 0 to the collect-only tally, not 1 — first try counted 1, was off by one
+against the real collector, corrected and re-verified exact); and, found while writing this arc's own
+CHECK-DEBT.md series row, `test_check_derived_claims.py`'s own DOCUMENT-RESTATES-A-WRONG-NUMBER plant
+located "the" series row by `re.search` (first match) instead of mirroring the probe's `rows[-1]`
+(true latest) — with two consecutive rows now stating the same open count, it silently planted into
+the wrong, non-latest row (fixed: `re.finditer(...)[-1]`, plus an explicit fixture/probe agreement
+assertion). `test_crucible_calendar_gen.py`'s 9 tests — now skipped under the default `.venv`-based
+full-suite run, by that file's own design — proven to still pass, 9/9, run separately under
+`.venv-dev`: relocated, not lost.
+
+Full suite: 1,498 passed / 2 skipped / 2 xfailed / 0 failed (baseline 1,496p/1s/2x — net +2 passed is
++11 new `check_python_transitive_deps` tests against -9 collapsed-to-skip). verify.py: 29 pass / 3
+fail / 2 cannot-measure / 0 skipped / 1 guarded (baseline 28/3/2/1 — the +1 pass is the new check;
+same 3 FAIL categories as baseline, zero net-new failure categories). PRE-FLIGHT found zero blocking
+ambiguities (both AUTHORITY-gated confirmation triggers — touching the 3 live runtime pins, changing
+how Chris invokes `.venv` — were avoidable by design), so zero `HALT:QUESTION` were raised; contract
+A6 governed the rest. Actual cost roughly 1h05m against a ~42 min estimate — the estimate's ~14 min
+check-integration constant held for the new check itself, but did not fold in a second full-suite-run
+cycle for the adversarial pass a dependency-set change forced on two *existing* checks
+(`check_price_ring`, `check_derived_claims`); logged for A5 coefficient tuning.

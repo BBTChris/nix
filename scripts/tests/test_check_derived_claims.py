@@ -777,17 +777,33 @@ def test_the_shipped_gate_reddens_when_a_DOCUMENT_RESTATES_A_WRONG_NUMBER(  # py
     derived = claim_value(output, "check_debt_open_items")
     assert isinstance(derived, int) and derived > 0
 
-    row = re.search(
-        # `ARC [\w-]+`, not `ARC \d+` (CHECK-DEBT D3.112): the latest series
-        # row may be a deliberately unnumbered arc (e.g. this repo's own
-        # ARC CRUCIBLE-CALENDAR-INFRA row) and still be the one stating the
-        # derived count -- mirrors the widening in
-        # check_derived_claims.py's `_p_check_debt_series_latest`.
-        rf"^\|\s*\d{{4}}-\d{{2}}-\d{{2}}\s*\|\s*ARC [\w-]+\s*\|\s*{derived}\s*\|",
-        (scratch / "docs" / "CHECK-DEBT.md").read_text(encoding="utf-8"),
-        re.MULTILINE,
+    # ARC CRUCIBLE-DEPSPLIT: `re.search` (FIRST match) is wrong here and was
+    # a latent bug this arc's own new series row exposed — `_p_check_debt_
+    # series_latest` reads `rows[-1]`, the LAST dated row, not "any row that
+    # happens to state the derived count." Two consecutive arcs can
+    # legitimately state the SAME open count (zero opened, zero discharged,
+    # as this arc's own row does) and `re.search` would then plant into the
+    # EARLIER of the two, which the probe never reads — the gate would see
+    # its true latest row untouched and correctly report no disagreement,
+    # exactly the false PASS this test exists to catch. `finditer(...)[-1]`
+    # mirrors the probe's own selection exactly.
+    matches = list(
+        re.finditer(
+            # `ARC [\w-]+`, not `ARC \d+` (CHECK-DEBT D3.112): the latest
+            # series row may be a deliberately unnumbered arc and still be
+            # the one stating the derived count -- mirrors the widening in
+            # check_derived_claims.py's `_p_check_debt_series_latest`.
+            r"^\|\s*\d{4}-\d{2}-\d{2}\s*\|\s*ARC [\w-]+\s*\|\s*(\d+)\s*\|",
+            (scratch / "docs" / "CHECK-DEBT.md").read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
     )
-    assert row is not None, "no series row states the derived open count"
+    assert matches, "no dated series row found"
+    row = matches[-1]
+    assert int(row.group(1)) == derived, (
+        f"latest series row states {row.group(1)}, probe derived {derived} "
+        "-- fixture and probe have drifted apart"
+    )
     subject_plant(
         "docs/CHECK-DEBT.md",
         row.group(0),

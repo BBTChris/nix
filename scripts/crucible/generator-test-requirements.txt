@@ -1,0 +1,19 @@
+# Test-only tooling for .venv-dev, layered ON TOP of generator-requirements.txt.
+#
+# Needed to run scripts/tests/test_crucible_calendar_gen.py — the one test
+# file that legitimately imports calendar_gen.py (ARC CRUCIBLE-DEPSPLIT;
+# its own module docstring: "needs pandas_market_calendars installed... that
+# is exactly the two-layer split the arc requires"). NOT needed to just run
+# the generator itself (`calendar_gen.py`'s own `main()`) — only to test it.
+#
+# Deliberately separate from generator-requirements.txt: that file is the
+# GENERATOR's own runtime dependency (what calendar_gen.py imports to run);
+# this one is test tooling layered on top, same tier distinction
+# checks/requirements-runtime.txt draws for the runtime venv's own
+# dev-tooling vs checks/pinned_deps.json's exact runtime pins.
+#
+# Install: uv pip install --python .venv-dev/bin/python -r \
+#   scripts/crucible/generator-requirements.txt -r \
+#   scripts/crucible/generator-test-requirements.txt
+# Run:     .venv-dev/bin/python -m pytest scripts/tests/test_crucible_calendar_gen.py
+pytest

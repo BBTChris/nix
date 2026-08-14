@@ -1,4 +1,4 @@
-# directory_structure — `~/nix` directory topology — v1.5.0
+# directory_structure — `~/nix` directory topology — v1.6.0
 
 Application root: `~/nix`. Everything for Nix is self-contained here, **except the system PostgreSQL
 cluster** (lives at the OS default per CLAUDE.md).
@@ -25,6 +25,40 @@ cluster** (lives at the OS default per CLAUDE.md).
   |-- state        Hardware identity + encrypted credential storage. `chmod 600` throughout;
                    gitignored wholesale (defense in depth beyond the `*credentials*.json` rule).
 ```
+
+**v1.6.0 changes — which venv, canonically:** ARC CRUCIBLE-DEPSPLIT split the single
+shared venv into two, gitignored the same way (`.venv-dev` / `.venv-dev/`, mirroring
+`.venv` / `.venv/`):
+
+- **`.venv`** — the runtime venv. `install.sh`-managed: `checks/pinned_deps.json`'s
+  three exact, drift-repaired pins (`ib_async`, `pytest-asyncio`, `pyzmq`) plus
+  `checks/requirements-runtime.txt`'s unpinned general dev-tooling (`coverage`,
+  `pre-commit`, `pytest-testmon`) plus `cryptography`. ALL of Titan/Nix runtime, the
+  full test suite, and `verify.py` run under this venv. It carries no calendar
+  library — never has, by convention now enforced structurally (below).
+- **`.venv-dev`** — build-only. Holds `scripts/crucible/generator-requirements.txt`
+  (`pandas_market_calendars` and its own transitive tree) plus, layered on top,
+  `scripts/crucible/generator-test-requirements.txt` (`pytest` — needed only to run
+  `scripts/tests/test_crucible_calendar_gen.py`, the one test file that legitimately
+  imports the generator; under the default full-suite run via `.venv`, that file's
+  `pytest.importorskip` makes it skip cleanly rather than fail, by design). The ONLY
+  thing that runs here is `scripts/crucible/calendar_gen.py` (directly or via that
+  test file), which refuses to import under any other interpreter (its own
+  venv-identity guard, resolved `sys.prefix` against this path) — a wrong-venv
+  invocation fails loudly with the exact three commands to fix it, rather than
+  silently half-working. Build: `uv venv .venv-dev && uv pip install --python
+  .venv-dev/bin/python -r scripts/crucible/generator-requirements.txt -r
+  scripts/crucible/generator-test-requirements.txt`.
+
+**Discovering which venv a future generator should use:** by convention, a build-time
+generator that needs a library the runtime venv must never carry gets its own
+`.venv-<name>`, documented here, with the same refuse-if-wrong-interpreter guard
+`calendar_gen.py` demonstrates — not installed ad hoc into `.venv` (docs/CHECK-DEBT.md
+D3.111 is the incident this replaces). `checks/check_python_transitive_deps.py`
+inspects `.venv`'s installed tree against every already-pinned package's own declared
+transitive ranges, so a future generator dependency that leaks into the wrong venv (or
+a routine bump that drifts an already-installed transitive out of range) fails that
+check loudly instead of silently, the way `tzdata` did before this split existed.
 
 **v1.5.0 changes:** `scripts/` line expanded to name `crucible/` -- the Crucible
 strategy-evaluation pipeline (`~/nix/docs/nix-strategy-evaluator-pipeline-6.docx`).

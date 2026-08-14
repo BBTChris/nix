@@ -413,20 +413,128 @@ def _p_checks_glob_count(home: Path) -> tuple[int, str]:
     return len(files), "checks/*.py on disk: " + ", ".join(files)
 
 
+def _module_level_importorskip_target(tree: ast.Module) -> str | None:
+    """The module name a TOP-LEVEL `pytest.importorskip(...)` guards, or None.
+
+    ARC CRUCIBLE-DEPSPLIT. Only `tree.body` (the module's own top-level
+    statements), never `ast.walk` — a guard nested in a function or an `if`
+    does not run at import time and cannot make the whole module uncollectable
+    the way a bare module-level call does. `pytest.importorskip` raises
+    `Skipped` DURING COLLECTION when its target is not importable, and pytest
+    reports the entire module as ONE collected (skipped) item rather than
+    walking it for individual `test_*` functions — a real collection-time
+    effect the AST count must predict, not merely a runtime skip mark
+    (`@pytest.mark.skipif`, which still collects one item per function
+    normally and needs no adjustment here).
+    """
+    for stmt in tree.body:
+        call = stmt.value if isinstance(stmt, ast.Expr) else None
+        if not isinstance(call, ast.Call):
+            continue
+        if ast.unparse(call.func) != "pytest.importorskip":
+            continue
+        if not call.args or not isinstance(call.args[0], ast.Constant):
+            continue
+        if isinstance(call.args[0].value, str):
+            return call.args[0].value
+    return None
+
+
+def _importable_under(venv_python: Path, module_name: str) -> bool | None:
+    """Is `module_name` importable under `venv_python`? None if unknown.
+
+    A subprocess, not a static guess — the only way to answer "will pytest's
+    collector actually walk this module's functions" is to ask the same
+    interpreter pytest itself runs under (`_p_pytest_ast_count`'s docstring
+    below; mirrors `check_python_deps.py`'s own §9.4 reasoning: never import
+    the target here, ask a disposable subprocess instead). Returns None
+    (unknown, not False) when the venv itself cannot answer — a probe that
+    collapsed "no venv" into "not importable" would turn a CANNOT_MEASURE
+    condition into a wrong number instead of an honest unknown.
+    """
+    if not venv_python.is_file():
+        return None
+    try:
+        code = f"import importlib.util as u,sys;sys.exit(0 if u.find_spec({module_name!r}) else 1)"
+        proc = subprocess.run(  # nosec B603 - fixed argv, shell=False
+            [str(venv_python), "-c", code],
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except OSError, subprocess.SubprocessError:
+        return None
+    return proc.returncode == 0
+
+
 def _p_pytest_ast_count(home: Path) -> tuple[int, str]:
-    total = 0
+    """Statically predict what `pytest --collect-only` will report.
+
+    ARC CRUCIBLE-DEPSPLIT / D3.111's own venv split exposed the gap this
+    function used to have: a module guarded by a top-level
+    `pytest.importorskip("pandas_market_calendars", ...)` (the ONE file that
+    legitimately imports the Crucible calendar generator,
+    `test_crucible_calendar_gen.py`) always used to import successfully,
+    because the generator's dependency lived in the SAME shared venv pytest
+    ran under. Once the runtime venv genuinely stopped carrying that
+    dependency (Success #1), the guard started firing for real, and the real
+    pytest collector — correctly — stopped walking that module's 9 `test_*`
+    functions and reported ONE collected (skipped) item for it instead. A
+    purely-textual AST count that does not know this has no way to predict
+    that collapse, so it kept counting 9 — a genuine, previously-latent
+    disagreement between two sources that DERIVE the same property by
+    different means (§7.12 point 3), now real rather than coincidental.
+    """
     files = sorted((home / "scripts" / "tests").glob("test_*.py"))
     if not files:
         raise ProbeError("scripts/tests holds no test_*.py")
-    for path in files:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            if not node.name.startswith("test_"):
-                continue
-            total += _parametrize_multiplier(node, path)
-    return total, f"{len(files)} test module(s), parametrize expanded"
+    venv_python = home / ".venv" / "bin" / "python3"
+    counts = [_count_one_file(path, venv_python) for path in files]
+    total = sum(n for n, _ in counts)
+    collapsed = [note for _, note in counts if note is not None]
+    detail = f"{len(files)} test module(s), parametrize expanded"
+    if collapsed:
+        detail += f"; collapsed by importorskip: {', '.join(collapsed)}"
+    return total, detail
+
+
+def _count_functions(tree: ast.Module, path: Path) -> int:
+    """Plain per-function static count, parametrize expanded."""
+    total = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not node.name.startswith("test_"):
+            continue
+        total += _parametrize_multiplier(node, path)
+    return total
+
+
+def _count_one_file(path: Path, venv_python: Path) -> tuple[int, str | None]:
+    """One file's contribution to the collect-only tally, plus a collapse note.
+
+    Split out of `_p_pytest_ast_count` (ARC CRUCIBLE-DEPSPLIT) to keep that
+    function's own cognitive complexity low — this is where the
+    importorskip-collapse branching actually lives.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    guard_target = _module_level_importorskip_target(tree)
+    if guard_target is None:
+        return _count_functions(tree, path), None
+    if _importable_under(venv_python, guard_target) is False:
+        # Verified empirically (ARC CRUCIBLE-DEPSPLIT): a module-level
+        # `pytest.importorskip` that fires contributes ZERO to
+        # `pytest --collect-only`'s own "N tests collected" tally — not
+        # one. It DOES show up as "1 skipped" in a real (non-collect-only)
+        # run's terminal summary, but that is a different count than the
+        # one this probe's sibling source (`pytest_collector`,
+        # `(?m)^(\d+) tests? collected`) reads.
+        return 0, f"{path.name}(importorskip {guard_target!r})"
+    # True or None (unknown/no venv): fall through to the normal
+    # per-function count — either it really does import (collects
+    # normally) or the venv cannot answer and the honest fallback is the
+    # plain static count, same as before this function existed.
+    return _count_functions(tree, path), None
 
 
 def _parametrize_multiplier(node: ast.AST, path: Path) -> int:

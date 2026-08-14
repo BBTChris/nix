@@ -164,7 +164,18 @@ _SKIP_DIRS = frozenset(
     # scan (and flag) the price ring's OWN legitimate `shared_memory` use in every
     # live worktree copy, which is the tree scanning itself. ARC 029: measured, a
     # sub-agent worktree drove this gate to FAIL on `.claude/worktrees/*/price_ring`.
-    {".venv", ".git", ".claude", "__pycache__", "graphify-out", "node_modules"}
+    # `.venv-dev` (ARC CRUCIBLE-DEPSPLIT): the same reasoning as `.venv` above,
+    # one line down — third-party code (numpy/pandas/pip's own vendored mmap
+    # use), never Nix's. Same exclusion, same stated reason, second venv.
+    {
+        ".venv",
+        ".venv-dev",
+        ".git",
+        ".claude",
+        "__pycache__",
+        "graphify-out",
+        "node_modules",
+    }
 )
 
 #: Module names whose import IS a shared-memory claim.

@@ -81,6 +81,7 @@
         "check_plane1_wal",
         "check_plane2_across_kill",
         "check_python_deps",
+        "check_python_transitive_deps",
         "check_reserved_cores",
         "check_state_bus"
       ],

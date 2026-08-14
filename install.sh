@@ -36,6 +36,17 @@ else
     mapfile -t PINS <<< "$PINS_RAW"
     "$NIX_HOME/.venv/bin/pip" install --quiet "${PINS[@]}"
 fi
+# ARC CRUCIBLE-DEPSPLIT: general-purpose runtime dev-tooling (pytest-testmon,
+# pre-commit, coverage — see checks/requirements-runtime.txt's own header for
+# why these are a separate, unpinned tier from the two above). Deliberately
+# plain pip, matching every other install in this bootstrap script — the
+# runtime/dev VENV SPLIT is what this arc introduces; it does not convert
+# install.sh's own tool choice, which stays consistent with itself. The
+# Crucible calendar generator's dependency (pandas_market_calendars) is
+# NEVER installed here — it lives only in .venv-dev, built by
+# scripts/crucible/generator-requirements.txt via a separate, explicit `uv
+# pip install` (its own header), never by this script.
+"$NIX_HOME/.venv/bin/pip" install --quiet -r "$NIX_HOME/checks/requirements-runtime.txt"
 
 echo "== install.sh: hardware identity (v4 full UUID, primary partition) =="
 ROOT_DEV=$(findmnt -n -o SOURCE /)

@@ -49,6 +49,10 @@ __pycache__/
 .venv
 .venv/
 venv/
+# ARC CRUCIBLE-DEPSPLIT: the generator-only dev venv (calendar_gen.py's
+# pandas_market_calendars tree). Same slashless/slash pairing as .venv above.
+.venv-dev
+.venv-dev/
 # testmon's SQLite database and its WAL/shared-memory sidecars. The bare name alone
 # did NOT cover the sidecars, and ARC 016 caught `.testmondata-shm` / `.testmondata-wal`
 # being staged by a `git add -A`. Committing them would put a machine-local, constantly

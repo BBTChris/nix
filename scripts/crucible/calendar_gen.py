@@ -18,14 +18,40 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import sys
 from datetime import UTC, date, datetime, time
 from importlib.metadata import version as pkg_version
 from pathlib import Path
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
-import pandas as pd  # pylint: disable=import-error
-import pandas_market_calendars as mcal  # pylint: disable=import-error
+# Wrong-venv guard (ARC CRUCIBLE-DEPSPLIT, Success #6) — runs BEFORE the
+# calendar-library imports below so it is the failure a wrong invocation
+# sees, not an incidental ImportError. Mirrors checks/check_venv.py's own
+# pattern: resolve sys.prefix and compare against the one expected venv root,
+# not a bare directory-name match. This module is the ONLY place in the
+# Crucible calendar subsystem allowed to import a calendar library (module
+# docstring above); running it under the shared runtime `.venv` must fail
+# loudly and explicitly, not silently half-work or fall through to an
+# unrelated ImportError with no pointer to the fix. That collision — a
+# generator-only dependency landing in the shared venv — is exactly how
+# D3.111 happened (docs/CHECK-DEBT.md).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_EXPECTED_VENV = _REPO_ROOT / ".venv-dev"
+if Path(sys.prefix).resolve() != _EXPECTED_VENV.resolve():
+    raise RuntimeError(
+        f"scripts/crucible/calendar_gen.py must run under the generator-only "
+        f"dev venv ({_EXPECTED_VENV}), not {sys.prefix!r}. Never the shared "
+        f"runtime .venv — see scripts/crucible/generator-requirements.txt "
+        f"and docs/CHECK-DEBT.md D3.111. Build and invoke through it:\n"
+        f"  uv venv {_EXPECTED_VENV}\n"
+        f"  uv pip install --python {_EXPECTED_VENV}/bin/python -r "
+        f"scripts/crucible/generator-requirements.txt\n"
+        f"  {_EXPECTED_VENV}/bin/python -m scripts.crucible.calendar_gen"
+    )
+
+import pandas as pd  # pylint: disable=import-error,wrong-import-position
+import pandas_market_calendars as mcal  # pylint: disable=import-error,wrong-import-position
 
 SPAN_START = "2008-01-01"
 SPAN_END = "2030-12-31"

@@ -1,0 +1,4 @@
+{
+  "comment": "Tracked, justified exceptions to check_python_transitive_deps.py — read by load_exceptions(). Each entry is a (consumer, dependency, declared_range) triple; a DIFFERENT declared_range for the same consumer/dependency (the declaring package's own requirement changed) is NOT covered by a stale entry (hard limit: no blanket skip). Empty today: D3.111, the violation this check exists to have caught, was RESOLVED by ARC CRUCIBLE-DEPSPLIT's runtime/dev venv split, not reported as an exception — see docs/CHECK-DEBT.md D3.111 and sessions/RESULTS.md for that arc.",
+  "exceptions": []
+}

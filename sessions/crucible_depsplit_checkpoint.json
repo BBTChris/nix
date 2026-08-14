@@ -1,0 +1,28 @@
+{
+  "arc": "CRUCIBLE-DEPSPLIT",
+  "contract": "1.1.0",
+  "branch": "arc-crucible-depsplit",
+  "base_commit": "2b9b5a8",
+  "phase": "10 of 10",
+  "phase_name": "banked",
+  "status": "COMPLETE",
+  "preflight": "CLEAR — 0 questions, 0 NOT FOUND",
+  "final_verdicts": {
+    "success_1_venv_split": "PROVEN — clean .venv rebuild carries no calendar libs; 33/33 test_crucible_calendar.py",
+    "success_2_generator_byte_identical": "PROVEN — content_hash_sha256 dbb01cc5...b4f67 unchanged, regenerated under .venv-dev",
+    "success_3_d3111": "RESOLVED (not reported) — real .venv tzdata=2025.3, in ib_async's declared range",
+    "success_4_transitive_check": "PROVEN — real disposable-venv can-fail (ib_async+forced tzdata==2026.3) goes RED, restored",
+    "success_5_no_regression": "PROVEN — full suite 1498p/2s/2x/0f vs baseline 1496p/1s/2x/0f; verify.py 29/3/2/0/1 vs baseline 28/3/2/0/1, same 3 FAIL categories, 0 net-new",
+    "success_6_which_venv": "PROVEN — docs/directory_structure.md v1.6.0",
+    "success_7_astral_gates": "PROVEN — ruff/pylint/bandit clean, ty clean per-venv",
+    "success_8_adversarial": "PROVEN — 3 real regressions found+fixed (check_price_ring .venv-dev exclusion; check_derived_claims importorskip-collapse; test_check_derived_claims.py latest-row plant fixture)"
+  },
+  "bank_protocol": {
+    "sessions_RESULTS_md": "written",
+    "downloads_RESULTS_md": "copied, verified identical",
+    "SESSION_md": "appended",
+    "commit": "pending — next action",
+    "push": "pending"
+  },
+  "next_action": "git add the arc's own files (NOT .ua/ or scripts/m.sh, pre-existing unrelated untracked clutter), commit, push, verify HEAD advanced and git status clean for these paths, report completion"
+}
