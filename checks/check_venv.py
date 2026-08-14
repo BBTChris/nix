@@ -5,6 +5,11 @@ Repairable without root: the engine is stdlib-only and runs from the system
 interpreter (§9.5), so it can rebuild the venv it does not run from.
 """
 
+# pylint: disable=duplicate-code
+# R0801: the lock-probe-before-reporting shape below (ARC 030 / Stage 2 A2)
+# necessarily pairs with check_python_deps.py's and check_venv_isolation.py's
+# near-identical use of `nixverify.venv_lock` — same unavoidable-duplication
+# class as check_untracked_attribution.py's declaration preamble.
 from __future__ import annotations
 
 import subprocess  # nosec B404 - fixed argv, no shell, no user input
@@ -13,6 +18,7 @@ from pathlib import Path
 
 import _preamble  # noqa: F401  pylint: disable=unused-import,wrong-import-order
 from nixverify.contract import CheckResult, Context, Mode, Status
+from nixverify.venv_lock import VenvLockHeld, probe_lock, venv_mutation_lock
 
 PRIVILEGE = "user"
 INTERACTIVE = False
@@ -113,16 +119,35 @@ def _probe(python: Path) -> str | None:
     return proc.stdout.strip() or proc.stderr.strip()
 
 
-def _create(venv: Path) -> str:
-    """Build the venv with the stdlib module. Returns '' on success."""
+#: Sentinel `_create` returns when the venv-mutation lock was held by
+#: someone else — distinct from a real build failure (§18: the caller must
+#: be able to tell "could not build" from "did not even try because another
+#: mutator owns this right now", not collapse both into one FAIL string).
+LOCK_CONTENDED = "\0LOCK_CONTENDED\0"
+
+
+def _create(nix_home: Path, venv: Path) -> str:
+    """Build the venv with the stdlib module, under the mutation lock.
+
+    ARC 030 / Stage 2 A2: `python -m venv` deletes and repopulates `venv`'s
+    contents. Doing that while another process (another arc's manual
+    rebuild, `check_python_deps.repair`) is reading or writing the same
+    directory is the CRUCIBLE-DEPSPLIT hazard this arc was told to prove and
+    close — see `nixverify.venv_lock`. Non-blocking: if the lock is held,
+    this returns `LOCK_CONTENDED` immediately rather than racing the holder
+    or hanging the runner.
+    """
     try:
-        subprocess.run(  # nosec B603 - fixed argv, shell=False
-            [sys.executable, "-m", "venv", str(venv)],
-            capture_output=True,
-            text=True,
-            timeout=300,
-            check=True,
-        )
+        with venv_mutation_lock(nix_home):
+            subprocess.run(  # nosec B603 - fixed argv, shell=False
+                [sys.executable, "-m", "venv", str(venv)],
+                capture_output=True,
+                text=True,
+                timeout=300,
+                check=True,
+            )
+    except VenvLockHeld:
+        return LOCK_CONTENDED
     except (OSError, subprocess.SubprocessError) as exc:
         return f"{exc!r}"
     return ""
@@ -153,6 +178,24 @@ def run(  # pylint: disable=too-many-return-statements
             status=Status.CANNOT_MEASURE,
             detail=f"{python}: probe timed out — could not measure (§4.1)",
         )
+    # ARC 030 / Stage 2 A2: the interpreter just failed to answer at all —
+    # before reporting that as a repairable defect, ask whether `.venv` is
+    # mid-mutation under someone else's hold RIGHT NOW. An absent/broken
+    # interpreter during a concurrent `rm -rf && python -m venv` is not
+    # evidence the venv is broken; it is evidence it was caught between two
+    # states, and a verdict about either one is a verdict about a state that
+    # may no longer exist by the time it is printed (§17).
+    held, lock_detail = probe_lock(ctx.nix_home)
+    if held:
+        return CheckResult(
+            name=NAME,
+            status=Status.CANNOT_MEASURE,
+            site=str(venv),
+            detail=f"{venv} did not answer AND the venv-mutation lock is "
+            f"held by another process ({lock_detail}) — this is a moving "
+            "target, not a stable subject; re-measure once the mutation "
+            "completes",
+        )
     if mode.rank < Mode.CORRECT.rank:
         return CheckResult(
             name=NAME,
@@ -171,7 +214,17 @@ def run(  # pylint: disable=too-many-return-statements
                 "(/usr/bin/python3), not .venv/bin/python3 (§9.5)"
             ),
         )
-    failure = _create(venv)
+    failure = _create(ctx.nix_home, venv)
+    if failure == LOCK_CONTENDED:
+        held, lock_detail = probe_lock(ctx.nix_home)
+        return CheckResult(
+            name=NAME,
+            status=Status.CANNOT_MEASURE,
+            site=str(venv),
+            detail=f"repair refused: the venv-mutation lock is held by "
+            f"another process ({lock_detail}) — rebuilding now would race "
+            "it; re-run once it releases",
+        )
     if failure:
         return CheckResult(
             name=NAME,

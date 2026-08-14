@@ -1,0 +1,15 @@
+{
+  "comment": "ARC 030 / Stage 2 A3. Tracked, justified exceptions for check_untracked_attribution's foreign-commit arm — a NON-LIVE local branch, with commits this arc's HEAD does not contain, touching a path canonical HEAD already tracks. Matched on the exact branch name; an untracked branch not listed here is always FAIL_NEEDS_OPERATOR, never silently skipped. See check_untracked_attribution.py's module docstring and downloads/arc_030_stage2_a_isolation.md for how these two were found (a real, unplanned discovery while proving the arm works against the live canonical repo, not a hypothetical).",
+  "exceptions": [
+    {
+      "branch": "docs/arc002-results",
+      "arc": "ARC 031",
+      "justification": "pre-dates this arc's dispatch-worktree convention entirely; an archival branch from a long-completed arc (ARC 002), never merged or deleted, diverging from downloads/RESULTS.md's current tracked content. Not the ARC 029 collision shape (no worktree ever raced this arc for it) — a repo-hygiene item, GUARDED pending an operator decision to delete or merge it."
+    },
+    {
+      "branch": "docs/arc005-writeback",
+      "arc": "ARC 031",
+      "justification": "same class as docs/arc002-results, from ARC 005: archival, unmerged, never deleted, diverging from downloads/RESULTS.md and sessions/SESSION.md. GUARDED pending the same operator decision."
+    }
+  ]
+}

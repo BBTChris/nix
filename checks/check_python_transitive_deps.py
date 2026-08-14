@@ -49,6 +49,7 @@ from pathlib import Path
 
 import _preamble  # noqa: F401  pylint: disable=unused-import,wrong-import-order
 from nixverify.contract import CheckResult, Context, Mode, Status
+from nixverify.venv_lock import probe_lock
 
 PRIVILEGE = "user"
 INTERACTIVE = False
@@ -291,7 +292,25 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
             detail=f"could not query the installed tree via {venv_python}",
         )
     exceptions = load_exceptions(checks_dir)
-    return evaluate(violations, exceptions)
+    result = evaluate(violations, exceptions)
+    # ARC 030 / Stage 2 A2: this gate is NON-CORRECTABLE and read-only, but a
+    # violation reported while `.venv` is mid-mutation is still a verdict
+    # about a moving target — a package briefly absent or half-installed
+    # between `rm` and reinstall can present a transient "range violated"
+    # shape that has nothing to do with a real drift (§17).
+    if result.status is not Status.PASS:
+        held, lock_detail = probe_lock(ctx.nix_home)
+        if held:
+            return CheckResult(
+                name=NAME,
+                status=Status.CANNOT_MEASURE,
+                site=result.site,
+                detail=f"{result.detail}; AND the venv-mutation lock is "
+                f"held by another process ({lock_detail}) — this may be the "
+                "in-progress mutation, not a real transitive-range "
+                "violation; re-measure once it releases",
+            )
+    return result
 
 
 # Deliberately duplicated across every checks/check_*.py — see

@@ -18,6 +18,11 @@ real interpreter — no mock, no hand-built dict standing in for what pip
 would report. See `test_a_forced_out_of_range_transitive_dep_reddens_the_gate`.
 """
 
+# pylint: disable=invalid-name,duplicate-code
+# Test names SHOUT the property under test, as in every other suite here.
+# duplicate-code: the fake-interpreter fixture setup here necessarily pairs
+# with the near-identical one in test_check_python_deps.py.
+
 from __future__ import annotations
 
 import subprocess
@@ -120,6 +125,40 @@ def test_query_failure_is_cannot_measure(tmp_path: Path) -> None:
 
     result = _run(Mode.VERIFY, tmp_path)
     assert result.status is Status.CANNOT_MEASURE
+
+
+def test_a_violation_UNDER_a_HELD_venv_mutation_lock_is_CANNOT_MEASURE(
+    tmp_path: Path,
+) -> None:
+    """ARC 030 / Stage 2 A2 — the same lock-awareness proven on the sibling
+    gates, here for the read-only, NON-CORRECTABLE member of the trio. Even
+    a gate that never repairs anything must not report a stable-sounding
+    FAIL_NEEDS_OPERATOR against a venv another process is actively mutating
+    — the violation might be the mutation's own transient in-between state.
+    """
+    # pylint: disable-next=import-outside-toplevel
+    from nixverify.venv_lock import venv_mutation_lock
+
+    venv_bin = tmp_path / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    fake_python = venv_bin / "python3"
+    payload = (
+        '[{"consumer": "ib_async", "consumer_version": "2.1.0", '
+        '"dependency": "tzdata", "declared_range": "<2026.0,>=2025.2", '
+        '"installed": "2026.3"}]'
+    )
+    fake_python.write_text(
+        f"#!/usr/bin/env python3\nprint('{payload}')\n", encoding="utf-8"
+    )
+    fake_python.chmod(0o755)
+
+    with venv_mutation_lock(tmp_path):
+        held = _run(Mode.VERIFY, tmp_path)
+    assert held.status is Status.CANNOT_MEASURE
+    assert "venv-mutation lock is held" in held.detail
+
+    released = _run(Mode.VERIFY, tmp_path)
+    assert released.status is Status.FAIL_NEEDS_OPERATOR
 
 
 def test_no_venv_is_cannot_measure(tmp_path: Path) -> None:

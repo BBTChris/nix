@@ -1,5 +1,8 @@
 """Venv check — the first repairable check (§3)."""
 
+# pylint: disable=invalid-name
+# Test names SHOUT the property under test, as in every other suite here.
+
 import subprocess
 import sys
 from pathlib import Path
@@ -177,6 +180,51 @@ def test_running_from_fails_closed_when_location_is_undeterminable(
     assert result.status is Status.FAIL_NEEDS_OPERATOR
     assert result.site == str(tmp_path / ".venv")
     assert not (tmp_path / ".venv").exists()  # refused before ever attempting _create()
+
+
+def test_a_HELD_venv_mutation_lock_makes_an_absent_venv_CANNOT_MEASURE(
+    tmp_path: Path,
+) -> None:
+    """ARC 030 / Stage 2 A2 — the hazard proven directly against `check_venv`.
+
+    An absent/unanswering `.venv` normally means FAIL_REPAIRABLE (see
+    `test_missing_venv_in_verify_mode_reports_without_repairing`, hitting the
+    identical branch with the lock free). Held by a concurrent mutator
+    (modelled here by this process holding it), the SAME absent-venv state
+    must be reported as CANNOT_MEASURE instead — an absent interpreter mid
+    `rm -rf .venv && python -m venv` is not evidence of a repairable defect,
+    it is evidence of a state that will not persist.
+    """
+    # pylint: disable-next=import-outside-toplevel
+    from nixverify.venv_lock import venv_mutation_lock
+
+    with venv_mutation_lock(tmp_path):
+        held_result = _run(Mode.VERIFY, tmp_path)
+    assert held_result.status is Status.CANNOT_MEASURE
+    assert "venv-mutation lock is held" in held_result.detail
+
+    # Released, the SAME tmp_path reverts to the ordinary repairable verdict —
+    # proving the CANNOT_MEASURE above was about the lock, not the venv.
+    free_result = _run(Mode.VERIFY, tmp_path)
+    assert free_result.status is Status.FAIL_REPAIRABLE
+
+
+def test_CORRECT_mode_refuses_to_rebuild_while_the_lock_is_HELD(
+    tmp_path: Path,
+) -> None:
+    """The repair path itself must not race a concurrent mutator: CORRECT
+    mode must not attempt `python -m venv` while another process holds the
+    lock — it must report CANNOT_MEASURE and leave `.venv` exactly as it
+    found it (absent, here), never partially rebuilt.
+    """
+    # pylint: disable-next=import-outside-toplevel
+    from nixverify.venv_lock import venv_mutation_lock
+
+    with venv_mutation_lock(tmp_path):
+        result = _run(Mode.CORRECT, tmp_path)
+    assert result.status is Status.CANNOT_MEASURE
+    assert "lock is held" in result.detail
+    assert not (tmp_path / ".venv").exists()
 
 
 def test_probe_timeout_is_cannot_measure_not_broken(
