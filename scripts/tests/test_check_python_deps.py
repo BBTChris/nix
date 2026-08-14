@@ -35,6 +35,13 @@ is running. That is the same ownership problem CHECK-DEBT D3.12 records for
 `check_venv`. **CHECK-DEBT D3.28.**
 """
 
+# pylint: disable=invalid-name,duplicate-code
+# Test names SHOUT the property under test, as in every other suite here
+# (ARC 030 / Stage 2 A2's lock-awareness tests are the ones long enough to
+# trip pylint's default naming-style check). duplicate-code: the fake-
+# interpreter fixture setup here necessarily pairs with the near-identical
+# one in test_check_python_transitive_deps.py.
+
 import hashlib
 import json
 import os
@@ -131,6 +138,42 @@ def test_query_failure_is_cannot_measure_not_absent(tmp_path: Path) -> None:
     result = _run(Mode.VERIFY, tmp_path)
 
     assert result.status is Status.CANNOT_MEASURE
+
+
+def test_drift_UNDER_a_HELD_venv_mutation_lock_is_CANNOT_MEASURE_not_FAIL(
+    tmp_path: Path,
+) -> None:
+    """ARC 030 / Stage 2 A2 — the hazard this arc's brief names directly.
+
+    A venv reporting "nothing installed" (every pin absent) is exactly the
+    transient shape a concurrent `rm -rf .venv && python -m venv` produces
+    mid-rebuild — not evidence the pins are actually violated. Without lock
+    awareness this fixture would drive `FAIL_REPAIRABLE` (proven by the
+    sibling test right above, which hits the identical "package absent"
+    branch via a different subject — a broken interpreter rather than an
+    empty package set — through the same `evaluate()` path). With the lock
+    held by this process (modelling a concurrent mutator), the SAME
+    drift-shaped state must report CANNOT_MEASURE, naming the lock.
+    """
+    # pylint: disable-next=import-outside-toplevel
+    from nixverify.venv_lock import venv_mutation_lock
+
+    venv_bin = tmp_path / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    fake_python = venv_bin / "python3"
+    fake_python.write_text("#!/usr/bin/env python3\nprint('{}')\n", encoding="utf-8")
+    fake_python.chmod(0o755)
+
+    with venv_mutation_lock(tmp_path):
+        result = _run(Mode.VERIFY, tmp_path)
+
+    assert result.status is Status.CANNOT_MEASURE
+    assert "venv-mutation lock is held" in result.detail
+
+    # Released, the identical tree is measured as real drift again — proving
+    # the CANNOT_MEASURE above was about the lock, not about the packages.
+    released = _run(Mode.VERIFY, tmp_path)
+    assert released.status is Status.FAIL_REPAIRABLE
 
 
 def test_load_pins_rejects_malformed_entries(tmp_path: Path) -> None:

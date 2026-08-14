@@ -80,7 +80,8 @@
         "check_python_deps",
         "check_python_transitive_deps",
         "check_reserved_cores",
-        "check_state_bus"
+        "check_state_bus",
+        "check_venv_isolation"
       ],
       "claims": [
         "cpu-affinity",

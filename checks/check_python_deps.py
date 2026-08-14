@@ -9,6 +9,12 @@ importlib.metadata in a subprocess, so a missing package cannot break the
 check meant to install it.
 """
 
+# pylint: disable=duplicate-code
+# R0801: the lock-probe-before-reporting-drift shape below (ARC 030 / Stage
+# 2 A2) necessarily pairs with check_venv.py's and check_venv_isolation.py's
+# near-identical use of `nixverify.venv_lock` — the same class of
+# unavoidable duplication `check_untracked_attribution.py`'s declaration
+# preamble already documents, just in a different shared helper.
 from __future__ import annotations
 
 import json
@@ -19,6 +25,7 @@ from pathlib import Path
 
 import _preamble  # noqa: F401  pylint: disable=unused-import,wrong-import-order
 from nixverify.contract import CheckResult, Context, Mode, Status
+from nixverify.venv_lock import VenvLockHeld, probe_lock, venv_mutation_lock
 
 PRIVILEGE = "user"
 INTERACTIVE = False
@@ -139,23 +146,41 @@ def evaluate(pins: dict[str, str], present: dict[str, str]) -> CheckResult:
     )
 
 
-def repair(venv_python: Path, pins: dict[str, str]) -> str:
-    """Reinstall every pin exactly. Returns '' on success."""
+#: Sentinel `repair` returns when the venv-mutation lock was held by someone
+#: else — ARC 030 / Stage 2 A2, same reasoning as `check_venv.LOCK_CONTENDED`
+#: (§18: "could not repair" and "did not even try, someone else owns this
+#: right now" must be two distinguishable outcomes, not one FAIL string).
+LOCK_CONTENDED = "\0LOCK_CONTENDED\0"
+
+
+def repair(nix_home: Path, venv_python: Path, pins: dict[str, str]) -> str:
+    """Reinstall every pin exactly, under the mutation lock. '' on success.
+
+    `pip install` mutates `.venv`'s site-packages exactly like `check_venv`'s
+    `python -m venv` does — the same shared, un-owned surface, so it takes
+    the same lock. Non-blocking: contention returns `LOCK_CONTENDED`
+    immediately rather than racing whoever holds it.
+    """
     specs = [f"{package}=={version}" for package, version in sorted(pins.items())]
     try:
-        subprocess.run(  # nosec B603 - fixed argv, shell=False
-            [str(venv_python), "-m", "pip", "install", "--quiet", *specs],
-            capture_output=True,
-            text=True,
-            timeout=900,
-            check=True,
-        )
+        with venv_mutation_lock(nix_home):
+            subprocess.run(  # nosec B603 - fixed argv, shell=False
+                [str(venv_python), "-m", "pip", "install", "--quiet", *specs],
+                capture_output=True,
+                text=True,
+                timeout=900,
+                check=True,
+            )
+    except VenvLockHeld:
+        return LOCK_CONTENDED
     except (OSError, subprocess.SubprocessError) as exc:
         return f"{exc!r}"
     return ""
 
 
-def run(mode: Mode, ctx: Context) -> CheckResult:
+def run(  # pylint: disable=too-many-return-statements
+    mode: Mode, ctx: Context
+) -> CheckResult:
     """Verify pins; reinstall to pin when permitted."""
     checks_dir = Path(__file__).resolve().parent
     venv_python = ctx.nix_home / ".venv" / "bin" / "python3"
@@ -174,9 +199,37 @@ def run(mode: Mode, ctx: Context) -> CheckResult:
             detail=f"could not query installed packages via {venv_python} (§4.1)",
         )
     result = evaluate(pins, present)
-    if result.status is Status.PASS or mode.rank < Mode.CORRECT.rank:
+    if result.status is Status.PASS:
         return result
-    failure = repair(venv_python, pins)
+    # ARC 030 / Stage 2 A2: drift was found. Before reporting it as real,
+    # ask whether `.venv` is mid-mutation under someone else's hold right
+    # now — a package reported "absent" mid-`pip install` is not evidence
+    # of a pin violation, it is evidence the query landed inside a window
+    # another process owns (§17: a property proven against a moving target
+    # is not proven).
+    held, lock_detail = probe_lock(ctx.nix_home)
+    if held:
+        return CheckResult(
+            name=NAME,
+            status=Status.CANNOT_MEASURE,
+            site=result.site,
+            detail=f"{result.detail}; AND the venv-mutation lock is held by "
+            f"another process ({lock_detail}) — this drift may be the "
+            "in-progress mutation, not a real pin violation; re-measure "
+            "once it releases",
+        )
+    if mode.rank < Mode.CORRECT.rank:
+        return result
+    failure = repair(ctx.nix_home, venv_python, pins)
+    if failure == LOCK_CONTENDED:
+        held, lock_detail = probe_lock(ctx.nix_home)
+        result.detail = (
+            f"{result.detail}; repair refused: the venv-mutation lock is "
+            f"held by another process ({lock_detail}) — reinstalling now "
+            "would race it"
+        )
+        result.status = Status.CANNOT_MEASURE
+        return result
     if failure:
         result.detail = f"{result.detail}; repair failed: {failure}"
         return result
