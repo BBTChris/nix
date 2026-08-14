@@ -2927,3 +2927,61 @@ THE COLLISION: a second session ran a separate ARC MON-1 arc on this same branch
 mid-flight, bundling commits and reverting uncommitted edits. No ARC 029 work was lost, but convergence
 needs a stable tree, so per operator decision the close-out was isolated onto branch arc-029-convergence.
 The operator merges it into arc-029-integration on /home/bbt/nix to land the arc on the canonical path.
+
+## 2026-08-14 — ARC CRUCIBLE-CALENDAR-INFRA — COMPLETE (branch arc-crucible-calendar-infra, off arc-029-integration)
+
+Built the calendar infrastructure layer for the Crucible strategy evaluation pipeline: a deterministic,
+network-free, product-group-scoped CME session calendar, 2008-2030, for the corpus builder, fill model,
+and bar aggregation to consume in later arcs — none of which are built here (scope fence held).
+
+Two-layer split: `scripts/crucible/calendar_gen.py` (build-time generator, `pandas_market_calendars`
+5.4.0 the only calendar library anywhere in the subsystem, chosen for shipping CME calendars scoped
+exactly to the six locked product groups) produces a vendored artifact —
+`cme_calendar_sessions.csv` (35,484 rows), `cme_calendar_reconciliation.csv` (1,433 rows),
+`cme_calendar_provenance.json` — consumed by `scripts/crucible/calendar.py`, a zero-dependency runtime
+module implementing all five locked v1 functions. Two-layer separation proven literally: uninstalled
+the calendar library and its transitive deps from the shared `.venv`, ran the runtime test suite
+(33/33) with them physically absent, then reinstalled generator-only. Determinism proven: two
+generations, byte-identical hash. Group-scoping proven on Thanksgiving 2024: four different outcomes
+(energy 13:30 CT close, equity 12:00 CT close, FX no early close, agriculture full holiday) on one
+date. RTH settlement-window conventions per group WebSearch-corroborated this session (direct
+cmegroup.com fetch timed out twice) rather than guessed, honestly labeled as secondary-sourced. A real
+2008 NYMEX holiday press release upgraded 4 pre-2010 HIGH-RISK rows to CME-VERIFIED; the other 98 stay
+honestly LIBRARY-sourced rather than fabricated as verified.
+
+New verify.py gate `check_crucible_calendar` (level-0) independently recomputes the artifact's hash
+against its provenance stamp and drives the runtime module for real; registered via
+`verify.py --optimize --commit`. `docs/directory_structure.md` v1.4.0 -> v1.5.0 names `scripts/crucible/`;
+CLAUDE.md's specs-table row for it corrected in the same motion (was stale at v1.3.0 from before this
+arc).
+
+Adversarial debug pass found and fixed three real bugs: an inverted RTH/ETH window on early-close days
+(rth_close could exceed the session's actual early close — caught on the very first generated
+Thanksgiving row), a `next_close` off-by-boundary bug that could `IndexError` at an exact close instant,
+and — the interesting one — this arc's own CHECK-DEBT summary row broke `check_derived_claims`'
+`check_debt_open_items` claim, because every prior arc was numbered (`ARC \d+`) and this one was
+deliberately not (its brief withheld a number; the next sequential one, ARC 030, is already CHECK-DEBT
+D3.104's named owner for unrelated work). First left RED on principle; reversed once `pytest` showed
+seven pre-existing tests failing against the live tree — A2 makes a mid-tier bug found in the
+adversarial loop in-scope regardless of whose file it lands in. Fixed by widening the probe's regex
+(and its test-file twin) to accept a named arc token; CHECK-DEBT D3.112 records the bug as fixed but
+the row stays counted OPEN because the SEPARATE `_DISCHARGED` pattern that would exclude it is also
+numeric-only and guards an exact-anchor plant test plus an independently-maintained twin in
+`independent_claims.py` — widening that too was refused as scope beyond what the regression required.
+CHECK-DEBT 151 -> 153 (D3.111: the generator dependency's `tzdata` transitive bump falls outside
+`ib_async`'s declared range, measured as not-yet-broken and left open; D3.112 above). The
+pre-commit runtime-pass hook's own full-suite escalation (triggered because the new files had no
+testmon fingerprint) caught a real fourth bug: three tracked non-test files
+(`scripts/crucible/__init__.py`, `calendar_gen.py`, `sessions/crucible_calendar_checkpoint.json`)
+were uncovered by `check_crucible_calendar.py`'s `SUBJECTS` tuple, failing
+`test_check_artifact_gate_coverage.py` for real against the live tree. Fixed by naming all three.
+
+Baseline: verify.py 28 pass / 3 fail / 2 cannot-measure / 1 guarded (race-free), identical in shape to
+ARC 029's own banked baseline plus exactly one expected `check_untracked_attribution` FAIL that clears
+on this commit. Full suite: 1,499 tests (up from 1,454), 1,496 passed / 1 skipped / 2 xfailed / 0
+failed, race-free. Net new failures this arc introduces once committed: zero.
+
+PRE-FLIGHT asked one clarification question (branch strategy, given the ARC 029/MON-1 collision this
+same log records above) rather than assuming; operator chose a new branch off arc-029-integration.
+Actual cost ~64 min against a ~35 min estimate, logged for A5 coefficient tuning — dominated by
+source-verification and the check-contract integration tax, not the calendar build itself.

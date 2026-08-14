@@ -1,0 +1,28 @@
+# Crucible calendar GENERATOR dependency pin — BUILD/dev-only.
+#
+# Deliberately NOT in checks/pinned_deps.json: that file is the single
+# source of truth for the shared runtime .venv (install.sh installs it there
+# and check_python_deps.py enforces conformance against the live venv
+# forever, repairing drift back to pin). pandas_market_calendars must NOT be
+# governed by that drift-repair loop -- it is a generator-only concern.
+#
+# It DOES stay installed in the shared dev .venv (this repo has one shared
+# venv for build+test+runtime) so /astral:ty and /astral:ruff can resolve
+# calendar_gen.py's import and the generator stays runnable without extra
+# setup. Success #1 of ARC CRUCIBLE-CALENDAR-INFRA -- the runtime query
+# module (calendar.py) works with this library ABSENT -- is proven instead
+# by scripts/tests/test_crucible_calendar.py's isolated-subprocess test
+# (spawns a bare interpreter with pandas_market_calendars/pandas/exchange
+# libraries excluded from sys.path) plus a static grep of calendar.py for
+# any import of this library or of socket/http/urllib. A one-time literal
+# `pip uninstall` + full suite run was also performed manually during this
+# arc and is recorded in RESULTS.md.
+#
+# Install ad hoc if this venv ever needs to regenerate the vendored artifact
+# from a clean checkout:
+#   .venv/bin/pip install -r scripts/crucible/generator-requirements.txt
+#   .venv/bin/python -m scripts.crucible.calendar_gen
+#
+# Pinned for determinism (Success #2: same pinned inputs -> byte-identical
+# output). Version recorded in the provenance stamp on every generation run.
+pandas_market_calendars==5.4.0

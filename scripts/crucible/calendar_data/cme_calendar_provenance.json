@@ -1,0 +1,31 @@
+{
+  "cme_source_reference": "CME Group official holiday/hours pages (cmegroup.com/trading-hours.html, cmegroup.com/media-room); reconciliation performed via WebSearch corroboration 2026-08-14 (direct contractSpecs fetch timed out) -- see cme_calendar_reconciliation.csv for per-row source labels",
+  "content_hash_excludes": [
+    "generated_utc"
+  ],
+  "content_hash_sha256": "dbb01cc55e2d9f2d66502b769d0211611cbbcc4a4281c0342bfcc91fc53b4f67",
+  "generated_utc": "2026-08-14T11:26:34Z",
+  "generator_library": "pandas_market_calendars",
+  "generator_library_version": "5.4.0",
+  "high_risk_row_count": 102,
+  "product_groups": [
+    "agriculturals",
+    "energy",
+    "equity_index",
+    "fx",
+    "interest_rates",
+    "metals"
+  ],
+  "reconciliation_summary": {
+    "CME-VERIFIED": 4,
+    "LIBRARY": 1429
+  },
+  "row_counts": {
+    "reconciliation": 1433,
+    "sessions": 35484
+  },
+  "span": {
+    "end": "2030-12-31",
+    "start": "2008-01-01"
+  }
+}

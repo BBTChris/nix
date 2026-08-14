@@ -490,8 +490,15 @@ def _p_check_debt_open_count(home: Path) -> tuple[int, str]:
 
 def _p_check_debt_series_latest(home: Path) -> tuple[int, str]:
     text = _read(home, "docs/CHECK-DEBT.md")
+    # `ARC [\w-]+` rather than `ARC \d+` (CHECK-DEBT D3.112): every row was
+    # numbered until ARC CRUCIBLE-CALENDAR-INFRA, whose brief deliberately
+    # withheld a number (the next sequential one, ARC 030, is already
+    # CHECK-DEBT D3.104's named owner for unrelated work). A numeric-only
+    # pattern went blind to that row's own summary line, producing a real
+    # DISAGREEMENT against an otherwise-clean tree. Widened to accept any
+    # word/hyphen arc token; still requires the literal "ARC " prefix.
     rows = re.findall(
-        r"^\|\s*\d{4}-\d{2}-\d{2}\s*\|\s*(ARC \d+)\s*\|\s*(\d+)\s*\|",
+        r"^\|\s*\d{4}-\d{2}-\d{2}\s*\|\s*(ARC [\w-]+)\s*\|\s*(\d+)\s*\|",
         text,
         re.MULTILINE,
     )

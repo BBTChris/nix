@@ -1,0 +1,36 @@
+{
+  "arc": "CRUCIBLE-CALENDAR-INFRA",
+  "contract": "1.1.0",
+  "branch": "arc-crucible-calendar-infra",
+  "started_utc": "2026-08-14T10:11:06Z",
+  "phase": "1/5",
+  "phase_name": "design+generator",
+  "status": "in_progress",
+  "decisions": {
+    "library": "pandas_market_calendars",
+    "library_calendars": {
+      "equity_index": "CME_Equity",
+      "energy": "CMEGlobex_Energy",
+      "metals": "CMEGlobex_Metals",
+      "interest_rates": "CME_InterestRate",
+      "agriculturals": "CME_Agriculture",
+      "fx": "CME_FX"
+    },
+    "artifact_format": "CSV (deterministic, diff-friendly) + JSON provenance sidecar + JSON reconciliation report",
+    "module_layout": "scripts/crucible/{calendar_gen.py (generator, dev-dep), calendar.py (runtime, zero-dep), calendar_data/ (vendored artifacts)}",
+    "rth_source": "WebSearch-corroborated legacy settlement-window convention per group (MANUAL source, documented); FX has no RTH (rth==eth)",
+    "branch_strategy": "new branch off arc-029-integration, per operator answer"
+  },
+  "what_changed": [],
+  "what_passed": [],
+  "what_remains": [
+    "generator script + vendored artifact + reconciliation report + provenance",
+    "runtime query module + 5-function API",
+    "test harness (determinism, coverage, DST, two-layer separation, API behavior)",
+    "astral gates (uv/ruff/ty)",
+    "check_crucible_calendar.py + directory_structure.md update",
+    "adversarial debug pass",
+    "bank protocol"
+  ],
+  "next_action": "write scripts/crucible/calendar_gen.py"
+}

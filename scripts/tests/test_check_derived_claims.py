@@ -778,7 +778,12 @@ def test_the_shipped_gate_reddens_when_a_DOCUMENT_RESTATES_A_WRONG_NUMBER(  # py
     assert isinstance(derived, int) and derived > 0
 
     row = re.search(
-        rf"^\|\s*\d{{4}}-\d{{2}}-\d{{2}}\s*\|\s*ARC \d+\s*\|\s*{derived}\s*\|",
+        # `ARC [\w-]+`, not `ARC \d+` (CHECK-DEBT D3.112): the latest series
+        # row may be a deliberately unnumbered arc (e.g. this repo's own
+        # ARC CRUCIBLE-CALENDAR-INFRA row) and still be the one stating the
+        # derived count -- mirrors the widening in
+        # check_derived_claims.py's `_p_check_debt_series_latest`.
+        rf"^\|\s*\d{{4}}-\d{{2}}-\d{{2}}\s*\|\s*ARC [\w-]+\s*\|\s*{derived}\s*\|",
         (scratch / "docs" / "CHECK-DEBT.md").read_text(encoding="utf-8"),
         re.MULTILINE,
     )

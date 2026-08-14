@@ -228,3 +228,15 @@ fold reproduces that exactly. The collision is the architect's to rule on.
   `docs/nix_check_contract.md`; the current instance (thirteen artifacts, owner ARC 030, temporary)
   is CHECK-DEBT D3.104. Enforced by `check_artifact_gate_coverage`'s exclusion arms, each planted and
   driven red in `scripts/tests/test_check_artifact_gate_coverage.py`.
+
+## ARC CRUCIBLE-CALENDAR-INFRA (2026-08-14)
+
+- **`directory_structure.md` bumped v1.4.0 -> v1.5.0**: names `scripts/crucible/`, the Crucible
+  strategy-evaluation pipeline's first landed slice (calendar infra). Specs table row corrected to
+  match (was stale at v1.3.0, itself a pre-existing drift from before this arc).
+- **New check `check_crucible_calendar`** (level-0, `DEPENDS_ON=()`, `RESOURCES=()`, non-correctable):
+  proves the vendored CME calendar artifact's sha256 independently matches its provenance stamp, and
+  that the runtime query module (`scripts/crucible/calendar.py`) imports clean of any calendar
+  library/network dependency and answers for all six locked product groups. Registered via
+  `verify.py --optimize --commit`.
+- No risk-spec or check-contract rule changes this arc -- new subsystem, existing contract applies.

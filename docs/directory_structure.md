@@ -1,4 +1,4 @@
-# directory_structure — `~/nix` directory topology — v1.4.0
+# directory_structure — `~/nix` directory topology — v1.5.0
 
 Application root: `~/nix`. Everything for Nix is self-contained here, **except the system PostgreSQL
 cluster** (lives at the OS default per CLAUDE.md).
@@ -7,7 +7,8 @@ cluster** (lives at the OS default per CLAUDE.md).
 ~/nix
   |-- scripts      All Python and shell scripts; verify.py engine (nixverify/),
   |                the vendor-neutral broker seam + vendor adapters (broker/),
-  |                and the test suite (scripts/tests/)
+  |                the Crucible strategy-evaluation pipeline (crucible/, calendar
+  |                infra so far), and the test suite (scripts/tests/)
   |-- docs         Reference documentation and markdown files (incl. the frozen risk spec)
   |-- checks       Check modules for verify.py and JSON execution map
   |-- risks        Library of risk rules and JSON execution map — data-role expression of the
@@ -24,6 +25,17 @@ cluster** (lives at the OS default per CLAUDE.md).
   |-- state        Hardware identity + encrypted credential storage. `chmod 600` throughout;
                    gitignored wholesale (defense in depth beyond the `*credentials*.json` rule).
 ```
+
+**v1.5.0 changes:** `scripts/` line expanded to name `crucible/` -- the Crucible
+strategy-evaluation pipeline (`~/nix/docs/nix-strategy-evaluator-pipeline-6.docx`).
+ARC CRUCIBLE-CALENDAR-INFRA landed its first slice: `calendar_gen.py` (build-time
+generator, the only module allowed to import a calendar library),
+`calendar.py` (zero-dependency runtime query module), and `calendar_data/`
+(the vendored, hash-stamped CME session-calendar artifact, 2008-2030, six
+product groups). Same reasoning as `broker/` and `nixverify/`: a subpackage
+under an already-documented top-level directory is named here rather than
+left implicit. Future arcs add the corpus builder, fill model, and bar
+aggregation under this same directory -- not built here (scope fence).
 
 **v1.4.0 changes:** `scripts/` line expanded again to name `broker/` — the §2A vendor-neutral
 seam (`broker_seam.py`), the IBKR order adapter (`broker_order_ibkr.py`), the mapping findings
