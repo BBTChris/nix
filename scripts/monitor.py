@@ -1821,11 +1821,11 @@ def run_tui(mon: Monitor, cfg: dict) -> int:
                 bg = -1
             except curses.error:
                 bg = curses.COLOR_BLACK
-            spec = [(A_NORM, curses.COLOR_WHITE), (A_DIM, curses.COLOR_YELLOW),
+            spec = [(A_NORM, curses.COLOR_WHITE), (A_DIM, curses.COLOR_WHITE),
                     (A_HDR, curses.COLOR_CYAN), (A_OK, curses.COLOR_GREEN),
                     (A_WARN, curses.COLOR_YELLOW), (A_CRIT, curses.COLOR_RED),
                     (A_INFO, curses.COLOR_CYAN), (A_ACCENT, curses.COLOR_MAGENTA),
-                    (A_NEON, 208 if curses.COLORS >= 256 else curses.COLOR_YELLOW)]
+                    (A_NEON, curses.COLOR_WHITE)]
             for i, (name, col) in enumerate(spec, start=1):
                 try:
                     curses.init_pair(i, col, bg)
@@ -1834,6 +1834,10 @@ def run_tui(mon: Monitor, cfg: dict) -> int:
                     pairs[name] = curses.A_NORMAL
             pairs[A_HDR] |= curses.A_BOLD
             pairs[A_CRIT] |= curses.A_BOLD
+            # Bright-white theme: NORM/DIM/NEON all render bold bright white.
+            pairs[A_NORM] |= curses.A_BOLD
+            pairs[A_DIM] |= curses.A_BOLD
+            pairs[A_NEON] |= curses.A_BOLD
         attr_of = lambda a: pairs.get(a, curses.A_NORMAL)
         # Dynamic truecolor for logo gradient. Attr strings that start with ESC
         # are raw SGR ("\x1b[1;38;2;R;G;Bm"); map each unique color to its own
