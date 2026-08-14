@@ -72,35 +72,19 @@
     "ARC 029 (D3.104 / CHECK-A8), ARCHITECT RULING. The re-owning CEILING fired: 0.5 re-pointed all sixteen owners off the COMPLETED ARC 027 to ARC 030 (the repair the gate's own CANNOT_MEASURE verdict demanded), and thirteen of them were already at the operator's ceiling of two, so the fourth owner was one re-owning too many and check_artifact_gate_coverage escalated GUARDED to FAIL. The marker could not be walked forward (the ceiling) and could not be reverted (a completed arc as owner is the masking doctrine B.3 refuses). The architect ruled OPTION 3 as a HOLDING state for ARC 029 ONLY, not the final disposition: move the thirteen out of the guard into `exclusions` below, each carrying its own written justification, all owned by ARC 030. ARC 030 is the committed bulk-retrofit arc -- it builds real per-artifact can-fail coverage for all thirteen, empties this bucket, and drives the gate green BY MEASUREMENT. An exclusion is a guard with its re-owning ceiling lifted and NOTHING ELSE lifted: it is still inside the one-way ratchet (a silent addition is a FAIL, an acquired coverage is a stale-baseline FAIL), still owned by a LIVE arc (ARC 030 completing without emptying it turns the gate CANNOT_MEASURE), still assigned under Section 0g, and it must state its case and declare itself temporary. The ceiling is the one rule lifted, and it is lifted only under this recorded ruling -- the gate cannot tell an authorized move from a laundering one, which is why the authorization is in the ledger (CHECK-A8, CHECK-DEBT D3.104), per check-contract rule 13. The three artifacts BELOW the ceiling -- gitenv.py, measurement_path.py, registry.py -- are untouched and remain legitimately owned rows.",
     "ARC 029 (Stage 2): the exit half added four nixrisk modules. stops.py is COVERED by check_synthetic_stop_only (sub-agent A). flatten.py, survival.py and coldstart.py are behaviourally test-covered but not yet check-covered; each is ADMITTED here as measured_by=tests, admitted ARC 029, owner ARC 030, with its driving check recorded as owed in CHECK-DEBT rather than manufactured as a proxy. This mirrors gitenv.py (ARC 026): honest coverage by tests, admitted by name, not a shallow check added to make the count fall (D3.19).",
     "ARC 030 (1.2): MON-1's three monitor scripts (scripts/monitor.py, harness.py, pty_test.py) lost their only SUBJECTS coverage when checks/check_monitor.py was retired (deprecated, consistently FAILING; the deprecation is a forward commit per §0h, not a rebase). Admitted here rather than silently dropped — a new uncovered artifact is this ratchet's own FAIL condition, so the addition names its arc (ARC 030) exactly like any other admission. See CHECK-DEBT D3.113.",
-    "ARC 030 (Stage 2 A2): `scripts/nixverify/venv_lock.py` is NEW — the venv-mutation lock (flock-based, non-blocking) that closes the CRUCIBLE-DEPSPLIT concurrent-mutation hazard, wired into check_venv, check_python_deps and check_python_transitive_deps. Mirrors gitenv.py's own admission exactly (ARC 026): verify machinery, thoroughly measured by scripts/tests/*.py (test_check_venv_isolation.py's lock-contention suite, plus one dedicated test in each of the three wired checks' own test files), not declared as any check's SUBJECT to make the arithmetic look better. `owner: ARC 031` per the D3.104/D3.113 precedent — the arc in flight is dead for a fresh assignment the moment it appends its own SESSION.md summary."
+    "ARC 030 (Stage 2 A2): `scripts/nixverify/venv_lock.py` is NEW — the venv-mutation lock (flock-based, non-blocking) that closes the CRUCIBLE-DEPSPLIT concurrent-mutation hazard, wired into check_venv, check_python_deps and check_python_transitive_deps. Mirrors gitenv.py's own admission exactly (ARC 026): verify machinery, thoroughly measured by scripts/tests/*.py (test_check_venv_isolation.py's lock-contention suite, plus one dedicated test in each of the three wired checks' own test files), not declared as any check's SUBJECT to make the arithmetic look better. `owner: ARC 031` per the D3.104/D3.113 precedent — the arc in flight is dead for a fresh assignment the moment it appends its own SESSION.md summary.",
+    "",
+    "ARC 030 (Stage 2, sub-agent B): SHRUNK by 8 as a MEASURED consequence of real per-artifact coverage landing, not by editing the count. `artifacts` 10 -> 7: scripts/nixrisk/flatten.py, survival.py and coldstart.py are now driven by checks/check_flatten.py, check_survival_watch.py and check_coldstart.py respectively (each a real behavioural drive of the D3.105-107 properties, with a plant/restore can-fail suite under scripts/tests/) — D3.105, D3.106, D3.107 discharged. `exclusions` 13 -> 8: checks/ibgateway_expected.json (checks/check_ibgateway_expected_schema.py — shape/content validation, genuinely new, never touching check_ibgateway_config's refused SUBJECTS trick), risks/broker_order.config.json (checks/check_broker_order_config.py — drives the REAL scripts/broker/broker_order_config.py loader/validator against the shipped file, the half check_risks_data_only's ARM 4 deliberately excludes for `broker_order`), databases/schema/extract_sources.py (checks/check_extract_sources.py — drives the real extraction program via subprocess against a fixture spec in an isolated tmp cwd), scripts/d1_12_reboot_capture.py (checks/check_d1_12_reboot_capture.py — drives observe_operator_presence/capture with a fully-patched _run) and scripts/runtime_gate.py (checks/check_runtime_gate.py — drives blob_shas/read_db/the verdict taxonomy/run_pytest, reachable from verify.py's own runtime venv which has no pytest, so import-by-exact-path rather than shelling to pytest) are all retired. Sub-agent B's partition of D3.104 (8 of the 13 ceiling-tripped artifacts) is now empty; the remaining 5 (sub-agent C's partition) and the 3 below-ceiling rows (gitenv.py, measurement_path.py, registry.py) are untouched by this edit."
   ],
   "schema": 2,
   "generated_by": "ARC 024",
   "decomposed_by": "ARC 028",
   "artifacts": {
-    "scripts/nixrisk/coldstart.py": {
-      "owner": "ARC 030",
-      "admitted": "ARC 029",
-      "measured_by": "tests",
-      "reason": "the cold-start reconciliation (ColdStart): registration gate, flatten-before-register, market-tradable guard, restart=flat. ARC 029 sub-agent D. Measured by scripts/tests/coldstart behavioural suite; no check declares it YET. Admitted rather than covered by a proxy check (D3.19: naming is not measuring, and a shallow check would land UNBOUND). Its driving check (check_coldstart or equivalent) is owed by ARC 030, recorded in CHECK-DEBT; this mirrors the gitenv.py admission (ARC 026)."
-    },
     "scripts/nixrisk/execution.py": {
       "owner": "ARC 030",
       "admitted": "ARC 029",
       "measured_by": "tests",
       "reason": "the idempotent execution ledger (ExecutionLedger): dedup by (order_id, exec_id), position = Σ signed_qty over the unique-key SET, cumulative kept as an independent audit cross-check. ARC 029 Stage 2.3. Measured by scripts/tests/test_execution.py (23 tests incl. permutation-invariance under duplication); no check declares it yet. Admitted as measured_by=tests (owner ARC 030) rather than a proxy check, mirroring the other exit-half modules; its driving check is owed in CHECK-DEBT."
-    },
-    "scripts/nixrisk/flatten.py": {
-      "owner": "ARC 030",
-      "admitted": "ARC 029",
-      "measured_by": "tests",
-      "reason": "the protective-flatten executor (ProtectiveFlatten): trigger set, zero-wire fire, dual-authority precedence, onset cancel, reconcile-then-publish. ARC 029 sub-agent B. Measured by scripts/tests/flatten behavioural suite; no check declares it YET. Admitted rather than covered by a proxy check (D3.19: naming is not measuring, and a shallow check would land UNBOUND). Its driving check (check_flatten or equivalent) is owed by ARC 030, recorded in CHECK-DEBT; this mirrors the gitenv.py admission (ARC 026)."
-    },
-    "scripts/nixrisk/survival.py": {
-      "owner": "ARC 030",
-      "admitted": "ARC 029",
-      "measured_by": "tests",
-      "reason": "the net-liq survival watch (SurvivalWatch): net-liq/cash non-conflation, floor-breach flatten + Critical alert, uniform broker-authoritative reconcile. ARC 029 sub-agent C. Measured by scripts/tests/survival behavioural suite; no check declares it YET. Admitted rather than covered by a proxy check (D3.19: naming is not measuring, and a shallow check would land UNBOUND). Its driving check (check_survival or equivalent) is owed by ARC 030, recorded in CHECK-DEBT; this mirrors the gitenv.py admission (ARC 026)."
     },
     "scripts/nixverify/gitenv.py": {
       "owner": "ARC 030",
@@ -151,26 +135,6 @@
       "justification": "The sys.path shim every checks/check_*.py imports. Named and exercised by nine test modules; no check declares it as a SUBJECT, and a check that re-drove it would be a second instrument for a property the suite already owns (doctrine C.9). [D3.104/CHECK-A8: at the re-owning ceiling (3 owners, 2 re-ownings) and re-pointed to ARC 030 in 0.5, which the ceiling rejected as the third re-owning. Moved OUT of the guard into this declared, TEMPORARY exclusion as the architect's OPTION-3 holding state for ARC 029 only; ARC 030 empties it with real per-artifact coverage. The exclusion escapes the ceiling and nothing else.]",
       "temporary": true
     },
-    "checks/ibgateway_expected.json": {
-      "owner": "ARC 030",
-      "justification": "NAMED BY NOTHING. check_ibgateway_config reads it as an INPUT with no validation and says so in its own SUBJECTS comment; no test module names it either. A previous arc already refused adding it to that check's SUBJECTS to make this count fall. [D3.104/CHECK-A8: at the re-owning ceiling (3 owners, 2 re-ownings) and re-pointed to ARC 030 in 0.5, which the ceiling rejected as the third re-owning. Moved OUT of the guard into this declared, TEMPORARY exclusion as the architect's OPTION-3 holding state for ARC 029 only; ARC 030 empties it with real per-artifact coverage. The exclusion escapes the ceiling and nothing else.]",
-      "temporary": true
-    },
-    "databases/schema/extract_sources.py": {
-      "owner": "ARC 030",
-      "justification": "NAMED BY NOTHING — not by a check, not by a test. It is the schema-extraction program for the database layer and it has never been inside any instrument's scope. It hid inside the aggregate for four arcs; per D3.19 naming it is not measuring it, so it is CANNOT_MEASURE and stays that way until something drives it. [D3.104/CHECK-A8: at the re-owning ceiling (3 owners, 2 re-ownings) and re-pointed to ARC 030 in 0.5, which the ceiling rejected as the third re-owning. Moved OUT of the guard into this declared, TEMPORARY exclusion as the architect's OPTION-3 holding state for ARC 029 only; ARC 030 empties it with real per-artifact coverage. The exclusion escapes the ceiling and nothing else.]",
-      "temporary": true
-    },
-    "risks/broker_order.config.json": {
-      "owner": "ARC 030",
-      "justification": "The broker-order module's data-role config. Named by scripts/tests/test_broker_order.py; no check declares it. It is a settable artifact under the AMENDMENT 3 trigger, so it is a row rather than an exclusion. [D3.104/CHECK-A8: at the re-owning ceiling (3 owners, 2 re-ownings) and re-pointed to ARC 030 in 0.5, which the ceiling rejected as the third re-owning. Moved OUT of the guard into this declared, TEMPORARY exclusion as the architect's OPTION-3 holding state for ARC 029 only; ARC 030 empties it with real per-artifact coverage. The exclusion escapes the ceiling and nothing else.]",
-      "temporary": true
-    },
-    "scripts/d1_12_reboot_capture.py": {
-      "owner": "ARC 030",
-      "justification": "NAMED BY NOTHING — not by a check, not by a test. The reboot-capture program behind nix-reboot-capture.service. It hid inside the aggregate for four arcs and is now visible on its own line. [D3.104/CHECK-A8: at the re-owning ceiling (3 owners, 2 re-ownings) and re-pointed to ARC 030 in 0.5, which the ceiling rejected as the third re-owning. Moved OUT of the guard into this declared, TEMPORARY exclusion as the architect's OPTION-3 holding state for ARC 029 only; ARC 030 empties it with real per-artifact coverage. The exclusion escapes the ceiling and nothing else.]",
-      "temporary": true
-    },
     "scripts/nixverify/__init__.py": {
       "owner": "ARC 030",
       "justification": "NAMED BY NOTHING, and it is the subtlest of the four: it is EXECUTED on every `from nixverify... import` in this repository and ASSERTED ABOUT nowhere. The classifier deliberately gives __init__.py no importable name, because matching the package name would mark it covered on the strength of imports of its siblings. [D3.104/CHECK-A8: at the re-owning ceiling (3 owners, 2 re-ownings) and re-pointed to ARC 030 in 0.5, which the ceiling rejected as the third re-owning. Moved OUT of the guard into this declared, TEMPORARY exclusion as the architect's OPTION-3 holding state for ARC 029 only; ARC 030 empties it with real per-artifact coverage. The exclusion escapes the ceiling and nothing else.]",
@@ -204,11 +168,6 @@
     "scripts/nixverify/render.py": {
       "owner": "ARC 030",
       "justification": "Verify machinery: presentation output. Measured by scripts/tests/test_render.py, test_cli.py and test_status_contract.py. [D3.104/CHECK-A8: at the re-owning ceiling (3 owners, 2 re-ownings) and re-pointed to ARC 030 in 0.5, which the ceiling rejected as the third re-owning. Moved OUT of the guard into this declared, TEMPORARY exclusion as the architect's OPTION-3 holding state for ARC 029 only; ARC 030 empties it with real per-artifact coverage. The exclusion escapes the ceiling and nothing else.]",
-      "temporary": true
-    },
-    "scripts/runtime_gate.py": {
-      "owner": "ARC 030",
-      "justification": "The pre-commit Stage 3 runtime gate — its own program, moved out of the YAML entry: string by ARC 018 to discharge D2.16. Measured by scripts/tests/test_runtime_gate.py; no check declares it. [D3.104/CHECK-A8: at the re-owning ceiling (3 owners, 2 re-ownings) and re-pointed to ARC 030 in 0.5, which the ceiling rejected as the third re-owning. Moved OUT of the guard into this declared, TEMPORARY exclusion as the architect's OPTION-3 holding state for ARC 029 only; ARC 030 empties it with real per-artifact coverage. The exclusion escapes the ceiling and nothing else.]",
       "temporary": true
     }
   }

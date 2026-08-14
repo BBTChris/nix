@@ -905,6 +905,16 @@ def test_the_REAL_TREES_THIRTEEN_ceiling_tripped_artifacts_are_the_D3104_EXCLUSI
         marked temporary — the ceiling is the ONE rule lifted;
       * the three below-ceiling rows survive as rows, and the gate is GUARDED —
         the ceiling escaped, but nothing was passed.
+
+    **ARC 030 (Stage 2, sub-agents B and C) is the committed bulk-retrofit arc**
+    (D3.104's own text names it): it builds real per-artifact coverage for the
+    thirteen and EMPTIES this bucket as a measured consequence, one artifact at
+    a time, never by editing a count. So `== 13` is no longer the invariant —
+    that number was the day-one snapshot, not a floor. What must still hold,
+    monotonically, as the bucket shrinks: never MORE than the original thirteen
+    (no laundering a new artifact in through this door), every survivor is a
+    MEMBER of the original thirteen (a SUBSET, not a swapped-in set), and every
+    survivor still satisfies the D3.104 disposition's three parts below.
     """
     from nixverify.contract import (
         GUARD_REOWN_CEILING,
@@ -913,13 +923,34 @@ def test_the_REAL_TREES_THIRTEEN_ceiling_tripped_artifacts_are_the_D3104_EXCLUSI
         reowning_defect,
     )
 
+    original_thirteen = {
+        "checks/_preamble.py",
+        "checks/ibgateway_expected.json",
+        "databases/schema/extract_sources.py",
+        "risks/broker_order.config.json",
+        "scripts/d1_12_reboot_capture.py",
+        "scripts/nixverify/__init__.py",
+        "scripts/nixverify/actuation.py",
+        "scripts/nixverify/contract.py",
+        "scripts/nixverify/engine.py",
+        "scripts/nixverify/loader.py",
+        "scripts/nixverify/optimize.py",
+        "scripts/nixverify/render.py",
+        "scripts/runtime_gate.py",
+    }
     history = gate._committed_history(REPO)
     assert not history.error, history.error
     working = json.loads((REPO / gate.BASELINE).read_text(encoding="utf-8"))
     exclusions = working.get("exclusions", {})
-    assert len(exclusions) == 13, (
-        f"expected the thirteen ceiling-tripped artifacts in `exclusions`, found "
-        f"{len(exclusions)} — the D3.104 disposition has drifted"
+    assert 0 < len(exclusions) <= 13, (
+        f"expected a non-empty SUBSET of the thirteen ceiling-tripped artifacts "
+        f"in `exclusions` (ARC 030 empties it by real coverage, never by editing "
+        f"a count), found {len(exclusions)}"
+    )
+    assert set(exclusions) <= original_thirteen, (
+        f"exclusions contains path(s) outside the original thirteen — that is "
+        f"laundering a new artifact through the D3.104 door, not shrinking it: "
+        f"{set(exclusions) - original_thirteen}"
     )
     completed, error = completed_arcs(REPO)
     assert not error, error
