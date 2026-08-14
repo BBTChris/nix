@@ -91,7 +91,7 @@ import class every sibling `checks/check_*.py`/`scripts/tests/test_check_*.py` a
 (verified by diffing diagnostic counts against `check_python_deps.py` / `test_check_python_deps.py`
 — not a regression this arc introduced).
 
-## Adversarial debug pass (Success #8) — 3 real regressions found and fixed
+## Adversarial debug pass (Success #8) — 4 real regressions found and fixed
 
 Both found by the FULL suite run, not a mental walkthrough:
 
@@ -130,7 +130,17 @@ Both found by the FULL suite run, not a mental walkthrough:
    drift between fixture and probe fails loudly at that assertion, not as a confusing downstream
    mismatch). Re-verified: 16/16 pass.
 
-No other adversarial findings. All three fixes are the A2-authorized in-scope repair for a
+4. **`sessions/crucible_depsplit_checkpoint.json`** — found only while banking, by pre-commit's
+   own full-file gate (`check_artifact_gate_coverage` via `test_check_artifact_gate_coverage.py`'s
+   real-tree assertion), the same class CALENDAR-INFRA's own bank found for its checkpoint file:
+   a newly-tracked `.json` artifact this check's ratchet requires be named as a SUBJECT by some
+   check, or reported as an uncovered artifact — this arc's own checkpoint named nowhere. **Fix:**
+   added it to `checks/check_python_transitive_deps.py`'s `SUBJECTS`, matching exactly how
+   CALENDAR-INFRA named `sessions/crucible_calendar_checkpoint.json` under `check_crucible_calendar.
+   py`'s own `SUBJECTS`. Re-verified: `check_artifact_gate_coverage` back to its baseline GUARDED
+   verdict (not FAIL).
+
+No other adversarial findings. All four fixes are the A2-authorized in-scope repair for a
 regression this arc's own change caused — not scope creep.
 
 ## CHECK-DEBT.md
@@ -174,7 +184,7 @@ opened a new debt row). `check_debt_open_items` re-verified at 153 both sides af
 6. **Which-venv is discoverable. PROVEN.** `docs/directory_structure.md` v1.6.0. Wrong-venv
    invocation of the generator fails loudly, naming the fix, rather than half-working.
 7. **Astral gates clean. PROVEN** — see above.
-8. **Adversarial debug pass complete. PROVEN** — 3 findings, all fixed, symptom/root-cause/fix
+8. **Adversarial debug pass complete. PROVEN** — 4 findings, all fixed, symptom/root-cause/fix
    recorded above.
 
 ## Actual vs estimated cost

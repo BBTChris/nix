@@ -3014,8 +3014,8 @@ resolved rather than reported. Real can-fail proof, not a mental walkthrough: a 
 `ib_async==2.1.0` plus a `--no-deps`-forced `tzdata==2026.3` reproduces D3.111's exact shape and the
 check goes RED naming both packages and both versions; restored.
 
-Adversarial debug pass (full-suite run, not a walkthrough) found and fixed three real regressions,
-two the split itself caused and one found while banking: `check_price_ring`'s filesystem sweep
+Adversarial debug pass (full-suite run, not a walkthrough) found and fixed four real regressions,
+two the split itself caused and two found while banking: `check_price_ring`'s filesystem sweep
 didn't exclude the new `.venv-dev` and flagged `numpy`/`pandas`/`pip`'s own vendored `mmap` use as
 spec violations (fixed: `.venv-dev` added to `_SKIP_DIRS`, same reasoning as `.venv`);
 `check_derived_claims`' `pytest_collected_tests` claim's AST-based `source_ast` probe couldn't
@@ -3029,7 +3029,11 @@ CHECK-DEBT.md series row, `test_check_derived_claims.py`'s own DOCUMENT-RESTATES
 located "the" series row by `re.search` (first match) instead of mirroring the probe's `rows[-1]`
 (true latest) — with two consecutive rows now stating the same open count, it silently planted into
 the wrong, non-latest row (fixed: `re.finditer(...)[-1]`, plus an explicit fixture/probe agreement
-assertion). `test_crucible_calendar_gen.py`'s 9 tests — now skipped under the default `.venv`-based
+assertion); and, found only by pre-commit's own full-file gate, `check_artifact_gate_coverage`
+flagged this arc's own `sessions/crucible_depsplit_checkpoint.json` as an uncovered artifact named
+by no check's `SUBJECTS` — same class CALENDAR-INFRA's own bank found for its checkpoint file,
+fixed the same way (named under `check_python_transitive_deps.py`'s `SUBJECTS`).
+`test_crucible_calendar_gen.py`'s 9 tests — now skipped under the default `.venv`-based
 full-suite run, by that file's own design — proven to still pass, 9/9, run separately under
 `.venv-dev`: relocated, not lost.
 
