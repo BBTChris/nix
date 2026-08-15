@@ -10,6 +10,11 @@ frozen collaborators (`seam.py`, `picture.py`), perturbs the COPY, and drives
 the SHIPPED gate's own bytes against it.
 """
 # pylint: disable=invalid-name,redefined-outer-name,duplicate-code
+# pylint: disable=missing-function-docstring
+# Each test's NAME states the property it drives, which is this suite's
+# whole convention; a docstring restating the name would be the second
+# spelling of one fact. Pre-existing across this file and surfaced only
+# when ARC 031 changed it — pylint runs per changed file.
 
 from __future__ import annotations
 
@@ -223,3 +228,37 @@ def test_the_GATE_LEAVES_THE_INTERPRETER_AS_IT_FOUND_IT(home: Path) -> None:
     assert sys.modules.get("nixrisk.survival") is real, (
         "the gate left the tmp_path copy of nixrisk.survival in sys.modules"
     )
+
+
+# ==========================================================================
+# CHECK-DEBT D3.124 (ARC 031) — a name-based import measures the LIVE tree
+# ==========================================================================
+
+
+def test_an_EMPTY_tree_is_CANNOT_MEASURE_and_was_a_PASS_before_this_guard(
+    tmp_path: Path,
+) -> None:
+    """The defect, and it was live and shipped until ARC 031 Stage 3.
+
+    `checks/_preamble.py` appends the REAL repository's `scripts/` to
+    `sys.path` permanently, so `importlib.import_module("nixrisk.survival")`
+    walks past the empty `home/scripts` this gate inserts and finds the live
+    module. Measured directly, in a fresh interpreter against a fresh empty
+    directory: this gate returned **PASS over a tree containing nothing**.
+    """
+    result = _run(tmp_path)
+    assert result.status is Status.CANNOT_MEASURE, (
+        f"an empty tree produced {result.status!r} — if this is PASS the gate "
+        f"is measuring the live repository again: {result.evidence}"
+    )
+    assert "resolved OUTSIDE" in (result.detail or ""), result.detail
+    assert "D3.124" in (result.detail or ""), result.detail
+
+
+def test_the_provenance_guard_ACCEPTS_a_real_copied_tree(home: Path) -> None:
+    """The guard must not reject the honest case, or it would be a blanket refusal."""
+    result = _run(home)
+    assert result.status is Status.PASS, result.detail
+    module, error = gate.load(home)
+    assert module is not None, error
+    assert str(home) in str(Path(module.survival.__file__ or "").resolve())

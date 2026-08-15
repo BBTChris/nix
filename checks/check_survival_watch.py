@@ -108,6 +108,45 @@ def _purge(saved: dict[str, ModuleType]) -> None:
     sys.modules.update(saved)
 
 
+def _provenance_defect(home: Path, loaded: Loaded) -> str:
+    """CHECK-DEBT D3.124 — the module imported must live under `home`.
+
+    MEASURED, not hypothesised: `checks/_preamble.py` appends the REAL
+    repository's `scripts/` to `sys.path` permanently, and a name-based
+    `import_module` walks that path after the `home/scripts` this function
+    inserts. Pointed at an empty directory, this gate imported the LIVE
+    `nixrisk.survival` and returned **PASS over a tree that contained
+    nothing** — reproduced on this file and on `check_coldstart` in fresh
+    interpreters against fresh empty trees (ARC 031, Stage 1 sub-agent A, and
+    re-measured at Stage 3 integration before this guard was written).
+
+    A PASS over an absent subject is the exact shape §17 forbids: the property
+    was proven against a different tree than the one under judgement. The
+    guard compares each loaded module's own `__file__` back against `home`,
+    which is a fact the import cannot fake.
+    """
+    root = (home / "scripts").resolve()
+    strays = []
+    for label, module in (
+        ("survival", loaded.survival),
+        ("seam", loaded.seam),
+        ("picture", loaded.picture),
+    ):
+        origin = Path(getattr(module, "__file__", "") or "").resolve()
+        if root not in origin.parents:
+            strays.append(f"{label} resolved to {origin}")
+    if not strays:
+        return ""
+    return (
+        f"{SURVIVAL_FILE}: the import resolved OUTSIDE {home} — "
+        + "; ".join(strays)
+        + ". `checks/_preamble.py` appends the real repository's scripts/ to "
+        "sys.path permanently, so a name-based import silently measures the "
+        "live tree; a property proven against a different tree is not proven "
+        "(§17, CHECK-DEBT D3.124). CANNOT_MEASURE, never a PASS"
+    )
+
+
 def load(home: Path) -> tuple[Loaded | None, str]:
     saved_path = list(sys.path)
     saved_modules = {
@@ -124,6 +163,9 @@ def load(home: Path) -> tuple[Loaded | None, str]:
             seam=importlib.import_module(SEAM_MODULE),
             picture=importlib.import_module(PICTURE_MODULE),
         )
+        stray = _provenance_defect(home, loaded)
+        if stray:
+            return None, stray
         return loaded, ""
     except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
         return None, (
