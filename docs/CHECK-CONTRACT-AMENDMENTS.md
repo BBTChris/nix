@@ -662,3 +662,90 @@ coverage for all thirteen, empties the exclusion, and drives `check_artifact_gat
 measurement**. The exclusion is temporary and `CHECK-DEBT.md` D3.104 says so. The three below-ceiling
 artifacts (`gitenv.py`, `measurement_path.py`, `registry.py`) are untouched and remain guarded rows.
 Verdict under this amendment: **GUARDED**, owner `ARC 030` — a withheld certification, never a pass.
+
+---
+
+## CHECK-A9 — the declared exclusion extends to two more artifacts, on doctrine-C.9 grounds (ARC 031 / D3.138)
+
+| field | value |
+|---|---|
+| origin | Architect ruling on **CHECK-DEBT D3.138**, issued to ARC 031, recorded here in the same arc |
+| status | **LIVE, and explicitly a HOLDING mechanism**, exactly as `CHECK-A8` is. The rule binds; this instance (two artifacts, owner `ARC 032`, temporary) is CHECK-DEBT D3.138 |
+| governs | `check_artifact_gate_coverage` — the same verdict-deciding classification `CHECK-A8` created, applied to two named paths. Written into the check contract (`nix_check_contract.md` §19) and recorded here, per **check-contract rule 13** |
+| scope | `scripts/nixverify/gitenv.py` and `scripts/nixverify/registry.py`. **Two paths, named. Nothing else.** `CHECK-A8` was scoped to its thirteen and this is scoped to its two, for the same reason: the gate cannot tell an authorized move from a laundering one, so the authorization enumerates its subjects |
+
+### What fired, and why every move was closed
+
+ARC 031's Stage-3 integration had to re-point every row owned by `ARC 031` before the arc appended
+its own `sessions/SESSION.md` summary — `guard_owner_defect` and `_exclusion_deferrals` are READ
+rules that run on every read, so the moment `completed_arcs()` includes `ARC 031` those rows read as
+owned by an arc that cannot pay (doctrine B.3; D3.40's mechanism). Eleven rows had headroom and were
+moved to `ARC 032`. **These two did not: both were AT the operator's re-owning ceiling, 2 of 2.**
+
+That left three moves and all three were defects:
+
+  * **walk the marker forward** — the third re-owning, which is *precisely* the move that produced
+    D3.120 one arc earlier, repeated in the same arc that discharged D3.120 by measurement;
+  * **revert to a previous owner** — a COMPLETED arc as owner, the masking doctrine B.3 exists to
+    refuse;
+  * **manufacture a `checks/check_*.py`** — see below, and this is the one that decides the ruling.
+
+ARC 031 took none of them, recorded D3.138 with both available architect moves named, and let the
+gate go **CANNOT_MEASURE** — the honest "a real debt has an owner who cannot pay" verdict, kept
+rather than edited away. **The gate predicted it, the write-back caused it, and the re-measure
+observed it**; that sequence is the evidence this amendment rests on.
+
+### The grounds: doctrine C.9, and why a check here would REDUCE the tree's honesty
+
+Both artifacts already carry real can-fail coverage — **by tests, which is the honest kind**:
+
+  * `scripts/tests/test_gitenv_hostile.py` drives `scrubbed_env` with the **both-halves control**:
+    every invocation is run UNSCRUBBED first and required to report the DECOY repository, so the
+    suite can distinguish *the scrub worked* from *`GIT_DIR` never mattered here*. That control is
+    stronger than what a fresh check would be written with.
+  * `scripts/tests/test_registry.py` (and three more modules, and every `verify.py` run) exercise
+    plan loading directly.
+
+A `checks/check_*.py` re-driving either would be the **second instrument for a property the suite
+already owns** — doctrine C.9's forbidden duplicate. It would lower this ratchet's count while
+covering nothing new, which is D3.19's defect exactly: *naming is not measuring*. The ruling
+therefore grants the exclusion rather than demanding a check, because **the honest reading is that
+these two are covered and this gate cannot see it** — `check_artifact_gate_coverage` counts
+`SUBJECTS` declarations, and a test module cannot make one.
+
+That asymmetry is the whole content of this amendment and it is worth stating plainly: **CHECK-A8's
+thirteen were an OVERDUE-WORK holding state; CHECK-A9's two are an INSTRUMENT-BLIND-SPOT holding
+state.** Same bucket, same constraints, different reason — and the difference is why D3.138 stays
+open as a debt against the *instrument*, not against the artifacts.
+
+### What is lifted, and what is not
+
+Nothing new. `CHECK-A9` grants these two paths exactly what `CHECK-A8` grants its thirteen and
+**not one rule more**:
+
+  * still inside the **one-way ratchet** — `Baseline.uncovered` folds `exclusions` into the single
+    accepted set, so a silent addition to either bucket is an unadmitted-growth FAIL and an artifact
+    that acquires real coverage is a stale-baseline FAIL. **MEASURED: the accepted set is 13 before
+    and 13 after** (7 rows + 6 exclusions → 5 rows + 8 exclusions), so the high-water mark cannot
+    see this move at all — which is the property that makes it a re-classification and not a growth;
+  * still owned by a **LIVE arc** (`ARC 032`) — a completed owner degrades the gate to
+    CANNOT_MEASURE, so the bucket cannot outlive its owner;
+  * still assigned under **§0g** (`_exclusion_assignment_defects`);
+  * still carrying a written `justification` and `temporary: true` per entry
+    (`_exclusion_shape_defects`).
+
+The **one** rule lifted is the re-owning ceiling.
+
+### The measured verdict
+
+`check_artifact_gate_coverage`: **CANNOT_MEASURE (exit 2) → GUARDED (exit 3)**, owner `ARC 032`,
+13 accepted in 5 per-artifact rows + 8 declared exclusions. A withheld certification with a live
+owner — never a pass, and the `UNBOUND` (D3.10) caveat on the verdict line is unchanged: this gate
+proves an artifact is NAMED by a check, never that it is MEASURED by one.
+
+### Exit
+
+D3.138 is **discharged as a ruling** and the exclusion is temporary by declaration. Discharge of the
+*instance* is either real per-artifact coverage that this gate can see, or an architect retiring the
+rows — the bucket is a holding state, not a resting place. See `CHECK-A8` for the mechanism, D3.104
+for its instance, and D3.120 for the measured cost of the move this ruling exists to avoid.

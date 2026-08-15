@@ -31,6 +31,19 @@ So the cap has exactly two possible input paths and BOTH are currently closed:
    snapshot §3 makes atomic, so it is a `SEAM_REV` bump and an architect
    ruling, not an implementation detail this arc may take.
 
+**RULED — OPTION A, path 2 (ARC 031, Phase 5).** The architect adopted the
+published-row fix: `PositionRow` gains `stop_distance`, riding the SAME
+versioned snapshot as `balance` and `positions` — one more field under one
+writer and one version stamp (§6.4b's principle) — and explicitly NOT path 1,
+which *is* the cross-table skew §6.4 forbids. The deciding argument is that the
+cap is a **safety input currently failing OPEN**: an unpriced position reads as
+zero risk, the bucket looks emptier than it is, and an emptier bucket ADMITS
+more. **This is R3-B's opening item and is NOT built here**: the Limiter (sole
+writer) adds the field, every mirror consumer widens, `SEAM_REV` goes to
+`1.1.0` (planned target recorded in `nixalloc/seam.py`), and R3-B re-proves the
+one-versioned-row identity across the wider schema. Until that lands, every
+sentence below still holds and this module still reports what it cannot price.
+
 Sub-agent C's `admit()` is correct as a FORMULA and its can-fail proves the
 summation. Sub-agent B's `BucketCapPort` is the right seam. Neither could see
 that the argument between them has no production source, because C was handed

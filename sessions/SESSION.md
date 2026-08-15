@@ -3290,3 +3290,144 @@ still discharge it (doctrine B.3)."* That is the trap D3.138 was opened to name,
 of this very paragraph's file, on the two rows the per-row headroom measurement refused to move.
 Predicted before the fact, not explained after it. **It is not a further failure and its cause IS
 named** — it is one CANNOT_MEASURE with a written owner-ruling attached, awaiting `CHECK-A9`.
+
+---
+
+### ARC 031 / Phase 5 — the four architect rulings, recorded (2026-08-15)
+
+Four rulings arrived against Phase 4's write-back and its post-write-back re-measure. **One of them
+acts, three are records**, and that split is stated first because it is the whole shape of the phase:
+nothing was designed here and nothing was invented here.
+
+**1. PUSH — done, and the pre-condition was re-measured rather than assumed.** `git fetch origin`
+before the push: **0 remote-side commits**, local ahead by **105** (the brief said 103, measured at
+0.2; the gate the ruling actually set was *zero remote divergence*, and that held exactly). No
+divergence appeared between 0.2 and now, so the STOP condition did not fire.
+`git push origin main` fast-forwarded **`0f9c5b9..22cd4fe`**. Re-fetched after: `origin/main` =
+**`22cd4fec0486090c458a4124474b4633dd94fd7b`**, `git rev-list --left-right --count origin/main...main`
+= **`0 0`**. 103 arcs' worth of work stopped existing on one box. The remote reported
+*"Bypassed rule violations for refs/heads/main: Changes must be made through a pull request"* — the
+push succeeded under an admin bypass; recorded because a bypassed branch rule is a fact about this
+repository's protection settings, not a warning to discard.
+
+**2. CHECK-A9 — GRANTED, and it is the disposition D3.138 recommended, taken by the architect rather
+than by the arc that would have benefited.** `scripts/nixverify/gitenv.py` and
+`scripts/nixverify/registry.py` move out of the ceiling-guarded `artifacts` bucket into `exclusions`,
+owner `ARC 032`, each with a written justification and `temporary: true`. The grounds are doctrine
+C.9: both already carry real can-fail coverage BY TESTS — `test_gitenv_hostile.py` drives the scrub
+with the **both-halves control** (each invocation run UNSCRUBBED first, the decoy repository required
+back, so the suite can tell *the scrub worked* from *`GIT_DIR` never mattered here*), and
+`test_registry.py` plus every `verify.py` run exercise plan loading — so a second `checks/check_*.py`
+is the **forbidden duplicate instrument, not new coverage**.
+
+Recorded in three places because check-contract rule 13 requires it: `docs/CHECK-CONTRACT-AMENDMENTS.md`
+(`CHECK-A9`), `docs/nix_check_contract.md` **§19.1**, and `CLAUDE.md` rule 14. The gate cannot tell an
+authorized move from a laundering one; that is exactly why the authorization is written down and
+enumerates its two paths.
+
+**MEASURED: `check_artifact_gate_coverage` CANNOT_MEASURE (exit 2) → GUARDED (exit 3)**, owner
+`ARC 032`, 13 accepted in **5 per-artifact rows + 8 declared exclusions**. The accepted-set size is
+**13 before and 13 after** — `Baseline.uncovered` folds both buckets, so the high-water mark cannot
+see this move at all, which is the property that makes it a re-classification and not a growth. The
+`UNBOUND` (D3.10) caveat on the verdict line is unchanged: this gate proves an artifact is NAMED by a
+check, never that it is MEASURED by one. D3.138 **discharged as a ruling**, and kept open in spirit
+in its own row's last sentence: the debt is now against the *instrument*, not the artifacts.
+
+**THE SUITE REFUSED THE MOVE BEFORE IT ACCEPTED IT, and that is the best evidence in this phase.**
+`test_the_REAL_TREES_THIRTEEN_ceiling_tripped_artifacts_are_the_D3104_EXCLUSION` FAILED on the first
+full run after the baseline edit: *"exclusions contains path(s) outside the original thirteen — that
+is laundering a new artifact through the D3.104 door"*, naming both paths. CHECK-A8's authorization
+was pinned as a literal set, so widening the bucket without widening the recorded ruling is a red —
+the anti-laundering control working on the first artifact it ever saw. It was repaired by writing a
+SECOND enumerated literal (`check_a9_pair`) rather than by relaxing the first, so the invariant still
+reads *an authorized exclusion is one a recorded `CHECK-A<n>` NAMES*.
+
+**One real difference between the two amendments, found by that same test and preserved in it.**
+CHECK-A8's thirteen are **OVER** the ceiling (a third re-owning already burned into committed
+history); CHECK-A9's two are **AT** it (2 of 2, stopped before the third was taken — measured per row,
+which is precisely what D3.120 did not do). So `reowning_defect` is correctly SILENT on these two, and
+the test asserts `moves >= ceiling` for them instead of `> ceiling`. Asserting a breach here would
+have asserted a fiction. **CHECK-A8's thirteen were an overdue-work holding state; CHECK-A9's two are
+an instrument-blind-spot holding state** — same bucket, same constraints, different reason.
+
+**3. SPEC-A8 — GRANTED, §7 governs.** Instrument selection is **prior** to
+`min(risk_contracts, margin_contracts, symbol_cap)` and a function of the **risk-ideal alone**:
+`margin_contracts` divides by live per-symbol margin and `symbol_cap` is per-instrument, so neither
+term is DEFINED until the instrument is known (ES margin is not MES margin), and under §3:132's
+literal order a risk-ideal of 0.6 fulls floors to `min(...) = 0` and denies **before micros are ever
+considered** — defeating the granularity micros exist for. §3:132 is amended to POINT at §7's
+pipeline rather than restate it (one source, core directive 3). The frozen document is **not edited**;
+`docs/SPEC-AMENDMENTS.md` gains `SPEC-A8`, and a v1.4 remains an architect action.
+
+**Ratifying what shipped, so no code moved and no re-measure is owed.** `scripts/nixalloc/sizing.py`
+already implemented §7's order and said so in its own docstring at the moment of the choice — D3.126
+was opened by the author of the choice, in the same motion as the choice. `check_allocator_pathway`,
+`check_allocator_seam` and the Stage-1 suites are unchanged and green. **D3.126 discharged.**
+
+Unlike SPEC-A7 this amendment adds **no machine-readable row, and does not need one**: SPEC-A7 carries
+`terminal-path additions` because `check_limiter_seam` derives an effective roster by parsing the
+frozen §3 sentence UNIONED with the ledger. Nothing in this tree derives a pipeline ORDER from spec
+text — the order lives in `sizing.py`'s control flow and is driven by the pathway gate — so inventing
+a surface no instrument consumes would be decoration.
+
+**4. D3.136 — OPTION A, RECORDED, NOT BUILT.** `stop_distance` joins the published `PositionRow`. The
+deciding argument is the direction of the failure: the correlation cap is a **safety input currently
+failing OPEN** — an unpriced position reads as zero risk, the bucket looks emptier than it is, and an
+emptier bucket ADMITS more. The skew-free fix is `stop_distance` riding the **same versioned snapshot**
+as `balance` and `positions`: one more field under ONE writer and ONE version stamp (§6.4b's
+principle). Path (a), the stop-book read, is refused by name — that IS the cross-table skew §6.4
+forbids. This is a **`SEAM_REV` bump, 1.0.0 → 1.1.0**: the Limiter (sole writer) adds the field, every
+mirror consumer widens, `MIRRORED_FIELDS` gains it, and **R3-B re-proves the one-versioned-row
+identity across the WIDER schema** rather than assuming the widening preserved it.
+
+**Deliberately not implemented this turn.** The planned target is recorded at the literal in
+`scripts/nixalloc/seam.py` and the ruling at the finding in `scripts/nixalloc/wiring.py`, so the next
+arc reads the decision where the decision binds rather than in a session log. **D3.136 stays OPEN**:
+a recorded ruling is not a landed mechanism, and closing the row on the strength of a decision is the
+restatement this ledger exists to refuse.
+
+**Ledger arithmetic, re-derived rather than typed.** The series table's ARC 031 row went **173 → 171**
+on the rulings alone — two discharges (D3.126, D3.138), zero new rows, D3.136 ruled and deliberately
+still open — and then **171 → 172** when the close-out run opened D3.140 (below). It was not
+edited by hand-count — `check_derived_claims` FAILED the moment the two dispositions were written
+(*"derived:ledger_rows=171, stated:series_table_latest_row=173"*), which is the gate catching a stale
+figure inside the same edit that staled it, and the cell was re-derived to what the rows say.
+
+**One correction made in passing.** `CLAUDE.md`'s spec table indexed `nix_check_contract.md` at
+v1.3.0; the file has read **v1.4.0** since ARC 025. Corrected — the identical core-directive-3 failure
+ARC 031 / Phase 0.6 recorded one arc earlier for `directory_structure.md`, in the same table, found
+the same way: by opening the file the row indexes.
+
+**CLOSE-OUT GATES, and the close-out run found something.**
+`pytest scripts/tests` → **1858 passed, 2 skipped, 2 xfailed** (11m12s), exit 0.
+`verify.py` → **47 passed | 2 failed | 1 cannot measure | 0 skipped | 1 guarded**, exit 1.
+
+Against Phase 4's post-write-back tally (47 / 1 / 3 / 0 / 0) the deltas are two, and only one of them
+was ordered. **`check_artifact_gate_coverage` CANNOT_MEASURE → GUARDED** is CHECK-A9 landing, as
+ruled. **`check_observed_resource_claims` CANNOT_MEASURE → FAIL is new, and it is a real finding**:
+`check_extract_sources` was OBSERVED using `subprocess:/usr/bin/python3` against a declaration of
+`('file-write:/tmp', 'subprocess:python')`.
+
+**It is not a Phase-5 regression, and that was measured rather than argued.** Nothing in this phase
+touched `check_extract_sources`, its declaration, or `nixverify.observe`. `covers` matches
+`subprocess:` tokens by BASENAME, and driven directly on both spellings:
+`covers('subprocess:python', 'subprocess:/home/bbt/nix/.venv/bin/python')` → **True**;
+`covers('subprocess:python', 'subprocess:/usr/bin/python3')` → **False**. The check spawns
+`sys.executable`, so the declaration is true under a venv and false under the system interpreter —
+**which `scripts/verify.py`'s own docstring names as a supported invocation** (*"Stdlib only (§9.1)
+so it runs under system python3 before .venv exists"*). Run as a both-halves control on the same
+tree: system interpreter → FAIL naming the claim verbatim; venv interpreter → CANNOT_MEASURE (the
+standing tap ECONNREFUSED, §17) with the finding ABSENT.
+
+§17 decides which verdict wins — a positively-observed undeclared claim outranks masking — so **FAIL
+is honest and is kept**, not re-run under the friendlier interpreter until it goes away. Opened as
+**D3.140** and NOT fixed here: the repair is one token (`'subprocess:python3'`), but `RESOURCES` is
+read statically and derived into the plan's disjointness, and widening a declaration inside a phase
+whose instruction was *record the rulings* is scope this phase does not have. The larger question the
+row carries: every `RESOURCES` declaration is verified against ONE interpreter per run, so any other
+declaration with the same latent split is currently unmeasured in one of the two documented launch
+modes.
+
+**Ledger: 173 → 171 → 172.** Two discharges (D3.126, D3.138), then one new row (D3.140) opened by the
+close-out run itself. Re-derived twice in one phase, both times because `check_derived_claims` FAILED
+against the stale cell inside the same edit that staled it — never hand-counted.

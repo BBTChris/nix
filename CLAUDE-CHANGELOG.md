@@ -253,3 +253,28 @@ fold reproduces that exactly. The collision is the architect's to rule on.
   v1.7.0. Recorded rather than quietly overwritten: a version number in this table
   that trails the file it indexes is the "restate a mutable fact" failure core
   directive 3 forbids, and it went one whole arc unnoticed.
+
+## ARC 031 / Phase 5 — architect rulings (2026-08-15)
+
+- **Check contract rule 14 (`CLAUDE.md`) — `CHECK-A9` added beside `CHECK-A8`.** The
+  declared-exclusion mechanism now names TWO amendments, each enumerating its own
+  paths. `CHECK-A8` (D3.104) is the **overdue-work** case; `CHECK-A9` (D3.138) is the
+  **instrument-blind-spot** case — `scripts/nixverify/gitenv.py` and
+  `scripts/nixverify/registry.py` already carry real can-fail coverage BY TESTS, so a
+  second `checks/check_*.py` is the duplicate instrument doctrine C.9 forbids, not new
+  coverage. The stale instance figure (thirteen artifacts, owner ARC 030) is corrected
+  to the measured one: eight, owner ARC 032, temporary.
+- Recorded in `docs/CHECK-CONTRACT-AMENDMENTS.md` (`CHECK-A9`) and
+  `docs/nix_check_contract.md` §19.1, per rule 13. Measured consequence:
+  `check_artifact_gate_coverage` CANNOT_MEASURE (exit 2) -> **GUARDED (exit 3)**.
+- **No `CLAUDE.md` change for `SPEC-A8` or the D3.136 ruling.** SPEC-A8 amends the
+  frozen risk spec (`docs/SPEC-AMENDMENTS.md`); D3.136's OPTION A is a recorded
+  decision R3-B executes. Neither is a durable invariant of this file.
+- **Spec table version corrected, measured in passing.** The table indexed
+  `nix_check_contract.md` at **v1.3.0**; the file's own header line has read
+  **v1.4.0** since ARC 025 (AMENDMENT 5, §17/§18/`ON_FAIL`). Corrected in the
+  table rather than left — the same "restate a mutable fact" failure (core
+  directive 3) that ARC 031 / Phase 0.6 recorded one arc earlier for
+  `directory_structure.md`, in the same table, found the same way: by opening the
+  file the row indexes. The check contract itself is NOT bumped by `CHECK-A9`;
+  §19.1 is an amendment recorded in place, exactly as `CHECK-A8`'s §19 was.

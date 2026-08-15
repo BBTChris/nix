@@ -879,6 +879,45 @@ def test_a_TRUNCATED_history_ALREADY_over_the_ceiling_still_FAILS(
     assert "RE-OWNED" in result.detail, result.detail
 
 
+#: CHECK-A8's authorization (ARC 029, D3.104) — ENUMERATED, because an
+#: authorized exclusion is one a recorded ruling NAMES.
+_CHECK_A8_THIRTEEN = {
+    "checks/_preamble.py",
+    "checks/ibgateway_expected.json",
+    "databases/schema/extract_sources.py",
+    "risks/broker_order.config.json",
+    "scripts/d1_12_reboot_capture.py",
+    "scripts/nixverify/__init__.py",
+    "scripts/nixverify/actuation.py",
+    "scripts/nixverify/contract.py",
+    "scripts/nixverify/engine.py",
+    "scripts/nixverify/loader.py",
+    "scripts/nixverify/optimize.py",
+    "scripts/nixverify/render.py",
+    "scripts/runtime_gate.py",
+}
+# ARC 031 (Phase 5) — CHECK-A9, the SECOND authorization, ENUMERATED exactly
+# as CHECK-A8's thirteen are. `scripts/nixverify/gitenv.py` and
+# `scripts/nixverify/registry.py` reached the ceiling owned by `ARC 031`,
+# which then completed; every move was closed (a third re-owning is D3.120's
+# own mistake, reverting names a completed arc, and a `checks/check_*.py` for
+# either is the DUPLICATE INSTRUMENT doctrine C.9 forbids — both are already
+# driven by tests with real can-fail controls). The architect granted the
+# extension; the widening of this assertion is that grant and NOTHING wider.
+#
+# THE ANTI-LAUNDERING PROPERTY IS UNCHANGED and that is the point of writing
+# a second literal instead of relaxing the first: an authorized exclusion is
+# one a recorded `CHECK-A<n>` NAMES, so the set of names on disk is the set
+# of names here. A path that appears in `exclusions` without appearing in a
+# ruling still fails, exactly as `gitenv.py` and `registry.py` did on the
+# commit that moved them before this literal was widened.
+_CHECK_A9_PAIR = {
+    "scripts/nixverify/gitenv.py",
+    "scripts/nixverify/registry.py",
+}
+_AUTHORIZED_EXCLUSIONS = _CHECK_A8_THIRTEEN | _CHECK_A9_PAIR
+
+
 def test_the_REAL_TREES_THIRTEEN_ceiling_tripped_artifacts_are_the_D3104_EXCLUSION() -> (
     None
 ):
@@ -935,34 +974,19 @@ def test_the_REAL_TREES_THIRTEEN_ceiling_tripped_artifacts_are_the_D3104_EXCLUSI
         reowning_defect,
     )
 
-    original_thirteen = {
-        "checks/_preamble.py",
-        "checks/ibgateway_expected.json",
-        "databases/schema/extract_sources.py",
-        "risks/broker_order.config.json",
-        "scripts/d1_12_reboot_capture.py",
-        "scripts/nixverify/__init__.py",
-        "scripts/nixverify/actuation.py",
-        "scripts/nixverify/contract.py",
-        "scripts/nixverify/engine.py",
-        "scripts/nixverify/loader.py",
-        "scripts/nixverify/optimize.py",
-        "scripts/nixverify/render.py",
-        "scripts/runtime_gate.py",
-    }
     history = gate._committed_history(REPO)
     assert not history.error, history.error
     working = json.loads((REPO / gate.BASELINE).read_text(encoding="utf-8"))
     exclusions = working.get("exclusions", {})
-    assert 0 < len(exclusions) <= 13, (
-        f"expected a non-empty SUBSET of the thirteen ceiling-tripped artifacts "
-        f"in `exclusions` (ARC 030 empties it by real coverage, never by editing "
-        f"a count), found {len(exclusions)}"
+    assert 0 < len(exclusions) <= len(_AUTHORIZED_EXCLUSIONS), (
+        f"expected a non-empty SUBSET of the AUTHORIZED exclusions (CHECK-A8's "
+        f"thirteen + CHECK-A9's two); the bucket empties by real coverage, never "
+        f"by editing a count, found {len(exclusions)}"
     )
-    assert set(exclusions) <= original_thirteen, (
-        f"exclusions contains path(s) outside the original thirteen — that is "
-        f"laundering a new artifact through the D3.104 door, not shrinking it: "
-        f"{set(exclusions) - original_thirteen}"
+    assert set(exclusions) <= _AUTHORIZED_EXCLUSIONS, (
+        f"exclusions contains path(s) named by NO recorded CHECK-A<n> ruling — "
+        f"that is laundering a new artifact through the D3.104/D3.138 door, not "
+        f"shrinking it: {set(exclusions) - _AUTHORIZED_EXCLUSIONS}"
     )
     completed, error = completed_arcs(REPO)
     assert not error, error
@@ -970,10 +994,21 @@ def test_the_REAL_TREES_THIRTEEN_ceiling_tripped_artifacts_are_the_D3104_EXCLUSI
     for path, entry in exclusions.items():
         lineage = gate._row_lineage(history, path)
         moves = len(lineage) - 1
-        # The committed lineage proves these are the EXHAUSTED guards, not an
-        # arbitrary set an author widened the exclusion with.
-        assert moves > GUARD_REOWN_CEILING, (path, lineage)
-        assert reowning_defect(lineage) != "", (path, lineage)
+        if path in _CHECK_A9_PAIR:
+            # CHECK-A9's two are AT the ceiling, not OVER it, and the difference
+            # is the whole difference between the two rulings. CHECK-A8's
+            # thirteen were EXHAUSTED guards (a third re-owning already burned
+            # in); these two were stopped at 2-of-2 BEFORE the third was taken —
+            # measured per row rather than discovered afterwards, which is what
+            # D3.138 records and what D3.120 did not do. So the lineage floor is
+            # at-or-over, and `reowning_defect` is correctly SILENT here: there
+            # is no breach, and asserting one would assert a fiction.
+            assert moves >= GUARD_REOWN_CEILING, (path, lineage)
+        else:
+            # The committed lineage proves these are the EXHAUSTED guards, not an
+            # arbitrary set an author widened the exclusion with.
+            assert moves > GUARD_REOWN_CEILING, (path, lineage)
+            assert reowning_defect(lineage) != "", (path, lineage)
         # The one rule lifted is the ceiling. Everything else is still live.
         assert guard_owner_defect(entry["owner"], completed) == "", (path, entry)
         assert entry.get("temporary") is True, (path, entry)
@@ -1011,8 +1046,11 @@ def test_the_REAL_TREES_THIRTEEN_ceiling_tripped_artifacts_are_the_D3104_EXCLUSI
         assert moves <= GUARD_REOWN_CEILING, (path, moves)
 
     # With the one over-ceiling row discharged, the gate's honest verdict on the
-    # real tree is GUARDED again: seven `artifacts` rows and six declared
-    # D3.104/CHECK-A8 exclusions remain, every one owned by a LIVE arc.
+    # real tree is GUARDED again: five `artifacts` rows and eight declared
+    # CHECK-A8/CHECK-A9 exclusions remain, every one owned by a LIVE arc. The
+    # accepted-set SIZE did not move when CHECK-A9 landed (13 before, 13 after) —
+    # `Baseline.uncovered` folds both buckets, so the ruling re-classified two
+    # artifacts and grew nothing, which is why the high-water mark never saw it.
     result = _run(REPO)
     assert result.status is Status.GUARDED, result
     assert result.guard_owner, "a GUARDED verdict with no owner is unattributable"

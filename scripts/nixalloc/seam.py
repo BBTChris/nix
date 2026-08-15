@@ -174,6 +174,32 @@ __all__ = [
 #: the same role `contract_rev` plays in `nix_strategy_contract_v1.1.md` §3.
 SEAM_REV = "1.0.0"
 
+#: PLANNED TARGET — `1.1.0`, and it is RECORDED here rather than left to be
+#: rediscovered, because a wire contract's next shape is exactly the thing a
+#: consumer wants stated in the contract itself.
+#:
+#: ARCHITECT RULING on CHECK-DEBT **D3.136**, OPTION A (ARC 031, Phase 5):
+#: `PositionRow` gains **`stop_distance`**. §7:501 prices bucket exposure as
+#: `(stop_ticks + slippage_pad) × tick_value × contracts`, so applying the
+#: correlation cap to positions ALREADY held needs each one's stop distance —
+#: and the published row carries none, so today an unpriced position values at
+#: ZERO, the bucket reads EMPTIER than it is, and the cap FAILS OPEN by
+#: admitting more. A safety input that fails open is the direction that matters,
+#: and `check_allocator_pathway` ARM 3 already drives both directions.
+#:
+#: The ruling picked the SKEW-FREE fix. `stop_distance` rides the SAME versioned
+#: snapshot as `balance` and `positions` — one more field under ONE writer and
+#: ONE version stamp (§6.4b's principle). It is explicitly NOT the stop-book
+#: read: the stop book is a SECOND table, and joining it to this one is the
+#: cross-table skew §6.4 forbids in the same breath as it fixes one snapshot.
+#:
+#: **NOT IMPLEMENTED HERE, deliberately.** This is R3-B's opening item: the
+#: Limiter (sole writer) adds the field, every mirror consumer widens,
+#: `MIRRORED_FIELDS` above gains it, `SEAM_REV` goes to `1.1.0`, and R3-B
+#: RE-PROVES the one-versioned-row identity across the wider schema rather than
+#: assuming the widening preserved it. Until then this literal stays `1.0.0`,
+#: which is the honest statement that the wire has not changed.
+
 #: THE PINNED SCHEMA at `SEAM_REV`. Spelled out, and the spelling is the point.
 #:
 #: MEASURED, not reasoned: the first draft of this tuple was DERIVED —

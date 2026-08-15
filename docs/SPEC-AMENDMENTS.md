@@ -552,6 +552,109 @@ does not declare. It went green only when the member landed. Both directions are
 
 ---
 
+## SPEC-A8 — instrument selection is PRIOR to `min(risk, margin, symbol_cap)`, and is a function of the risk-ideal alone
+
+| field | value |
+|---|---|
+| origin | **Architect ruling, issued in ARC 031 (Phase 5).** Not spec text. |
+| implemented by | **Nothing new — this ratifies what shipped.** `scripts/nixalloc/sizing.py` (ARC 031, Stage 1, sub-agent B) already implements §7's order and said so in its own module docstring at the moment of the choice |
+| closes | CHECK-DEBT **D3.126** — opened ARC 031 (Stage 1, sub-agent B) **by the author of the choice, in the same motion as the choice**, as a finding ABOUT THE SPEC rather than a decision made quietly |
+| section that would have to say it | **§3:132-133** (the Allocator sizing pipeline) in `nics_risk_subsystem_spec_v1.3.md`, which now points at **§7:488-493** as the governing text |
+| status | **PENDING** a v1.4 of `nics_risk_subsystem_spec_v1.3.md`, which the architect owns |
+| governing text | **§7:488-493.** §3:132-133 is amended to CITE it, not to restate it — one source, per core directive 3 |
+
+### Ruling, as issued
+
+> **Adopt §7's instrument-selection ordering.** Selection is prior to `min(risk, margin, symbol_cap)`
+> and a function of the **risk-ideal alone**, because `margin_contracts` divides by live per-symbol
+> margin and `symbol_cap` is per-instrument — **neither term is defined until the instrument is
+> known.** §3:132's order denies valid trades before micros are considered and is the incoherent one.
+>
+> Amend, do **not** edit the frozen doc in place: record **SPEC-A8**, and §3:132 points at §7's
+> pipeline. Mechanical fold, ratifying what shipped.
+
+### What the frozen spec says today — both sentences, verbatim
+
+**§3:132-133**, the pipeline diagram:
+
+> ```
+> size = min(risk_contracts, margin_contracts, symbol_cap)
+>      → instrument selection (§7: single-instrument preference) → FCFS / static-priority → correlation cap
+> ```
+
+— selection **after** the `min`.
+
+**§7:488-493**, the selection rule:
+
+> **Instrument selection (deterministic, single-instrument preference — v1.2):** compute ideal size
+> in micro units (MES etc. = 1/10). **One instrument per trade** [...] Rule: if risk-ideal quantizes
+> acceptably to fulls (≥ threshold fulls, quantization error ≤ tolerance) ⇒ fulls only; otherwise
+> micros only.
+
+— selection as a function of the **risk-ideal**, and therefore **before** the other two terms.
+
+One document, two orders, and nothing on disk could tell an implementer which one governed. That is
+what D3.126 recorded rather than resolved.
+
+### Why §7 is the coherent one — measured, not preferred
+
+Two independent reasons, and the first is decisive on its own:
+
+1. **The other two terms are UNDEFINED until the instrument is known.** `margin_contracts =
+   floor(max(0, headroom_$) / live_margin_per_contract)` divides by the **live per-symbol** margin,
+   and ES margin is not MES margin. `symbol_cap` is a **per-instrument** ceiling. Under §3's literal
+   order the `min` must be evaluated before its own inputs exist. §7's order has no such circularity:
+   the risk term `floor(per_trade_risk_$ / ((stop_ticks + slippage_pad) × tick_value))` is computable
+   in micro units from the stop intent alone, which is exactly what §7:488 says to compute.
+
+2. **§3's order DENIES VALID TRADES, silently.** A risk-ideal of 0.6 fulls floors to `0`, `min(...)`
+   is `0`, and §3:134 (*"size 0 ⇒ deny"*) rejects the proposal **before micros are ever considered** —
+   defeating the granularity micros exist to provide. The denial is indistinguishable, in the sizing
+   rationale, from an honest risk-bound denial.
+
+**Where the two orders AGREE, stated because it bounds the blast radius:** on every input where the
+full contract is selected, the two pipelines produce identical output. Nothing observable separates
+them there. The divergence is confined to the sub-one-full band — which is precisely the band micros
+were added for, and precisely why the wrong order is not a harmless ambiguity.
+
+### The pipeline as amended
+
+```
+risk-ideal (micro units)  ← §7:488, from the stop intent alone
+   ↓
+instrument selection (§7:488-493: fulls only, or micros only — never both)
+   ↓
+size = min(risk_contracts, margin_contracts, symbol_cap)   ← now all three terms are DEFINED
+   ↓
+FCFS / static-priority  →  correlation cap (§7:498-506)
+   ↓
+size 0 ⇒ deny. Else proposed order (carries sizing rationale: binding constraint + input snapshot).
+```
+
+§3:132-133 is amended to **point at §7**, not to duplicate it. Restating §7's rule inside §3 is the
+mutable-fact restatement core directive 3 forbids, and is how the two sentences drifted apart in the
+first place.
+
+### What this amendment does NOT do
+
+* **It does not edit the frozen document.** §3:132-133 stands as written in
+  `nics_risk_subsystem_spec_v1.3.md`; this entry is the amendment of record, exactly as SPEC-A1–A7
+  are, and a v1.4 is an architect action.
+* **It does not change one line of shipped code, and that is the point of calling it a mechanical
+  fold.** `scripts/nixalloc/sizing.py` already implements this order. `checks/check_allocator_pathway`
+  and the Stage-1 suites are unchanged and stay green — no re-measure is owed, because nothing moved.
+* **It adds no machine-readable row, and unlike SPEC-A7 it does not need one.** SPEC-A7 carries a
+  `terminal-path additions` row because `check_limiter_seam` derives an *effective roster* by parsing
+  the frozen §3 sentence UNIONED with this ledger, and an unparsed amendment would have reddened that
+  gate forever. No gate in this tree derives a pipeline ORDER from spec text — the order is expressed
+  in `sizing.py`'s control flow and driven by the pathway gate — so there is nothing here for a parser
+  to read, and inventing a surface no instrument consumes would be decoration.
+* **It does not touch the correlation cap's input problem.** §7's cap still cannot be computed from
+  the published financial picture; that is CHECK-DEBT **D3.136**, ruled separately (OPTION A —
+  `stop_distance` on the published `PositionRow`, a `SEAM_REV` bump, built by R3-B).
+
+---
+
 ## Standing note for the architect
 
 Every ruling in this file was issued **because the arc that met the gap refused to invent the

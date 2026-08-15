@@ -1001,8 +1001,30 @@ arc** (a completed owner is CANNOT_MEASURE, so it cannot outlive its owner), sta
 §0g, and must carry a written `justification` and `temporary: true`. The one rule lifted is lifted
 only under the recorded amendment, because the gate cannot tell an authorized move from a laundering
 one — which is why the authorization lives in the ledger and the check contract (`CLAUDE.md` rule 14),
-not in the instrument. The current instance is thirteen artifacts owned by ARC 030, temporary; ARC 030
-empties the bucket with real per-artifact coverage and drives the gate green by measurement.
+not in the instrument. The CHECK-A8 instance was thirteen artifacts owned by ARC 030, temporary; ARC 030
+emptied eight of them with real per-artifact coverage, and the remaining five carry forward.
+
+### 19.1 CHECK-A9 (ARC 031, D3.138) — the mechanism extends to two more artifacts, and to nothing else
+
+`scripts/nixverify/gitenv.py` and `scripts/nixverify/registry.py` reached the ceiling (2 of 2) owned by
+`ARC 031`, which then completed, so this gate read CANNOT_MEASURE. Every move was closed: walking the
+marker forward is the third re-owning that produced D3.120 one arc earlier; reverting names a completed
+arc (B.3); and writing a `checks/check_*.py` for either would be the **duplicate instrument doctrine C.9
+forbids**, because `scripts/tests/test_gitenv_hostile.py` (both-halves control — every invocation run
+UNSCRUBBED first, decoy repository required back) and `scripts/tests/test_registry.py` plus every
+`verify.py` run already drive them. ARC 031 refused all three, recorded D3.138, and let the honest red
+stand.
+
+The architect granted **CHECK-A9** on those C.9 grounds. Both paths move into `exclusions`, owner
+`ARC 032`. The amendment lifts the re-owning ceiling for **these two named paths and nothing else** —
+every other constraint in §19 applies unchanged, and the accepted-set size is unchanged at 13 (7 rows +
+6 exclusions → 5 rows + 8 exclusions), so the high-water mark cannot see the move. Measured verdict:
+**CANNOT_MEASURE → GUARDED**.
+
+The two amendments differ in their *reason*, and the distinction is load-bearing: CHECK-A8's thirteen
+were an **overdue-work** holding state; CHECK-A9's two are an **instrument-blind-spot** holding state —
+these artifacts are covered, and `check_artifact_gate_coverage` (which counts `SUBJECTS` declarations)
+cannot see it. D3.138 therefore stays open as a debt against the instrument, not against the artifacts.
 
 ---
 

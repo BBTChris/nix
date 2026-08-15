@@ -131,6 +131,24 @@ remain legitimately owned rows. An exclusion escapes the ceiling and NOTHING
 else (rule 10 above), so the gate is GUARDED — a withheld certification with a
 live owner — not a pass. CHECK-DEBT D3.104 records the disposition and that the
 exclusion is temporary.
+
+**ARC 031 (D3.138 / CHECK-A9) — THE MECHANISM IS EXTENDED TO TWO MORE ARTIFACTS,
+AND TO NOTHING ELSE.** Two of the three below-ceiling artifacts named above stopped
+being below the ceiling: `measurement_path.py` left the ratchet entirely in ARC 031
+/ 0.3 by real coverage (`check_measurement_path`, D3.120 discharged BY MEASUREMENT),
+while `gitenv.py` and `registry.py` reached 2 of 2 and were owned by `ARC 031`,
+which then completed — so this gate read CANNOT_MEASURE, exactly as D3.138 said it
+would. ARC 031 refused both bad moves rather than taking one: a third re-owning is
+the move that produced D3.120, and reverting names a completed arc. The architect
+granted **CHECK-A9** on doctrine-C.9 grounds — both already carry real can-fail
+coverage by TESTS (`test_gitenv_hostile.py`'s both-halves control;
+`test_registry.py` plus every `verify.py` run), so a second `checks/check_*.py`
+re-driving either is the forbidden DUPLICATE INSTRUMENT, not new coverage. Both
+move into `exclusions`, owner `ARC 032`. CHECK-A9 is scoped to these TWO paths
+exactly as CHECK-A8 was scoped to its thirteen; the bucket is unchanged in every
+other respect, and the accepted-set SIZE is unchanged (`uncovered` folds both
+buckets), so the high-water mark cannot see the move — which is what makes it a
+re-classification rather than a growth.
 """
 
 from __future__ import annotations
@@ -1142,8 +1160,8 @@ def _evidence_for(state: Measured) -> str:
         f"{len(artifacts)} tracked artifact(s); {len(declared)} declared subject(s); "
         f"{len(uncovered)} uncovered; baseline schema v{baseline.schema} accepts "
         f"{len(baseline.uncovered)} in {len(baseline.rows)} per-artifact row(s) + "
-        f"{len(baseline.exclusions)} declared exclusion(s) (D3.104/CHECK-A8, "
-        "ceiling-exempt, ARC 030); "
+        f"{len(baseline.exclusions)} declared exclusion(s) (D3.104/CHECK-A8 and "
+        "D3.138/CHECK-A9, ceiling-exempt); "
         f"ratchet high-water mark {len(mark[0])} at committed revision "
         f"{mark[1][:12]}; ceiling {GUARD_REOWN_CEILING} applied PER ARTIFACT over "
         f"{len(history.revisions)} committed revision(s)"
@@ -1252,7 +1270,7 @@ def run(  # pylint: disable=unused-argument,too-many-locals,too-many-return-stat
         ]
         exclusion_lines = [
             f"{path} EXCLUDED -> {ex.owner.strip()} "
-            "(D3.104/CHECK-A8 holding state, ceiling-exempt, temporary)"
+            "(CHECK-A8/CHECK-A9 holding state, ceiling-exempt, temporary)"
             for path, ex in sorted(baseline.exclusions.items())
         ]
         return CheckResult(

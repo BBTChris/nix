@@ -95,8 +95,15 @@ ENFORCED. Sizing within headroom here is an optimisation that keeps the gate
 from having to size down; it is not a second gate, and it must never be read as
 one.
 
-A FINDING ABOUT THE SPEC, REPORTED RATHER THAN ROUTED AROUND — CHECK-DEBT D3.126
+A FINDING ABOUT THE SPEC, REPORTED RATHER THAN ROUTED AROUND — CHECK-DEBT D3.126,
+RULED AS SPEC-A8 (ARC 031, Phase 5): §7 GOVERNS, and this module already obeys it
 --------------------------------------------------------------------------------
+The architect adopted §7's ordering and amended §3:132 to POINT at §7's pipeline
+(`docs/SPEC-AMENDMENTS.md`, SPEC-A8; the frozen document is not edited). The ruling
+ratifies what shipped, so NOT ONE LINE BELOW CHANGED — which is the whole content of
+"mechanical fold". The reasoning the ruling adopted is the reasoning this docstring
+recorded at the moment of the choice, and it is left standing below unaltered.
+
 §3:132 orders the pathway `size = min(risk, margin, symbol_cap) → instrument
 selection → FCFS → correlation cap`, i.e. selection AFTER the `min`. §7:488-493
 orders it the other way: *"compute ideal size in micro units ... if risk-ideal
@@ -109,8 +116,8 @@ aesthetic:** `margin_contracts` divides by `live_margin_per_contract` and
 the instrument is known — ES margin is not MES margin. Under §3's literal
 order, a risk-ideal of 0.6 fulls yields `min(...) = 0` and denies before micros
 are ever considered, which defeats the granularity micros exist for. The two
-orders agree on every input where the full contract is selected. D3.126 records
-the divergence for the architect.
+orders agree on every input where the full contract is selected. D3.126 recorded
+the divergence for the architect; SPEC-A8 is the answer, and it is the order above.
 """
 
 from __future__ import annotations
