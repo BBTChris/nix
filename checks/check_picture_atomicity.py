@@ -168,7 +168,8 @@ from nixverify.contract import (
 #
 # pylint: disable=too-many-lines
 # Six arms, THREE plants (ARC 032 added the stop-book join), a codec probe and a
-# §7.12 section that answers six conditions with a named mechanism apiece.
+# standing-question section (`debug.md` §7.12) that answers six conditions with a
+# named mechanism apiece.
 # `nix_check_contract.md` §4.2 requires a check to be a single independently
 # runnable artifact, so splitting this across modules would break the contract to
 # satisfy a length counter; the honest alternative to the length is fewer
