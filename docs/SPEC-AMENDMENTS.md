@@ -758,6 +758,86 @@ by `POSITION_ROW_FIELDS`. The spelling was a sketch; the invariant binds (§0b).
 
 ---
 
+## SPEC-A10 — calendar source conflict: the LIVE source decides, and the disagreement is a RECORDED EVENT (ARC 033)
+
+| field | value |
+|---|---|
+| origin | **Architect ruling, issued in ARC 033's brief (A4).** Not spec text |
+| implemented by | **NOTHING YET, and that is the finding rather than a delay** — see "why this cannot be built today" |
+| section that would have to say it | **§6.4:368-371** (the calendar poller) — the frozen spec has no source-conflict clause at all |
+| status | **PENDING** a v1.4, AND **partially UNRATIFIED** — the rule is adoptable; the vendor the brief names is not (below) |
+
+### Ruling, verbatim as issued
+
+> **Calendar source conflict (locked, Econoday live vs historical):** for live decisions the live
+> source wins on disagreement; disagreements are **logged as flagged events, never silently
+> resolved**.
+
+### What the frozen spec says today — and the part that is NOT in it
+
+§6.4:369-370 gives the calendar poller its job (*"per-symbol window set (sessions, econ events, roll
+schedule, holidays/half-days)"*) and §12.3:622-623 makes it the one place exchange-local is converted.
+**Neither names a source, a vendor, or a conflict rule.** §6.4:371's push-preferred clause resolves a
+different conflict — event stream versus poll for the SAME venue — and is not this.
+
+**MEASURED, because the brief presents this rule as already locked and it is not:**
+
+* the string `Econoday` appears **nowhere in this repository except the ARC 033 brief itself**;
+* `nics_risk_subsystem_spec_v1.3.md` names **no calendar vendor** at any line;
+* `dev_and_services_plan.md`, which owns vendor and staging questions, names none either;
+* there is no "calendar-source-conflict addendum" in this tree, under that name or any other.
+
+The brief instructed the arc to *"read the frozen risk spec DIRECTLY for … the calendar-source-conflict
+addendum"*. There is no such addendum. Per **§0b / CHECK-DEBT D3.81** — *resolve any rule named by
+label to its ledger id before acting* — a rule with no ledger id does not bind, so it is given one
+here rather than acted on as though it already had one.
+
+### Why the rule is right, stated so the ruling survives the vendor question
+
+Two sources of the same fact can disagree, and there are only three things a system can do about it:
+pick one silently, refuse, or **pick one and record that it picked**. The first is the one that
+destroys evidence — §9 makes Plane 1 an append-only record of money truth and §12.10 splits the two
+planes precisely so an operational fact has somewhere to live. **A disagreement between calendar
+sources IS an operational fact**: it means one of them is wrong about when a market is open, and a
+system that resolves it silently has thrown away the only signal that would ever have told anyone.
+
+"Live wins for live decisions" is the correct half too, and for a reason the spec already carries:
+§6.1/§6.1b/§6.2 windows are evaluated against **now**, and a historical source is by construction a
+record of what was believed earlier. It is the right tiebreak and it is not the interesting half.
+
+### WHY THIS CANNOT BE BUILT TODAY, and what would have to be true first
+
+**There is exactly ONE calendar source in this tree** — the vendored, hash-stamped CME artifact under
+`scripts/crucible/calendar_data/` (35,484 rows, 2008-2030, six product groups), queried by the
+zero-dependency `scripts/crucible/calendar.py`. There is **no live calendar poller at all**. A
+conflict-resolution rule over one source has nothing to resolve, and a gate built over it would drive
+a disagreement it manufactured between two halves of the same artifact — the manufactured-input pass
+this project has measured five times since ARC 027.
+
+So the amendment records the rule and names its preconditions rather than pretending a mechanism:
+
+1. **a vendor decision** — which live source, ratified where vendor decisions live
+   (`dev_and_services_plan.md`), not asserted in an arc brief;
+2. **a live calendar poller** exists and publishes a window set (§6.4, R4);
+3. **two sources are simultaneously readable**, or there is no disagreement to have.
+
+**What IS buildable now, and is the honest version of A4:** a gate that reddens if a SECOND calendar
+source is ever introduced without a flagging path — so the rule cannot be violated by the change that
+first makes it violable. That is a real control over a real future edit, and it is not a simulation of
+a conflict that cannot occur.
+
+### What this amendment deliberately does NOT decide
+
+* **The vendor.** `Econoday` is recorded as the brief's word and is **UNRATIFIED**; nothing in this
+  tree or in the staging plan chooses it, and an arc may not mint a vendor.
+* **Whether a historical calendar source exists at all.** The vendored artifact is a *generated*
+  build-time product, not a second live feed, and calling it "the historical source" would be this
+  ledger inventing the second half of a conflict.
+* **The tolerance.** "Disagreement" over instants needs a threshold; §12A defines none for the
+  calendar, and inventing one here would put a tunable in an amendment instead of in `risks/`.
+
+---
+
 ## Standing note for the architect
 
 Every ruling in this file was issued **because the arc that met the gap refused to invent the
