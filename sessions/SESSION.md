@@ -3431,3 +3431,165 @@ modes.
 **Ledger: 173 → 171 → 172.** Two discharges (D3.126, D3.138), then one new row (D3.140) opened by the
 close-out run itself. Re-derived twice in one phase, both times because `check_derived_claims` FAILED
 against the stale cell inside the same edit that staled it — never hand-counted.
+
+## ARC 032 — R3-B: The Widened Picture, the Closed Cap, and Recovery Reflection (2026-08-15)
+
+**Canonical path `/home/bbt/nix`, absolute, unmoved. Not pushed — the push is the operator's.**
+
+**THE PAYOFF, AND IT IS A BEFORE/AFTER, NOT AN AFTER.** §7's correlation-bucket cap failed OPEN
+because the published `PositionRow` carried no stop distance, so a held position priced at zero and
+the bucket read emptier than it was. The architect's OPTION A landed: `stop_distance` on the published
+row, on the same versioned snapshot, never a stop-book read. Measured on ONE scenario against TWO code
+paths, with the BEFORE half being the actual pre-widening `wiring.py`/`caps.py`/`sizing.py` and both
+seams **checked out of git and executed** — found by `-S POSITION_ROW_FIELDS`, never a hard-coded sha.
+Two held same-bucket positions (ES 2 @ 20t, NQ 3 @ 20t), a 1.5% ceiling on $100,000, one third
+proposal:
+
+```
+BEFORE   36 contracts   binding=risk        bucket_used=$0.00    cap INCOMPLETE
+AFTER    22 contracts   binding=bucket_cap  bucket_used=$880.00  cap complete
+```
+
+**Fourteen extra contracts — 63% more — admitted on identical inputs.** $880 is $550 (ES) + $330 (NQ):
+neither position alone and not the larger of them, so the figure cannot be produced by a max-shaped or
+single-position cap. **D3.136 discharged.**
+
+A before/after whose "before" is a hand-written approximation of code that no longer exists is a
+comparison against the author's memory. The loader carries its own non-vacuity assertion — the
+pre-widening `PositionRow` must NOT have `stop_distance` — and **that assertion FIRED on the first
+draft**, which restored `sys.modules` per module and so let `nixalloc.seam`'s own
+`from nixrisk.seam import PositionRow` resolve against the LIVE widened module. The "before" half was
+silently the "after" half, and the control said so before any number was reported.
+
+**THE OUT-OF-BAND STOP TABLE WAS DELETED, NOT DEFAULTED.** It was the measurement of the gap; keeping
+it as a fallback leaves a second unversioned input a gate can manufacture — the exact shape that let
+ARC 031 ship three green gates over a cap that could not run. With it gone, the only way into the cap
+is to publish a row, recorded as §7.12 answer 7: closed AT THE SOURCE rather than in the arm.
+
+**NOTHING PINNED THE PUBLISHED ROW'S SCHEMA, AND A WIDENING WAS WHAT MADE ANYONE LOOK.**
+`check_limiter_seam` pins the picture's nine field names with their §3 reasons; `check_allocator_seam`
+ARM 2 compared `MIRRORED_FIELDS` against the picture's dataclass. **Neither named one field of
+`PositionRow`** — so renaming `PositionRow.margin`, or deleting `PositionRow.state`, changed the
+published wire and left every seam gate GREEN. **Driven, not asserted:** the pre-widening gate's own
+bytes, checked out of git and run against a copy of the pre-widening seam with `margin` renamed,
+**PASS**. A first draft measured a mutilated copy of *today's* gate instead and failed correctly —
+removing a gate's input does not reproduce a gate that never had one, and the failed draft is recorded
+in the test docstring because it is the more instructive half.
+
+The repair is `POSITION_ROW_FIELDS` — a LITERAL checked against `dataclasses.fields()`, never derived,
+because ARC 031 measured a derived pin passing on eight of nine renames — plus `STOP_DISTANCE_FIELD`
+as its own finding, for the reason `VERSION_FIELD` has one: §3's atomicity is observable only through
+the version stamp and §7's cap computable only through the stop distance, and losing either does not
+make its rule wrong, it makes the rule **silently unenforceable**. `SEAM_REV 1.0.0 → 1.1.0`,
+`WIRE_SCHEMA 1 → 2`, and the sixth field on §3:159's five-field enumeration recorded as **SPEC-A9**
+rather than slipped in.
+
+**THE ATOMICITY IDENTITY WAS RE-PROVEN, AND THE THIRD PLANT IS OPTION B ITSELF.**
+`_StopBookJoinBook` keeps stop distances in a SECOND table and joins them at read time — §6.4's
+cross-table skew, executed rather than argued — and because its FIRST table is the real
+`FinancialPictureBook`, the only field it can tear on is the one this arc added. It tore on **41 of
+41, 2.1% of 2000 reads**, against **0.0%** for both older plants over the same reads under the same
+writer in the same process. The measured arm: **0**. The architect's refusal of Option B is now a
+measurement in this tree. A **real process boundary** was also crossed (child pid 3092594 vs parent
+3092549, 444 bytes off a live `ipc://` endpoint, mirror FRESH carrying `stop_distance` 137, with a
+killed-child control taking 0 bytes) — **D3.122 NARROWED, not discharged**, with its four residuals
+enumerated.
+
+**D3.140 DISCHARGED ON BOTH HALVES.** On trunk the two documented launch modes DISAGREED — venv
+`47/1/2`, system `47/2/1`. They now AGREE at `48/1/2`, and the gate reporting them has measured both:
+`check_observed_resource_claims` sweeps the whole population once per launch mode and returns
+CANNOT_MEASURE, never PASS, when one is missing or both resolve to the same interpreter.
+
+**EACH OF THE THREE SUB-AGENTS FOUND A HAZARD THE INTEGRATOR HAD STATED BACKWARDS IN ITS OWN PROMPT,
+AND IN TWO CASES OBEYING IT WOULD HAVE PRODUCED A GREEN THAT MEASURED NOTHING.**
+* **B:** I wrote *"assert resolved `os.path.realpath` paths differ"*. **Both interpreters realpath to
+  `/usr/bin/python3.14`** — the venv's `python` is a symlink to the same binary. That branch would
+  have made the gate report *"only one interpreter is present"* forever while a live, reproducible,
+  already-measured split sat in front of it. The discriminator is the child-reported `sys.executable`,
+  whose BASENAME is what `covers()` matches on.
+* **C:** I wrote *"the producer of these states is R5 and absent"*. Wrong three ways — the producer
+  EXISTS (`nixrisk/flatten.py:_confirmed_rows`, ARC 029 / R2, measured by an AST census returning
+  exactly `['scripts/nixrisk/flatten.py']`); the supervisor is **R4** (§12B:872-876), not R5;
+  and flatten is **R2** and built. **That is what made the transition drivable without manufactured
+  inputs** — believing me would have forced C to construct its own `FinancialPicture`s, the exact
+  manufactured-input pass the same brief warned against.
+* **A:** the *"13,924 races / 83,971 planted tears"* figures belong to `check_allocator_mirror` A1 and
+  are **observations, not races**; comparing against them would have produced a table that looked like
+  a regression and measured nothing. A also found a manufactured-input pass in my A3 (a v2 body with
+  the stamp edited still carries the field, so it proves nothing about which clause fired) and a
+  second in my A2 (a single `MIN_TEARS` floor is satisfied by two plants with ZERO power over the new
+  field).
+* **And 0.3's premise:** `required_approving_review_count` is **0**. Self-merge is already permitted;
+  there is no human review to replace. **And there are zero workflows and zero check runs in this
+  repository's history**, so requiring status checks today would leave every PR at *"waiting for
+  status"* forever with `enforce_admins: true` removing the only escape — the ARC 019 deadlock
+  reintroduced from the other side. Config drafted both ways, rollback included, **not applied**.
+* **And 0.4's instruction could not be followed as written:** `MIRRORED_FIELDS` pins
+  `FinancialPicture`, and `stop_distance` is a field of `PositionRow` one level down; adding the name
+  there would have reddened the gate on the spot.
+
+**THE §4 SCREEN WAS PROVEN AS A RULE AND WAS NOT ON THE PASS.** C drove §4:284-286 across a REAL
+transition — `True → False → True` over three published versions on a real socket, with the dying
+strategy arriving FIRST so its disappearance from the FCFS ordering means something — and its gate is
+green. From a worktree that could not edit `wiring.py`, it also measured that **nothing on a
+production path called the screen**, while `wiring.py`'s docstring asserted a `contention.rank` wiring
+that did not exist. **D3.136's shape one layer up**, inside the module whose whole job is to state
+what the composition cannot do. Wired at integration (**D3.147**, opened and discharged in the same
+arc), defaulted ON rather than opt-in, running BEFORE sizing with every §7 term reported as ZERO
+because none was computed. **The abstain boundary was measured, not designed:** the first draft
+swallowed the stale-mirror case and ARM 1 reddened instantly — *"the three non-sizing outcomes
+collapsed into 2"*.
+
+**A SECOND FAIL-OPEN DOOR, FOUND WHILE CLOSING THE FIRST, AND IT IS NOT CLOSED.** §7:498's bucket map
+is keyed on LOGICAL symbols and nothing pins what vocabulary the published `symbol` field speaks; this
+tree publishes `ES`, `MES`, `ESZ6` and `MESU6` in its own fixtures. The old filter was one
+comprehension, so a contract-spelled row matched nothing and left the bucket **with no counter and no
+note** — priced at zero by OMISSION rather than by valuation, in the same admitting direction.
+Narrowed (a third reported class, folded into `cap_complete`, asserted by the FIGURE and not by the
+counter) and owned as **D3.142**: the fix is a decision about what the field means.
+
+**AND THE HOLE THAT REMAINS IS THE ONE WORTH READING. D3.150: NOTHING IN PRODUCTION EVER CHOOSES A
+`stop_distance`.** Exactly two production constructors exist — the codec, which READS it off the wire,
+and `flatten._confirmed_rows`, which CARRIES it. **The field is proven to TRAVEL and not to be RIGHT,
+and only the first is banked.** §7:501 prices bucket exposure from that distance, so a row published
+with a placeholder feeds the cap a number no sizing pass computed, and a wrong-but-present value is
+not obviously safer than the absent one it replaced.
+
+**CONVERGENCE, MEASURED.** `--optimize --commit` → *"derived plan is identical to the live registry"*.
+Observer sweep: 3 orders × 2 sweeps × **2 interpreters** = 12 sweeps, 51 subjects each, **612
+observations**, permuted WITHIN registry blocks only after proving no member depends on a block-mate —
+**0 order-dependent, 0 unstable, and 121 claims per sweep IDENTICAL under both interpreters**, which
+is D3.140's discharge confirmed by an instrument that knows nothing about it. Census three ways:
+**52 == 52 == 52**. Binding rebuilt from measured observations: **BOUND=50, EXERCISED-NEVER-RED=2,
+UNBOUND=0** over 1,626 observations, `check_allocator_lifecycle` landing BOUND with 19 reds.
+
+**THE PHASE-0.1 BINDING DELTA WAS THIS ARC'S OWN HAND, AND IT RESOLVED.** Trunk measured 50/1/0
+against the brief's 49/2/0 because the census ran while `docs/BRANCH-PROTECTION-PROPOSAL.md` sat
+uncommitted: `check_untracked_attribution` correctly reddened on *"work exists in the canonical tree
+that no commit on any branch contains"*, and a red is what BINDS a check. Committing it restored
+49/2/0. **That was never a discharge of D3.139** — its finding is that the suite drives `evaluate()`
+and never `run()`, so the tracer cannot see the reds the suite already proves; an incidental real red
+disguises an instrument gap rather than repairing one.
+
+**THE CEILING BIT AND THE ARC DID NOT BUY A GREEN.** All thirteen coverage guards were owned by ARC
+032 — the arc in flight — so all thirteen would be dead the moment this summary was appended. Twelve
+were walked forward to ARC 033. `scripts/nixrisk/execution.py` is at 2 of 2 re-ownings, so its two
+moves are FAIL (a third re-owning) or CANNOT_MEASURE (a dead owner); CANNOT_MEASURE was chosen because
+paying the FAIL to move it one more arc is buying a green with the exact deferral the ceiling forbids,
+and the third move — real coverage — is the second instrument doctrine C.9 refuses here. **D3.144**,
+architect.
+
+**LEDGER 172 → 186.** Seventeen opened, three discharged, and **twelve of the seventeen were opened by
+an instrument or a sub-agent measuring something a brief asserted**. Not typed: `check_derived_claims`
+FAILED against the stale 172 inside the same edit that staled it.
+
+**CLOSE-OUT GATES.** `verify.py` **48 passed | 1 failed | 2 cannot measure | 0 skipped | 1 guarded**,
+exit 1 — **identical under both documented interpreters**, which is the D3.140 discharge stated as a
+figure. The FAIL is `check_ibgateway_service` (tap session, by design); the two cannot-measures are
+`check_ibgateway_config` and `check_observed_resource_claims`, both §17 masking by the same dead port;
+the guard is `check_artifact_gate_coverage`. One transient CANNOT_MEASURE in an earlier venv run
+(`check_plane2_across_kill`: *"only 19 heartbeat(s) … (floor 20)"*) was a load artifact of two
+back-to-back verify runs and cleared on three consecutive re-runs (51, 24, 53) — the gate refusing
+rather than reporting a green over too small a set is it working. `pre-commit run --all-files` is RED
+and was RED at `d1525ba`: 75 ruff errors on `scripts/{harness,monitor,pty_test}.py`, files no arc
+owns and this arc did not touch (**D3.145**); every per-commit hook run passed.
