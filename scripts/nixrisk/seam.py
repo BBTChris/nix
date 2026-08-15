@@ -615,6 +615,100 @@ class StopBookPort(Protocol):
         """Drop a stop whose position is closed."""
 
 
+# ---------------------------------------------------------------------------
+# THE TRADE <-> ORDER JOIN (ARC 033 / 0.2) — declarations only
+#
+# **THE FROZEN SPEC DOES NOT SAY HOW A `trade_id` RELATES TO A
+# `client_order_id`, AND NOTHING IN THIS TREE SAYS IT EITHER.** That is the
+# whole reason this section exists, and it is stated before the types so it
+# cannot be read as settled.
+#
+# §3:159 keys the published position table BY `trade_id`. §4 mints `trade_id`
+# at open ("tagged with trade_id (minted by Limiter at open)"). `StopState`
+# above — and `ProposedOrder`, and `Reservation`, and §4's own `(order_id,
+# exec_id)` dedup key — are keyed by `client_order_id`. So the sentence *"the
+# published stop_distance for the same trade"* names a join the spec never
+# defines, and until it does, an implementation that writes
+# `trade_id == client_order_id` has taken an architectural decision inside an
+# equality where no reader can see it and no gate can redden on it.
+#
+# `TradeOrigin` and `TradeOriginPort` make that decision a SURFACE. The value
+# says which entry order opened which trade; the port is where a writer asks.
+# The binding itself — how a `trade_id` is minted from the order that opened
+# it — is a POLICY that lives in the implementation and is injected, so the
+# default can be changed by configuration rather than by an edit to a
+# construction site. This module declares the shape and takes no default:
+# `scripts/nixrisk/positions.py` carries the default binding and names it.
+#
+# This is the D3.137 shape caught one module over: *a seam that cannot express
+# its own inputs*. The repair there was to widen the port to carry what §7:501
+# actually prices from. The repair here is the same — except that the missing
+# thing is a RELATIONSHIP rather than a field, so the port carries the
+# relationship instead of assuming it.
+#
+# NOTHING BELOW CARRIES BEHAVIOUR (`check_limiter_seam` ARM 2).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TradeOrigin:
+    """Which ENTRY ORDER opened which TRADE, and for whom. §3/§4's missing join.
+
+    Three fields, and each is one half of a key the system already has or the
+    owner both halves must agree about:
+
+    * `trade_id` — §3:159's position-table key, minted by the Limiter at open.
+    * `client_order_id` — the key `ProposedOrder`, `Reservation`, `StopState`
+      and §4's `(order_id, exec_id)` dedup tuple all use.
+    * `strategy_id` — §9 requires it on every event row and §3:159 publishes it
+      on every position row. It rides HERE rather than being fetched from a
+      second table, for the reason §6.4 gives about second tables: the
+      association between a strategy, its order and its trade is established
+      exactly once, at approval, and a writer that looked it up later could read
+      a mapping that had moved.
+
+    **This type does not say WHICH order id belongs to which trade id** — that
+    is the injected policy — it says only that the pairing is a recorded fact
+    with a name, rather than an equality assumed at a construction site.
+    """
+
+    trade_id: str
+    client_order_id: str
+    strategy_id: str
+
+
+@runtime_checkable
+class TradeOriginPort(Protocol):
+    """Where the trade<->order join is asked. SYNCHRONOUS, and it is a LOOKUP.
+
+    Synchronous for the reason every other Limiter port is (§5's single-threaded
+    loop, §11's cache-reads-and-arithmetic hot path): the join is consulted while
+    a fill is being turned into a published row, and an awaitable lookup would
+    put a suspension point inside the motion §3's atomicity rule requires to be
+    one.
+
+    **Both directions are declared, and the second is not redundant.** A writer
+    that only ever maps order -> trade cannot detect a mint that produced the
+    SAME `trade_id` for two different orders, which is the collision that would
+    make §3's position table stop being keyed by `trade_id` at all — the defect
+    `picture.picture_defects` already refuses a snapshot for. A reverse lookup
+    is what makes that detectable at the moment of recording.
+
+    Returning `None` rather than raising is deliberate: an unknown order is a
+    QUESTION with an answer ("this system has no record of that order opening a
+    trade"), and the caller is the one holding the context needed to decide
+    whether that is a fatal condition. `positions.py` treats it as one and
+    refuses loudly; a reconciliation path might legitimately treat it as an
+    orphan to sweep (§4).
+    """
+
+    def origin_for_order(self, client_order_id: str) -> TradeOrigin | None:
+        """The trade this order opened, or `None` if this system has no record."""
+
+    def origin_for_trade(self, trade_id: str) -> TradeOrigin | None:
+        """The order that opened this trade, or `None`. The reverse direction."""
+
+
 @dataclass(frozen=True)
 class SurvivalReading:
     """§6.5's net-liq watch, and §15 C2's rule made structural.
