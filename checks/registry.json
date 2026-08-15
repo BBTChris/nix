@@ -64,6 +64,7 @@
         "subprocess:findmnt",
         "subprocess:git",
         "subprocess:python",
+        "subprocess:python3",
         "subprocess:systemctl",
         "subprocess:xdpyinfo"
       ]

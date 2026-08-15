@@ -398,6 +398,204 @@ def test_a_SEQUENTIAL_block_containing_this_gate_is_fine(tmp_path: Path) -> None
 # --- DECLARATION CONFORMANCE -------------------------------------------------
 
 
+# --- BOTH DOCUMENTED LAUNCH MODES (ARC 032, CHECK-DEBT D3.140) ---------------
+#
+# The plant here is D3.140's own mechanism, reproduced under tmp_path: a check
+# that spawns `sys.executable` and declares `subprocess:python`. `covers`
+# matches a subprocess token by BASENAME, so that declaration is TRUE under
+# `.venv/bin/python` and FALSE under `/usr/bin/python3` — the same tree, the
+# same commit, opposite verdicts, decided by nothing but the launch.
+
+_SPAWNS_ITS_OWN_INTERPRETER = (
+    "import subprocess, sys\n"
+    "subprocess.run([sys.executable, '-c', 'pass'], check=False, capture_output=True)"
+)
+
+
+def _launch_mode_paths(home: Path) -> dict[str, str]:
+    """What each documented launch mode's interpreter reports itself to be.
+
+    Asked of the interpreters rather than assumed from the paths, for the same
+    reason the gate asks: a venv `python` reports a different `sys.executable`
+    from the path used to launch it whenever the tree is a linked worktree, and
+    an assertion against the requested path would be testing the wrong string.
+    """
+    from nixverify.observe import documented_interpreters
+
+    reported = {}
+    for label, path in documented_interpreters(home):
+        proc = subprocess.run(
+            [path, "-c", "import sys; sys.stdout.write(sys.executable)"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        assert proc.returncode == 0, f"{label} ({path}) would not run: {proc.stderr}"
+        reported[label] = proc.stdout.strip()
+    return reported
+
+
+def test_PLANT_a_declaration_TRUE_under_ONE_interpreter_and_FALSE_under_the_OTHER(
+    tmp_path: Path,
+) -> None:
+    """D3.140's condition, planted, driven through the SHIPPED run(), and RED.
+
+    The declaration is not wrong under every launch mode — that is the whole
+    point, and it is why one sweep passed this for as long as the gate did one
+    sweep. The assertion is on the REASON (rule 11 / §18): the finding must name
+    the interpreter it holds under AND the claim, and must NOT name the other
+    interpreter, because a report that listed both would say the declaration is
+    false under a launch mode where it is true.
+    """
+    modes = _launch_mode_paths(tmp_path)
+    checks = _population(tmp_path)
+    plant(
+        checks,
+        "check_split",
+        _SPAWNS_ITS_OWN_INTERPRETER,
+        resources="('subprocess:python',)",
+    )
+    result = _run(tmp_path)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert f"check_split:subprocess:{modes['system']}" in result.site, result.site
+    assert "false declaration" in result.detail, result.detail
+    assert f"subprocess:{modes['system']}" in result.detail, result.detail
+    assert f"observed under: {modes['system']}" in result.detail, result.detail
+    assert modes["venv"] not in result.detail, (
+        "the finding claims the declaration is false under the venv launch mode "
+        f"too, where it is TRUE: {result.detail}"
+    )
+
+
+def test_CONTROL_declaring_BOTH_interpreters_turns_that_FAIL_into_a_PASS(
+    tmp_path: Path,
+) -> None:
+    """§5.1 step 6, and the proof the gate is not simply hostile to `subprocess:`.
+
+    Same plant, same two sweeps, one token added. Without this the arm above
+    shows only that the gate can go red.
+    """
+    checks = _population(tmp_path)
+    plant(
+        checks,
+        "check_split",
+        _SPAWNS_ITS_OWN_INTERPRETER,
+        resources="('subprocess:python', 'subprocess:python3')",
+    )
+    result = _run(tmp_path)
+    assert result.status is Status.PASS, result
+    assert "2 DISTINCT documented launch mode(s)" in result.evidence, result.evidence
+
+
+def test_a_finding_under_BOTH_launch_modes_names_BOTH(
+    tmp_path: Path, listener: int
+) -> None:
+    """The merge's discriminating half: one line, both interpreters, not two lines.
+
+    A declaration false under both is a different finding from one false under
+    one, with a different repair. If `_merge` unioned nothing, this would render
+    as two identical-looking lines and the distinction D3.140 is about would be
+    invisible in the report.
+    """
+    modes = _launch_mode_paths(tmp_path)
+    checks = _population(tmp_path)
+    plant(
+        checks,
+        "check_leaky",
+        f"import socket\n"
+        f"socket.create_connection(('127.0.0.1', {listener}), timeout=5).close()",
+        resources="()",
+    )
+    result = _run(tmp_path)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert result.site.count(f"check_leaky:socket:127.0.0.1:{listener}") == 1, (
+        f"the same finding was reported once per sweep: {result.site}"
+    )
+    for path in modes.values():
+        assert path in result.detail, (path, result.detail)
+
+
+def test_a_MISSING_documented_interpreter_is_CANNOT_MEASURE_naming_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§7.12 closure 7 / rule 10: one launch mode absent means one is UNMEASURED.
+
+    The population here is otherwise clean, so the tempting verdict is PASS —
+    which is precisely the verdict rule 10 forbids. A safety property proven
+    while one of its two subjects is unavailable is not proven.
+    """
+    _population(tmp_path)
+    absent = tmp_path / "no-such-interpreter"
+    monkeypatch.setattr(
+        gate,
+        "documented_interpreters",
+        lambda home: (("venv", sys.executable), ("system", str(absent))),
+    )
+    result = _run(tmp_path)
+    assert result.status is Status.CANNOT_MEASURE, result
+    assert str(absent) in result.detail, result.detail
+    assert "UNAVAILABLE" in result.detail, result.detail
+    assert "system launch mode" in result.detail, result.detail
+    assert exit_code_for(result.status) == 2
+
+
+def test_the_SAME_interpreter_TWICE_is_CANNOT_MEASURE_not_two_launch_modes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§7.12 closure 6 — the failure this whole arm exists to prevent.
+
+    Two sweeps of one interpreter produce two identical passes and read exactly
+    like a declaration proven under both launch modes. It is the manufactured
+    input a "both interpreters" gate is easiest to build on, so the gate refuses
+    it by name.
+    """
+    _population(tmp_path)
+    monkeypatch.setattr(
+        gate,
+        "documented_interpreters",
+        lambda home: (("venv", sys.executable), ("system", sys.executable)),
+    )
+    result = _run(tmp_path)
+    assert result.status is Status.CANNOT_MEASURE, result
+    assert "SAME interpreter" in result.detail, result.detail
+    assert sys.executable in result.detail, result.detail
+
+
+def test_a_child_that_ran_under_a_DIFFERENT_interpreter_is_UNOBSERVED_for_that_mode() -> (
+    None
+):
+    """An "I launched X" is not an "X ran" — D3.140's mechanism one level down.
+
+    A unit over the pure comparison, in the same shape as
+    `test_a_positively_undeclared_claim_OUTRANKS_masking` above: an interpreter
+    that reports itself as something else cannot be planted without a wrapper
+    that the launch-mode probe would itself catch first, so the mismatched
+    record is supplied directly.
+    """
+    system = "/usr/bin/python3"
+    mode = gate.LaunchMode(label="system", requested=system, reported=system)
+    conformance = gate._interpreter_conformance  # pylint: disable=protected-access
+
+    def observed(interpreter: str) -> ObservedRun:
+        return ObservedRun(
+            check="check_x",
+            claims=("subprocess:/bin/true",),
+            interpreter=interpreter,
+        )
+
+    findings = conformance([observed("/somewhere/else/python")], mode)
+    assert [f.verdict for f in findings] == [gate.UNKNOWN], findings
+    assert "/somewhere/else/python" in findings[0].reason
+    assert system in findings[0].reason
+    assert "UNOBSERVED" in findings[0].reason
+    assert findings[0].site == "check_x:system"
+
+    assert not conformance([observed(system)], mode), (
+        "the arm fires on a child that DID run under the mode"
+    )
+
+
 def test_this_gates_own_declarations_are_literals_the_AST_reader_can_read() -> None:
     """§4.4: a declaration that must be executed to be read is not a declaration."""
     declaration = read_all(REPO / "checks")[gate.NAME]
