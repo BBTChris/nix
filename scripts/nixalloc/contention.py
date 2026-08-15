@@ -70,21 +70,54 @@ for this to return an answer while measuring nothing?*
   4. **The fallback is reached by an exception escaping**, so "never halts" is
      true only because the caller crashed. CLOSED: a port that RAISES is driven
      and must still produce a deterministic FCFS answer naming the exception.
+
+ARC 032 — THE §4 LIFECYCLE SCREEN, ADDED IN FRONT AND NOT INSIDE
+----------------------------------------------------------------
+§4:284-286 says a strategy mid-recovery *"is never counted eligible for new
+capital while dying"*. That is a different property from ordering — it decides
+WHO MAY ENTER the race, not who wins it — and `nixalloc/lifecycle.py` owns it,
+because nothing in this tree did (see that module's C.9 census).
+
+`rank_eligible` is the composition of the two and is deliberately NOT a second
+ordering: it screens with the lifecycle view and then delegates to `rank` below,
+which is untouched. Doctrine C.9 forbids a second instrument for a property one
+already owns, and `rank` owns §6.6's ordering — so the screen wraps it rather
+than being copied into a parallel pass, and every §6.6 property proven of `rank`
+is proven of `rank_eligible` by construction.
+
+Its `lifecycle` argument is REQUIRED and has no default, which is the §7.12
+closure for this addition: a screen that could be forgotten and a screen that is
+deliberately absent must not be spelled the same way. A caller that wants no
+screen calls `rank`.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
 
 from nixalloc.seam import ContentionPolicy, RankingRow, RankingTablePort
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at run time
+    # MEASURED, not stylistic. `checks/check_allocator_caps.py`'s can-fail suite
+    # copies this module into a throwaway tree from a HAND-MAINTAINED file list,
+    # so a new RUN-TIME first-party import here turns that gate CANNOT_MEASURE
+    # in a tree the gate itself still reports green on. Reported as CHECK-DEBT
+    # rather than worked around silently; the screen is consumed STRUCTURALLY
+    # (`LifecycleViewPort` is a Protocol and this module never constructs one of
+    # its records), so a typing-only import is the honest shape as well as the
+    # safe one.
+    from nixalloc.lifecycle import CapitalEligibility, LifecycleViewPort
 
 __all__ = [
     "NEUTRAL_WEIGHT",
     "Contender",
     "ContentionRanking",
+    "Ineligible",
     "fcfs_order",
     "rank",
+    "rank_eligible",
 ]
 
 #: The weight every contender carries under BOTH policies today. Named rather
@@ -115,6 +148,24 @@ class Contender:
 
 
 @dataclass(frozen=True)
+class Ineligible:
+    """One contender the §4 lifecycle screen kept OUT of the race, and why.
+
+    Never a bare id: §18 requires the REASON, and "s2 was excluded" is
+    unactionable where "s2 holds two rows in state closing at version 7" is the
+    whole diagnosis. `snapshot_version` rides along so a refusal can never be
+    read against a snapshot that did not produce it, and `verdict` carries the
+    view's own record when there was one — it is `None` only where the view
+    itself failed to answer, which is the one refusal this module authors.
+    """
+
+    contender: Contender
+    reason: str
+    snapshot_version: int | None
+    verdict: CapitalEligibility | None = None
+
+
+@dataclass(frozen=True)
 class ContentionRanking:
     """An ORDERING and a weighting. Never an award — see the module docstring.
 
@@ -134,6 +185,17 @@ class ContentionRanking:
     #: a correct answer, it is no measurement).
     contenders: int
     reason: str
+    #: ARC 032. Contenders the §4:284-286 lifecycle screen kept OUT of this
+    #: race, each with the eligibility record that refused it. EMPTY under
+    #: `rank`, which screens nothing — the default is what keeps `rank`'s own
+    #: shape unchanged, and an empty tuple here means "nothing was screened",
+    #: never "everything passed".
+    refused: tuple[Ineligible, ...] = ()
+
+    @property
+    def screened(self) -> int:
+        """How many contenders were offered, screened and ranked in total."""
+        return self.contenders + len(self.refused)
 
     @property
     def is_fallback(self) -> bool:
@@ -295,3 +357,81 @@ def _weighted(
             "gives arbitration to the Limiter, not to this module"
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# ARC 032 — the §4:284-286 lifecycle screen, composed in front of `rank`
+# ---------------------------------------------------------------------------
+
+
+def _screen(
+    contenders: Sequence[Contender], lifecycle: LifecycleViewPort
+) -> tuple[tuple[Contender, ...], tuple[Ineligible, ...]]:
+    """Split the field into may-be-ranked and may-not (§4:284-286).
+
+    FAILS CLOSED on a view that raises, and that direction is the decision: the
+    §6.6:467 rule that an outage must never halt order flow governs the SCORING
+    table, which is an optimisation, while this is a safety screen over §4's own
+    published state. A lifecycle view that cannot answer is exactly the §12.7
+    half-built-mirror case, and §12.7 fast-drops rather than sizing. Refusing
+    costs entries; admitting hands capital to a strategy that may be dying.
+    """
+    ranked: list[Contender] = []
+    refused: list[Ineligible] = []
+    for contender in contenders:
+        try:
+            verdict = lifecycle.eligibility(contender.strategy_id)
+        except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
+            refused.append(
+                Ineligible(
+                    contender=contender,
+                    reason=(
+                        "scripts/nixalloc/contention.py:rank_eligible: the "
+                        f"lifecycle view raised {type(exc).__name__}: {exc} for "
+                        f"{contender.strategy_id!r} — §4:284-286 is a SAFETY "
+                        "screen over published state, not §6.6's scoring "
+                        "optimisation, so an unanswerable screen REFUSES "
+                        "capital rather than admitting it (§12.7: a mirror that "
+                        "cannot be read is fast-dropped, never sized on)"
+                    ),
+                    snapshot_version=None,
+                )
+            )
+            continue
+        if verdict.eligible:
+            ranked.append(contender)
+        else:
+            refused.append(
+                Ineligible(
+                    contender=contender,
+                    reason=verdict.reason,
+                    snapshot_version=verdict.snapshot_version,
+                    verdict=verdict,
+                )
+            )
+    return tuple(ranked), tuple(refused)
+
+
+def rank_eligible(
+    contenders: Sequence[Contender],
+    table: RankingTablePort | None,
+    lifecycle: LifecycleViewPort,
+    *,
+    max_age_s: float | None = None,
+    now: float | None = None,
+) -> ContentionRanking:
+    """§4's screen, then §6.6's ordering. SYNCHRONOUS, total, never raises.
+
+    Two rules, composed, and NEITHER re-implemented here: `lifecycle` decides
+    who may be handed new capital (§4:284-286) and `rank` decides the order of
+    whoever survives that (§6.6). The screen runs FIRST because ranking a
+    contender that may not receive capital is work that can only produce a wrong
+    answer — and because §6.6's fallback is FCFS, an unscreened dying strategy
+    that arrived first would sit at the head of the ordering.
+
+    `lifecycle` is positional and REQUIRED. There is deliberately no default: a
+    caller who forgot the screen and a caller who wants none would otherwise
+    write the same call, and only one of those is safe.
+    """
+    ranked, refused = _screen(contenders, lifecycle)
+    return replace(rank(ranked, table, max_age_s=max_age_s, now=now), refused=refused)
