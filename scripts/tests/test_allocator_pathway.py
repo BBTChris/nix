@@ -20,15 +20,47 @@ second reports `cap_incomplete` rather than a clean ceiling over an empty
 bucket.
 """
 # pylint: disable=invalid-name,redefined-outer-name,duplicate-code
+# pylint: disable=too-many-lines
+# Over the 1000-line ceiling since ARC 032, and the excess is the BEFORE half of
+# D3.136's discharge: checking the pre-widening modules out of git and loading
+# them without letting `sys.modules` hand back the widened ones. Splitting it
+# into a second module would put the two halves of one measurement in two
+# files, which is the thing that makes a before/after drift apart.
 
 from __future__ import annotations
 
+import dataclasses
+import importlib.util
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
+import pytest  # pylint: disable=import-error
+
 REPO = Path(__file__).resolve().parent.parent.parent
+
+#: Throwaway checkouts of the pre-widening revision, removed at session end.
+_PRE032_TREES: list[Path] = []
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _remove_pre032_checkouts():
+    """Delete every temporary pre-widening checkout this module made.
+
+    Session-scoped and autouse so it fires even when the before/after test is
+    the only one that ran, and so a suite that leaves work behind on the disk
+    is not the arc's cleanup problem later.
+    """
+    yield
+    for root in _PRE032_TREES:
+        shutil.rmtree(root, ignore_errors=True)
+    _PRE032_TREES.clear()
+
+
 sys.path.insert(0, str(REPO / "scripts"))
 
 from nixalloc import caps  # pylint: disable=wrong-import-position
@@ -87,14 +119,22 @@ class _Tradability:
         return self._tradable, self._why
 
 
-def _row(
+def _row(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     trade_id: str,
     symbol: str,
     size: int,
     *,
     state: PositionState = PositionState.OPEN,
     margin: float = 500.0,
+    stop_distance: int = 20,
 ) -> PositionRow:
+    """One published row. ARC 032: `stop_distance` is a PUBLISHED field now.
+
+    It is a keyword with a usable default because most cases here are about
+    something else; the cases that are about the cap pass it explicitly, and
+    `stop_distance=0` is how this suite drives the pre-widening blindness on
+    the wire rather than by withholding a side table that no longer exists.
+    """
     return PositionRow(
         trade_id=trade_id,
         symbol=symbol,
@@ -102,7 +142,7 @@ def _row(
         size=size,
         margin=margin,
         state=state,
-        stop_distance=20,
+        stop_distance=stop_distance,
     )
 
 
@@ -247,7 +287,7 @@ def test_21_a_BUCKET_capped_size_down_is_measured_against_the_SUM_of_two() -> No
     picture = _picture(
         positions=held, margins={"ES": 500.0, "MES": 50.0, "NQ": 400.0, "MNQ": 40.0}
     )
-    stops = PublishedExposures(stop_ticks_by_trade={"T-ES": 20, "T-NQ": 20})
+    stops = PublishedExposures()
     # 1.5% of 100,000 = $1,500. The two held positions price at $550 (ES) and
     # $330 (NQ) = $880, leaving $620 of room against a $27.50 micro contract.
     # A cap measured against the SUM admits 22; against max($550) it would
@@ -331,7 +371,7 @@ def test_21_a_STALE_mirror_REFUSES_to_size_rather_than_sizing_on_a_partial() -> 
 def test_21_all_six_paths_run_against_ONE_simulated_snapshot() -> None:
     """The composition itself: six outcomes, one picture, no cross-talk."""
     picture = _picture(positions=(_row("T-ES", "ES", 2),))
-    stops = PublishedExposures(stop_ticks_by_trade={"T-ES": 20})
+    stops = PublishedExposures()
     outcomes = {
         "clean": _pathway(_fresh(picture)).propose(
             "s", "ES", Side.LONG, 20, StopMode.FIXED, 1.0
@@ -368,58 +408,432 @@ def test_21_all_six_paths_run_against_ONE_simulated_snapshot() -> None:
 
 
 # ==========================================================================
-# D3.136 — the gap the composition found, driven in both directions
+# D3.136 — CLOSED IN ARC 032, and the closure is a BEFORE/AFTER measurement
+#
+# 2.1's instruction, quoted so these tests can be read against it: "prove the
+# fail-open is CLOSED in the direction ARC 031 measured — two held same-bucket
+# positions with real stop distances, a third proposal capped against their
+# true summed dollar-risk, and prove the SAME scenario admitted the third
+# BEFORE the widening. The before/after is the measurement; after alone proves
+# nothing."
+#
+# So the BEFORE half is not simulated. `test_the_SAME_scenario_ADMITTED_the_
+# third_before_the_widening` checks the pre-widening `wiring.py`, `caps.py`,
+# `sizing.py` and both seams out of git and runs them, unmodified, on the same
+# numbers. A before/after where the "before" is a hand-written approximation of
+# code that no longer exists is a comparison against the author's memory.
 # ==========================================================================
 
 
-def test_the_cap_over_an_UNPRICEABLE_bucket_reports_INCOMPLETE_not_a_ceiling() -> None:
-    """The published row carries no stop distance, so the bucket is unpriceable.
+def _third_proposal_scenario() -> tuple[tuple[PositionRow, ...], dict[str, float]]:
+    """TWO held same-bucket positions with real stop distances, and the knobs.
 
-    This is the honest production state today: `PublishedExposures` with an
-    empty stop table prices NOTHING, and a cap computed over an empty bucket
-    would admit the full proposal while a real bucket might be full. The
-    pathway must SAY so rather than return a clean ceiling.
+    Returned from one place so the BEFORE and AFTER halves are provably the
+    same scenario: if the two halves each built their own picture, the
+    comparison would measure the two fixtures rather than the two code paths.
     """
-    picture = _picture(positions=(_row("T-ES", "ES", 2), _row("T-NQ", "NQ", 3)))
-    adapter = BucketCapAdapter(config=_cap_config(0.02), source=PublishedExposures())
+    held = (
+        _row("T-ES", "ES", 2, stop_distance=20),
+        _row("T-NQ", "NQ", 3, stop_distance=20),
+    )
+    margins = {"ES": 500.0, "MES": 50.0, "NQ": 400.0, "MNQ": 40.0}
+    return held, margins
+
+
+def test_the_cap_now_runs_on_the_COMPLETE_bucket() -> None:
+    """AFTER: every term real, and `bucket_used` is the true SUM.
+
+    §7: `Σ dollar_risk(open + pending in B) + proposed ≤ bucket_cap_pct(B) ×
+    balance`. The two held positions price at (20 + 2) × 12.5 × 2 = $550 (ES)
+    and (20 + 2) × 5.0 × 3 = $330 (NQ) — a SUM of $880, which is neither of
+    them and is not the larger of them, so the figure asserted below cannot be
+    produced by a max-shaped or single-position implementation.
+    """
+    held, margins = _third_proposal_scenario()
+    picture = _picture(positions=held, margins=margins)
+    adapter = BucketCapAdapter(config=_cap_config(0.015), source=PublishedExposures())
     report = _pathway(_fresh(picture), cap=adapter).propose(
         "strat-1", "ES", Side.LONG, 20, StopMode.FIXED, 1.0
     )
-    assert report.cap_incomplete, (
-        "two held equities positions could not be priced and the pathway "
-        "reported a clean cap — that is the false-green D3.136 names"
+    assert report.cap_complete, (
+        f"blind={report.cap_blind} unbucketed={report.cap_unbucketed}"
     )
-    assert set(report.cap_blind) == {"T-ES", "T-NQ"}, report.cap_blind
-    assert "could NOT be priced" in report.proposal.rationale.note, (
-        f"§16 U5's rationale must carry the blindness: {report.proposal.rationale.note}"
+    used = report.proposal.rationale.bucket_used
+    assert used == pytest.approx(880.0), (
+        "the bucket must price at the SUM of both held positions. "
+        f"$550 would be ES alone, $330 NQ alone, $880 the sum: got {used!r}"
     )
+    assert report.proposal.rationale.binding is BindingConstraint.BUCKET_CAP
+    assert report.proposal.rationale.bucket is CorrelationBucket.EQUITIES
 
 
-def test_a_position_priced_at_ZERO_would_be_the_admitting_direction() -> None:
-    """Why unpriced rows are REPORTED and not silently valued at zero.
+def test_the_SAME_scenario_ADMITTED_the_third_before_the_widening() -> None:
+    """THE BEFORE/AFTER. The pre-widening code is CHECKED OUT AND RUN.
 
-    A row valued at zero risk makes the bucket look emptier than it is, and an
-    emptier bucket ADMITS more. Driven as a comparison so the direction is a
-    measurement rather than a claim.
+    Not approximated, not described: `git show <base>:scripts/nixalloc/*.py`
+    and both seams, loaded by exact path into a throwaway package namespace,
+    driven on the numbers `_third_proposal_scenario` supplies to the AFTER half
+    one test above.
+
+    The BEFORE half's `PublishedExposures` takes its stop distances from an
+    out-of-band map, and on a real snapshot that map is EMPTY — which is
+    exactly what production had. So both held positions price at zero, the
+    bucket sums to zero, and the third proposal is admitted against an empty
+    ceiling.
     """
-    picture = _picture(positions=(_row("T-ES", "ES", 8),))
-    priced = BucketCapAdapter(
-        config=_cap_config(0.02),
-        source=PublishedExposures(stop_ticks_by_trade={"T-ES": 40}),
+    before = _pre_widening_modules()
+    if before is None:
+        pytest.skip("no pre-widening revision reachable from this branch")
+        return
+    old_seam, old_wiring, old_sizing, old_caps = before
+
+    old_rows = tuple(
+        old_seam.PositionRow(
+            trade_id=row.trade_id,
+            symbol=row.symbol,
+            strategy_id=row.strategy_id,
+            size=row.size,
+            margin=row.margin,
+            state=old_seam.PositionState.OPEN,
+        )
+        for row in _third_proposal_scenario()[0]
     )
-    blind = BucketCapAdapter(config=_cap_config(0.02), source=PublishedExposures())
-    with_price = _pathway(_fresh(picture), cap=priced).propose(
-        "s", "ES", Side.LONG, 20, StopMode.FIXED, 1.0
+    _, margins = _third_proposal_scenario()
+    old_picture = old_seam.FinancialPicture(
+        version=41,
+        published_ts=1_700_000_000.0,
+        balance=100_000.0,
+        positions=old_rows,
+        margin_per_contract=MappingProxyType(margins),
+        sum_open_margin=10_000.0,
+        sum_reservations=0.0,
+        committed=10_000.0,
+        deployable=100_000.0 * 0.70 - 10_000.0,
     )
-    without = _pathway(_fresh(picture), cap=blind).propose(
-        "s", "ES", Side.LONG, 20, StopMode.FIXED, 1.0
+    old_cap = old_wiring.BucketCapAdapter(
+        config=old_caps.CapConfig(
+            bucket_cap_pct={
+                "equities": 0.015,
+                "energy": 0.015,
+                "metals": 0.015,
+                "rates": 0.015,
+            },
+            slippage_pad_ticks={"ES": 2.0, "MES": 2.0, "NQ": 2.0, "MNQ": 2.0},
+            tick_value_usd={"ES": 12.5, "MES": 1.25, "NQ": 5.0, "MNQ": 0.5},
+            micro_weight=0.1,
+        ),
+        # The HONEST production value: nothing published a stop distance, so
+        # nothing could be handed one.
+        source=old_wiring.PublishedExposures(),
     )
-    assert without.proposal.contracts >= with_price.proposal.contracts, (
-        "pricing a held position at zero must never ADMIT LESS than pricing it "
-        "honestly — if it did, the gap would be conservative and D3.136 would "
-        "be a nuisance rather than a hazard"
+    old_pathway = old_wiring.AllocatorPathway(
+        mirror=_OldMirror(
+            old_seam.MirrorSnapshot(
+                state=old_seam.MirrorState.FRESH,
+                picture=old_picture,
+                reason="complete and stamped",
+            )
+        ),
+        tradability=_AlwaysTradable(),
+        instruments={
+            "ES": old_sizing.InstrumentSpec(
+                symbol="ES", micro_symbol="MES", tick_value=12.5, micro_ratio=10
+            ),
+            "NQ": old_sizing.InstrumentSpec(
+                symbol="NQ", micro_symbol="MNQ", tick_value=5.0, micro_ratio=10
+            ),
+        },
+        knobs=_old_knobs(old_sizing),
+        bucket_cap=old_cap,
+    )
+    was = old_pathway.propose(
+        "strat-1", "ES", old_seam.Side.LONG, 20, old_seam.StopMode.FIXED, 1.0
+    )
+
+    held, margins = _third_proposal_scenario()
+    now = _pathway(
+        _fresh(_picture(positions=held, margins=margins)),
+        cap=BucketCapAdapter(config=_cap_config(0.015), source=PublishedExposures()),
+    ).propose("strat-1", "ES", Side.LONG, 20, StopMode.FIXED, 1.0)
+
+    # THE MEASUREMENT. Same balance, same two held positions, same stop
+    # distances, same ceiling, same proposal — different code.
+    assert was.proposal.contracts > now.proposal.contracts, (
+        "the widening was supposed to CLOSE a fail-open. The pre-widening "
+        f"pathway admitted {was.proposal.contracts} contracts and the widened "
+        f"one admitted {now.proposal.contracts}. If the widened one admits the "
+        "same or more, the cap did not close and this arc's premise is wrong"
+    )
+    assert was.proposal.rationale.bucket_used == 0.0, (
+        "the BEFORE half was supposed to price the held bucket at ZERO — that "
+        "is what made it fail open. It reported "
+        f"{was.proposal.rationale.bucket_used!r}, so this control is measuring "
+        "something other than what it names"
+    )
+    assert was.cap_incomplete, (
+        "the pre-widening pathway reported a CLEAN cap over an unpriceable "
+        "bucket — then D3.136 was worse than recorded, not better"
+    )
+    assert now.proposal.rationale.bucket_used == pytest.approx(880.0)
+
+
+def test_a_position_published_with_NO_stop_distance_is_the_ADMITTING_direction() -> (
+    None
+):
+    """The fail-open direction, still driven — on the WIRE, not on a side table.
+
+    D3.136 is closed, but the condition that made it dangerous is a publisher
+    emitting a row with no usable distance. That can still happen, so it is
+    still measured: `stop_distance=0` on the wire must report INCOMPLETE and
+    must admit MORE than the same row priced honestly.
+    """
+    honest = _picture(positions=(_row("T-ES", "ES", 8, stop_distance=20),))
+    silent = _picture(positions=(_row("T-ES", "ES", 8, stop_distance=0),))
+    with_price = _pathway(
+        _fresh(honest),
+        cap=BucketCapAdapter(config=_cap_config(0.02), source=PublishedExposures()),
+    ).propose("s", "ES", Side.LONG, 20, StopMode.FIXED, 1.0)
+    without = _pathway(
+        _fresh(silent),
+        cap=BucketCapAdapter(config=_cap_config(0.02), source=PublishedExposures()),
+    ).propose("s", "ES", Side.LONG, 20, StopMode.FIXED, 1.0)
+
+    assert without.proposal.contracts > with_price.proposal.contracts, (
+        "a held position published with NO stop distance must admit MORE than "
+        "one priced honestly — if it admits the same or less the gap is "
+        f"conservative: {without.proposal.contracts} vs "
+        f"{with_price.proposal.contracts}"
     )
     assert without.cap_incomplete and not with_price.cap_incomplete
+    assert set(without.cap_blind) == {"T-ES"}, without.cap_blind
+    assert "could NOT be priced" in without.proposal.rationale.note
+
+
+def test_a_row_in_NO_bucket_is_REPORTED_not_dropped_from_the_sum() -> None:
+    """THE SECOND DOOR, found while closing the first.
+
+    §7:498's map is keyed on LOGICAL symbols (`ES`, `NQ`, ...). Nothing pins
+    the vocabulary of the published row's `symbol` field, and this tree already
+    publishes contract spellings (`ESZ6`, `MESU6`) in its own fixtures. The
+    pre-ARC-032 filter was one comprehension — `BUCKET_OF.get(row.symbol) is
+    bucket` — so a contract-spelled row matched nothing and left the bucket
+    silently, priced at zero by OMISSION. Same admitting direction, different
+    door, and reading the stop distance off the row does nothing about it.
+    """
+    held, margins = _third_proposal_scenario()
+    picture = _picture(
+        positions=(*held, _row("T-CM", "ESZ6", 4, stop_distance=20)), margins=margins
+    )
+    adapter = BucketCapAdapter(config=_cap_config(0.015), source=PublishedExposures())
+    report = _pathway(_fresh(picture), cap=adapter).propose(
+        "strat-1", "ES", Side.LONG, 20, StopMode.FIXED, 1.0
+    )
+    assert "T-CM:ESZ6" in report.cap_unbucketed, report.cap_unbucketed
+    assert not report.cap_complete, (
+        "a table holding an unbucketable counted row reported a COMPLETE cap"
+    )
+    assert "in NO bucket" in report.proposal.rationale.note, (
+        f"§16 U5's rationale must carry it: {report.proposal.rationale.note}"
+    )
+    # And the row really was absent from the SUM — proven by the figure, not by
+    # the counter, because a counter can be incremented by code that also
+    # counted the row.
+    assert report.proposal.rationale.bucket_used == pytest.approx(880.0), (
+        "the unbucketed row must not have entered the equities SUM: "
+        f"{report.proposal.rationale.bucket_used!r}"
+    )
+
+
+class _OldMirror:  # pylint: disable=too-few-public-methods
+    """A mirror port for the pre-widening seam. One verb, because it has one."""
+
+    def __init__(self, snapshot: Any) -> None:
+        self._snapshot = snapshot
+
+    def snapshot(self) -> Any:
+        return self._snapshot
+
+    def version(self) -> int:
+        picture = self._snapshot.picture
+        return -1 if picture is None else picture.version
+
+
+class _AlwaysTradable:  # pylint: disable=too-few-public-methods
+    def tradable(self, symbol: str) -> tuple[bool, str]:
+        del symbol
+        return True, "tradable"
+
+
+def _old_knobs(old_sizing: Any) -> Any:
+    """The pre-widening `SizingKnobs`, built from THE LIVE ONE'S OWN FIELDS.
+
+    Derived rather than retyped (directive 3). `SizingKnobs` did not change in
+    ARC 032, so copying the live values across guarantees the two halves of the
+    before/after are sized against identical knobs — a hand-written second copy
+    is a place the comparison could silently become a comparison of knobs.
+    """
+    return old_sizing.SizingKnobs(**dataclasses.asdict(_knobs()))
+
+
+#: The modules the BEFORE half needs, in dependency order. One tuple, read by
+#: both the checkout step and the load step, so the two cannot drift apart.
+_PRE032_MODULES = (
+    ("nixrisk", "scripts/nixrisk/__init__.py"),
+    ("nixrisk.seam", "scripts/nixrisk/seam.py"),
+    ("nixalloc", "scripts/nixalloc/__init__.py"),
+    ("nixalloc.seam", "scripts/nixalloc/seam.py"),
+    ("nixalloc.caps", "scripts/nixalloc/caps.py"),
+    ("nixalloc.sizing", "scripts/nixalloc/sizing.py"),
+    ("nixalloc.wiring", "scripts/nixalloc/wiring.py"),
+)
+
+
+def _git(*args: str) -> str | None:
+    """`git` under the D3.22 scrub. `None` on any non-zero exit.
+
+    `pre-commit` exports `GIT_INDEX_FILE` / `GIT_DIR` into every hook it runs,
+    so a bare `subprocess.run(["git", ...])` here would answer about whatever
+    started the hook rather than about this repository.
+    """
+    from nixverify.gitenv import scrubbed_env  # pylint: disable=import-outside-toplevel
+
+    done = subprocess.run(  # nosec B603 B607 - fixed argv, repo-local paths
+        ["git", "-C", str(REPO), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=scrubbed_env(),
+    )
+    return done.stdout if done.returncode == 0 else None
+
+
+def _pre_widening_revision() -> str | None:
+    """The commit BEFORE `POSITION_ROW_FIELDS` landed, or `None`.
+
+    Found by walking history for the commit that introduced the pin and taking
+    its parent — never a hard-coded sha, which is the moving anchor doctrine
+    C.4 forbids.
+    """
+    log = _git(
+        "log",
+        "--format=%H",
+        "-S",
+        "POSITION_ROW_FIELDS",
+        "--",
+        "scripts/nixalloc/seam.py",
+    )
+    if not log:
+        return None
+    parent = _git("rev-parse", f"{log.split()[-1]}^")
+    return parent.strip() if parent else None
+
+
+def _checkout_pre032(base: str) -> Path | None:
+    """Write the pre-widening sources into a throwaway tree. `None` if any miss."""
+    root = Path(tempfile.mkdtemp(prefix="nix-pre032-"))
+    _PRE032_TREES.append(root)
+    for _, rel in _PRE032_MODULES:
+        source = _git("show", f"{base}:{rel}")
+        if source is None:
+            return None
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(source, encoding="utf-8")
+    return root
+
+
+def _restore_modules(saved: dict[str, Any]) -> None:
+    """Put `sys.modules` and the parent-package attributes back, in that order.
+
+    Both halves, because a package attribute set during the load outlives the
+    `sys.modules` entry: leaving `nixalloc.seam` bound to the pre-widening
+    module on the live `nixalloc` package would poison every test that ran
+    after this one, in a way the poisoned test would report as its own bug.
+    """
+    for name, previous in saved.items():
+        if previous is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = previous
+    for name, previous in saved.items():
+        if previous is None or "." not in name:
+            continue
+        parent, _, leaf = name.rpartition(".")
+        if saved.get(parent) is not None:
+            setattr(saved[parent], leaf, previous)
+
+
+def _install_pre032(name: str, path: Path) -> Any:
+    """Load ONE pre-widening module under its real dotted name. `None` on failure.
+
+    Under its REAL name and not a `_pre032.` alias, because
+    `nixalloc.seam` executes `from nixrisk.seam import PositionRow` and that
+    statement resolves through `sys.modules` by the name the source spells.
+    Aliasing would make the import find the LIVE widened seam.
+    """
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    if "." in name:
+        parent, _, leaf = name.rpartition(".")
+        setattr(sys.modules[parent], leaf, module)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_pre032(root: Path) -> dict[str, Any] | None:
+    """Load the checked-out tree by EXACT PATH, then put `sys.modules` back.
+
+    EVERY pre-widening module stays installed for the WHOLE load and is
+    restored only at the end. Restoring after each one — the first draft — meant
+    `nixalloc.seam`'s own `from nixrisk.seam import PositionRow` resolved
+    against the LIVE widened module, so the "before" half was silently the
+    "after" half. The non-vacuity assertion in the caller caught it.
+    """
+    loaded: dict[str, Any] = {}
+    saved = {name: sys.modules.get(name) for name, _ in _PRE032_MODULES}
+    try:
+        for name, rel in _PRE032_MODULES:
+            module = _install_pre032(name, root / rel)
+            if module is None:
+                return None
+            loaded[name] = module
+    finally:
+        _restore_modules(saved)
+    return loaded
+
+
+def _pre_widening_modules() -> tuple[Any, Any, Any, Any] | None:
+    """`(alloc seam, wiring, sizing, caps)` as they were BEFORE the widening.
+
+    Split into three helpers — find the revision, check it out, load it — for
+    the ordinary reason, and one that matters here: the load step's
+    `sys.modules` bookkeeping is the part that can silently turn this control
+    into a comparison of the widened code against itself, and it is easier to
+    read when it is not wrapped in filesystem work.
+    """
+    base = _pre_widening_revision()
+    if base is None:
+        return None
+    root = _checkout_pre032(base)
+    if root is None:
+        return None
+    loaded = _load_pre032(root)
+    if loaded is None:
+        return None
+    # NON-VACUITY: the loaded seam must be the NARROW one, or this whole
+    # control is comparing the widened code against itself.
+    assert "stop_distance" not in {
+        f.name for f in dataclasses.fields(loaded["nixalloc.seam"].PositionRow)
+    }, "the 'pre-widening' PositionRow already carries stop_distance"
+    return (
+        loaded["nixalloc.seam"],
+        loaded["nixalloc.wiring"],
+        loaded["nixalloc.sizing"],
+        loaded["nixalloc.caps"],
+    )
 
 
 # ==========================================================================
@@ -518,7 +932,7 @@ def test_22_the_release_is_visible_WITHOUT_the_allocator_recomputing_committed()
 def test_23_no_path_emits_anything_that_reaches_a_broker() -> None:
     """The authority invariant at the SEAM, across all of 2.1's paths."""
     picture = _picture(positions=(_row("T-ES", "ES", 2),))
-    stops = PublishedExposures(stop_ticks_by_trade={"T-ES": 20})
+    stops = PublishedExposures()
     reports = [
         _pathway(_fresh(picture)).propose(
             "s", "ES", Side.LONG, 20, StopMode.FIXED, 1.0
@@ -592,7 +1006,7 @@ def test_23_a_cap_that_RAISES_denies_rather_than_killing_the_pass() -> None:
     picture = _picture(positions=(_row("T-ES", "ES", 2),))
     adapter = BucketCapAdapter(
         config=_cap_config(),
-        source=PublishedExposures(stop_ticks_by_trade={"T-ES": 20}),
+        source=PublishedExposures(),
     )
 
     class _Exploding:

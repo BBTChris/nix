@@ -25,14 +25,26 @@ and nothing it emits can reach a broker.* Five arms serve that one property.
     level is the translation from a published position table into exposures,
     which C never saw.
 
-  * **ARM 3 — D3.136, the gap the composition FOUND.** §7 prices exposure from
-    `(stop_ticks + slippage_pad) × tick_value × contracts` and the published
-    `PositionRow` carries no stop distance at all. Driven in both directions:
-    with an out-of-band stop table the cap runs and reports complete; with the
-    honest empty one it reports INCOMPLETE and names every row it could not
-    price. A cap silently computed over an empty bucket is the false green
-    this arm exists to refuse — and it fails in the ADMITTING direction, which
-    is why it is an arm and not a comment.
+  * **ARM 3 — D3.136, the gap the composition FOUND and ARC 032 CLOSED.** §7
+    prices exposure from `(stop_ticks + slippage_pad) × tick_value ×
+    contracts`, and the published `PositionRow` now carries `stop_distance`
+    (`SEAM_REV 1.1.0`, `SPEC-A9`), so the cap runs on the complete bucket.
+
+    **The arm did not become a formality when the gap closed**, and the way it
+    is driven changed in a way that matters: there is no out-of-band stop table
+    any more, so the only way this gate can reach the cap is by PUBLISHING a
+    row. It now drives three things on one scenario — (A) a fully priced bucket
+    reports complete and carries a non-zero `bucket_used` into §16 U5's
+    rationale; (B) the SAME scenario with `stop_distance=0` on the wire reports
+    INCOMPLETE, names every unpriced row, and is required to admit strictly
+    MORE, which is D3.136's direction still under measurement; (C) a counted
+    row whose symbol §7:498 places in NO bucket is REPORTED rather than dropped.
+
+    (C) is the SECOND DOOR, found while closing the first: reading the distance
+    off the row does nothing for a row that never reaches the bucket. §7:498's
+    map is keyed on logical symbols, nothing pins the published `symbol`
+    field's vocabulary, and the pre-ARC-032 filter dropped a contract-month row
+    silently — priced at zero by OMISSION, in the same admitting direction.
 
   * **ARM 4 — 2.2, partial-fill reflection (§4).** Two published versions of
     one trade: reserved for 20, filled at 5, the unfilled reservation
@@ -71,6 +83,17 @@ while measuring nothing?
  6. The stale-mirror arm could pass on a mirror that is merely EMPTY, proving
     nothing about PARTIAL. CLOSED: all three non-fresh states are driven and
     each refusal must name its own state.
+ 7. **(ARC 032) ARM 3 could be handed its stop distances out of band**, so the
+    cap would run on numbers the gate invented rather than on the wire the
+    production pass reads — the exact shape that let ARC 031 ship three green
+    gates over a cap that could not run. CLOSED at the SOURCE, not in the arm:
+    `PublishedExposures` no longer accepts a stop table, so there is nothing to
+    hand it. A gate can only reach the cap by publishing a row.
+ 8. **(ARC 032) ARM 3's before/after could stop discriminating** — if the
+    unpriced and priced cases ever admit the same number, the arm reports green
+    while measuring nothing about the fail-open direction. CLOSED: the arm
+    requires the unpriced case to admit STRICTLY MORE and reports a finding
+    when it does not.
 
 WHAT THIS GATE CANNOT PROVE, stated rather than implied. It drives the
 composition against a SIMULATED Limiter snapshot in one process. It does not
@@ -235,7 +258,16 @@ class _Tradability:
         return self._tradable, self._why
 
 
-def _row(loaded: Loaded, trade_id: str, symbol: str, size: int) -> Any:
+def _row(
+    loaded: Loaded, trade_id: str, symbol: str, size: int, stop_distance: int = 20
+) -> Any:
+    """One published row. `stop_distance` is a PARAMETER, and that is the point.
+
+    ARC 032: the stop distance is now a published field, so the way this gate
+    drives the cap blind is by publishing a row with NO usable distance (`0`),
+    not by withholding a side table it used to be handed. The gate can only
+    reach the cap through the wire the production pass reads.
+    """
     return loaded.seam.PositionRow(
         trade_id=trade_id,
         symbol=symbol,
@@ -243,7 +275,7 @@ def _row(loaded: Loaded, trade_id: str, symbol: str, size: int) -> Any:
         size=size,
         margin=500.0,
         state=loaded.seam.PositionState.OPEN,
-        stop_distance=20,
+        stop_distance=stop_distance,
     )
 
 
@@ -353,9 +385,10 @@ def _arm_six_paths(loaded: Loaded) -> list[Finding]:
     findings: list[Finding] = []
     held = (_row(loaded, "T-ES", "ES", 2), _row(loaded, "T-NQ", "NQ", 3))
     picture = _picture(loaded, positions=held)
-    stops = loaded.wiring.PublishedExposures(
-        stop_ticks_by_trade={"T-ES": 20, "T-NQ": 20}
-    )
+    # ARC 032: the distances ride the ROWS above (`stop_distance=20`), so the
+    # source is constructed with nothing. There is no side table left to hand
+    # it — the only way into the cap is the published wire.
+    stops = loaded.wiring.PublishedExposures()
     cap = loaded.wiring.BucketCapAdapter(
         config=_cap_config(loaded, DISCRIMINATING_CEILING_PCT), source=stops
     )
@@ -490,9 +523,10 @@ def _arm_summation(loaded: Loaded) -> list[Finding]:
     site = f"{WIRING}:BucketCapAdapter.admit[summation]"
     findings: list[Finding] = []
     both = (_row(loaded, "T-ES", "ES", 2), _row(loaded, "T-NQ", "NQ", 3))
-    stops = loaded.wiring.PublishedExposures(
-        stop_ticks_by_trade={"T-ES": 20, "T-NQ": 20}
-    )
+    # ARC 032: the distances ride the ROWS above (`stop_distance=20`), so the
+    # source is constructed with nothing. There is no side table left to hand
+    # it — the only way into the cap is the published wire.
+    stops = loaded.wiring.PublishedExposures()
     config = _cap_config(loaded, DISCRIMINATING_CEILING_PCT)
 
     # THE DISCRIMINATOR, re-proved every run (§7.12/3). The sum-shaped and
@@ -555,21 +589,72 @@ def _arm_summation(loaded: Loaded) -> list[Finding]:
 
 
 def _arm_unpriceable(loaded: Loaded) -> list[Finding]:
+    """ARM 3, ARC 032: D3.136 CLOSED, and the fail-open direction still driven.
+
+    The arm did not become a formality when the gap closed. It now measures
+    three things on ONE scenario, over the mirror consumer's ACTUAL published
+    rows — no side table exists to hand it any more:
+
+    A. **The cap runs on the COMPLETE bucket** and reports it complete.
+    B. **The same scenario with the distances absent from the wire admits
+       MORE.** That is D3.136's direction, still driven, and it is the half
+       that would silently return if a publisher ever shipped `stop_distance=0`.
+    C. **A counted row §7:498 places in NO bucket is REPORTED, never dropped.**
+       The second door: reading the distance off the row does nothing for a row
+       that never reaches the bucket.
+    """
     site = f"{WIRING}:PublishedExposures[D3.136]"
     findings: list[Finding] = []
-    held = (_row(loaded, "T-ES", "ES", 2), _row(loaded, "T-NQ", "NQ", 3))
-    picture = _picture(loaded, positions=held)
     config = _cap_config(loaded, DISCRIMINATING_CEILING_PCT)
+    source = loaded.wiring.PublishedExposures
 
-    blind = loaded.wiring.BucketCapAdapter(
-        config=config, source=loaded.wiring.PublishedExposures()
+    # -- A: the complete bucket, priced entirely from the published rows ----
+    priced_rows = (
+        _row(loaded, "T-ES", "ES", 2, stop_distance=20),
+        _row(loaded, "T-NQ", "NQ", 3, stop_distance=20),
     )
-    report = _go(loaded, _pathway(loaded, _fresh(loaded, picture), cap=blind))
+    complete = _picture(loaded, positions=priced_rows)
+    ok_cap = loaded.wiring.BucketCapAdapter(config=config, source=source())
+    ok = _go(loaded, _pathway(loaded, _fresh(loaded, complete), cap=ok_cap))
+    if not ok.cap_complete:
+        findings.append(
+            Finding(
+                site,
+                "every counted row carried a published stop distance and a "
+                f"§7 bucket, and the pathway still reported an incomplete cap: "
+                f"blind={ok.cap_blind} unbucketed={ok.cap_unbucketed}",
+            )
+        )
+    if ok.proposal.rationale.bucket_used <= 0.0:
+        findings.append(
+            Finding(
+                site,
+                "§16 U5's rationale reports bucket_used="
+                f"{ok.proposal.rationale.bucket_used!r} over two held positions "
+                "with real stop distances — a ZERO here is D3.136's fail-open "
+                "still live, reported as a clean ceiling",
+            )
+        )
+
+    # -- B: the SAME scenario with the distances absent from the wire -------
+    blind_rows = (
+        _row(loaded, "T-ES", "ES", 2, stop_distance=0),
+        _row(loaded, "T-NQ", "NQ", 3, stop_distance=0),
+    )
+    blind_cap = loaded.wiring.BucketCapAdapter(config=config, source=source())
+    report = _go(
+        loaded,
+        _pathway(
+            loaded,
+            _fresh(loaded, _picture(loaded, positions=blind_rows)),
+            cap=blind_cap,
+        ),
+    )
     if not report.cap_incomplete:
         findings.append(
             Finding(
                 site,
-                "two held equities positions had no published stop distance "
+                "two held equities positions published NO usable stop distance "
                 "and the pathway reported a CLEAN cap — a ceiling measured "
                 "over an empty bucket admits more than a real one, which is "
                 "the false green in the ADMITTING direction",
@@ -577,10 +662,7 @@ def _arm_unpriceable(loaded: Loaded) -> list[Finding]:
         )
     if set(report.cap_blind) != {"T-ES", "T-NQ"}:
         findings.append(
-            Finding(
-                site,
-                f"the unpriced rows were not named: {report.cap_blind}",
-            )
+            Finding(site, f"the unpriced rows were not named: {report.cap_blind}")
         )
     if "could NOT be priced" not in report.proposal.rationale.note:
         findings.append(
@@ -590,26 +672,44 @@ def _arm_unpriceable(loaded: Loaded) -> list[Finding]:
                 f"Limiter's event log could not audit it: {report.proposal.rationale.note}",
             )
         )
-
-    priced = loaded.wiring.BucketCapAdapter(
-        config=config,
-        source=loaded.wiring.PublishedExposures(
-            stop_ticks_by_trade={"T-ES": 20, "T-NQ": 20}
-        ),
-    )
-    ok = _go(loaded, _pathway(loaded, _fresh(loaded, picture), cap=priced))
-    if ok.cap_incomplete:
-        findings.append(
-            Finding(site, f"a fully priced bucket reported incomplete: {ok.cap_blind}")
-        )
-    if report.proposal.contracts < ok.proposal.contracts:
+    if report.proposal.contracts <= ok.proposal.contracts:
         findings.append(
             Finding(
                 site,
-                "pricing held positions at zero ADMITTED LESS than pricing "
-                "them honestly — if that were true the gap would be "
-                "conservative, and D3.136 would be a nuisance rather than a "
-                "hazard. Measured the other way",
+                f"an UNPRICED bucket admitted {report.proposal.contracts} and a "
+                f"priced one admitted {ok.proposal.contracts} — pricing held "
+                "positions at zero was supposed to admit MORE. If it admits "
+                "the same or less, this arm is no longer discriminating and "
+                "D3.136's direction is unmeasured on this run",
+            )
+        )
+
+    # -- C: the second door — a counted row §7 places in no bucket ---------
+    stray = _picture(
+        loaded,
+        positions=(*priced_rows, _row(loaded, "T-CM", "ESZ6", 4, stop_distance=20)),
+    )
+    stray_cap = loaded.wiring.BucketCapAdapter(config=config, source=source())
+    strayed = _go(loaded, _pathway(loaded, _fresh(loaded, stray), cap=stray_cap))
+    if "T-CM:ESZ6" not in strayed.cap_unbucketed:
+        findings.append(
+            Finding(
+                site,
+                "a counted row carrying the contract symbol ESZ6 was dropped "
+                "from every bucket's SUM and the pathway did not name it: "
+                f"unbucketed={strayed.cap_unbucketed}. §7:498's map is keyed on "
+                "LOGICAL symbols and nothing pins the published row's symbol "
+                "vocabulary, so this row was priced at zero by OMISSION — the "
+                "same admitting direction D3.136 was, through a second door",
+            )
+        )
+    if strayed.cap_complete:
+        findings.append(
+            Finding(
+                site,
+                "a table containing an unbucketable counted row reported a "
+                "COMPLETE cap — `cap_complete` must fold BOTH classes or a "
+                "caller reads an unbucketed table as a whole one",
             )
         )
     return findings

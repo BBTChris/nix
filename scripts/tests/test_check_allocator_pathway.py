@@ -240,14 +240,20 @@ def test_ARM2_a_case_that_no_longer_DISCRIMINATES_is_itself_a_finding(
 
 
 def test_ARM3_an_unpriced_position_valued_at_ZERO_reddens(home: Path) -> None:
-    """D3.136: the false green in the ADMITTING direction."""
+    """D3.136: the false green in the ADMITTING direction.
+
+    ARC 032 re-anchored this plant. The defect planted is IDENTICAL — a row
+    with no usable stop distance dropped from the report instead of counted as
+    unpriced — but it is now planted against the published `stop_distance`
+    rather than against a lookup in a side table that no longer exists.
+    """
     _plant(
         home,
         WIRING,
-        "            if stop is None or stop <= 0:\n"
+        "            if stop <= 0:\n"
         "                unpriced.append(row.trade_id)\n"
         "                continue\n",
-        "            if stop is None or stop <= 0:\n                continue\n",
+        "            if stop <= 0:\n                continue\n",
     )
     result = _run(home)
     _red(
@@ -257,14 +263,63 @@ def test_ARM3_an_unpriced_position_valued_at_ZERO_reddens(home: Path) -> None:
     )
 
 
+def test_ARM3_an_UNBUCKETED_row_dropped_SILENTLY_reddens(home: Path) -> None:
+    """THE SECOND DOOR (ARC 032), and the plant is the pre-ARC-032 code itself.
+
+    Replacing the three-way classification with the one comprehension this
+    module shipped before ARC 032 — `BUCKET_OF.get(row.symbol) is bucket`, no
+    third class, no counter — is exactly how a contract-spelled row left the
+    bucket with nothing said. If ARM 3 (C) stays green on it, the report is
+    decoration.
+    """
+    _plant(
+        home,
+        WIRING,
+        "            if row_bucket is None:\n"
+        '                unbucketed.append(f"{row.trade_id}:{row.symbol}")\n'
+        "                continue\n",
+        "            if row_bucket is None:\n                continue\n",
+    )
+    result = _run(home)
+    _red(
+        result,
+        site_contains="D3.136",
+        why_contains="was dropped from every bucket",
+    )
+
+
+def test_ARM3_a_cap_complete_that_IGNORES_the_unbucketed_class_reddens(
+    home: Path,
+) -> None:
+    """`cap_complete` must fold BOTH classes, or it reports a lie by omission.
+
+    A caller asking "did the cap see the whole bucket?" gets one boolean. If
+    that boolean only knows about unpriced rows, an unbucketed table reads as a
+    complete one — which is the D3.136 report shape reproduced one level up,
+    inside the very predicate that exists to prevent it.
+    """
+    _plant(
+        home,
+        WIRING,
+        "        return not self.cap_incomplete and not self.cap_unbucketed",
+        "        return not self.cap_incomplete",
+    )
+    result = _run(home)
+    _red(
+        result,
+        site_contains="D3.136",
+        why_contains="reported a COMPLETE cap",
+    )
+
+
 def test_ARM3_a_rationale_that_HIDES_the_blindness_reddens(home: Path) -> None:
     """§16 U5: the Limiter's event log must be able to audit the blindness."""
     _plant(
         home,
         WIRING,
         '            f"; {len(unpriced)} held position(s) in {query.bucket.value} could "\n'
-        '            "NOT be priced (no published stop distance — D3.136), so this "\n'
-        '            "ceiling is measured over an INCOMPLETE bucket"\n',
+        '            "NOT be priced (published stop_distance absent or non-positive), "\n'
+        '            "so this ceiling is measured over an INCOMPLETE bucket"\n',
         '            ""\n',
     )
     result = _run(home)

@@ -7,9 +7,28 @@ module is where they meet, and composing them is what found the thing none of
 them could see alone.
 
 ---------------------------------------------------------------------------
-THE FINDING THIS MODULE EXISTS TO STATE (CHECK-DEBT D3.136)
+D3.136 IS CLOSED (ARC 032, Stage 2), AND THE FINDING IS KEPT
 ---------------------------------------------------------------------------
-**§7's correlation-bucket cap cannot be computed from the published snapshot
+**§7's cap now runs on the COMPLETE bucket.** `PositionRow.stop_distance` rides
+the published snapshot (`SEAM_REV 1.1.0`, `WIRE_SCHEMA 2`, `SPEC-A9`), so
+`PublishedExposures` prices a held position from the same versioned row that
+carries `balance`, and `Σ dollar_risk(open + pending in B) + proposed ≤
+bucket_cap_pct(B) × balance` has every term real. The out-of-band stop table
+this module carried as a measurement of the gap is DELETED, not defaulted.
+
+**Measured before and after on ONE scenario, because the after alone proves
+nothing:** two held same-bucket positions carrying real stop distances, and a
+third proposal against them. Under the pre-widening bytes the two held rows
+priced at ZERO, the bucket read empty and the third proposal was ADMITTED
+WHOLE; under the widened row the same scenario prices the bucket at its true
+summed dollar risk and the third proposal is CAPPED. The figures are in
+`scripts/tests/test_allocator_pathway.py` and the pre-widening half is driven
+from git rather than simulated.
+
+The original finding is kept below verbatim in substance, because the reason a
+gap existed outlives the gap and the NEXT one will have this shape.
+
+**§7's correlation-bucket cap could not be computed from the published snapshot
 alone, and nothing in Stage 1 could notice.**
 
 §7:501 fixes the exposure unit as dollar risk:
@@ -21,7 +40,7 @@ distance at all**. The distance lives in the Limiter's stop book as
 `StopState.initial_distance_ticks`, keyed by `client_order_id`, and the stop
 book is not published.
 
-So the cap has exactly two possible input paths and BOTH are currently closed:
+So the cap had exactly two possible input paths and BOTH were closed:
 
 1. **Read the stop book as a second table.** That is the cross-table skew §6.4
    refuses in the same breath as it fixes one snapshot — "independent tables
@@ -38,11 +57,20 @@ writer and one version stamp (§6.4b's principle) — and explicitly NOT path 1,
 which *is* the cross-table skew §6.4 forbids. The deciding argument is that the
 cap is a **safety input currently failing OPEN**: an unpriced position reads as
 zero risk, the bucket looks emptier than it is, and an emptier bucket ADMITS
-more. **This is R3-B's opening item and is NOT built here**: the Limiter (sole
-writer) adds the field, every mirror consumer widens, `SEAM_REV` goes to
-`1.1.0` (planned target recorded in `nixalloc/seam.py`), and R3-B re-proves the
-one-versioned-row identity across the wider schema. Until that lands, every
-sentence below still holds and this module still reports what it cannot price.
+more. **BUILT IN ARC 032**: the Limiter (sole writer) added the field, every
+mirror consumer widened, `SEAM_REV` went to `1.1.0`, and the one-versioned-row
+identity was RE-PROVEN on the wider row by the same race harness — including a
+third plant that IS path 1, the stop-book join, so the refusal of Option B is a
+measurement in this tree and not only an argument in a ledger.
+
+**AND A SECOND DOOR WAS FOUND WHILE CLOSING THE FIRST**, which is the part
+worth carrying forward: reading the stop distance off the row does nothing for
+a row that never reaches the bucket at all. §7:498's map is keyed on LOGICAL
+symbols and nothing pins what vocabulary the published `symbol` field speaks,
+so a row spelled `ESZ6` was dropped by the bucket filter with no counter and no
+note — valued at zero by OMISSION rather than by valuation, in the same
+admitting direction. `PublishedExposures.classify` reports that class
+separately (`unbucketed`), because the two faults need different repairs.
 
 Sub-agent C's `admit()` is correct as a FORMULA and its can-fail proves the
 summation. Sub-agent B's `BucketCapPort` is the right seam. Neither could see
@@ -50,8 +78,15 @@ that the argument between them has no production source, because C was handed
 `Exposure` rows directly and B was handed `None`. **A green from either gate
 does not mean the cap can run**, and this module refuses to hide that: the
 exposure source is an INJECTED port with no default, `PublishedExposures`
-(the only source derivable from the snapshot today) reports every row it could
-not price, and `PathwayReport` carries that count out to the caller.
+reports every counted row it could not price AND every one it could not
+bucket, and `PathwayReport` carries both counts out to the caller.
+
+Absent, and stated rather than implied: the published row does not say whether
+a position is a §7:502 MICRO leg. `PublishedExposures.micro_symbols` is
+injected from the registration ACK's static instrument data. Empty errs
+CONSERVATIVELY — a micro priced as a full is priced at ten times its weight, so
+the bucket reads FULLER and the cap admits LESS — but it is still wrong, and it
+is owned in `CHECK-DEBT` rather than left to be rediscovered.
 
 ---------------------------------------------------------------------------
 WHAT IS COMPOSED HERE, AND WHAT IS STILL ABSENT
@@ -136,31 +171,88 @@ class ExposureSourcePort(Protocol):
 
 @dataclass(frozen=True)
 class PublishedExposures:
-    """The only exposure source derivable from the published snapshot today.
+    """The exposure source, derived from the PUBLISHED SNAPSHOT and nothing else.
 
-    It prices a row ONLY if the caller supplied that trade's stop distance out
-    of band, and returns every other counted row as UNPRICED. That is not a
-    workaround: it is the measurement. On a real snapshot with no side table,
-    `unpriced` equals the number of counted rows in the bucket and `exposures`
-    is empty — so a cap computed from it is a cap over nothing, and
-    `PathwayReport.cap_blind` says so out loud.
+    **ARC 032 closed D3.136 here.** Until this arc the published `PositionRow`
+    carried no stop distance, so this class priced a row only if the caller
+    handed it one **out of band** (`stop_ticks_by_trade`), and on a real
+    snapshot that map was empty: every counted row came back UNPRICED, the
+    bucket summed to zero, and the cap admitted against a bucket it could not
+    see. The row now carries `stop_distance` on the same versioned snapshot as
+    `balance` (`SEAM_REV 1.1.0`, `SPEC-A9`), so the distance is read from the
+    row and the out-of-band map is GONE.
+
+    **The map was deleted rather than kept as a fallback, and that is the §0a
+    decision in this class.** A retained side table is a second, unversioned
+    input a gate can manufacture — exactly the shape that let ARC 031 ship
+    three green gates over a cap that could not run. With it gone, the only
+    way to drive this class is to publish a row, which is the thing under
+    measurement.
+
+    THREE OUTCOMES PER COUNTED ROW, and all three are REPORTED:
+
+    * **priced** — the row is in bucket B and carries a positive stop distance.
+    * **unpriced** — the row is in bucket B and its `stop_distance` is absent or
+      non-positive. Reported, never valued at zero: a row silently worth zero
+      makes the bucket look emptier than it is, which is the direction that
+      ADMITS.
+    * **unbucketed** — §7:498's map gives the row's symbol NO bucket at all.
+
+    That third class is new in ARC 032 and it is a **second fail-open door the
+    widening exposed**. `BUCKET_OF` is keyed on §7:498's LOGICAL symbols
+    (`ES`, `NQ`, `CL`, `GC`, `ZN`). Nothing pins the vocabulary of the
+    published row's `symbol` field, and this tree already publishes all three
+    spellings in its own fixtures — `ES` (logical), `MES` (micro logical) and
+    `ESZ6` / `MESU6` (contract). The pre-ARC-032 filter was a single
+    comprehension, `BUCKET_OF.get(row.symbol) is bucket`, so a real row
+    carrying a contract symbol matched NOTHING and vanished from the bucket
+    silently — priced at zero by omission rather than by valuation, with no
+    counter and no note. Closing D3.136 by reading the stop distance would not
+    have closed that; the row would still never have reached the sum.
     """
 
-    #: `trade_id -> stop distance in ticks`, whatever the caller could learn.
-    #: Empty is the honest production value today.
-    stop_ticks_by_trade: Mapping[str, int] = dataclasses.field(default_factory=dict)
-    #: `trade_id`s known to be micro legs (§7:502, counted at 1/10 weight).
-    micro_trades: frozenset[str] = frozenset()
+    #: §7:502's micro legs. The published row does NOT say whether a position
+    #: is a micro, so this is injected — but it is a STATIC INSTRUMENT PROPERTY
+    #: (the micro leg's symbol, delivered on the registration ACK per
+    #: `nix_strategy_contract_v1.1.md` §7.2), never per-trade state. That is the
+    #: distinction that makes it config rather than a manufactured measurement.
+    #: EMPTY is safe in the conservative direction and is not silent: a micro
+    #: priced as a full is priced at TEN TIMES its §7:502 weight, so the bucket
+    #: reads FULLER than it is and the cap admits LESS. Over-counting is the
+    #: direction that denies; it is still wrong and it is owned in CHECK-DEBT.
+    micro_symbols: frozenset[str] = frozenset()
 
     def exposures(
         self, picture: FinancialPicture, bucket: CorrelationBucket
     ) -> tuple[Sequence[caps.Exposure], tuple[str, ...]]:
-        """`(priced, unpriced)` — every counted row this source could not price."""
+        """`(priced, unpriced)`. See `classify` for the third class."""
+        priced, unpriced, _ = self.classify(picture, bucket)
+        return priced, unpriced
+
+    def classify(
+        self, picture: FinancialPicture, bucket: CorrelationBucket
+    ) -> tuple[tuple[caps.Exposure, ...], tuple[str, ...], tuple[str, ...]]:
+        """`(priced, unpriced, unbucketed)` over the WHOLE counted table.
+
+        Iterates every counted-state row rather than a pre-filtered bucket
+        slice, because "this row belongs to another bucket" and "this row
+        belongs to no bucket §7 knows" are different facts and only the first
+        is a legitimate reason to drop it.
+        """
         priced: list[caps.Exposure] = []
         unpriced: list[str] = []
-        for row in _counted_rows(picture, bucket):
-            stop = self.stop_ticks_by_trade.get(row.trade_id)
-            if stop is None or stop <= 0:
+        unbucketed: list[str] = []
+        for row in picture.positions:
+            if row.state not in COUNTED_STATES:
+                continue
+            row_bucket = BUCKET_OF.get(row.symbol)
+            if row_bucket is None:
+                unbucketed.append(f"{row.trade_id}:{row.symbol}")
+                continue
+            if row_bucket is not bucket:
+                continue
+            stop = int(row.stop_distance)
+            if stop <= 0:
                 unpriced.append(row.trade_id)
                 continue
             priced.append(
@@ -168,10 +260,10 @@ class PublishedExposures:
                     symbol=row.symbol,
                     contracts=abs(row.size),
                     stop_ticks=stop,
-                    micro=row.trade_id in self.micro_trades,
+                    micro=row.symbol in self.micro_symbols,
                 )
             )
-        return tuple(priced), tuple(unpriced)
+        return tuple(priced), tuple(unpriced), tuple(unbucketed)
 
 
 def _counted_rows(
@@ -219,6 +311,13 @@ class BucketCapAdapter:
     #: Set by the pass, read by the report. A list because the adapter is
     #: frozen and this is measurement output, not configuration.
     unpriced: list[str] = dataclasses.field(default_factory=list)
+    #: ARC 032. Counted rows §7:498 places in NO bucket — see
+    #: `PublishedExposures.classify`. Kept separate from `unpriced` because the
+    #: two need different repairs: an unpriced row needs a publisher that fills
+    #: `stop_distance`, an unbucketed one needs a decision about what vocabulary
+    #: the published `symbol` field speaks. Collapsing them would report one
+    #: number for two faults, which is the ambiguity §7.12/1 refuses.
+    unbucketed: list[str] = dataclasses.field(default_factory=list)
 
     def admit(self, query: BucketQuery) -> BucketVerdict:
         """Clamp toward B's ceiling. Never raises the size, never raises at all.
@@ -233,10 +332,16 @@ class BucketCapAdapter:
         the first draft let it kill the sizing pass.
         """
         self.unpriced.clear()
+        self.unbucketed.clear()
         try:
-            held, unpriced = self.source.exposures(  # pylint: disable=assignment-from-no-return
-                query.picture, query.bucket
-            )
+            classify = getattr(self.source, "classify", None)
+            if classify is None:
+                held, unpriced = self.source.exposures(  # pylint: disable=assignment-from-no-return
+                    query.picture, query.bucket
+                )
+                unbucketed: tuple[str, ...] = ()
+            else:
+                held, unpriced, unbucketed = classify(query.picture, query.bucket)
         except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
             return BucketVerdict(
                 contracts=0,
@@ -248,6 +353,7 @@ class BucketCapAdapter:
                 ),
             )
         self.unpriced.extend(unpriced)
+        self.unbucketed.extend(unbucketed)
         try:
             decision = caps.admit(
                 symbol=query.symbol,
@@ -267,16 +373,26 @@ class BucketCapAdapter:
             )
         blind = (
             f"; {len(unpriced)} held position(s) in {query.bucket.value} could "
-            "NOT be priced (no published stop distance — D3.136), so this "
-            "ceiling is measured over an INCOMPLETE bucket"
+            "NOT be priced (published stop_distance absent or non-positive), "
+            "so this ceiling is measured over an INCOMPLETE bucket"
             if unpriced
+            else ""
+        )
+        stray = (
+            f"; {len(unbucketed)} counted row(s) carry a symbol §7:498 places "
+            f"in NO bucket and were therefore counted in NONE: "
+            f"{list(unbucketed)} — the published row's symbol vocabulary is "
+            "unpinned, so a row spelled as a contract month never reaches its "
+            "bucket's SUM. That is a fail-open in the same direction D3.136 "
+            "was, reached by a different door"
+            if unbucketed
             else ""
         )
         return BucketVerdict(
             contracts=decision.admitted_contracts,
             used=decision.used_dollar_risk,
             ceiling=decision.ceiling_dollar_risk,
-            note=f"§7 cap applied over {len(held)} priced exposure(s){blind}",
+            note=f"§7 cap applied over {len(held)} priced exposure(s){blind}{stray}",
         )
 
 
@@ -287,13 +403,27 @@ class PathwayReport:
     proposal: Proposal
     #: Held positions in the proposal's bucket that had no priceable stop.
     cap_blind: tuple[str, ...] = ()
-    #: True when the cap ran over an incomplete bucket (D3.136).
+    #: True when the cap ran over an incomplete bucket.
     cap_incomplete: bool = False
+    #: ARC 032: counted rows §7:498 places in no bucket at all. A row here was
+    #: counted in NO bucket's sum, so the cap ran over less than the table.
+    cap_unbucketed: tuple[str, ...] = ()
 
     @property
     def reaches_broker(self) -> bool:
         """Always False — §2. The pathway emits proposals, never orders."""
         return self.proposal.reaches_broker
+
+    @property
+    def cap_complete(self) -> bool:
+        """True only when EVERY counted row was classified and priced.
+
+        One predicate over both classes, deliberately: a caller asking "did the
+        cap see the whole bucket?" must not have to know there are two ways for
+        the answer to be no, and a caller that checked only `cap_incomplete`
+        would read an unbucketed table as a complete one.
+        """
+        return not self.cap_incomplete and not self.cap_unbucketed
 
 
 class AllocatorPathway:
@@ -342,10 +472,12 @@ class AllocatorPathway:
             signal_ts=signal_ts,
         )
         blind = tuple(self._cap.unpriced) if self._cap is not None else ()
+        stray = tuple(self._cap.unbucketed) if self._cap is not None else ()
         return PathwayReport(
             proposal=proposal,
             cap_blind=blind,
             cap_incomplete=bool(blind),
+            cap_unbucketed=stray,
         )
 
 
