@@ -280,13 +280,24 @@ def test_the_control_passes_and_its_evidence_names_what_it_read(
     assert "send-path ['cancel_order', 'flatten', 'place_order']" in evidence
     # ARC 029: the order path acquired a package home (scripts/nixrisk, the exit
     # half), so arm(ii) now imports the broker modules AND the nixrisk package
-    # modules — 17 in this tree. The literal is banked evidence; it moves when a
+    # modules — 18 in this tree. The literal is banked evidence; it moves when a
     # module is added to either home, which is the point of asserting it.
-    # BUMPED 16 -> 17 by ARC 033 / 0.2, which added `scripts/nixrisk/positions.py`
-    # (the origin write, D3.150). The bump is the assertion WORKING: a new module
-    # on the order path is exactly what this literal exists to make visible, and
-    # `check_order_path_bans` re-scanned it and reported 0 banned calls.
-    assert "arm(ii) imported 17 order-path module(s)" in evidence, evidence
+    # BUMPED 16 -> 18 by ARC 033, and it took TWO bumps to get there because the
+    # tripwire FIRED TWICE, independently, in two worktrees with no visibility
+    # into each other. Phase 0.2 added `scripts/nixrisk/positions.py` (the origin
+    # write, D3.150) and bumped 16 -> 17; Phase 0.4 added
+    # `scripts/nixrisk/calendar_seam.py` (the §6.4 calendar/poller seam) and also
+    # bumped 16 -> 17, from its own base. Neither was wrong about its own module
+    # and both were wrong about the total, which the integration merge caught as a
+    # conflict on this exact line.
+    #
+    # That is the assertion working, twice over: a literal nobody can edit without
+    # meeting it is what makes a new order-path module a deliberate, visible
+    # admission rather than a silent one. Re-banked at 18 rather than loosened —
+    # both new modules are declaration-and-dataclass surfaces with no send, no
+    # retry shape and no banned import, and `check_order_path_bans` re-scanned the
+    # widened scope and still reports 0 banned calls.
+    assert "arm(ii) imported 18 order-path module(s)" in evidence, evidence
 
 
 def test_the_reviewed_suppressions_are_the_two_known_fanouts_and_no_plant_is_pre_silenced(
