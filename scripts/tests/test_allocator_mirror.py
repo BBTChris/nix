@@ -100,6 +100,7 @@ def linked(generation: int, published_ts: float = 1_000.0) -> FinancialPicture:
         size=generation,
         margin=want["row_margin"],
         state=PositionState.OPEN,
+        stop_distance=20,
     )
     return FinancialPicture(
         version=generation,
@@ -449,6 +450,7 @@ def keyed(version: int, es: float, nq: float, ts: float = 1_000.0) -> FinancialP
         size=1,
         margin=1_000.0,
         state=PositionState.OPEN,
+        stop_distance=20,
     )
     return FinancialPicture(
         version=version,

@@ -220,6 +220,7 @@ def _world(seam: Any, generation: int) -> tuple[float, tuple[Any, ...]]:
             size=1,
             margin=float(generation),
             state=seam.PositionState.OPEN,
+            stop_distance=20,
         )
         for index in range(_ROWS)
     )

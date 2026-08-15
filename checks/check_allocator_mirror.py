@@ -358,6 +358,7 @@ def _linked_picture(loaded: Loaded, generation: int, published_ts: float) -> Any
         size=generation,
         margin=want["row_margin"],
         state=loaded.seam.PositionState.OPEN,
+        stop_distance=20,
     )
     return loaded.seam.FinancialPicture(
         version=generation,
@@ -776,6 +777,7 @@ def _keyed_picture(
         size=1,
         margin=1_000.0,
         state=loaded.seam.PositionState.OPEN,
+        stop_distance=20,
     )
     return loaded.seam.FinancialPicture(
         version=version,

@@ -172,6 +172,7 @@ def _rows(*margins: float) -> tuple[PositionRow, ...]:
             size=1,
             margin=margin,
             state=PositionState.OPEN,
+            stop_distance=20,
         )
         for i, margin in enumerate(margins)
     )

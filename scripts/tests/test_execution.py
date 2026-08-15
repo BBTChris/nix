@@ -363,6 +363,7 @@ def row(symbol: str, size: int) -> PositionRow:
         size=size,
         margin=1234.5,
         state=PositionState.OPEN,
+        stop_distance=20,
     )
 
 

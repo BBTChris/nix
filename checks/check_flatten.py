@@ -314,6 +314,7 @@ def _open_book(loaded: Loaded, sink, *, balance: float, trade_id: str = "T-1"):
                 size=1,
                 margin=1000.0,
                 state=loaded.seam.PositionState.OPEN,
+                stop_distance=20,
             )
         ],
     )

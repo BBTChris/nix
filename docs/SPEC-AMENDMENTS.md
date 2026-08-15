@@ -655,6 +655,109 @@ first place.
 
 ---
 
+## SPEC-A9 — the published position row carries the STOP DISTANCE; §3:159's enumeration gains a sixth field
+
+| field | value |
+|---|---|
+| origin | **Architect ruling, issued in ARC 031 (Phase 5) as OPTION A on CHECK-DEBT D3.136.** Not spec text. |
+| implemented by | **ARC 032 (R3-B), Phase 0.4** — `nixrisk.seam.PositionRow.stop_distance`, `nixrisk.picture` both codec directions, `WIRE_SCHEMA 1 -> 2`, `nixalloc.seam.SEAM_REV 1.0.0 -> 1.1.0` |
+| closes | CHECK-DEBT **D3.136** — §7's correlation-bucket cap could not be computed from the published financial picture, and failed OPEN while it could not |
+| section that would have to say it | **§3:159** (`per-position rows keyed by trade_id: symbol, strategy_id, size, margin, state`) in `nics_risk_subsystem_spec_v1.3.md`, with **§7:501** as the clause that forces it and **§6.4** as the clause that forbids the alternative |
+| status | **PENDING** a v1.4 of `nics_risk_subsystem_spec_v1.3.md`, which the architect owns |
+
+**NO `terminal-path additions` ROW, and its absence is deliberate — MEASURED, not
+reasoned.** The first draft of this table carried
+`| terminal-path additions | *(none — this amendment adds no TerminalPath member)* |`,
+on the reasonable-sounding argument that stating "none" is more explicit than omitting the row.
+`check_limiter_seam` then FAILED: *"§3 names a release path TERMINALPATH that the seam does not
+declare"*. The gate derives the EFFECTIVE terminal-path roster by parsing the frozen §3 sentence
+UNIONED with this row across every amendment here (the mechanism SPEC-A7 had to build), and it read
+the prose "adds no `TerminalPath` member" as a path named `TERMINALPATH`. The row is machine-read,
+so the only correct way to say "this amendment adds none" is to not have the row — which is what
+SPEC-A8 does, and this is the second amendment in a row for which that is true.
+
+### Ruling, verbatim as issued (ARC 031, Phase 5)
+
+> **OPTION A.** `PositionRow` gains **`stop_distance`**. §7:501 prices bucket exposure as
+> `(stop_ticks + slippage_pad) × tick_value × contracts`, so applying the correlation cap to
+> positions ALREADY held needs each one's stop distance — and the published row carries none, so
+> today an unpriced position values at ZERO, the bucket reads EMPTIER than it is, and the cap
+> **FAILS OPEN** by admitting more.
+>
+> The ruling picked the SKEW-FREE fix. `stop_distance` rides the **same versioned snapshot** as
+> `balance` and `positions` — one more field under ONE writer and ONE version stamp (§6.4b's
+> principle). It is explicitly NOT the stop-book read: the stop book is a SECOND table, and joining
+> it to this one is the cross-table skew §6.4 forbids in the same breath as it fixes one snapshot.
+
+### What the frozen spec says today
+
+§3:159 enumerates the row: *"per-position rows keyed by trade_id: **symbol, strategy_id, size,
+margin, state**"*. Five fields after the key. **`stop_distance` is a sixth**, and that is why this
+amendment exists rather than the change simply landing: §3:159 is a closed enumeration inside the
+frozen document, and an implementation that quietly adds a field to it is an implementation
+disagreeing with the spec without saying so.
+
+Eight lines up, §3:157 fixes the row's purpose as *"every position in whatever state it is in"* and
+§3:162's ATOMICITY RULE fixes *"balance and the position table publish together as one snapshot —
+never two separate reads"*. Both are satisfied by the addition and neither authorises it; the
+authorisation is the ruling above.
+
+### Why the alternative was refused BY NAME, which is what makes this a ruling
+
+There were exactly two input paths for §7:501's stop distance and both were closed:
+
+* **Option B — read the Limiter's stop book as a second table** (`StopState.initial_distance_ticks`,
+  keyed by `client_order_id`). That is the cross-table skew **§6.4** refuses in the same sentence
+  that fixes one snapshot — *"independent tables tick on independent clocks"* — and it was
+  unavailable anyway, because nothing publishes the stop book.
+* **Option A — put the distance on the published row.** A change to the one snapshot §3 makes
+  atomic, therefore a `SEAM_REV` bump and an architect ruling rather than an implementation detail.
+
+The asymmetry that decides it, and it is a *direction* rather than a preference: the cap is a
+**safety input that was failing OPEN**. An unpriced position reads as zero risk, the bucket looks
+emptier than it is, and an emptier bucket **admits more**. Incomplete in the permissive direction is
+not the same defect as incomplete.
+
+### What this amendment deliberately does NOT decide
+
+* **It does not make the row a general-purpose carrier.** One field, forced by one clause of §7,
+  under the same writer and the same version stamp. §2's authority split is untouched: the Limiter
+  is still the sole writer and the Allocator still only reads.
+* **It does not touch §6.4b's per-key venue stamps.** The published picture still carries none, the
+  Allocator's mirror still degrades to a whole-snapshot recency guard, and that is still CHECK-DEBT
+  **D3.121**. A `SEAM_REV` that moved for this reason is not evidence D3.121 was addressed, and
+  `scripts/nixalloc/mirror.py` says so at the paragraph that would otherwise be read as a claim.
+* **It does not decide the field's PROVENANCE inside the Limiter.** `stop_distance` is the tick
+  distance the position was sized against; which of the Limiter's own structures the writer reads it
+  from is the writer's business and is not a wire property.
+
+### How this amendment is ENFORCED, which is the part that is not documentation
+
+The mechanism is `nixalloc.seam.POSITION_ROW_FIELDS` plus `STOP_DISTANCE_FIELD`, and it had to be
+BUILT, because **nothing in this tree pinned the published row's schema at all**.
+`check_limiter_seam` pins the nine field names of `FinancialPicture` with their §3 reasons;
+`check_allocator_seam` ARM 2 compared `MIRRORED_FIELDS` against `dataclasses.fields(FinancialPicture)`.
+Neither named one field of `PositionRow`. So before ARC 032, renaming `PositionRow.margin` or
+deleting `PositionRow.state` changed the published wire and left every seam gate green.
+
+That claim is DRIVEN, not asserted:
+`test_the_PRE_WIDENING_GATE_was_BLIND_to_the_row` checks the pre-widening gate's own bytes out of
+git, runs them against a copy of the pre-widening seam with `PositionRow.margin` renamed, and
+asserts that gate **passes**. `test_EVERY_published_ROW_field_renamed_in_turn_reddens` then walks
+`POSITION_ROW_FIELDS` and proves today's gate reddens on each one, and
+`test_RENAMING_stop_distance_reddens_naming_the_FAIL_OPEN` proves the stop-distance finding names
+the fail-open rather than reporting a generic schema drift.
+
+**One sentence of the ARC 031 ruling was wrong on the facts and is corrected rather than repeated.**
+It said *"`nixalloc.seam.MIRRORED_FIELDS` gains it"*. `MIRRORED_FIELDS` pins `FinancialPicture`'s
+fields; `stop_distance` is a field of `PositionRow`, one level down inside the `positions` tuple.
+Adding the name there would have made the tuple disagree with
+`dataclasses.fields(FinancialPicture)` and reddened the gate on the spot. The invariant the sentence
+was reaching for — *the published row's schema is pinned to a literal at `SEAM_REV`* — is honoured
+by `POSITION_ROW_FIELDS`. The spelling was a sketch; the invariant binds (§0b).
+
+---
+
 ## Standing note for the architect
 
 Every ruling in this file was issued **because the arc that met the gap refused to invent the

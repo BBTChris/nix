@@ -22,6 +22,24 @@ serve that single property; none of them is a second property.
     version stamp disappearing is its own named finding rather than one
     missing element in a set difference.
 
+    **WIDENED IN ARC 032, and the widening is what found the hole.** The pin
+    above covers `FinancialPicture` and stops there. `positions` is a tuple of
+    `PositionRow`, and until ARC 032 **no gate in this tree named a single
+    field of that row** — `check_limiter_seam` pins the nine picture fields
+    with their §3 reasons and this arm compared the same nine. So renaming
+    `PositionRow.margin`, or DELETING `PositionRow.state`, changed the
+    published wire and left every seam gate GREEN. This arm now also compares
+    `POSITION_ROW_FIELDS` against `dataclasses.fields(PositionRow)`, and
+    checks `STOP_DISTANCE_FIELD` against that same set as its OWN finding —
+    for the reason `VERSION_FIELD` gets its own: §3's atomicity is observable
+    only through the version stamp, and §7's correlation cap is computable
+    from the published snapshot only through the stop distance. Losing either
+    does not make its rule wrong; it makes the rule silently unenforceable,
+    and for the stop distance that silence is D3.136's fail-open returning.
+    Extending this arm rather than minting ARM 7 is doctrine C.9: the property
+    ("a literal pin still matches the dataclass it was pinned against") is one
+    this arm already owns; the row is a second subject, not a second property.
+
   * **ARM 3 — READ-ONLY BY CONSTRUCTION, in two independent spellings.** No
     `Protocol` in the module may declare a verb whose name is a mutation, and
     every dataclass in it must be `frozen=True`. Two spellings because they
@@ -328,6 +346,58 @@ def _arm_mirrored_fields(loaded: Loaded) -> list[Finding]:
                 "read unobservable rather than impossible",
             )
         )
+    findings += _row_schema(loaded)
+    return findings
+
+
+def _row_schema(loaded: Loaded) -> list[Finding]:
+    """ARC 032: the same pinned-literal rule, one level down, on `PositionRow`.
+
+    `positions` is a tuple of rows and the rows carry the fields §7:501 prices
+    exposure from. A pin that stops at the picture leaves the row's schema
+    unguarded, which is the state this tree was in until the widening.
+    """
+    findings: list[Finding] = []
+    site = f"{SEAM}:POSITION_ROW_FIELDS"
+    row = getattr(loaded.limiter, "PositionRow", None)
+    if row is None or not dataclasses.is_dataclass(row):
+        return [
+            Finding(
+                f"{LIMITER_SEAM}:PositionRow",
+                "not a dataclass, so its declared properties cannot be read",
+            )
+        ]
+    expected = tuple(field.name for field in dataclasses.fields(row))
+    declared = tuple(getattr(loaded.allocator, "POSITION_ROW_FIELDS", ()))
+    if declared != expected:
+        missing = sorted(set(expected) - set(declared))
+        extra = sorted(set(declared) - set(expected))
+        findings.append(
+            Finding(
+                site,
+                f"the pinned published-ROW schema does not match the Limiter's "
+                f"own PositionRow. missing={missing or 'none'} "
+                f"extra={extra or 'none'} order_matches="
+                f"{sorted(declared) == sorted(expected)}; declared={list(declared)}",
+            )
+        )
+    stop = getattr(loaded.allocator, "STOP_DISTANCE_FIELD", "")
+    if stop not in expected:
+        findings.append(
+            Finding(
+                f"{SEAM}:STOP_DISTANCE_FIELD",
+                f"the stop-distance field {stop!r} is not a field of the "
+                "published position row — §7:501 prices bucket exposure as "
+                "(stop_ticks + slippage_pad) x tick_value x contracts, so §7's "
+                "correlation cap can price an ALREADY-HELD position from the "
+                "published snapshot ONLY through that field. Dropping or "
+                "renaming it does not make the cap wrong, it makes the cap "
+                "FAIL OPEN: an unpriced position values at zero, the bucket "
+                "reads emptier than it is, and an emptier bucket ADMITS more "
+                "(CHECK-DEBT D3.136). §6.4 forbids recovering it from the stop "
+                "book, which is a second table on its own clock",
+            )
+        )
     return findings
 
 
@@ -577,7 +647,12 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
             f"{LIMITER_SEAM}'s (not merely same-shaped); "
             f"{len(getattr(loaded.allocator, 'MIRRORED_FIELDS', ()))} mirrored "
             "field(s) and the version stamp derived from the Limiter's own "
-            "dataclass; read-only proven in two spellings (no mutating verb on "
+            "dataclass; "
+            f"{len(getattr(loaded.allocator, 'POSITION_ROW_FIELDS', ()))} "
+            "published-ROW field(s) and the stop-distance field checked against "
+            "the Limiter's own PositionRow (ARC 032 — the row's schema was "
+            "unpinned by ANY gate before this arc); read-only proven in two "
+            "spellings (no mutating verb on "
             "any Protocol, every value type frozen); the correlation buckets "
             "parsed out of §7's locked sentence in the frozen spec with no "
             "bucket or symbol spelled in this gate; zero coroutines; zero "

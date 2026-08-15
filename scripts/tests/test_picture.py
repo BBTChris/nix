@@ -61,6 +61,7 @@ def _row(trade_id: str, margin: float, state: PositionState = PositionState.OPEN
         size=1,
         margin=margin,
         state=state,
+        stop_distance=20,
     )
 
 

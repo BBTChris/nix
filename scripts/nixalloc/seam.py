@@ -147,7 +147,9 @@ from nixrisk.seam import (
 __all__ = [
     "BUCKET_OF",
     "MIRRORED_FIELDS",
+    "POSITION_ROW_FIELDS",
     "SEAM_REV",
+    "STOP_DISTANCE_FIELD",
     "AllocatorPort",
     "BindingConstraint",
     "ContentionPolicy",
@@ -172,11 +174,18 @@ __all__ = [
 #: This seam's own revision. Bumped when a declared property changes, so a
 #: consumer built against an older shape can refuse rather than mis-read —
 #: the same role `contract_rev` plays in `nix_strategy_contract_v1.1.md` §3.
-SEAM_REV = "1.0.0"
+SEAM_REV = "1.1.0"
 
-#: PLANNED TARGET — `1.1.0`, and it is RECORDED here rather than left to be
-#: rediscovered, because a wire contract's next shape is exactly the thing a
-#: consumer wants stated in the contract itself.
+#: **ARC 032 BUMPED THIS 1.0.0 -> 1.1.0, AND ONLY BECAUSE THE WIRE ACTUALLY
+#: CHANGED.** ARC 031 recorded `1.1.0` as a PLANNED target and deliberately
+#: left the literal at `1.0.0`, on the stated rule that the literal moves when
+#: the bytes move and not when a decision is taken. The bytes have now moved:
+#: `nixrisk.seam.PositionRow` carries `stop_distance`, `nixrisk.picture`
+#: encodes and decodes it, and `WIRE_SCHEMA` went `1 -> 2` in the same edit.
+#: A consumer built against `1.0.0` must refuse this snapshot rather than
+#: mis-read it, which is the whole job of the number.
+#:
+#: The ruling this discharges, kept because the argument is the durable part:
 #:
 #: ARCHITECT RULING on CHECK-DEBT **D3.136**, OPTION A (ARC 031, Phase 5):
 #: `PositionRow` gains **`stop_distance`**. §7:501 prices bucket exposure as
@@ -193,12 +202,25 @@ SEAM_REV = "1.0.0"
 #: read: the stop book is a SECOND table, and joining it to this one is the
 #: cross-table skew §6.4 forbids in the same breath as it fixes one snapshot.
 #:
-#: **NOT IMPLEMENTED HERE, deliberately.** This is R3-B's opening item: the
-#: Limiter (sole writer) adds the field, every mirror consumer widens,
-#: `MIRRORED_FIELDS` above gains it, `SEAM_REV` goes to `1.1.0`, and R3-B
-#: RE-PROVES the one-versioned-row identity across the wider schema rather than
-#: assuming the widening preserved it. Until then this literal stays `1.0.0`,
-#: which is the honest statement that the wire has not changed.
+#: **BUILT IN ARC 032 (R3-B).** The Limiter (sole writer) added the field, the
+#: codec carries it both directions, and the one-versioned-row identity was
+#: RE-PROVEN on the WIDER row by `check_picture_atomicity` rather than assumed
+#: to survive the widening.
+#:
+#: **ONE SENTENCE OF ARC 031's RULING WAS WRONG ON THE FACTS, and correcting it
+#: is worth more than repeating it.** It said *"`MIRRORED_FIELDS` above gains
+#: it"*. `MIRRORED_FIELDS` pins the fields of **`FinancialPicture`**, and
+#: `stop_distance` is a field of **`PositionRow`** — a member of the
+#: `positions` tuple, one level down. Adding the name to `MIRRORED_FIELDS`
+#: would have made the tuple disagree with `dataclasses.fields(FinancialPicture)`
+#: and reddened `check_allocator_seam` on the spot. The invariant the sentence
+#: was reaching for is real and is honoured by `POSITION_ROW_FIELDS` below: the
+#: published row's schema is PINNED TO A LITERAL at `SEAM_REV`, so widening it
+#: costs a deliberate edit here. The spelling was a sketch; the invariant binds
+#: (§0b).
+#:
+#: The row's own field list is an extension of a frozen enumeration (§3:159
+#: names `symbol, strategy_id, size, margin, state`), recorded as **`SPEC-A9`**.
 
 #: THE PINNED SCHEMA at `SEAM_REV`. Spelled out, and the spelling is the point.
 #:
@@ -235,6 +257,47 @@ MIRRORED_FIELDS: tuple[str, ...] = (
 #: outside ONLY through this field: a consumer that observes a balance and a
 #: position table bearing different versions has observed a torn read.
 VERSION_FIELD = "version"
+
+#: THE PINNED SCHEMA OF ONE PUBLISHED **ROW** at `SEAM_REV`. A literal, for the
+#: identical reason `MIRRORED_FIELDS` is one, and it is new in ARC 032 because
+#: until ARC 032 **nothing in this tree pinned it at all**.
+#:
+#: MEASURED, and this is the gap the widening exposed rather than created:
+#: `check_limiter_seam` pins the field names of `FinancialPicture` (nine
+#: entries, each with its §3 reason) and `check_allocator_seam` ARM 2 compares
+#: `MIRRORED_FIELDS` against `dataclasses.fields(FinancialPicture)`. **Neither
+#: names a single field of `PositionRow`.** So on the tree as it stood, renaming
+#: `PositionRow.margin` to `PositionRow.margn`, or DELETING `state`, changed the
+#: published wire and left every seam gate green. The nine-field pin was doing
+#: its job one level too high, and a widening was the thing that made anyone
+#: look.
+#:
+#: Pinned as a literal and checked against `dataclasses.fields(PositionRow)` by
+#: `check_allocator_seam`, never DERIVED from it. ARC 031 measured why: its
+#: first `MIRRORED_FIELDS` was derived, its can-fail renamed each published
+#: field in turn, and the gate stayed GREEN on eight of nine because the
+#: derivation moved with the rename. A derivation cannot go stale and it also
+#: cannot NOTICE.
+POSITION_ROW_FIELDS: tuple[str, ...] = (
+    "trade_id",
+    "symbol",
+    "strategy_id",
+    "size",
+    "margin",
+    "state",
+    #: ARC 032, `SEAM_REV 1.1.0`, `SPEC-A9`. §7:501's exposure unit, for the
+    #: positions already held.
+    "stop_distance",
+)
+
+#: The published row's stop-distance field name, pinned separately for the same
+#: reason `VERSION_FIELD` is pinned separately: §7's correlation cap is
+#: computable from the published snapshot ONLY through this field, so dropping
+#: or renaming it does not make the cap wrong — it makes the cap FAIL OPEN
+#: again, silently, which is strictly worse than making it fail. A rename
+#: caught by `POSITION_ROW_FIELDS` alone would be reported as "the schema
+#: moved"; this one is reported as "the thing that closed D3.136 is gone".
+STOP_DISTANCE_FIELD = "stop_distance"
 
 
 # ---------------------------------------------------------------------------

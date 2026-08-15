@@ -425,6 +425,7 @@ def _rows(subject: _Subject, *margins: float) -> tuple[Any, ...]:
             size=1,
             margin=margin,
             state=seam.PositionState.OPEN,
+            stop_distance=20,
         )
         for i, margin in enumerate(margins)
     )

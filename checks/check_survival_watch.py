@@ -235,6 +235,7 @@ def _position(loaded: Loaded, *, margin: float) -> Any:
         size=1,
         margin=margin,
         state=loaded.seam.PositionState.OPEN,
+        stop_distance=20,
     )
 
 

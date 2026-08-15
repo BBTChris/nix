@@ -68,13 +68,22 @@ timestamp/sequence, and the guard to be **per key** so *"a late update on one
 key can never regress another"*.
 
 **The published financial picture in this tree carries no such stamps.**
-`nixalloc.seam.MIRRORED_FIELDS` pins nine fields at `SEAM_REV 1.0.0` — `version,
+`nixalloc.seam.MIRRORED_FIELDS` pins nine fields at `SEAM_REV 1.1.0` — `version,
 published_ts, balance, positions, margin_per_contract, sum_open_margin,
 sum_reservations, committed, deployable` — and `published_ts` is the *Limiter's*
 clock (`nixrisk.picture.FinancialPictureBook._build` stamps it with its own
 `clock()`), not a venue stamp. So §6.4b's per-key guard is **not expressible
 over the published snapshot alone**, and that gap is CHECK-DEBT D3.121, owned by
 ARC 032. It is a gap in the WIRE, not in the rule.
+
+**ARC 032 widened the seam and did NOT close D3.121, which is worth saying
+plainly rather than letting a `SEAM_REV` bump imply otherwise.** The bump to
+`1.1.0` added `stop_distance` to `POSITION_ROW_FIELDS` — the *row's* pinned
+schema, one level down — because §7:501 needs a held position's stop distance
+to price it. The picture's own nine fields are unchanged and none of them is a
+venue stamp, so §6.4b is exactly as unexpressible on the wire as it was before.
+A `SEAM_REV` that moved for a different reason is not evidence that this one
+was addressed.
 
 This module therefore takes the stamps as a field that rides BESIDE the picture
 (`MirrorUpdate.source_stamps`, wire key `source_stamps`), keyed as `balance`,

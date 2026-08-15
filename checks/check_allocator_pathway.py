@@ -243,6 +243,7 @@ def _row(loaded: Loaded, trade_id: str, symbol: str, size: int) -> Any:
         size=size,
         margin=500.0,
         state=loaded.seam.PositionState.OPEN,
+        stop_distance=20,
     )
 
 

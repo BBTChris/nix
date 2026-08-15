@@ -25,7 +25,9 @@ exit code or the status alone (check contract v2 §11).
 
 from __future__ import annotations
 
+import importlib.util
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -41,6 +43,10 @@ from nixverify.contract import (  # pylint: disable=wrong-import-position
     Mode,
     Status,
 )
+
+GATE_REL = "checks/check_allocator_seam.py"
+ALLOC_SEAM = "scripts/nixalloc/seam.py"
+RISK_SEAM = "scripts/nixrisk/seam.py"
 
 COPIED = (
     "scripts/nixalloc/seam.py",
@@ -151,7 +157,7 @@ def test_the_gate_reads_the_tree_it_was_GIVEN_not_the_live_repo(home: Path) -> N
     _plant(
         home,
         "scripts/nixalloc/seam.py",
-        'SEAM_REV = "1.0.0"',
+        'SEAM_REV = "1.1.0"',
         'SEAM_REV = "9.9.9-planted"',
     )
     result = _run(home)
@@ -202,6 +208,268 @@ def test_EVERY_mirrored_field_renamed_in_turn_reddens(tmp_path: Path) -> None:
         )
 
 
+# --------------------------------------------------------------------------
+# ARC 032 / 0.4 — THE GATE MUST REDDEN ON THE WIDENING ITSELF
+#
+# The brief's instruction, quoted so the tests below can be read against it:
+# "PROVE the seam gate reddens on the widening itself — a renamed or dropped
+#  stop_distance must redden it, and MIRRORED_FIELDS must be PINNED to a
+#  literal at SEAM_REV, not derived from the dataclass (the derivation is what
+#  made ARC 031's first seam gate pass on eight of nine renames)."
+#
+# MEASURED CORRECTION, and it is why these tests exist as a separate block:
+# `MIRRORED_FIELDS` pins `FinancialPicture`'s fields. `stop_distance` is a
+# field of `PositionRow` — one level down, inside the `positions` tuple.
+# Adding the name to `MIRRORED_FIELDS` would make that tuple disagree with
+# `dataclasses.fields(FinancialPicture)` and redden ARM 2 immediately. The pin
+# the invariant actually needs is `POSITION_ROW_FIELDS`, which did not exist
+# before this arc, because **nothing in this tree pinned the published row's
+# schema at all**. The vacuity test below proves that claim rather than
+# asserting it: it drives the gate's own bytes at the PRE-WIDENING seam and
+# shows a renamed row field passing.
+# --------------------------------------------------------------------------
+
+
+def _row_slice(home: Path) -> tuple[str, int, int]:
+    """`(whole file, start, end)` of the Limiter's `PositionRow` block."""
+    text = (home / "scripts/nixrisk/seam.py").read_text(encoding="utf-8")
+    start = text.index("@dataclass(frozen=True)\nclass PositionRow:")
+    end = text.index("@dataclass(frozen=True)\nclass FinancialPicture:", start)
+    return text, start, end
+
+
+def _rename_row_field(home: Path, field: str) -> None:
+    """Rename ONE declared field, inside the `PositionRow` block only."""
+    text, start, end = _row_slice(home)
+    block = text[start:end]
+    anchor = f"\n    {field}: "
+    assert block.count(anchor) == 1, (
+        f"{field!r} appears {block.count(anchor)} times in the PositionRow "
+        "block, not once"
+    )
+    patched = block.replace(anchor, f"\n    {field}_renamed: ")
+    (home / "scripts/nixrisk/seam.py").write_text(
+        text[:start] + patched + text[end:], encoding="utf-8"
+    )
+
+
+def test_EVERY_published_ROW_field_renamed_in_turn_reddens(tmp_path: Path) -> None:
+    """One plant per pinned row field, enumerated from the seam's own literal.
+
+    Enumerated and not sampled, for the reason ARC 031 measured on the picture:
+    a gate proven on one field says nothing about the other six, and the field
+    a later arc adds must be covered without anyone remembering to add a test.
+    """
+    sys.path.insert(0, str(REPO / "scripts"))
+    from nixalloc import seam  # pylint: disable=import-outside-toplevel
+
+    fields = seam.POSITION_ROW_FIELDS
+    assert "stop_distance" in fields, (
+        f"the pin does not carry the field this arc added: {fields}"
+    )
+    assert len(fields) >= 7, f"the published row shrank unexpectedly: {fields}"
+
+    for index, field in enumerate(fields):
+        home = tmp_path / f"row_{index}"
+        for rel in COPIED:
+            target = home / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(REPO / rel, target)
+        _rename_row_field(home, field)
+        result = _run(home)
+        assert result.status is Status.FAIL_NEEDS_OPERATOR, (
+            f"renaming published ROW field {field!r} left the seam gate GREEN — "
+            f"the gate measures nothing about it: {result}"
+        )
+        assert field in (result.detail or ""), (
+            f"the finding does not name the renamed field {field!r}: {result.detail}"
+        )
+
+
+def test_RENAMING_stop_distance_reddens_naming_the_FAIL_OPEN(home: Path) -> None:
+    """The field this arc added, with its own finding and its own reason.
+
+    Renaming it is caught twice and the two findings say different things: the
+    schema pin says "the row moved", and `STOP_DISTANCE_FIELD` says "the thing
+    that closed D3.136 is gone". Only the second is actionable, which is why it
+    is a separate finding rather than one element of a set difference — the
+    same argument `VERSION_FIELD` already carries one level up.
+    """
+    _rename_row_field(home, "stop_distance")
+    result = _run(home)
+    _red(
+        result,
+        site_contains="STOP_DISTANCE_FIELD",
+        why_contains="FAIL OPEN",
+    )
+    assert "POSITION_ROW_FIELDS" in (result.site or ""), result.site
+    assert "an emptier bucket ADMITS more" in (result.detail or ""), result.detail
+
+
+def test_DROPPING_stop_distance_from_the_row_reddens(home: Path) -> None:
+    """Dropped, not renamed — the case a rename-only suite would miss."""
+    text, start, end = _row_slice(home)
+    block = text[start:end]
+    anchor = "    stop_distance: int\n"
+    assert block.count(anchor) == 1, block
+    (home / "scripts/nixrisk/seam.py").write_text(
+        text[:start] + block.replace(anchor, "") + text[end:], encoding="utf-8"
+    )
+    result = _run(home)
+    _red(result, site_contains="STOP_DISTANCE_FIELD", why_contains="FAIL OPEN")
+
+
+def test_DROPPING_stop_distance_from_the_PIN_reddens_too(home: Path) -> None:
+    """The other direction: the row keeps it, the contract forgets it.
+
+    A pin is a two-sided claim. A suite that only ever perturbs the dataclass
+    proves the gate notices the producer moving and says nothing about a
+    consumer quietly narrowing what it promises to carry.
+    """
+    _plant(
+        home,
+        "scripts/nixalloc/seam.py",
+        "    #: ARC 032, `SEAM_REV 1.1.0`, `SPEC-A9`. §7:501's exposure unit, for the\n"
+        "    #: positions already held.\n"
+        '    "stop_distance",\n',
+        "",
+    )
+    result = _run(home)
+    _red(
+        result,
+        site_contains="POSITION_ROW_FIELDS",
+        why_contains="does not match the Limiter's own PositionRow",
+    )
+    assert "missing=['stop_distance']" in (result.detail or ""), result.detail
+
+
+def test_the_PIN_IS_A_LITERAL_and_a_DERIVATION_would_have_passed(home: Path) -> None:
+    """THE VACUITY CONTROL, and it is the reason the pin is spelled out.
+
+    ARC 031's first `MIRRORED_FIELDS` was DERIVED from `dataclasses.fields()`,
+    and its can-fail renamed each published field in turn: the gate stayed
+    GREEN on eight of nine, because the derivation moved with the rename. This
+    plants that exact mistake on THIS arm — it replaces the literal pin with
+    the derivation — and asserts the gate then passes on a renamed row field.
+
+    A test that asserts the CORRECT thing reddens proves the arm works. This
+    one proves the arm would NOT have worked if it had been written the
+    plausible way, which is the claim that is actually in doubt.
+    """
+    _plant(
+        home,
+        "scripts/nixalloc/seam.py",
+        "import enum\n",
+        "import dataclasses as _dc\nimport enum\n",
+    )
+    _plant(
+        home,
+        "scripts/nixalloc/seam.py",
+        "POSITION_ROW_FIELDS: tuple[str, ...] = (",
+        "POSITION_ROW_FIELDS: tuple[str, ...] = tuple(\n"
+        "    _f.name for _f in _dc.fields(PositionRow)\n"
+        ") or (",
+    )
+    _rename_row_field(home, "margin")
+    result = _run(home)
+    assert result.status is Status.PASS, (
+        "the derived pin was supposed to move with the rename and pass — if it "
+        f"reddens, this control is no longer measuring what it names: {result}"
+    )
+
+
+def test_the_PRE_WIDENING_GATE_was_BLIND_to_the_row(tmp_path: Path) -> None:
+    """The claim in the arm's own docstring, DRIVEN against the real old bytes.
+
+    "Renaming `PositionRow.margin` changed the published wire and left every
+    seam gate green" is a statement about the gate this project shipped before
+    ARC 032, so it is measured against **that gate's actual bytes**, checked
+    out of git at the arc's base revision — not by mutilating today's gate
+    until it looks blind, which would measure the mutilation.
+
+    A first draft did exactly that (deleted the pin from a COPY of today's
+    seam) and it FAILED, correctly: with the pin gone the literal reads `()`,
+    the comparison is `() != (seven fields)`, and the arm still reddens naming
+    the renamed field. Removing a gate's input does not reproduce a gate that
+    never had one. Recorded because the failed draft is the more instructive
+    half.
+    """
+    base = _base_revision()
+    if base is None:
+        pytest.skip("no pre-widening revision on this branch to compare against")
+        return
+    old_gate_src, old_alloc_seam, old_risk_seam = base
+
+    home = tmp_path / "pre"
+    for rel in COPIED:
+        target = home / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(REPO / rel, target)
+    (home / "scripts/nixalloc/seam.py").write_text(old_alloc_seam, encoding="utf-8")
+    (home / "scripts/nixrisk/seam.py").write_text(old_risk_seam, encoding="utf-8")
+
+    old_gate_path = tmp_path / "old_check_allocator_seam.py"
+    old_gate_path.write_text(old_gate_src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("_old_seam_gate", old_gate_path)
+    assert spec is not None and spec.loader is not None
+    old_gate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(old_gate)
+
+    clean = old_gate.run(Mode.VERIFY, Context(nix_home=home, mode=Mode.VERIFY))
+    assert clean.status is Status.PASS, (
+        f"the pre-widening gate does not pass on its own pristine seam, so this "
+        f"control has no baseline to measure against: {clean}"
+    )
+
+    _rename_row_field(home, "margin")
+    dirty = old_gate.run(Mode.VERIFY, Context(nix_home=home, mode=Mode.VERIFY))
+    assert dirty.status is Status.PASS, (
+        "the pre-widening gate DID see a renamed PositionRow field — then the "
+        "ARC 032 arm is a duplicate instrument (doctrine C.9), not new "
+        f"coverage, and this arc's premise is wrong: {dirty}"
+    )
+
+
+def _base_revision() -> tuple[str, str, str] | None:
+    """`(old gate, old allocator seam, old limiter seam)` at the pre-widening rev.
+
+    Resolved by walking this file's own history for the commit that introduced
+    `POSITION_ROW_FIELDS` and taking its parent — never a hard-coded sha, which
+    is the moving anchor doctrine C.4 forbids. `gitenv.scrubbed_env` per D3.22:
+    `pre-commit` exports `GIT_INDEX_FILE`/`GIT_DIR` into every hook it runs, so
+    a bare `subprocess.run(["git", ...])` here would answer about whatever
+    started the hook.
+    """
+    from nixverify.gitenv import scrubbed_env  # pylint: disable=import-outside-toplevel
+
+    env = scrubbed_env()
+
+    def git(*args: str) -> str | None:
+        done = subprocess.run(  # nosec B603 B607 - fixed argv, repo-local paths
+            ["git", "-C", str(REPO), *args],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+        return done.stdout if done.returncode == 0 else None
+
+    log = git("log", "--format=%H", "-S", "POSITION_ROW_FIELDS", "--", ALLOC_SEAM)
+    if not log:
+        return None
+    introduced = log.split()[-1]
+    parent = git("rev-parse", f"{introduced}^")
+    if not parent:
+        return None
+    base = parent.strip()
+    sources = [
+        git("show", f"{base}:{rel}") for rel in (GATE_REL, ALLOC_SEAM, RISK_SEAM)
+    ]
+    if any(source is None for source in sources):
+        return None
+    return sources[0], sources[1], sources[2]  # type: ignore[return-value]
+
+
 def test_DROPPING_the_version_stamp_reddens_with_its_own_finding(home: Path) -> None:
     """The stamp is not one field among nine; §3's atomicity turns on it."""
     _plant(
@@ -242,8 +510,8 @@ def test_a_LOCAL_REDEFINITION_of_the_snapshot_reddens_even_when_identical(
     _plant(
         home,
         "scripts/nixalloc/seam.py",
-        'SEAM_REV = "1.0.0"',
-        f'{duplicate}\n\nSEAM_REV = "1.0.0"',
+        'SEAM_REV = "1.1.0"',
+        f'{duplicate}\n\nSEAM_REV = "1.1.0"',
     )
     result = _run(home)
     _red(

@@ -410,6 +410,7 @@ def test_the_HOT_PATH_NEVER_TOUCHES_THE_POSITION_TABLE() -> None:
             size=1,
             margin=1_000.0,
             state=PositionState.OPEN,
+            stop_distance=20,
         )
         for index in range(64)
     )

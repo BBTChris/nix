@@ -64,6 +64,7 @@ def open_truth(
             size=2,
             margin=1_234.5,
             state=PositionState.OPEN,
+            stop_distance=20,
         )
         for i in range(n)
     )

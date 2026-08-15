@@ -102,6 +102,7 @@ def _row(
         size=size,
         margin=margin,
         state=state,
+        stop_distance=20,
     )
 
 

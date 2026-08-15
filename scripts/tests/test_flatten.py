@@ -682,6 +682,7 @@ def _open_book(
                 size=1,
                 margin=1000.0,
                 state=PositionState.OPEN,
+                stop_distance=20,
             )
         ],
     )

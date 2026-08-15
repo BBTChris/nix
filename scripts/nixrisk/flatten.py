@@ -660,6 +660,12 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
                 size=row.size,
                 margin=row.margin,
                 state=PositionState.CLOSING,
+                # CARRIED from the mirror's row, never re-derived and never a
+                # literal (ARC 032). This constructor exists to move a row to
+                # CLOSING and change nothing else; inventing a stop distance
+                # here would make the Limiter publish a §7:501 exposure figure
+                # that no sizing pass ever computed.
+                stop_distance=row.stop_distance,
             )
             for row in projection.positions
             if row.symbol in held_symbols
