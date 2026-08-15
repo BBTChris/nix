@@ -1,7 +1,10 @@
 # ARC 031 / Phase 5 — the four rulings, recorded
 
 **Canonical path:** `/home/bbt/nix` (absolute, unmoved).
-**`origin/main`:** ``22cd4fe`` — **PUSHED.** 0.2 is closed.
+**`origin/main`:** `a229228` — **PUSHED, twice.** 0.2 is closed. `22cd4fe` is the fast-forward the
+ruling ordered (`0f9c5b9..22cd4fe`); `a229228` is this phase's own commit, pushed after it. Stated as
+two figures rather than one because the first is the ruling's result and the second is this file's
+own durability — and quoting only the later one would erase the thing you asked to be reported.
 
 All four rulings are recorded. **One acted, two were ledger/amendment writes, one is a decision R3-B
 executes.** Nothing was designed here and nothing was invented here; where a ruling ratified what
