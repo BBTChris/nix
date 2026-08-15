@@ -993,23 +993,29 @@ def test_the_REAL_TREES_THIRTEEN_ceiling_tripped_artifacts_are_the_D3104_EXCLUSI
     # CANNOT_MEASURE the moment this arc's own close-out lands regardless.
     # Recorded honestly (CHECK-DEBT, ARC 031-owned) rather than hidden: this
     # ONE row is a genuine, self-caused, now-permanent ceiling breach.
+    # ARC 031 / 0.3 — D3.120 DISCHARGED BY MEASUREMENT, and this test took the
+    # update its own failure message invited. `checks/check_measurement_path.py`
+    # now declares `scripts/nixverify/measurement_path.py` as a real SUBJECT and
+    # drives the §0c classifier over seven arms, so the row left the `artifacts`
+    # ratchet entirely — a SHRINK, which needs no admitting arc. Route (b), a
+    # new `CHECK-A<n>` exclusion, was refused by the architect: the ceiling
+    # breach flagged an overdue MEASUREMENT, not an overdue escape hatch. The
+    # row is gone rather than excused, so no `artifacts` row is over the
+    # ceiling any more and the loop below has no exemption in it.
+    assert "scripts/nixverify/measurement_path.py" not in working["artifacts"], (
+        "the D3.120 row is back in the ratchet — if a driving check was "
+        "removed, the debt is open again and this assertion is the alarm"
+    )
     for path in working["artifacts"]:
         moves = len(gate._row_lineage(history, path)) - 1
-        if path == "scripts/nixverify/measurement_path.py":
-            assert moves > GUARD_REOWN_CEILING, (
-                "measurement_path.py was expected to be the one row Stage 3 "
-                "integration pushed over the ceiling — if this assertion "
-                "fails, either the breach was fixed (great — update this "
-                "test) or the fixture no longer matches the real tree"
-            )
-            continue
-        assert moves <= GUARD_REOWN_CEILING, path
+        assert moves <= GUARD_REOWN_CEILING, (path, moves)
 
-    # The ceiling escaped for the exclusions bucket, but measurement_path.py's
-    # own ceiling breach (above) is real and unrelated to D3.104 — the gate's
-    # overall verdict is therefore FAIL_NEEDS_OPERATOR on the real tree, not
-    # GUARDED, and naming that honestly is this test's own job now.
-    assert _run(REPO).status is Status.FAIL_NEEDS_OPERATOR, _run(REPO)
+    # With the one over-ceiling row discharged, the gate's honest verdict on the
+    # real tree is GUARDED again: seven `artifacts` rows and six declared
+    # D3.104/CHECK-A8 exclusions remain, every one owned by a LIVE arc.
+    result = _run(REPO)
+    assert result.status is Status.GUARDED, result
+    assert result.guard_owner, "a GUARDED verdict with no owner is unattributable"
 
 
 # ===========================================================================

@@ -157,6 +157,34 @@ ALLOWED = frozenset(
     }
 )
 
+#: A STRICTLY NARROWER second tier (ARC 031 / 0.4). Files permitted to NAME the
+#: `/dev/shm` literal and forbidden every other shared-memory construct — no
+#: import, no attribute, no bare name. `ALLOWED` above means "may touch shared
+#: memory"; these files do not touch it and must not be given that permission.
+#:
+#: WHY IT EXISTS. `nixverify.observe` is the runtime resource OBSERVER, and its
+#: `shm` vocabulary rule is what lets it recognise the price ring's OWN
+#: legitimate claims as declared rather than reporting them as false
+#: declarations. It compares claim strings; it never opens, maps or creates a
+#: segment. Putting it in `ALLOWED` would have granted a permission it does not
+#: need and does not use — the category error this tier exists to refuse — and
+#: spelling the constant as `"/dev/" + "shm"` to slip past the detector would
+#: have been evasion of a gate that is working correctly.
+#:
+#: The tier is enforced, not asserted: `_arm5_narrowness` reads the KIND of each
+#: hit, so an `import mmap` landing in one of these files is a defect naming the
+#: construct, exactly as it would be in any unlisted file.
+LITERAL_ONLY_ALLOWED = frozenset(
+    {
+        "scripts/nixverify/observe.py",
+        "scripts/tests/test_observe.py",
+    }
+)
+
+#: The hit-kind prefix `_ShmVisitor` emits for a `/dev/shm` string constant.
+#: Everything else it emits is a genuine construct use.
+_LITERAL_HIT = "literal "
+
 #: Directories the sweep does not enter, each for a stated reason.
 _SKIP_DIRS = frozenset(
     # `.claude` holds agent WORKTREES — full copies of this repo the harness
@@ -498,23 +526,49 @@ def _arm4_kernel(name: str, alive: bool, defects: list, ev: list) -> None:
 def _arm5_narrowness(
     hits: dict[str, list[str]], scanned: int, defects: list, ev: list
 ) -> None:
-    """§12.7's exception is SOLE. Any file outside the allow-list is a defect."""
-    strays = {rel: found for rel, found in hits.items() if rel not in ALLOWED}
+    """§12.7's exception is SOLE. Any file outside the allow-list is a defect.
+
+    Two tiers, and the second is narrower rather than looser: a
+    `LITERAL_ONLY_ALLOWED` file may name the `/dev/shm` string and nothing
+    else, so an `import mmap` there is judged exactly as it would be anywhere
+    unlisted. A blanket entry in `ALLOWED` would have granted a permission
+    those files neither need nor use.
+    """
+    strays: dict[str, list[str]] = {}
+    for rel, found in hits.items():
+        if rel in ALLOWED:
+            continue
+        if rel in LITERAL_ONLY_ALLOWED:
+            constructs = [hit for hit in found if _LITERAL_HIT not in hit]
+            if constructs:
+                strays[rel] = constructs
+            continue
+        strays[rel] = found
     for rel, found in sorted(strays.items()):
+        tier = (
+            "names the literal AND uses a construct, which its literal-only "
+            "permission does not cover"
+            if rel in LITERAL_ONLY_ALLOWED
+            else "the price firehose is the ONE permitted user; everything "
+            "else goes over ZeroMQ"
+        )
         defects.append(
             (
                 rel,
-                (
-                    f"shared memory outside §12.7's sole exception ({found[0]}) — "
-                    "the price firehose is the ONE permitted user; everything else "
-                    "goes over ZeroMQ"
-                ),
+                f"shared memory outside §12.7's sole exception ({found[0]}) — {tier}",
             )
         )
     if not strays:
+        literal_only = sorted(set(hits) & LITERAL_ONLY_ALLOWED)
         ev.append(
             f"narrowness: {scanned} .py files swept, shared memory confined to "
-            f"{sorted(hits)}"
+            f"{sorted(set(hits) - LITERAL_ONLY_ALLOWED)}"
+            + (
+                f"; {literal_only} name the path literal only, with zero "
+                "shared-memory constructs (checked per hit, not assumed)"
+                if literal_only
+                else ""
+            )
         )
 
 

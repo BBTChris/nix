@@ -63,7 +63,17 @@ guarantee has to hold for a check nobody has written yet.
    4002 only when a config file exists is unobserved on a box without that file.
    This is the residual, it is *narrower* than D2.27's residual, and it is named
    rather than papered over.
-4. **Module-level side effects.** Observation is armed AFTER the check module is
+4. **A `dir_fd` whose descriptor has already closed.** CHECK-DEBT D3.118 is
+   discharged by resolving `dir_fd`-relative `os.*` targets through
+   `/proc/self/fd/<n>` (see `resolve_fd`), which is what makes a
+   `TemporaryDirectory` teardown record `file-write:/tmp/<dir>/<name>` instead
+   of the bare `file-write:<name>` no honest `file-write:<root>` declaration
+   could ever cover. The residual is narrow and named: if the descriptor is
+   gone by the time the hook reads it, or `/proc` is not mounted, the claim
+   falls back to the unresolved basename. It is never DROPPED — a lost claim
+   is indistinguishable from one never made, which is the whole defect.
+
+5. **Module-level side effects.** Observation is armed AFTER the check module is
    imported and disarmed before the record is written, so import machinery does
    not appear as the check's claims. `--optimize` never imports a check at all,
    so a module-level socket is a hazard for the ENGINE, not for planning.
@@ -147,6 +157,59 @@ _UNREACHABLE_ERRNOS = frozenset(
 #: Ceiling on ONE observed check. Exhausting it is CANNOT_MEASURE, never PASS.
 PER_CHECK_TIMEOUT_S = 60.0
 
+#: `dir_fd` values that mean "there is no directory descriptor". CPython passes
+#: -1 for an omitted argument and `AT_FDCWD` (-100) for an explicit
+#: cwd-relative call; neither names a directory this module could resolve.
+_NO_DIR_FD = frozenset({-1, -100})
+
+#: CHECK-DEBT D3.118. Per audited `os.*` mutator: (path arg index, dir_fd arg
+#: index). `shutil.rmtree` — which `tempfile.TemporaryDirectory.__exit__` uses —
+#: takes CPython's TOCTOU-safe fd-relative path when the platform supports
+#: `os.open(..., dir_fd=...)`, and unlinks each entry as
+#: `os.unlink(entry.name, dir_fd=parent_fd)`. The PEP 578 event then fires with
+#: that literal `(basename, dir_fd)` pair, so decoding `args[0]` alone records
+#: `file-write:sample.py` — a bare fixture basename no honest
+#: `file-write:<root>` declaration can cover, and which doctrine C.4 forbids
+#: papering over with a literal per-filename token. The index is per EVENT
+#: because the signatures differ: `os.remove(path, dir_fd)`,
+#: `os.mkdir(path, mode, dir_fd)`, `os.rename(src, dst, src_dir_fd, dst_dir_fd)`.
+#: `os.truncate(fd, length)` carries no dir_fd at all — its first argument may
+#: itself BE a descriptor, which is the `None` case below.
+_DIR_FD_ARG: dict[str, int | None] = {
+    "os.remove": 1,
+    "os.rmdir": 1,
+    "os.mkdir": 2,
+    "os.rename": 2,
+    "os.truncate": None,
+}
+
+
+#: The POSIX shared-memory mount. A vocabulary constant this module COMPARES
+#: claims against; nothing here ever opens it.
+_SHM_ROOT = "/dev/shm"  # nosec B108
+
+
+def resolve_fd(fd: int) -> str:
+    """The path an open descriptor names, via `/proc/self/fd/<n>`, or ''.
+
+    Linux-specific and deliberately so: this project's architecture invariant
+    is Ubuntu-only, and the alternative (threading a per-process fd table
+    through an audit hook that must not itself perform audited operations) is
+    strictly worse. `os.readlink` emits no audit event — MEASURED, not
+    assumed — so this cannot re-enter the hook that calls it.
+
+    Total by construction. A descriptor closed between the event firing and
+    this call, a `/proc` that is not mounted, or a non-Linux kernel all yield
+    '' and the caller falls back to the unresolved name: a claim recorded
+    under a bare basename is a weaker record, an exception raised inside the
+    hook is a LOST claim, and D3.118's whole point is that a lost claim is
+    indistinguishable from one never made.
+    """
+    try:
+        return os.readlink(f"/proc/self/fd/{int(fd)}")
+    except OSError, ValueError, TypeError:
+        return ""
+
 
 @dataclasses.dataclass(frozen=True)
 class ObservedRun:
@@ -222,7 +285,7 @@ class _Recorder:
         elif event == "subprocess.Popen":
             self._on_popen(args)
         else:  # os.remove / rename / mkdir / rmdir / truncate
-            self._on_path(args)
+            self._on_path(event, args)
 
     def _on_socket(self, args: tuple) -> None:
         kind, target = format_address(args[1] if len(args) > 1 else None)
@@ -245,10 +308,54 @@ class _Recorder:
         if program is not None and not isinstance(program, int):
             self.add("subprocess", os.fsdecode(program))
 
-    def _on_path(self, args: tuple) -> None:
-        path = args[0] if args else None
-        if path is not None and not isinstance(path, int):
-            self.add("file-write", os.fsdecode(path))
+    def _on_path(self, event: str, args: tuple) -> None:
+        """`os.*` mutators, with D3.118's `dir_fd` resolution applied.
+
+        Three shapes, all real and all previously collapsed into one:
+
+        * an absolute (or cwd-relative) path with no descriptor — decoded as
+          before;
+        * a basename relative to a `dir_fd`, which `shutil.rmtree` produces on
+          every `TemporaryDirectory` teardown — joined to the directory the
+          descriptor names;
+        * `os.truncate(fd, length)`, whose first argument may itself BE a
+          descriptor rather than a path. The old code returned silently here,
+          so a truncate-by-fd — the one `os.*` mutator that destroys content
+          rather than a directory entry — was invisible.
+        """
+        target = args[0] if args else None
+        if target is None:
+            return
+        if isinstance(target, int):
+            # os.truncate(fd, length): the descriptor IS the subject.
+            resolved = resolve_fd(target)
+            if resolved:
+                self.add("file-write", resolved)
+            return
+        self._add_path(args, 0, _DIR_FD_ARG.get(event))
+        if event == "os.rename":
+            # `os.rename(src, dst, src_dir_fd, dst_dir_fd)`. The DESTINATION
+            # is the write — a rename over an existing file destroys it — and
+            # only `args[0]` was ever recorded, so the atomic-write idiom
+            # (write to a temp name, rename into place) claimed the temp name
+            # and never the file it actually replaced.
+            self._add_path(args, 1, 3)
+
+    def _add_path(self, args: tuple, index: int, dir_fd_index: int | None) -> None:
+        """One path argument of an `os.*` mutator, `dir_fd`-resolved."""
+        target = args[index] if len(args) > index else None
+        if target is None or isinstance(target, int):
+            return
+        text = os.fsdecode(target)
+        if not text:
+            return
+        if dir_fd_index is not None and not text.startswith("/"):
+            raw = args[dir_fd_index] if len(args) > dir_fd_index else None
+            if isinstance(raw, int) and raw not in _NO_DIR_FD:
+                directory = resolve_fd(raw)
+                if directory:
+                    text = f"{directory.rstrip('/')}/{text}"
+        self.add("file-write", text)
 
 
 def format_address(address: object) -> tuple[str, str]:
@@ -460,6 +567,7 @@ def _read_record(name: str, record: Path) -> ObservedRun:
 # here rather than spread through the gate:
 #
 #   venv            -> any claim whose path lies under <nix_home>/.venv
+#   shm             -> any file-write under /dev/shm (POSIX shared memory)
 #   state/ | state  -> any file-write under <nix_home>/state
 #   journal         -> /dev/log, /run/systemd/journal/*, journalctl, systemd-cat
 #   service:<n>     -> systemctl / journalctl subprocesses
@@ -504,6 +612,31 @@ def _covers_journal(claim: str) -> bool:
     return Path(_claim_path(claim)).name in ("journalctl", "systemd-cat")
 
 
+def _covers_shm(claim: str) -> bool:
+    """`shm` covers POSIX shared memory — any write under `/dev/shm`.
+
+    Added with D3.118's `os.truncate(fd, length)` arm, which made these claims
+    visible for the first time: `multiprocessing.shared_memory` sizes a fresh
+    segment with `os.ftruncate(fd, size)`, and before the repair that
+    fd-relative event carried no path at all. Three checks
+    (`check_price_ring`, `check_feed_kill_drill`, `check_plane2_across_kill`)
+    have declared `shm` since ARC 021; the token was simply unknown to this
+    table and matched by exact string equality only. A DIRECTORY rule, not a
+    per-segment literal — segment names carry a pid and a random suffix, so an
+    exact token would be the C.4 anchor this gate refuses.
+    """
+    path = _claim_path(claim)
+    return bool(path) and (path == _SHM_ROOT or path.startswith(f"{_SHM_ROOT}/"))
+
+
+#: The two EXACT-MATCH vocabulary tokens whose rule is a whole predicate.
+#: A dict here and not in `covers` at large: `covers` reads top to bottom and
+#: the ORDER of its prefix rules is load-bearing (the fall-through to `False`
+#: is what makes an unrecognised token match by exact equality only). These two
+#: are exact, disjoint token names, so no order between THEM exists to hide.
+_EXACT_TOKEN_RULES = {"journal": _covers_journal, "shm": _covers_shm}
+
+
 def _covers_socket_token(declared: str, claim: str) -> bool:
     """`port:N`, `network:*` and the canonical `socket:`/`unix-socket:` forms."""
     if declared.startswith("port:"):
@@ -538,8 +671,9 @@ def covers(  # pylint: disable=too-many-return-statements
     if declared in ("state/", "state"):
         path = _claim_path(claim)
         return claim.startswith("file-write:") and _under(path, nix_home / "state")
-    if declared == "journal":
-        return _covers_journal(claim)
+    exact = _EXACT_TOKEN_RULES.get(declared)
+    if exact is not None:
+        return exact(claim)
     if declared.startswith("service:"):
         return Path(_claim_path(claim)).name in ("systemctl", "journalctl")
     if _covers_socket_token(declared, claim):

@@ -312,6 +312,71 @@ def test_the_ALLOW_LIST_is_four_entries_and_names_them() -> None:
     ), sorted(gate.ALLOWED)
 
 
+def test_the_LITERAL_ONLY_tier_is_two_entries_and_names_them() -> None:
+    """The narrower tier cannot widen quietly either (ARC 031 / 0.4)."""
+    assert gate.LITERAL_ONLY_ALLOWED == frozenset(
+        {
+            "scripts/nixverify/observe.py",
+            "scripts/tests/test_observe.py",
+        }
+    ), sorted(gate.LITERAL_ONLY_ALLOWED)
+    assert not (gate.ALLOWED & gate.LITERAL_ONLY_ALLOWED), (
+        "a file in both tiers has the broad permission, so the narrow one "
+        "would be decorative"
+    )
+
+
+def test_a_LITERAL_ONLY_file_that_IMPORTS_mmap_is_STILL_a_defect() -> None:
+    """The narrow tier is ENFORCED per hit, never granted per file.
+
+    This is the whole difference between the two tiers. `ALLOWED` means "may
+    touch shared memory"; `LITERAL_ONLY_ALLOWED` means "may name the path
+    string and nothing else". If the second silently behaved like the first,
+    the observer's vocabulary rule would have bought `nixverify.observe` a
+    blanket permission it neither needs nor uses.
+    """
+    rel = min(gate.LITERAL_ONLY_ALLOWED)
+    defects: list = []
+    evidence: list[str] = []
+    gate._arm5_narrowness(
+        {rel: [f"line 1: literal {gate._SHM_LITERAL!r}"]}, 200, defects, evidence
+    )
+    assert not defects, f"a literal-only hit must be permitted: {defects}"
+
+    defects = []
+    evidence = []
+    gate._arm5_narrowness(
+        {
+            rel: [
+                f"line 1: literal {gate._SHM_LITERAL!r}",
+                "line 9: import mmap",
+            ]
+        },
+        200,
+        defects,
+        evidence,
+    )
+    assert len(defects) == 1, defects
+    site, why = defects[0]
+    assert site == rel, defects
+    assert "import mmap" in why, why
+    assert "literal-only permission does not cover" in why, why
+
+
+def test_an_UNLISTED_file_naming_only_the_literal_is_still_a_defect() -> None:
+    """The narrow tier must not leak to files nobody listed."""
+    defects: list = []
+    evidence: list[str] = []
+    gate._arm5_narrowness(
+        {"scripts/somewhere_else.py": [f"line 1: literal {gate._SHM_LITERAL!r}"]},
+        200,
+        defects,
+        evidence,
+    )
+    assert len(defects) == 1, defects
+    assert "ONE permitted user" in defects[0][1], defects
+
+
 def test_a_DOCSTRING_mentioning_shared_memory_is_NOT_a_use(tmp_path: Path) -> None:
     """The false-positive class that would have made this detector unusable.
 

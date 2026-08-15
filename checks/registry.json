@@ -30,6 +30,7 @@
         "check_ibgateway_service",
         "check_limiter_gate",
         "check_limiter_seam",
+        "check_measurement_path",
         "check_name_coherence",
         "check_nixverify_init",
         "check_node_identity",

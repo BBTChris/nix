@@ -22,9 +22,11 @@ REPO = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 
 from nixverify.observe import (  # pylint: disable=wrong-import-position
+    _Recorder,
     covers,
     format_address,
     observe_check,
+    resolve_fd,
     undeclared,
 )
 
@@ -295,3 +297,156 @@ def test_format_address_is_total_over_the_address_families_it_may_meet() -> None
     assert format_address("/dev/log") == ("unix-socket", "/dev/log")
     assert format_address(b"/dev/log") == ("unix-socket", "/dev/log")
     assert format_address(None)[0] == "socket"
+
+
+# ===========================================================================
+# CHECK-DEBT D3.118 — `dir_fd`-relative targets (ARC 031 / 0.4)
+# ===========================================================================
+#
+# The defect, measured by ARC 030 sub-agent B and reproduced here as the first
+# test below: `tempfile.TemporaryDirectory.__exit__` goes through
+# `shutil.rmtree`, which on Linux takes CPython's TOCTOU-safe fd-relative
+# strategy and unlinks each entry as `os.unlink(entry.name, dir_fd=parent_fd)`.
+# The PEP 578 event fires with that literal `(basename, dir_fd)` pair, so the
+# recorded claim was `file-write:sample.py` — a bare fixture basename with no
+# path segment any `file-write:<root>` declaration's prefix check can match.
+# Two checks were held FAIL by it, and the only cheap repair was a literal
+# per-filename token, which is the anchor doctrine C.4 forbids.
+#
+# These tests are the can-fail for the repair: each drives the REAL observer,
+# in a real child process where possible, and asserts BOTH that the resolved
+# absolute path appears AND that the bare basename does not.
+
+
+def test_a_TemporaryDirectory_teardown_records_ABSOLUTE_paths_not_basenames(
+    tmp_path: Path,
+) -> None:
+    """D3.118's exact reproduction, in the direction that discharges it."""
+    plant(
+        tmp_path / "checks",
+        "check_tempdir",
+        "import pathlib\n"
+        "import tempfile\n"
+        "with tempfile.TemporaryDirectory(prefix='nix-d3118-') as tmp:\n"
+        "    (pathlib.Path(tmp) / 'sample.py').write_text('x=1\\n')\n"
+        "    (pathlib.Path(tmp) / 'sub').mkdir()",
+        resources='("file-write:/tmp",)',
+    )
+    run = observe_check(tmp_path / "checks", "check_tempdir", tmp_path)
+    assert run.measured, run.error
+    assert "file-write:sample.py" not in run.claims, (
+        "the bare basename is D3.118 itself — a claim no honest "
+        f"file-write:<root> declaration can cover: {run.claims}"
+    )
+    assert "file-write:sub" not in run.claims, run.claims
+    removed = [c for c in run.claims if c.endswith("/sample.py")]
+    assert removed, f"the unlinked entry was not recorded at all: {run.claims}"
+    assert all(c.startswith("file-write:/tmp/nix-d3118-") for c in removed), removed
+    assert undeclared(run.claims, ("file-write:/tmp",), tmp_path) == (), (
+        "the whole point of the repair: an ORDINARY, non-literal "
+        "file-write:/tmp declaration now accounts for every teardown claim"
+    )
+
+
+def test_the_dir_fd_ARGUMENT_INDEX_is_right_for_each_event_shape(
+    tmp_path: Path,
+) -> None:
+    """`os.remove(path, dir_fd)` vs `os.mkdir(path, mode, dir_fd)`.
+
+    The index differs per event and a single wrong entry silently reads a
+    MODE as a descriptor. Driven at the recorder, because a real
+    `os.mkdir(..., dir_fd=...)` cannot be provoked from a plant reliably —
+    the argument tuple is the thing under test, so it is supplied exactly.
+    """
+    import os  # pylint: disable=import-outside-toplevel
+
+    fd = os.open(str(tmp_path), os.O_RDONLY)
+    try:
+        recorder = _Recorder()
+        recorder.armed = True
+        recorder.hook("os.remove", ("gone.py", fd))
+        recorder.hook("os.rmdir", ("gonedir", fd))
+        recorder.hook("os.mkdir", ("made", 0o777, fd))
+        recorder.hook("os.rename", ("from", "to", fd, fd))
+    finally:
+        os.close(fd)
+    assert recorder.lost == 0, "a lost claim is indistinguishable from no claim"
+    root = str(tmp_path)
+    assert f"file-write:{root}/gone.py" in recorder.claims, recorder.claims
+    assert f"file-write:{root}/gonedir" in recorder.claims, recorder.claims
+    assert f"file-write:{root}/made" in recorder.claims, (
+        "os.mkdir's dir_fd is args[2]; reading args[1] would resolve the MODE "
+        f"(0o777) as a descriptor: {recorder.claims}"
+    )
+    assert f"file-write:{root}/to" in recorder.claims, (
+        "a rename's DESTINATION is the write — it destroys whatever was "
+        f"there: {recorder.claims}"
+    )
+    assert f"file-write:{root}/from" in recorder.claims, recorder.claims
+
+
+def test_os_truncate_by_FILE_DESCRIPTOR_is_observed(tmp_path: Path) -> None:
+    """`os.truncate(fd, length)` — the one mutator whose subject IS a descriptor.
+
+    Previously dropped outright (`isinstance(path, int)` returned early), which
+    made `multiprocessing.shared_memory`'s own `ftruncate` sizing invisible.
+    """
+    target = tmp_path / "sized.bin"
+    plant(
+        tmp_path / "checks",
+        "check_truncate",
+        f"import os\n"
+        f"fd = os.open({str(target)!r}, os.O_RDWR | os.O_CREAT)\n"
+        f"os.truncate(fd, 0)\n"
+        f"os.close(fd)",
+    )
+    run = observe_check(tmp_path / "checks", "check_truncate", tmp_path)
+    assert run.measured, run.error
+    assert f"file-write:{target}" in run.claims, run.claims
+
+
+def test_resolve_fd_is_TOTAL_over_a_descriptor_that_is_not_open() -> None:
+    """The residual, named: an unresolvable fd yields '' and never raises."""
+    assert resolve_fd(999_999) == ""
+    assert resolve_fd(-1) == ""
+
+
+def test_an_UNRESOLVABLE_dir_fd_FALLS_BACK_rather_than_losing_the_claim() -> None:
+    """A dropped claim is worse than a weak one — it looks like no claim at all."""
+    recorder = _Recorder()
+    recorder.armed = True
+    recorder.hook("os.remove", ("orphan.py", 999_999))
+    assert recorder.lost == 0, recorder.lost
+    assert "file-write:orphan.py" in recorder.claims, recorder.claims
+
+
+def test_an_ABSOLUTE_target_ignores_a_dir_fd_that_is_also_supplied(
+    tmp_path: Path,
+) -> None:
+    """`os.remove('/abs/x', dir_fd=fd)` is an absolute path; joining would corrupt it."""
+    import os  # pylint: disable=import-outside-toplevel
+
+    fd = os.open(str(tmp_path), os.O_RDONLY)
+    try:
+        recorder = _Recorder()
+        recorder.armed = True
+        recorder.hook("os.remove", ("/etc/hostname", fd))
+    finally:
+        os.close(fd)
+    assert "file-write:/etc/hostname" in recorder.claims, recorder.claims
+
+
+def test_covers_shm_matches_dev_shm_and_nothing_else(tmp_path: Path) -> None:
+    """The `shm` token, unknown to the vocabulary until D3.118's truncate arm.
+
+    Three checks have declared `shm` since ARC 021 and the table had no rule
+    for it, so it matched by exact string equality only — invisible while
+    `os.ftruncate`'s fd-relative event carried no path at all.
+    """
+    assert covers("shm", "file-write:/dev/shm/nix_ring_gate_1_a", tmp_path)
+    assert covers("shm", "file-write:/dev/shm", tmp_path)
+    assert not covers("shm", "file-write:/dev/shmem/x", tmp_path), (
+        "a prefix rule that matched /dev/shmem would be a rubber stamp"
+    )
+    assert not covers("shm", f"file-write:{tmp_path}/x", tmp_path)
+    assert not covers("shm", "socket:127.0.0.1:4002", tmp_path)
