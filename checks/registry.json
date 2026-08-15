@@ -17,6 +17,7 @@
       "on_fail": "continue",
       "checks": [
         "check_allocator_caps",
+        "check_allocator_pathway",
         "check_allocator_seam",
         "check_allocator_sizing",
         "check_artifact_gate_coverage",

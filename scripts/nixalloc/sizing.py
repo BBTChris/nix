@@ -147,6 +147,7 @@ from nixalloc.seam import (
 __all__ = [
     "NO_SNAPSHOT",
     "BucketCapPort",
+    "BucketQuery",
     "BucketVerdict",
     "Instrument",
     "InstrumentSpec",
@@ -395,24 +396,56 @@ class BucketVerdict:
     note: str = ""
 
 
+@dataclass(frozen=True)
+class BucketQuery:
+    """Everything §7:501's exposure unit needs to price ONE proposal.
+
+    ARC 031 / Stage 2 WIDENED this seam, and the reason is a measurement
+    rather than a preference. The port originally passed
+    `(bucket, contracts, risk_per_contract, picture)`, and Stage 2's
+    integration found that insufficient the first time a real implementation
+    was wired behind it: §7's cap prices exposure from
+    `(stop_ticks + slippage_pad) × tick_value × contracts`, so an
+    implementation needs the LOGICAL symbol (to resolve the bucket and the
+    per-symbol pad and tick value), the STOP DISTANCE, and whether the
+    selected instrument is a micro leg (§7:502 counts micros at 1/10). None of
+    those three could be recovered from the old arguments: `equities` holds
+    two symbols, so the bucket alone does not name the proposal's symbol, and
+    the pass silently reported "cap NOT APPLIED" for every equities proposal
+    on a snapshot that priced both ES and NQ — the normal case.
+
+    Neither Stage-1 gate could see it. Sub-agent B drove the port with `None`
+    and asserted the not-applied sentence; sub-agent C drove `caps.admit`
+    directly with `Exposure` rows it constructed. The argument between them
+    was never made until Stage 2 made it.
+    """
+
+    #: The LOGICAL symbol (ES, not MES) — §7:498's bucket map is keyed on it.
+    symbol: str
+    bucket: CorrelationBucket
+    contracts: int
+    stop_ticks: int
+    #: True when instrument selection chose the micro leg (§16 U4, §7:502).
+    micro: bool
+    #: The pass's own per-contract dollar risk, carried so an implementation
+    #: can cross-check its own pricing against the sizer's.
+    risk_per_contract: float
+    picture: FinancialPicture
+
+
 @runtime_checkable
 class BucketCapPort(Protocol):
     """§7:505-515's same-bucket dollar-risk ceiling. Implemented elsewhere.
 
     Declared here as the seam this pathway calls, and NOT implemented here:
-    `scripts/nixalloc/caps.py` owns it. `SizingAllocator` takes it as a
-    required argument so a caller with no cap wired has to say `None` out loud
-    rather than acquire a permissive default by omission.
+    `scripts/nixalloc/caps.py` owns the formula and
+    `scripts/nixalloc/wiring.py` owns the adapter. `SizingAllocator` takes it
+    as a required argument so a caller with no cap wired has to say `None` out
+    loud rather than acquire a permissive default by omission.
     """
 
-    def admit(
-        self,
-        bucket: CorrelationBucket,
-        contracts: int,
-        risk_per_contract: float,
-        picture: FinancialPicture,
-    ) -> BucketVerdict:
-        """Clamp `contracts` toward B's ceiling. Never raises the size."""
+    def admit(self, query: BucketQuery) -> BucketVerdict:
+        """Clamp `query.contracts` toward B's ceiling. Never raises the size."""
 
 
 # ---------------------------------------------------------------------------
@@ -822,7 +855,7 @@ class SizingAllocator:
         contracts = max(0, min(terms.risk, terms.margin, terms.cap))
         bucket = BUCKET_OF.get(symbol)
         capped, used, ceiling, note = self._apply_bucket_cap(
-            bucket, contracts, terms, picture
+            bucket, symbol, stop_ticks, contracts, terms, picture
         )
         binding = (
             BindingConstraint.BUCKET_CAP
@@ -851,9 +884,11 @@ class SizingAllocator:
             ),
         )
 
-    def _apply_bucket_cap(
+    def _apply_bucket_cap(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self,
         bucket: CorrelationBucket | None,
+        symbol: str,
+        stop_ticks: int,
         contracts: int,
         terms: _Sized,
         picture: FinancialPicture,
@@ -872,7 +907,15 @@ class SizingAllocator:
                 ),
             )
         verdict = self._bucket_cap.admit(
-            bucket, contracts, terms.per_contract_risk, picture
+            BucketQuery(
+                symbol=symbol,
+                bucket=bucket,
+                contracts=contracts,
+                stop_ticks=stop_ticks,
+                micro=terms.instrument.is_micro,
+                risk_per_contract=terms.per_contract_risk,
+                picture=picture,
+            )
         )
         admitted = max(0, min(contracts, verdict.contracts))
         return admitted, verdict.used, verdict.ceiling, verdict.note
