@@ -21,6 +21,7 @@
         "check_allocator_seam",
         "check_allocator_sizing",
         "check_artifact_gate_coverage",
+        "check_blackout_windows",
         "check_broker_order_config",
         "check_calendar_schema",
         "check_canonical_tree",
