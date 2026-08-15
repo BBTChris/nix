@@ -85,12 +85,6 @@
   "generated_by": "ARC 024",
   "decomposed_by": "ARC 028",
   "artifacts": {
-    "scripts/nixrisk/execution.py": {
-      "owner": "ARC 032",
-      "admitted": "ARC 029",
-      "measured_by": "tests",
-      "reason": "the idempotent execution ledger (ExecutionLedger): dedup by (order_id, exec_id), position = Σ signed_qty over the unique-key SET, cumulative kept as an independent audit cross-check. ARC 029 Stage 2.3. Measured by scripts/tests/test_execution.py (23 tests incl. permutation-invariance under duplication); no check declares it yet. Admitted as measured_by=tests (owner ARC 030) rather than a proxy check, mirroring the other exit-half modules; its driving check is owed in CHECK-DEBT."
-    },
     "scripts/nixverify/venv_lock.py": {
       "owner": "ARC 033",
       "measured_by": "tests",
