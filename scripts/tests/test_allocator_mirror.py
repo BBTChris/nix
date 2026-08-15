@@ -877,6 +877,42 @@ def test_the_REAL_zeromq_ipc_path_leaves_a_DELTA_ONLY_mirror_partial(
         publisher.close()
 
 
+def test_the_REAL_wire_leaves_the_mirror_PARTIAL_when_a_row_LOST_stop_distance(
+    tmp_path: Path,
+) -> None:
+    """ARC 032: the consumer half of D3.136's fail-open, over a real socket.
+
+    A row with no stop distance must leave the Allocator STALE rather than
+    sizeable on a table it invented. The direction is what matters: an unpriced
+    position reads as ZERO dollar risk, the bucket looks emptier than it is, and
+    an emptier bucket ADMITS more — so a defaulted decode here is not merely
+    incomplete, it is incomplete in the permissive direction.
+    """
+    endpoint = statebus.endpoint_for("t-nostop", root=tmp_path)
+    publisher = statebus.StatePublisher(endpoint)
+    subscriber = None
+    try:
+        body = wire_body(keyed(11, 1.0, 1.0, time.time()), {})
+        body["positions"] = [
+            {k: v for k, v in row.items() if k != "stop_distance"}
+            for row in body["positions"]
+        ]
+        assert body["positions"], "the plant needs a row to strip"
+        publisher.publish(TOPIC, body)
+        subscriber = statebus.StateSubscriber(endpoint, [TOPIC])
+        mirror = AllocatorMirror(StateBusFeed(subscriber), max_age_s=60.0)
+        publisher.service(1500)
+        snap = mirror.refresh(750)
+        assert subscriber.bytes_received > 0, "the plant must reach the consumer"
+        assert snap.state is MirrorState.PARTIAL, snap.reason
+        assert snap.sizeable is False, snap.reason
+        assert "stop_distance" in snap.reason, snap.reason
+    finally:
+        if subscriber is not None:
+            subscriber.close()
+        publisher.close()
+
+
 def test_the_REAL_wire_refuses_an_unreadable_source_stamp(tmp_path: Path) -> None:
     """§6.4b orders by source time; a stamp that cannot be read is refused."""
     endpoint = statebus.endpoint_for("t-bad", root=tmp_path)

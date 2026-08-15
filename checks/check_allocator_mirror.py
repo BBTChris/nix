@@ -105,6 +105,20 @@ Seven answers. Every one is CLOSED by a mechanism in this file, not by a promise
    drives a delta-only mirror that must report PARTIAL naming the missing topic,
    and replays the §6.4b per-key regression over that same live socket.
 
+8. **THE WIRE COULD NEVER LEAVE THIS PROCESS.** Two sockets in one process do
+   traverse the kernel, but fd inheritance, socket-file permissions and the
+   actual §12.7 topology — *Limiter process -> Allocator process*, on separate
+   cores (§10) — are all untouched by that, and CHECK-DEBT **D3.122** says so in
+   as many words. *CLOSED (ARC 032):* `_arm_cross_process` spawns a REAL child
+   interpreter that binds the endpoint, publishes ONE picture **before the
+   parent's subscriber exists** and then does nothing but answer subscriptions,
+   and requires the parent's `AllocatorMirror` to reach FRESH across that
+   boundary carrying the child's `stop_distance`. The arm asserts the announced
+   pid is not this process's. Its CONTROL is the same drill with the child
+   **killed before the parent subscribes**: the mirror must stay EMPTY on zero
+   bytes, so arrival in the measured half is evidence the live child produced it
+   and not evidence that something in this process remembered it.
+
 ## Boundary against the neighbouring gates (§5.5, doctrine C.9)
 
 `check_state_bus` owns the TRANSPORT (`nixbus/statebus.py`).
@@ -116,11 +130,17 @@ would still fail on a torn consumer over a perfect bus and a perfect publisher.
 
 Sizing arithmetic (§7), correlation caps, contention (§6.6 — the Scoring process
 is R5 and does not exist), the tradability cache (§16 U1) and the strategy FSM.
-No green here may be read as covering any of them. It also does not prove
-CROSS-PROCESS delivery: publisher and subscriber are two sockets in one process,
-so `ipc://` really does traverse the kernel but fd inheritance and permissions
-across a real process boundary are unproven here — `docs/CHECK-DEBT.md` carries
-that row rather than this docstring carrying a reassurance.
+No green here may be read as covering any of them.
+
+**Cross-process delivery, restated for ARC 032 rather than left as it was.** Arm
+5's publisher and subscriber are still two sockets in ONE process. Arm 6 crosses
+a real boundary: a child interpreter binds, publishes and services while this
+process only subscribes. What that narrows of D3.122 is `ipc://` delivery,
+socket-file visibility and snapshot-on-subscribe across a `fork`+`exec`; what it
+does NOT reach is the rest of the row — the child is a bare publisher rather than
+a real Limiter, there is no core pinning (§10), no SELinux/AppArmor labelling is
+exercised, and nothing here says anything about behaviour under load. The row is
+narrowed, not discharged, and this docstring says which half.
 """
 
 from __future__ import annotations
@@ -128,8 +148,11 @@ from __future__ import annotations
 import dataclasses
 import importlib
 import inspect
+import json
 import operator
+import os
 import secrets
+import subprocess  # nosec B404 - argv built in `_spawn_child`, shell=False
 import sys
 import tempfile
 import threading
@@ -183,17 +206,30 @@ DEPENDS_ON: tuple[str, ...] = ("check_venv",)
 #: * `interpreter:sys.modules` / `interpreter:sys.path` — `load()` purges and
 #:   restores the `nixalloc`/`nixrisk`/`nixbus` package namespaces so the gate
 #:   reads the tree it was GIVEN rather than the live repository.
-#: `subprocess:*` is deliberately ABSENT: this gate spawns nothing.
+#: * `subprocess:python3` / `subprocess:python` — **ARC 032**: arm 6's publisher
+#:   children, spawned through `sys.executable`. BOTH spellings, because the
+#:   observer matches a subprocess claim by BASENAME and `sys.executable` is
+#:   `python` under the venv and `python3` under the system interpreter — the
+#:   split D3.140 measured on `check_extract_sources`, declared away here rather
+#:   than reproduced. This declaration REPLACES the line that read *"`subprocess:*`
+#:   is deliberately ABSENT: this gate spawns nothing"*, which was true until
+#:   arm 6 existed and would now be a false declaration (D2.27).
 RESOURCES: tuple[str, ...] = (
     "file-write:/tmp",
     "interpreter:sys.modules",
     "interpreter:sys.path",
+    "subprocess:python",
+    "subprocess:python3",
     "zmq-ipc",
 )
 TIME_BOUND = True
 #: One bounded race (~1 s), one bounded falsifier race (~0.2 s), three socket
-#: round-trips each with a bounded service/drain budget.
-EXPECTED_S = 12.0
+#: round-trips each with a bounded service/drain budget, and TWO child
+#: interpreters (the measured cross-process drill and its killed-child control),
+#: each bounded by `CHILD_CEILING_S`. MEASURED on this node at 5.9 s, twice, with
+#: arm 6 costing ~4.5 s of it; budgeted with headroom because ARRIVAL ends both
+#: child waits and only a BROKEN boundary reaches a ceiling.
+EXPECTED_S = 15.0
 CORRECTABLE = False
 NON_CORRECTABLE_REASON = (
     "the subject is the Allocator's live consumer-side behaviour under a real "
@@ -224,6 +260,22 @@ DRAIN_MS = 750
 #: Freshness ceiling used by the driven mirrors. Explicit everywhere: the class
 #: takes no default, deliberately.
 MAX_AGE_S = 60.0
+#: Arm 6. How long the child keeps answering subscriptions, and how long this
+#: process will wait for its mirror to complete. ARRIVAL ends the wait; the
+#: ceiling only bounds a boundary that is BROKEN rather than slow (D3.39).
+CHILD_SECONDS = 20.0
+CHILD_CEILING_S = 10.0
+#: The CONTROL's ceiling, and it is shorter on purpose. The child is reaped
+#: before the subscriber is opened, so its silence is PERMANENT rather than slow
+#: and waiting `CHILD_CEILING_S` would add ten seconds of certainty to a wait
+#: already an order of magnitude past the healthy arrival. The PROPERTY is
+#: unchanged; only the ceiling moves (the reasoning `check_picture_atomicity`
+#: records for its own planted-failure ceilings).
+CONTROL_CEILING_S = 1.5
+#: The stop distance in TICKS the child publishes. A value nothing else in this
+#: gate uses, so a row carrying it CAME FROM THE CHILD — the placeholder 20 that
+#: every fixture in the tree carries would have proved nothing.
+CHILD_STOP_TICKS = 137
 
 
 class Finding(NamedTuple):
@@ -1344,6 +1396,229 @@ def _delta_only_finding(
     return []
 
 
+# --------------------------------------------------------------------------
+# ARM 6 — a REAL process boundary (CHECK-DEBT D3.122, narrowed by measurement)
+# --------------------------------------------------------------------------
+
+#: The child publisher, written into the gate's OWN tempdir and unlinked with it.
+#: Doctrine C.8: it is not a production artifact and it never lands in the tree.
+#: It is a bare §3 publisher — one commit, then nothing but `service()` — because
+#: the property under measurement is the BOUNDARY, and a child that did more
+#: would make a failure ambiguous between the boundary and the child.
+_CHILD_SOURCE = '''\
+"""ARC 032 arm 6: a real second process publishing §3's financial picture."""
+import json
+import os
+import sys
+import time
+
+root, endpoint, stop_ticks, seconds = (
+    sys.argv[1], sys.argv[2], int(sys.argv[3]), float(sys.argv[4])
+)
+sys.path.insert(0, root)
+
+from nixbus import statebus  # noqa: E402
+from nixrisk import picture as pic  # noqa: E402
+from nixrisk import seam  # noqa: E402
+
+publisher = statebus.StatePublisher(endpoint)
+sink = pic.StateBusPictureSink(publisher)
+book = pic.FinancialPictureBook(
+    balance=250_000.0, deployable_fraction=0.70, sink=sink
+)
+row = seam.PositionRow(
+    trade_id="T-XP",
+    symbol="ES",
+    strategy_id="cross-process",
+    size=3,
+    margin=1_000.0,
+    state=seam.PositionState.OPEN,
+    stop_distance=stop_ticks,
+)
+snapshot = book.commit(balance=250_000.0, positions=(row,))
+print(
+    json.dumps(
+        {
+            "pid": os.getpid(),
+            "version": snapshot.version,
+            "stop_distance": row.stop_distance,
+            "balance": snapshot.balance,
+            "executable": sys.executable,
+        }
+    ),
+    flush=True,
+)
+# From here on the child ONLY answers subscriptions. The picture above was
+# published before this process's parent had a subscriber at all, so nothing but
+# §12.7's snapshot-on-subscribe can put it on the parent's mirror.
+deadline = time.monotonic() + seconds
+while time.monotonic() < deadline:
+    publisher.service(50)
+publisher.close()
+'''
+
+
+def _spawn_child(home: Path, root: Path, endpoint: str) -> tuple[Any, dict[str, Any]]:
+    """Start the publisher child and read its self-announcement. Raises on either."""
+    script = root / "arc032_picture_publisher.py"
+    script.write_text(_CHILD_SOURCE, encoding="utf-8")
+    argv = [
+        sys.executable,
+        str(script),
+        str((home / "scripts").resolve()),
+        endpoint,
+        str(CHILD_STOP_TICKS),
+        str(CHILD_SECONDS),
+    ]
+    # pylint: disable=consider-using-with
+    # The child outlives this call by design: the whole drill happens while it
+    # runs, and `_cross_process` owns the terminate and the reap on every path.
+    proc = subprocess.Popen(  # nosec B603 - argv built here, no shell
+        argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
+    line = proc.stdout.readline() if proc.stdout else ""
+    if not line.strip():
+        proc.kill()
+        proc.wait(timeout=20)
+        stderr = (proc.stderr.read() if proc.stderr else "")[:400]
+        raise MirrorChildError(
+            f"the publisher child printed no announcement; stderr={stderr!r}"
+        )
+    return proc, json.loads(line)
+
+
+class MirrorChildError(RuntimeError):
+    """The arm-6 child could not be started or would not announce itself."""
+
+
+def _cross_process(
+    loaded: Loaded, home: Path, root: Path, *, kill_before_subscribe: bool
+) -> dict[str, Any]:
+    """Publish from a REAL child; mirror in THIS process. The boundary, driven.
+
+    `kill_before_subscribe` is the CONTROL: with the child dead before this
+    process ever connects, nothing may arrive. Without it, arrival in the
+    measured half would be evidence only that something delivered a picture.
+    """
+    name = "alloc-xpc" if kill_before_subscribe else "alloc-xp"
+    endpoint = loaded.statebus.endpoint_for(name, root=root)
+    proc, announced = _spawn_child(home, root, endpoint)
+    subscriber = None
+    try:
+        if kill_before_subscribe:
+            proc.kill()
+            proc.wait(timeout=20)
+        subscriber = loaded.statebus.StateSubscriber(endpoint, [loaded.picture.TOPIC])
+        mirror = loaded.mirror.AllocatorMirror(
+            loaded.mirror.StateBusFeed(subscriber), max_age_s=MAX_AGE_S
+        )
+        ceiling = CONTROL_CEILING_S if kill_before_subscribe else CHILD_CEILING_S
+        started = time.monotonic()
+        deadline = started + ceiling
+        snap = mirror.snapshot()
+        while time.monotonic() < deadline:
+            snap = mirror.refresh(DRAIN_MS)
+            if snap.sizeable:
+                break
+        return {
+            "announced": announced,
+            "child_pid": proc.pid,
+            "own_pid": os.getpid(),
+            "endpoint": endpoint,
+            "socket_file": Path(endpoint.removeprefix("ipc://")).exists(),
+            "bytes": subscriber.bytes_received,
+            "snap": snap,
+            "waited_s": time.monotonic() - started,
+        }
+    finally:
+        if subscriber is not None:
+            subscriber.close()
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=20)
+
+
+def _arm_cross_process(  # pylint: disable=too-many-return-statements
+    loaded: Loaded, home: Path, root: Path, evidence: list[str]
+) -> list[Finding]:
+    """§12.7's topology, across a real `fork`+`exec`. D3.122's measured half."""
+    site = f"{MIRROR_FILE}:StateBusFeed[cross-process]"
+    try:
+        live = _cross_process(loaded, home, root, kill_before_subscribe=False)
+        control = _cross_process(loaded, home, root, kill_before_subscribe=True)
+    except (MirrorChildError, OSError, ValueError) as exc:
+        return [
+            Finding(
+                site,
+                f"the publisher child could not be driven: {type(exc).__name__}: "
+                f"{exc} — a boundary that was never crossed proves nothing about "
+                "cross-process delivery, and D3.122 stands exactly where it was",
+            )
+        ]
+    if live["announced"]["pid"] == live["own_pid"]:
+        return [
+            Finding(
+                site,
+                f"the publisher announced pid {live['announced']['pid']}, which is "
+                "THIS process — no boundary was crossed and the arm is measuring "
+                "itself",
+            )
+        ]
+    if not live["bytes"]:
+        return [
+            Finding(
+                site,
+                f"the subscriber took ZERO bytes from a publisher in pid "
+                f"{live['child_pid']} over {live['endpoint']} after "
+                f"{live['waited_s']:.2f}s — §12.7's snapshot-on-subscribe did not "
+                "cross the process boundary, and this is deliberately never a PASS",
+            )
+        ]
+    snap = live["snap"]
+    if snap.state is not loaded.seam.MirrorState.FRESH or not snap.sizeable:
+        return [
+            Finding(
+                site,
+                f"the mirror is {snap.state!r} (sizeable={snap.sizeable!r}) after "
+                f"{live['bytes']} byte(s) from pid {live['child_pid']}. Mirror said: "
+                f"{snap.reason!r}",
+            )
+        ]
+    rows = snap.picture.positions
+    got = [row.stop_distance for row in rows]
+    if got != [CHILD_STOP_TICKS]:
+        return [
+            Finding(
+                site,
+                f"the row that crossed the boundary carries stop_distance {got}, not "
+                f"[{CHILD_STOP_TICKS}] — the field §7:501 prices a held position "
+                "from did not survive a real process boundary, or arrived defaulted, "
+                "which is D3.136's fail-open one transport further out",
+            )
+        ]
+    if control["bytes"] or control["snap"].sizeable:
+        return [
+            Finding(
+                f"{site} CONTROL (child killed before subscribe)",
+                f"a subscriber received {control['bytes']} byte(s) and reported "
+                f"{control['snap'].state!r} with the publisher already dead — so "
+                "arrival in the measured half is not evidence that a live second "
+                "process produced it",
+            )
+        ]
+    evidence.append(
+        f"A6 ACROSS A REAL PROCESS BOUNDARY: child pid {live['child_pid']} "
+        f"(this process is {live['own_pid']}) bound {live['endpoint']}, published "
+        f"picture version {live['announced']['version']} BEFORE any subscriber "
+        f"existed, and this process's mirror reached "
+        f"{snap.state.value}/sizeable on {live['bytes']} byte(s) in "
+        f"{live['waited_s']:.2f}s carrying stop_distance {CHILD_STOP_TICKS}; the "
+        f"killed-child CONTROL took {control['bytes']} byte(s) and reported "
+        f"{control['snap'].state.value}"
+    )
+    return []
+
+
 def _remove_tree(root: Path) -> None:
     """Delete the scratch bus directory by ABSOLUTE path, never `shutil.rmtree`.
 
@@ -1385,6 +1660,7 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
         findings += _arm_transport(
             loaded, root, float(secrets.randbelow(9000) + 1000), evidence
         )
+        findings += _arm_cross_process(loaded, ctx.nix_home, root, evidence)
     except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
         return _cannot(
             f"the mirror could not be driven: {type(exc).__name__}: {exc}; "

@@ -101,19 +101,77 @@ def test_the_gate_PASSES_and_its_evidence_reports_a_REAL_race(
     assert "wire byte(s)" in result.evidence, result.evidence
 
 
-def test_BOTH_PLANTS_actually_TORE_which_is_what_gives_the_arm_power(
+def test_ALL_THREE_PLANTS_actually_TORE_which_is_what_gives_the_arm_power(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """§0a: a concurrency test that never observes the failing case is a sleep.
 
-    The number is parsed back out of the evidence rather than trusted as a word.
+    The numbers are parsed back out of the evidence rather than trusted as words.
     """
     result = _run(monkeypatch, _subjects())
     assert "PLANT two-read consumer" in result.evidence, result.evidence
     assert "PLANT two-attribute book" in result.evidence, result.evidence
-    rate = result.evidence.split("the weaker of the two plants tore at ")[1]
+    assert "PLANT stop-book join" in result.evidence, result.evidence
+    rate = result.evidence.split("the weakest of the three plants tore at ")[1]
     assert float(rate.split("%")[0]) > 0.0, result.evidence
     assert "TORN READ at version" in result.evidence, result.evidence
+
+
+def test_the_STOP_BOOK_JOIN_plant_tore_ON_STOP_DISTANCE_and_the_rate_is_REPORTED(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ARC 032's whole re-proof: the harness has POWER over the NEW field.
+
+    A re-proof that races the old fields and ignores the new one proves the old
+    row still works. The number parsed here is the stop-axis rate specifically,
+    not the plant's overall tear rate — the two older plants tear at a healthy
+    rate with ZERO power over `stop_distance`, so the overall figure would pass
+    this test while measuring nothing.
+    """
+    result = _run(monkeypatch, _subjects())
+    assert "TORN ROW at version" in result.evidence, result.evidence
+    assert "stop_distance axis" in result.evidence, result.evidence
+    stop_rate = result.evidence.split("the stop-book-join plant tore at ")[1]
+    assert float(stop_rate.split("%")[0]) > 0.0, result.evidence
+    # The CONTROL that makes the line above about the join and not about noise:
+    # the two older plants must report ZERO on this axis, because they tear on
+    # balance-versus-row and leave every row internally coherent.
+    for label in ("PLANT two-read consumer", "PLANT two-attribute book"):
+        segment = result.evidence.split(label)[1].split(";")[0]
+        assert "of which 0 on the stop_distance axis" in segment, segment
+
+
+def test_the_detector_names_a_FRESH_stop_distance_against_a_STALE_size() -> None:
+    """AXIS 2, driven directly. It consults `balance` NOWHERE, and that is why.
+
+    A cross-table join leaves balance and the position table mutually perfect,
+    so an axis that referenced balance could not see it at all.
+    """
+    seam = sys.modules["nixrisk.seam"]
+    _, stale = gate._world(seam, 40)
+    _, fresh = gate._world(seam, 41)
+    joined = dataclasses.replace(stale[0], stop_distance=fresh[0].stop_distance)
+    picture = seam.FinancialPicture(
+        version=1,
+        published_ts=0.0,
+        balance=gate._BASE + 40,  # balance AGREES with the row's size and margin
+        positions=(joined,),
+        margin_per_contract={},
+        sum_open_margin=joined.margin,
+        sum_reservations=0.0,
+        committed=0.0,
+        deployable=0.0,
+    )
+    defect = gate._generation_defect(picture)
+    assert "TORN ROW at version 1 [stop_distance axis]" in defect, defect
+    assert "stop_distance 61 (generation 41)" in defect, defect
+    assert "size 40 (generation 40)" in defect, defect
+    assert "cross-table skew" in defect, defect
+    # The CONTROL: the same row, unjoined, is not a tear.
+    assert (
+        gate._generation_defect(dataclasses.replace(picture, positions=(stale[0],)))
+        == ""
+    ), "one generation across all three row carriers is not a tear"
 
 
 def test_the_detector_names_BOTH_generations_not_merely_that_it_disagreed() -> None:
@@ -238,6 +296,148 @@ def test_a_MIRROR_THAT_NEVER_REFUSES_reddens_and_names_tradable(
     assert result.status is Status.FAIL_NEEDS_OPERATOR, result.evidence
     assert "picture.py:PictureMirror.tradable" in result.site, result.site
     assert "never sized on" in result.detail, result.detail
+
+
+class _StopJoinBook(pic.FinancialPictureBook):
+    """THE SUBJECT broken in exactly ONE way: §6.4's Option B, cross-table.
+
+    `commit` is untouched — balance, `size` and `margin` stay atomic under one
+    version stamp — and only `current()` joins the stop distance on, out of a
+    table it refreshes ONE READ LATE. So the only field that can be wrong is
+    `stop_distance`, which is precisely the tear the narrow harness could not
+    see and the whole reason ARC 032 re-proved the identity rather than assuming
+    the widening preserved it.
+    """
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        #: The SECOND table, one read behind. Declared here rather than lazily,
+        #: because a plant whose defect depends on attribute creation order is a
+        #: plant that could stop planting quietly.
+        self._lagging: dict[str, int] = {}
+
+    def current(self):
+        """Read the picture, then join the distance from the LAGGING table."""
+        picture = super().current()
+        stops = self._lagging
+        self._lagging = {row.trade_id: row.stop_distance for row in picture.positions}
+        rows = tuple(
+            dataclasses.replace(
+                row, stop_distance=stops.get(row.trade_id, gate._STOP_BASE)
+            )
+            for row in picture.positions
+        )
+        return dataclasses.replace(picture, positions=rows)
+
+
+def test_a_STOP_BOOK_JOIN_in_the_SUBJECT_reddens_the_MEASURED_arm_by_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The measured arm can see a tear on `stop_distance` ALONE. The sharp point.
+
+    Without this control the re-proof would be a green over a harness that races
+    the five old fields, and a fresh `stop_distance` against a stale `size` would
+    pass it silently.
+    """
+    result = _run(monkeypatch, _subjects(FinancialPictureBook=_StopJoinBook))
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.evidence
+    assert "picture.py:FinancialPictureBook.commit" in result.site, result.site
+    assert "TORN ROW at version" in result.detail, result.detail
+    assert "stop_distance axis" in result.detail, result.detail
+    assert "cross-table skew" in result.detail, result.detail
+
+
+def test_a_JOIN_PLANT_WITH_NO_POWER_OVER_STOP_reddens_the_STOP_AXIS_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The floor that keeps the re-proof honest, driven.
+
+    The stand-in TEARS — at the two-attribute book's own healthy rate — so the
+    generic `MIN_TEARS` floor is satisfied and only the stop-axis floor can
+    catch it. That is exactly the failure mode a single tear floor would let
+    through: a harness with plenty of power over the old fields and none at all
+    over the new one.
+    """
+    monkeypatch.setattr(
+        gate,
+        "_StopBookJoinBook",
+        lambda picture_mod, seam: gate._TwoAttributeBook(seam),
+    )
+    result = _run(monkeypatch, _subjects())
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.evidence
+    assert "PLANT stop-book join" in result.site, result.site
+    assert "NO POWER over stop_distance" in result.detail, result.detail
+    assert "says NOTHING about the field this arc added" in result.detail, result.detail
+
+
+def test_a_DEFAULTING_DECODER_reddens_the_CODEC_arm_naming_the_FAIL_OPEN(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D3.136's fail-open, reintroduced by the codec. `raw.get(..., 0)` in one line."""
+
+    def _defaulting(payload):
+        body = dict(payload)
+        body["positions"] = [
+            {"stop_distance": 0, **dict(row)} for row in payload["positions"]
+        ]
+        return pic.decode_picture(body)
+
+    result = _run(monkeypatch, _subjects(decode_picture=_defaulting))
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.evidence
+    assert "encode_picture/decode_picture" in result.site, result.site
+    assert "fail-open reintroduced by the codec" in result.detail, result.detail
+    assert "ADMITS more" in result.detail, result.detail
+
+
+def test_a_SCHEMA_BLIND_DECODER_reddens_and_says_the_refusal_missed_the_SCHEMA(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Why the stamp was bumped: the refusal must name the SHAPE, not one key.
+
+    A decoder that ignores the stamp still refuses a genuine version-1 body —
+    the rows have no `stop_distance` — but it refuses it as a corrupt message
+    rather than as a shape it does not understand, and a consumer cannot act on
+    that. This control is what stops the schema assertion being satisfied by the
+    key clause wearing the schema's name.
+    """
+
+    def _schema_blind(payload):
+        return pic.decode_picture({**dict(payload), "schema": pic.WIRE_SCHEMA})
+
+    result = _run(monkeypatch, _subjects(decode_picture=_schema_blind))
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.evidence
+    assert "encode_picture/decode_picture" in result.site, result.site
+    assert "does not name the SCHEMA" in result.detail, result.detail
+    assert "KeyError('stop_distance')" in result.detail, result.detail
+
+
+def test_a_SINK_THAT_STRIPS_STOP_DISTANCE_reddens_the_WIRE_and_the_LATE_arms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The field really has to survive the socket, and BOTH wire arms can see it.
+
+    The sink publishes rows whose `stop_distance` is the generation-0 base while
+    balance and the table advance normally — a picture that is perfect on every
+    field the narrow row had.
+    """
+
+    class _StopStrippingSink(pic.StateBusPictureSink):
+        """The plant: every row goes onto the wire priced at generation 0."""
+
+        def emit(self, picture) -> None:
+            """§6.4's skew, moved onto the wire."""
+            rows = tuple(
+                dataclasses.replace(row, stop_distance=gate._STOP_BASE)
+                for row in picture.positions
+            )
+            super().emit(dataclasses.replace(picture, positions=rows))
+
+    result = _run(monkeypatch, _subjects(StateBusPictureSink=_StopStrippingSink))
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.evidence
+    assert "encode_picture/decode_picture" in result.site, result.site
+    assert "torn snapshot on the wire" in result.detail, result.detail
+    assert "TORN ROW" in result.detail, result.detail
+    assert "arrived DEFAULTED" in result.detail, result.detail
 
 
 def test_a_TORN_ENCODER_reddens_the_WIRE_arm(
