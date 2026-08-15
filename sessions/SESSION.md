@@ -3593,3 +3593,12 @@ back-to-back verify runs and cleared on three consecutive re-runs (51, 24, 53) �
 rather than reporting a green over too small a set is it working. `pre-commit run --all-files` is RED
 and was RED at `d1525ba`: 75 ruff errors on `scripts/{harness,monitor,pty_test}.py`, files no arc
 owns and this arc did not touch (**D3.145**); every per-commit hook run passed.
+
+**POST-WRITE-BACK RE-MEASURE, appended forward-only (§0h).** The write-back made ARC 032 a completed
+arc, and `check_artifact_gate_coverage` went **GUARDED → CANNOT_MEASURE** naming
+`scripts/nixrisk/execution.py`'s owner: *"'ARC 032' has ALREADY COMPLETED — its close-out summary is
+in sessions/SESSION.md"*. `verify.py` **48 passed | 1 failed | 3 cannot measure | 0 skipped**, exit 1.
+**Predicted before the commit that caused it** — in D3.144, in the re-owning commit `8105092` and in
+the write-back commit's own message. Nothing else moved. Both figures are true of different moments:
+`48 | 1 | 2 | 0 | 1` immediately before the write-back under BOTH interpreters, `48 | 1 | 3 | 0 | 0`
+immediately after.

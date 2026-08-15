@@ -586,3 +586,33 @@ policy, and a §16 U1 single-pass proposal has no race to arbitrate anyway); bla
 **`SEAM_REV` is 1.1.0 because the bytes moved.** ARC 031 pinned it at 1.0.0 with the target planned
 and wrote down the rule that the literal moves when the wire changes and not when a decision is taken.
 It changed here for the reason that rule allows.
+
+---
+
+## POST-WRITE-BACK RE-MEASURE — the predicted transition, fired
+
+The write-back commit appended ARC 032's summary to `sessions/SESSION.md`, which makes ARC 032 a
+COMPLETED arc to `contract.completed_arcs`. Re-measured immediately afterwards:
+
+```
+check_artifact_gate_coverage:  GUARDED (exit 3)  ->  CANNOT_MEASURE (exit 2)
+  checks/gate_coverage_baseline.json:artifacts:scripts/nixrisk/execution.py:owner:
+  'ARC 032' has ALREADY COMPLETED — its close-out summary is in sessions/SESSION.md
+
+verify.py  →  48 passed | 1 failed | 3 cannot measure | 0 skipped   exit 1
+```
+
+**This was written down BEFORE the commit that caused it** — in `D3.144`, in the guard re-owning
+commit `8105092`, and in the write-back commit's own message — with both available moves measured and
+the reason the other was refused. It is the transition the ceiling exists to force: the work on
+`scripts/nixrisk/execution.py` is overdue, a fourth owner would be a third re-owning, and paying a
+FAIL to move it one more arc is buying a green with the exact deferral the ceiling forbids.
+
+The other twelve guards were walked forward to ARC 033 and are unaffected. Nothing else moved: the
+FAIL is still the tap session, the two standing cannot-measures are still §17 masking by the dead
+Gateway port, and `48 passed` is unchanged.
+
+**The final figure for this arc is therefore stated twice, and both are true of different moments:**
+`48 | 1 | 2 | 0 | 1` immediately before the write-back, under BOTH interpreters, and
+`48 | 1 | 3 | 0 | 0` immediately after it. Quoting only the first would hide a transition this arc
+predicted; quoting only the second would hide that the arc's gates closed green.
