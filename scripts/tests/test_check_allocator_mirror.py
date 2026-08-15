@@ -98,12 +98,19 @@ def test_the_REAL_tree_passes_and_says_what_it_measured() -> None:
     """A gate that cannot pass on a clean subject measures nothing on a dirty one."""
     result = _run(REPO)
     assert result.status is Status.PASS, result.detail
-    for marker in ("A1:", "A2:", "A3:", "A4:", "REAL wire"):
+    for marker in ("A1:", "A2:", "A3:", "A4:", "REAL wire", "REAL PROCESS BOUNDARY"):
         assert marker in (result.evidence or ""), (
             f"the PASS does not report {marker!r}: {result.evidence}"
         )
     assert "0 torn" in (result.evidence or ""), result.evidence
     assert "falsifier caught" in (result.evidence or ""), result.evidence
+    # The CONTROL half of arm 6, read back out of the evidence rather than
+    # trusted: with the publisher dead before this process subscribed, nothing
+    # may arrive. Without it, arrival in the measured half would be evidence
+    # only that SOMETHING delivered a picture.
+    assert "killed-child CONTROL took 0 byte(s) and reported empty" in (
+        result.evidence or ""
+    ), result.evidence
 
 
 def test_an_untouched_COPY_also_passes(home: Path) -> None:
@@ -118,6 +125,12 @@ def test_the_gate_DECLARES_the_mirror_as_its_subject_and_refuses_to_correct() ->
     assert "authority violation" in gate.NON_CORRECTABLE_REASON
     assert "zmq-ipc" in gate.RESOURCES
     assert "file-write:/tmp" in gate.RESOURCES
+    # ARC 032: arm 6 really does spawn, so the declaration really must say so.
+    # Both spellings — the observer matches by BASENAME and `sys.executable` is
+    # `python` under the venv and `python3` under the system interpreter, which
+    # is the split D3.140 measured on another gate's declaration.
+    assert "subprocess:python" in gate.RESOURCES, gate.RESOURCES
+    assert "subprocess:python3" in gate.RESOURCES, gate.RESOURCES
 
 
 def test_a_MISSING_subject_is_cannot_measure_never_a_PASS(tmp_path: Path) -> None:
@@ -374,6 +387,85 @@ def test_a_DELTA_ONLY_mirror_treated_as_COMPLETE_reddens_the_transport_arm(
         result,
         site_contains="StateBusFeed[ipc]",
         why_contains="fed ONLY deltas reports",
+    )
+
+
+# --------------------------------------------------------------------------
+# ARM 6 — THE REAL PROCESS BOUNDARY (CHECK-DEBT D3.122)
+# --------------------------------------------------------------------------
+#
+# These plants edit the gate's OWN child source, which is a string constant the
+# gate writes into its own tempdir. Doctrine C.8 holds: no production artifact is
+# touched, and `scripts/nixrisk/picture.py` still publishes what it always did.
+
+
+def test_the_CHILD_really_is_a_SECOND_PROCESS_and_the_evidence_says_which(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The claim is a boundary; the pid is the only thing that can prove one.
+
+    Driven through the gate's own driver so the number in the evidence and the
+    number asserted here are the same observation.
+    """
+    del monkeypatch
+    loaded, error = gate.load(REPO)
+    assert loaded is not None, error
+    live = gate._cross_process(  # pylint: disable=protected-access
+        loaded, REPO, tmp_path, kill_before_subscribe=False
+    )
+    assert live["announced"]["pid"] != live["own_pid"], live
+    assert live["announced"]["pid"] == live["child_pid"], live
+    assert live["bytes"] > 0, "zero wire bytes is a vacuous boundary crossing"
+    assert live["socket_file"], live["endpoint"]
+    assert [row.stop_distance for row in live["snap"].picture.positions] == [
+        gate.CHILD_STOP_TICKS
+    ], live["snap"].picture.positions
+
+
+def test_a_CHILD_that_publishes_a_DEFAULTED_stop_distance_reddens_arm_6() -> None:
+    """The field really has to survive the boundary — not merely the picture.
+
+    This is the plant that makes arm 6 a measurement of ARC 032's widening
+    rather than a re-run of ARC 031's transport arm: everything else about the
+    child is unchanged, and the row crosses the boundary priced at the value a
+    defaulted decode would have invented.
+    """
+    original = gate._CHILD_SOURCE  # pylint: disable=protected-access
+    planted = original.replace("stop_distance=stop_ticks,", "stop_distance=0,")
+    assert planted != original, "the plant anchor moved"
+    try:
+        gate._CHILD_SOURCE = planted  # pylint: disable=protected-access
+        result = _run(REPO)
+    finally:
+        gate._CHILD_SOURCE = original  # pylint: disable=protected-access
+    _red(
+        result,
+        site_contains="StateBusFeed[cross-process]",
+        why_contains="carries stop_distance [0]",
+    )
+    assert "did not survive a real process boundary" in (result.detail or ""), (
+        result.detail
+    )
+
+
+def test_a_CHILD_that_NEVER_ANNOUNCES_is_a_FINDING_and_names_D3_122() -> None:
+    """A boundary that was never crossed must not read as a boundary that held."""
+    original = gate._CHILD_SOURCE  # pylint: disable=protected-access
+    try:
+        gate._CHILD_SOURCE = (  # pylint: disable=protected-access
+            'import sys\nsys.stderr.write("planted: this child announces nothing\\n")\n'
+        )
+        result = _run(REPO)
+    finally:
+        gate._CHILD_SOURCE = original  # pylint: disable=protected-access
+    _red(
+        result,
+        site_contains="StateBusFeed[cross-process]",
+        why_contains="printed no announcement",
+    )
+    assert "D3.122 stands exactly where it was" in (result.detail or ""), result.detail
+    assert "planted: this child announces nothing" in (result.detail or ""), (
+        "the refusal must quote the child's own stderr, not merely its exit code"
     )
 
 

@@ -263,6 +263,90 @@ def test_the_schema_key_is_NOT_underscore_prefixed_REGRESSION() -> None:
     assert not any(key.startswith("_") for key in body), sorted(body)
 
 
+def _strip_stops(body: dict, *, schema: int | None = None) -> dict:
+    """A body whose rows really LOST `stop_distance` — the version-1 shape.
+
+    Not a version-2 body with its stamp edited: such a body still carries the
+    field, so a decoder that ignored the stamp entirely would round-trip it and
+    the schema assertion below would be satisfied by a decoder that has no
+    schema check at all.
+    """
+    out = dict(body)
+    out["positions"] = [
+        {k: v for k, v in row.items() if k != "stop_distance"}
+        for row in body["positions"]
+    ]
+    if schema is not None:
+        out["schema"] = schema
+    return out
+
+
+def test_the_wire_carries_stop_distance_on_EVERY_row_BOTH_directions() -> None:
+    """ARC 032 / `SEAM_REV 1.1.0`: the field §7:501 prices a held position from."""
+    book = _book()
+    snapshot = book.commit(
+        positions=(
+            PositionRow(
+                trade_id="T1",
+                symbol="MESU6",
+                strategy_id="s1",
+                size=2,
+                margin=100.0,
+                state=PositionState.OPEN,
+                stop_distance=37,
+            ),
+            PositionRow(
+                trade_id="T2",
+                symbol="MNQU6",
+                strategy_id="s2",
+                size=1,
+                margin=50.0,
+                state=PositionState.CLOSING,
+                stop_distance=91,
+            ),
+        )
+    )
+    body = pic.encode_picture(snapshot)
+    assert [row["stop_distance"] for row in body["positions"]] == [37, 91], body
+    back = pic.decode_picture(body)
+    assert [row.stop_distance for row in back.positions] == [37, 91], back.positions
+    assert back == snapshot, (back, snapshot)
+
+
+def test_a_row_with_NO_stop_distance_is_REFUSED_and_never_DEFAULTED() -> None:
+    """D3.136's fail-open must not come back through the codec.
+
+    A defaulted decode publishes a held position priced at ZERO dollar risk; the
+    bucket then reads emptier than it is and the §7 cap ADMITS more. So the
+    missing key is a refusal, not a zero.
+    """
+    body = pic.encode_picture(_book().commit(positions=(_row("T1", 10.0),)))
+    with pytest.raises(pic.PictureError) as red:
+        pic.decode_picture(_strip_stops(body))
+    assert "KeyError('stop_distance')" in str(red.value), str(red.value)
+    assert "undecodable position row" in str(red.value), str(red.value)
+
+
+def test_a_GENUINE_schema_1_body_is_refused_naming_the_SCHEMA_not_the_key() -> None:
+    """Why `WIRE_SCHEMA` went 1 -> 2: the refusal must say the TRUE thing.
+
+    Both halves, same body, one integer apart: under the OLD stamp the refusal
+    names the schema (a shape this consumer does not understand — something a
+    consumer can act on); under the CURRENT stamp it names the field (a corrupt
+    message). If the bump had been skipped, only the second sentence would exist.
+    """
+    body = pic.encode_picture(_book().commit(positions=(_row("T1", 10.0),)))
+    with pytest.raises(pic.PictureError) as old:
+        pic.decode_picture(_strip_stops(body, schema=1))
+    assert f"wire schema 1 is not {pic.WIRE_SCHEMA}" in str(old.value), str(old.value)
+    assert "stop_distance" not in str(old.value), str(old.value)
+
+    with pytest.raises(pic.PictureError) as current:
+        pic.decode_picture(_strip_stops(body))
+    assert "stop_distance" in str(current.value), str(current.value)
+    assert "wire schema" not in str(current.value), str(current.value)
+
+
 def test_decode_REFUSES_an_unknown_schema_and_says_so() -> None:
     body = pic.encode_picture(_book().current())
     body["schema"] = 99
@@ -280,7 +364,16 @@ def test_a_picture_survives_the_REAL_state_bus(tmp_path: Path, closing: list) ->
     book = pic.FinancialPictureBook(
         balance=50_000.0, deployable_fraction=FRACTION, sink=sink
     )
-    sent = book.commit(balance=51_000.0, positions=(_row("T9", 900.0),))
+    row = PositionRow(
+        trade_id="T9",
+        symbol="MESU6",
+        strategy_id="s1",
+        size=1,
+        margin=900.0,
+        state=PositionState.OPEN,
+        stop_distance=44,  # a value nothing else in this file uses
+    )
+    sent = book.commit(balance=51_000.0, positions=(row,))
     subscriber = statebus.StateSubscriber(endpoint, [pic.TOPIC])
     closing.append(subscriber)
     mirror = pic.PictureMirror(subscriber, max_age_s=60.0)
@@ -295,6 +388,9 @@ def test_a_picture_survives_the_REAL_state_bus(tmp_path: Path, closing: list) ->
     got = mirror.picture()
     assert got is not None, mirror.decode_errors
     assert got == sent, (got, sent)
+    # Named explicitly as well as covered by the equality above, so a regression
+    # says WHICH field the socket lost rather than dumping two whole pictures.
+    assert [r.stop_distance for r in got.positions] == [44], got.positions
 
 
 # ---------------------------------------------------------------------------

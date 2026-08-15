@@ -37,7 +37,7 @@ and check_state_bus would still fail if the picture were torn.
    the shortfall. (D3.39: arrival terminates, the clock is only a ceiling, so the
    verdict is not a function of machine load.)
 
-2. **THE DETECTOR IS ASLEEP.** This is the sharp one, and it is why two PLANTS
+2. **THE DETECTOR IS ASLEEP.** This is the sharp one, and it is why three PLANTS
    run on every invocation before the subject is judged at all:
 
    * `_TwoReadConsumer` — §3's forbidden shape on the CONSUMER side, literally:
@@ -48,10 +48,22 @@ and check_state_bus would still fail if the picture were torn.
    * `_TwoAttributeBook` — the same shape on the PUBLISHER side: a book that
      keeps balance and the table in two attributes and stores them one after the
      other.
+   * `_StopBookJoinBook` — **ARC 032's plant, and the only one with any power
+     over the field ARC 032 added.** It is OPTION B, the design the architect
+     REFUSED by name (D3.136): a publisher that keeps stop distances in a SECOND
+     table on its own clock and JOINS them onto rows read from the first at read
+     time. Its first table is the REAL `FinancialPictureBook`, so balance and the
+     rows are atomic and the ONLY thing it can tear on is `stop_distance` — which
+     is what makes it a measurement of the ruling rather than a restatement of
+     it. §6.4: *"independent tables tick on independent clocks"*.
 
-   **Each plant must produce at least `MIN_TEARS` observed tears or the gate
-   returns CANNOT_MEASURE.** A concurrency test that never observes the failing
-   case is a sleep with an assertion after it, and this gate refuses to be one.
+   **Each plant must produce at least `MIN_TEARS` observed tears, and the join
+   plant must produce at least `MIN_STOP_TEARS` of them ON THE `stop_distance`
+   AXIS, or the gate returns CANNOT_MEASURE.** A concurrency test that never
+   observes the failing case is a sleep with an assertion after it, and this gate
+   refuses to be one. The stop-axis floor is separate because the two older
+   plants tear on `balance`-versus-row and would satisfy a single floor while
+   proving nothing whatever about the new field.
 
 3. **THE TEAR IS INVISIBLE ANYWAY.** `picture.picture_defects` catches a snapshot
    whose derived fields disagree with its own inputs — and it CANNOT catch §3's
@@ -59,9 +71,26 @@ and check_state_bus would still fail if the picture were torn.
    table at *k+1* and then derives consistently produces a perfectly coherent
    snapshot (`picture_defects`' docstring says so). Closed by planting a
    GENERATION LINK into the world the writer publishes: balance carries the
-   generation and so does every row's margin, so a snapshot assembled from two
-   generations names them both. Both detectors run; the second is the one with
-   the power.
+   generation and so does every row's `margin`, its `size` **and its
+   `stop_distance`**, so a snapshot assembled from two generations names them
+   both. Both detectors run; the second is the one with the power.
+
+   **TWO INDEPENDENT TEAR AXES since ARC 032**, because a re-proof that races the
+   old fields and ignores the new one says nothing about the new one:
+
+   * **AXIS 2, the row against ITSELF** — `stop_distance` must belong to the same
+     generation as that row's own `size` and `margin`. This axis needs no
+     reference to `balance` at all, which is exactly why it can see a cross-table
+     join that keeps balance and the table perfectly coherent.
+   * **AXIS 1, the row against BALANCE** — a row's `margin` must belong to the
+     generation `balance` carries.
+
+   They overlap by construction and the overlap is stated rather than hidden: a
+   `stop_distance` disagreeing with `balance` must ALSO disagree either with its
+   own row's `margin` (axis 2 fires) or with nothing, in which case that `margin`
+   already disagrees with `balance` (axis 1 fires). So the pair is gapless, and
+   neither clause is dead: the join plant fires axis 2 and the two older plants
+   fire axis 1.
 
 4. **THE WIRE IS NEVER USED.** An in-memory race says nothing about §12.7. Closed
    by `_bus_race`, which decodes every message a real `zmq` SUB actually received
@@ -83,8 +112,27 @@ and check_state_bus would still fail if the picture were torn.
 
 ## WHAT THIS GATE CANNOT PROVE, STATED RATHER THAN IMPLIED
 
+**AXIS 2's power over the MEASURED ARM is conditional, and saying so is the
+point.** `_world` builds one `PositionRow` per generation and the subject
+publishes that object whole, so `stop_distance`, `size` and `margin` are
+inseparable in the measured arm by construction: axis 2 cannot fire there no
+matter what `FinancialPictureBook` does. What axis 2 therefore proves is
+narrower than "the measured arm never tore on `stop_distance`" and is worth
+stating in the narrow form: *a publisher that REBUILDS rows — joining the
+distance on from a second table — is caught, and this publisher does not rebuild
+rows.* The join plant supplies the first half over a live race; the second half
+is a can-fail control in `scripts/tests/test_check_picture_atomicity.py`
+(`..._a_STOP_BOOK_JOIN_in_the_SUBJECT_reddens_the_MEASURED_arm_by_name`), which
+puts the join INSIDE the subject and requires the measured arm to redden, so the
+claim is a measurement on both halves rather than an argument on one.
+Axis 1 has unconditional power over the measured arm (a two-commit
+publisher reddens it); axis 2 does not, and a gate that let the two read alike
+would be claiming the stronger of them for free.
+
 It runs one process. It does not prove cross-process delivery, fd inheritance, or
-behaviour under a real Limiter's load. It proves nothing about stop conversion,
+behaviour under a real Limiter's load. (`check_allocator_mirror` arm 6 crosses a
+real boundary for the CONSUMER's mirror; nothing here does.) It proves nothing
+about stop conversion,
 protective-exit wiring, session-close flatten, HALT semantics, cold-start
 reconciliation, the Sentinel, Scoring or the Allocator — none of which exist yet.
 A green here says the picture is atomic and its mirror fails closed; it does NOT
@@ -93,6 +141,7 @@ say the Limiter is a safety spine.
 
 from __future__ import annotations
 
+import dataclasses
 import secrets
 import sys
 import tempfile
@@ -116,6 +165,14 @@ from nixverify.contract import (
 # identically, and doctrine B.2 requires the crash path return CANNOT_MEASURE in
 # both. Those blocks are MANDATED to be the same text.
 # pylint: disable=duplicate-code
+#
+# pylint: disable=too-many-lines
+# Six arms, THREE plants (ARC 032 added the stop-book join), a codec probe and a
+# §7.12 section that answers six conditions with a named mechanism apiece.
+# `nix_check_contract.md` §4.2 requires a check to be a single independently
+# runnable artifact, so splitting this across modules would break the contract to
+# satisfy a length counter; the honest alternative to the length is fewer
+# measurements. Same reasoning `check_allocator_mirror.py` records for itself.
 PRIVILEGE = "user"
 INTERACTIVE = False
 DISRUPTIVE = False
@@ -139,7 +196,10 @@ DEPENDS_ON: tuple[str, ...] = ("check_venv",)
 #:   below are threads, and the observer sees no claim for them.
 RESOURCES: tuple[str, ...] = ("file-write:/tmp", "zmq-ipc")
 TIME_BOUND = True
-#: MEASURED on this node, not budgeted: four races plus three socket rendezvous.
+#: MEASURED on this node, not budgeted: FOUR races (ARC 032 added the stop-book
+#: join), one codec probe and three socket rendezvous — 0.70 s, twice. Budgeted
+#: with wide headroom because ARRIVAL ends every race and only a race that is
+#: BROKEN rather than slow can reach `RACE_CEILING_S` (D3.39).
 EXPECTED_S = 20.0
 ON_FAIL = "continue"
 CORRECTABLE = False
@@ -160,11 +220,30 @@ _BASE = 1_000_000.0
 _ROWS = 3
 _FRACTION = 0.70
 
+#: The stop distance in TICKS at generation 0. A row at generation *g* publishes
+#: `_STOP_BASE + g`, so the generation is recoverable from `stop_distance` by
+#: subtraction and a row whose distance was joined from a different generation is
+#: arithmetically visible — the same trick `margin` already plays for balance.
+#: It is an OFFSET rather than the bare generation so that the field stays a
+#: plausible tick count at generation 0 and so that a row someone forgot to stamp
+#: (a literal `stop_distance=20` fixture) reads as generation 0 rather than as
+#: whatever generation happens to equal 20.
+_STOP_BASE = 20
+
+#: The token every AXIS-2 defect carries, so the stop-axis tears can be counted
+#: out of the tear list without a second detector. Doctrine C.9: one instrument.
+_STOP_AXIS = "stop_distance axis"
+
 #: Non-vacuity floors (`debug.md` §7.12), each a count the gate must REACH or it
 #: says it measured nothing. Floors, not today's numbers (doctrine C.4).
 MIN_READS = 2_000
 MIN_VERSIONS = 40
 MIN_TEARS = 1
+#: The join plant's floor, on the `stop_distance` AXIS specifically. Separate
+#: from `MIN_TEARS` on purpose: the two older plants tear on balance-versus-row,
+#: so a single tear floor is satisfiable while the harness has no power at all
+#: over the field ARC 032 added.
+MIN_STOP_TEARS = 1
 MIN_BUS_MESSAGES = 20
 #: Ceiling on ONE race. ARRIVAL ends it; this only bounds a race that is BROKEN
 #: rather than slow, which is why it can afford to be enormous (D3.39).
@@ -207,35 +286,70 @@ def _import_subjects() -> tuple[Any, Any, str]:
 
 
 def _world(seam: Any, generation: int) -> tuple[float, tuple[Any, ...]]:
-    """ONE consistent world state, with the generation encoded in BOTH halves.
+    """ONE consistent world state, with the generation encoded in EVERY half.
 
     That link is the whole instrument. Without it a snapshot built from a stale
     balance and a fresh table is internally perfect and undetectable.
+
+    **FOUR carriers since ARC 032, not two:** `balance`, and each row's `margin`,
+    `size` and `stop_distance`. The three row fields are what make AXIS 2 — the
+    row judged against ITSELF — expressible at all, and axis 2 is the only axis
+    a cross-table join can be caught on, because such a join leaves `balance` and
+    the position table perfectly coherent with each other.
     """
     rows = tuple(
         seam.PositionRow(
             trade_id=f"T{index}",
             symbol="MESU6",
             strategy_id="drill",
-            size=1,
+            size=generation,
             margin=float(generation),
             state=seam.PositionState.OPEN,
-            stop_distance=20,
+            stop_distance=_STOP_BASE + generation,
         )
         for index in range(_ROWS)
     )
     return _BASE + generation, rows
 
 
+def _row_defect(snapshot: Any, row: Any) -> str:
+    """AXIS 2: `""` when this ONE row's three carriers agree with each other.
+
+    Deliberately makes NO reference to `snapshot.balance`. That independence is
+    the point: §6.4's cross-table skew — a stop distance kept in a second table
+    and joined on at read time — produces a snapshot whose balance and position
+    table are mutually perfect, so an axis that consults balance cannot see it.
+    """
+    stop_generation = row.stop_distance - _STOP_BASE
+    if stop_generation == row.size and float(stop_generation) == row.margin:
+        return ""
+    return (
+        f"TORN ROW at version {snapshot.version} [{_STOP_AXIS}]: row "
+        f"{row.trade_id} carries stop_distance {row.stop_distance!r} "
+        f"(generation {stop_generation}) against size {row.size!r} (generation "
+        f"{row.size}) and margin {row.margin!r} (generation {row.margin:.0f}) — "
+        "a FRESH stop_distance joined onto a STALE size is the cross-table skew "
+        "§6.4 refuses in the same breath as it fixes one snapshot, and §7:501 "
+        "would price this held position off a distance that was never true of it"
+    )
+
+
 def _generation_defect(snapshot: Any) -> str:
-    """`""` when every field of this ONE snapshot belongs to ONE generation."""
+    """`""` when every field of this ONE snapshot belongs to ONE generation.
+
+    Two axes, checked row-internal FIRST. See the module docstring for why the
+    pair is gapless and why neither clause is dead.
+    """
     generation = snapshot.balance - _BASE
     for row in snapshot.positions:
+        if defect := _row_defect(snapshot, row):
+            return defect
         if row.margin != generation:
             return (
                 f"TORN READ at version {snapshot.version}: balance {snapshot.balance!r} "
                 f"is generation {generation:.0f} while row {row.trade_id} carries "
-                f"margin {row.margin!r} (generation {row.margin:.0f}) — §3's "
+                f"margin {row.margin!r} (generation {row.margin:.0f}), size "
+                f"{row.size!r} and stop_distance {row.stop_distance!r} — §3's "
                 "atomicity rule says balance and the position table publish "
                 "together as one snapshot, never two separate reads"
             )
@@ -283,12 +397,28 @@ class RaceResult:  # pylint: disable=too-many-instance-attributes
         """
         return len(self.tears) / max(1, self.reads)
 
+    @property
+    def stop_tears(self) -> int:
+        """Tears on AXIS 2 — the `stop_distance` axis — counted, not assumed.
+
+        Read out of the tear TEXT rather than from a second detector, because a
+        second detector is a second instrument for one property (doctrine C.9)
+        and could drift from the one whose message the evidence quotes.
+        """
+        return sum(1 for tear in self.tears if _STOP_AXIS in tear)
+
+    @property
+    def stop_tear_rate(self) -> float:
+        """Stop-axis tears per read. THE figure ARC 032's re-proof turns on."""
+        return self.stop_tears / max(1, self.reads)
+
     def summary(self) -> str:
         """One line of narration for the evidence string."""
         return (
             f"{self.label}: {self.reads} read(s) across {self.versions} distinct "
             f"version(s), writer reached generation {self.generations}, "
-            f"{len(self.tears)} tear(s) ({self.tear_rate:.1%}), "
+            f"{len(self.tears)} tear(s) ({self.tear_rate:.1%}), of which "
+            f"{self.stop_tears} on the {_STOP_AXIS} ({self.stop_tear_rate:.1%}), "
             f"{len(self.coherence)} incoherent, {self.seconds:.2f}s"
         )
 
@@ -347,7 +477,7 @@ def race(  # pylint: disable=too-many-locals
 
 
 # ---------------------------------------------------------------------------
-# The two PLANTS. Neither touches a production artifact (doctrine C.8).
+# The three PLANTS. None touches a production artifact (doctrine C.8).
 # ---------------------------------------------------------------------------
 
 
@@ -422,6 +552,55 @@ class _TwoAttributeBook:
         )
 
 
+class _StopBookJoinBook:
+    """PLANT THREE: **OPTION B**, the design the architect refused (D3.136).
+
+    A publisher that keeps stop distances in a SECOND TABLE on its own clock and
+    JOINS them onto rows read out of the first table at read time. §6.4 refuses
+    it by name — *"independent tables tick on independent clocks, so a sizing
+    pass could read fresh margin against slightly stale balance — cross-table
+    skew, the same split-brain we removed for balance, reintroduced at a new
+    seam"* — and the whole of ARC 032's seam widening is the alternative.
+
+    **This plant is why the re-proof is a re-proof.** Its FIRST table is the real
+    `FinancialPictureBook`, so balance, `size` and `margin` are atomic and
+    mutually perfect; the only field it can possibly tear on is `stop_distance`.
+    If it does not tear, the harness has no power over the field this arc added
+    and the measured arm's clean sheet ON THAT FIELD means nothing — which is the
+    exact shape of a re-proof that races the old fields and ignores the new one.
+
+    Doctrine C.8: it touches no production artifact. It CONSUMES the real book
+    and strips the distance out of what it stores there, which is precisely what
+    a publisher with a separate stop book would have to publish.
+    """
+
+    def __init__(self, picture_mod: Any, seam: Any) -> None:
+        del seam
+        self._book = _new_book(picture_mod)
+        #: THE SECOND TABLE. Its own dict, its own store, its own clock.
+        self._stops: dict[str, int] = {}
+
+    def commit(self, *, balance: float, positions: tuple[Any, ...]) -> None:
+        """Advance the two tables SEPARATELY. The forbidden shape, on purpose."""
+        stripped = tuple(
+            dataclasses.replace(row, stop_distance=_STOP_BASE) for row in positions
+        )
+        self._book.commit(balance=balance, positions=stripped)
+        time.sleep(0)  # the window two independent clocks always have
+        self._stops = {row.trade_id: row.stop_distance for row in positions}
+
+    def current(self) -> Any:
+        """Read table one, then table two, then JOIN. Two reads, one snapshot."""
+        picture = self._book.current()  # table 1 — atomic, one version stamp
+        time.sleep(0)
+        stops = self._stops  # table 2 — a SECOND read, on a different clock
+        rows = tuple(
+            dataclasses.replace(row, stop_distance=stops.get(row.trade_id, _STOP_BASE))
+            for row in picture.positions
+        )
+        return dataclasses.replace(picture, positions=rows)
+
+
 # ---------------------------------------------------------------------------
 # Drivers — each returns OBSERVATIONS, never a verdict
 # ---------------------------------------------------------------------------
@@ -433,11 +612,20 @@ def _new_book(picture_mod: Any) -> Any:
     )
 
 
+#: The plants whose tears give the measured arm its power, and the AXIS each one
+#: has power on. Read by `_arm_plants` and by `_arm_measured`, so the floor and
+#: the power statement can never name different populations.
+PLANT_KEYS: tuple[str, ...] = ("plant_consumer", "plant_publisher", "plant_join")
+#: The one plant that can tear on `stop_distance`, named once.
+STOP_PLANT_KEY = "plant_join"
+
+
 def run_races(picture_mod: Any, seam: Any) -> dict[str, RaceResult]:
-    """The measured arm and both plants, under one harness."""
+    """The measured arm and all three plants, under one harness."""
     measured_book = _new_book(picture_mod)
     plant_book = _new_book(picture_mod)
     torn_book = _TwoAttributeBook(seam)
+    join_book = _StopBookJoinBook(picture_mod, seam)
     return {
         "measured": race(
             picture_mod, seam, "measured", measured_book.current, measured_book
@@ -451,6 +639,9 @@ def run_races(picture_mod: Any, seam: Any) -> dict[str, RaceResult]:
         ),
         "plant_publisher": race(
             picture_mod, seam, "PLANT two-attribute book", torn_book.current, torn_book
+        ),
+        STOP_PLANT_KEY: race(
+            picture_mod, seam, "PLANT stop-book join", join_book.current, join_book
         ),
     }
 
@@ -576,12 +767,87 @@ def _late_subscribers(  # pylint: disable=too-many-locals
                 None if (p := mirror.picture()) is None else p.balance - _BASE
                 for mirror in mirrors
             ],
+            #: The SAME generation, recovered from `stop_distance` instead of
+            #: from `balance`. A field that never crossed the wire, or crossed it
+            #: defaulted, shows up here as generation 0 while `generations` still
+            #: reads 7 — which is exactly D3.136's fail-open wearing a mirror.
+            "stop_generations": [
+                None
+                if (p := mirror.picture()) is None
+                else sorted({row.stop_distance - _STOP_BASE for row in p.positions})
+                for mirror in mirrors
+            ],
             "bytes": [sub.bytes_received for sub in opened],
         }
     finally:
         for sub in opened:
             sub.close()
         publisher.close()
+
+
+def _strip_stops(body: dict[str, Any], *, schema: int | None) -> dict[str, Any]:
+    """A copy of `body` with `stop_distance` GONE from every row.
+
+    Not a version-2 body with its stamp edited — the rows really lose the key,
+    which is the shape `WIRE_SCHEMA` 1 actually emitted. A "version-1 body" made
+    by editing one integer would still carry the field, so a decoder that ignored
+    the stamp entirely would pass. That is the manufactured input this probe
+    exists not to take.
+    """
+    out = dict(body)
+    out["positions"] = [
+        {key: value for key, value in row.items() if key != "stop_distance"}
+        for row in body["positions"]
+    ]
+    if schema is not None:
+        out["schema"] = schema
+    return out
+
+
+def _refusal(picture_mod: Any, body: dict[str, Any]) -> str:
+    """The message `decode_picture` refused with, or `""` if it ACCEPTED."""
+    try:
+        picture_mod.decode_picture(body)
+    except picture_mod.PictureError as exc:
+        return str(exc)
+    return ""
+
+
+def _codec_probe(picture_mod: Any, seam: Any) -> dict[str, Any]:
+    """§12.7's codec, BOTH directions, over the wider row (D3.122's concrete half).
+
+    `encode_picture` and `decode_picture` are the only thing standing between the
+    Limiter's table and a consumer's mirror, so a field the seam carries and the
+    codec drops is a field that does not exist anywhere it matters.
+    """
+    book = _new_book(picture_mod)
+    balance, rows = _world(seam, 13)
+    picture = book.commit(balance=balance, positions=rows)
+    body = picture_mod.encode_picture(picture)
+    # TOTAL, deliberately: a codec that refuses its OWN output is a finding for
+    # `_arm_codec` to report, not an exception that turns the whole drive into
+    # "could not be driven" and loses every other measurement in this run.
+    back, error = None, ""
+    try:
+        back = picture_mod.decode_picture(body)
+    except picture_mod.PictureError as exc:
+        error = str(exc)
+    return {
+        "schema": body["schema"],
+        "encoded_stops": [row["stop_distance"] for row in body["positions"]],
+        "decoded_stops": (
+            [] if back is None else [row.stop_distance for row in back.positions]
+        ),
+        "round_trip_equal": back == picture,
+        "round_trip_error": error,
+        # A TRUE version-1 body: rows without the key AND the old stamp.
+        "v1_refusal": _refusal(picture_mod, _strip_stops(body, schema=1)),
+        # THE CONTROL. The same stripped rows under the CURRENT stamp: the
+        # refusal must move from the schema to the FIELD, which is what proves
+        # the line above is the schema clause firing and not the key clause
+        # wearing the schema's name.
+        "stripped_refusal": _refusal(picture_mod, _strip_stops(body, schema=None)),
+    }
 
 
 def _stale_rule(
@@ -638,18 +904,23 @@ def _arm_measured(races: dict[str, RaceResult], defects: list, ev: list) -> None
             )
         )
         return
-    weakest = min(races[key].tear_rate for key in ("plant_consumer", "plant_publisher"))
+    weakest = min(races[key].tear_rate for key in PLANT_KEYS)
+    stop_plant = races[STOP_PLANT_KEY]
     ev.append(
         result.summary()
-        + f" — POWER: the weaker of the two plants tore at {weakest:.1%} of reads "
-        "under this same harness, so a clean sheet over "
-        f"{result.reads} read(s) is a measurement and not an absence"
+        + f" — POWER: the weakest of the three plants tore at {weakest:.1%} of reads "
+        f"under this same harness, so a clean sheet over {result.reads} read(s) is "
+        "a measurement and not an absence; and the stop-book-join plant tore at "
+        f"{stop_plant.stop_tear_rate:.1%} ON THE {_STOP_AXIS} over "
+        f"{stop_plant.reads} read(s), so a publisher that JOINED the distance from "
+        "a second table would be caught — which is exactly what this publisher's "
+        "clean sheet on that axis is a measurement of, and no more"
     )
 
 
 def _arm_plants(races: dict[str, RaceResult], defects: list, ev: list) -> None:
-    """Both plants must TEAR. A detector that saw nothing measured nothing."""
-    for key in ("plant_consumer", "plant_publisher"):
+    """All three plants must TEAR. A detector that saw nothing measured nothing."""
+    for key in PLANT_KEYS:
         result = races[key]
         if len(result.tears) < MIN_TEARS:
             defects.append(
@@ -666,6 +937,24 @@ def _arm_plants(races: dict[str, RaceResult], defects: list, ev: list) -> None:
             )
             return
         ev.append(result.summary() + f" — first: {result.tears[0][:120]}")
+    join = races[STOP_PLANT_KEY]
+    if join.stop_tears < MIN_STOP_TEARS:
+        defects.append(
+            (
+                f"{_SITE_BOOK} [{join.label}]",
+                (
+                    f"the stop-book-join PLANT produced {join.stop_tears} tear(s) on "
+                    f"the {_STOP_AXIS}, below the floor of {MIN_STOP_TEARS}, over "
+                    f"{join.reads} read(s) across {join.versions} version(s) and "
+                    f"{len(join.tears)} tear(s) in total — so the harness has NO "
+                    "POWER over stop_distance, and a re-proof that races the old "
+                    "fields and ignores the new one proves the old row still works "
+                    "and says NOTHING about the field this arc added. §6.4's "
+                    "cross-table skew is the one thing this plant exists to show, "
+                    "and it did not show it"
+                ),
+            )
+        )
 
 
 def _arm_bus(bus: dict[str, Any], defects: list, ev: list) -> None:
@@ -679,6 +968,69 @@ def _arm_bus(bus: dict[str, Any], defects: list, ev: list) -> None:
     ev.append(
         f"bus: {bus['messages']} message(s) decoded across {bus['versions']} "
         f"version(s), {bus['bytes']} wire byte(s), {bus['emitted']} emitted, 0 torn"
+    )
+
+
+def _because(codec: dict[str, Any]) -> str:
+    """The round-trip refusal, quoted, when there was one. §18: name the reason."""
+    error = codec["round_trip_error"]
+    return f" — the codec REFUSED its own output: {error}" if error else ""
+
+
+def _arm_codec(codec: dict[str, Any], defects: list, ev: list) -> None:
+    """The wire carries `stop_distance` both ways, or refuses and says WHICH."""
+    expected = [_STOP_BASE + 13] * _ROWS
+    if codec["encoded_stops"] != expected or codec["decoded_stops"] != expected:
+        defects.append(
+            (
+                _SITE_WIRE,
+                (
+                    f"the codec carried stop_distance {codec['encoded_stops']} out "
+                    f"and {codec['decoded_stops']} back, expected {expected} on "
+                    "every row — a field the seam carries and the wire drops is a "
+                    f"field the Allocator never sees{_because(codec)}"
+                ),
+            )
+        )
+        return
+    if not codec["round_trip_equal"]:
+        defects.append((_SITE_WIRE, "encode -> decode did not reproduce the picture"))
+        return
+    stripped = codec["stripped_refusal"]
+    if "KeyError('stop_distance')" not in stripped:
+        defects.append(
+            (
+                _SITE_WIRE,
+                (
+                    f"a row with NO stop_distance decoded with {stripped!r} rather "
+                    "than being refused by name — a defaulted decode publishes a "
+                    "held position priced at ZERO dollar risk, which makes the "
+                    "bucket look emptier than it is and ADMITS more: D3.136's "
+                    "fail-open reintroduced by the codec"
+                ),
+            )
+        )
+        return
+    v1 = codec["v1_refusal"]
+    if f"wire schema 1 is not {codec['schema']}" not in v1:
+        defects.append(
+            (
+                _SITE_WIRE,
+                (
+                    f"a genuine WIRE_SCHEMA 1 body was refused with {v1!r}, which "
+                    "does not name the SCHEMA. The stamp was bumped precisely so "
+                    "the refusal says 'this consumer does not understand that "
+                    "shape' — the thing a consumer can act on — instead of naming "
+                    "one missing key, which reads as a corrupt message"
+                ),
+            )
+        )
+        return
+    ev.append(
+        f"codec: stop_distance round-tripped {expected} on {_ROWS} row(s) under "
+        f"schema {codec['schema']}; a stripped row is REFUSED naming the field "
+        f"({stripped[:60]}...); a genuine schema-1 body is refused naming the "
+        "SCHEMA, not the key"
     )
 
 
@@ -719,10 +1071,26 @@ def _arm_late(late: dict[str, Any], defects: list, ev: list) -> None:
             )
         )
         return
+    if late["stop_generations"] != [[7], [7]]:
+        defects.append(
+            (
+                _SITE_WIRE,
+                (
+                    f"the mirrored rows' stop_distance recovers generations "
+                    f"{late['stop_generations']}, not [[7], [7]] — the field either "
+                    "did not survive snapshot-on-subscribe or arrived DEFAULTED, "
+                    "which is D3.136's fail-open (an unpriced position reads as "
+                    "zero risk, the bucket looks emptier than it is, and an emptier "
+                    "bucket ADMITS more) reintroduced on the wire"
+                ),
+            )
+        )
+        return
     ev.append(
         f"late subscribers served sequentially: "
         f"{late['first']['served']}+{late['second']['served']} snapshot(s), "
-        f"{late['bytes']} wire byte(s), both mirroring generation 7"
+        f"{late['bytes']} wire byte(s), both mirroring generation 7 on balance AND "
+        f"on stop_distance (rows carry {_STOP_BASE + 7} ticks)"
     )
 
 
@@ -797,6 +1165,7 @@ def _drive(picture_mod: Any, statebus: Any, seam: Any, root: Path) -> dict[str, 
     try:
         return {
             "races": run_races(picture_mod, seam),
+            "codec": _codec_probe(picture_mod, seam),
             "bus": _bus_race(picture_mod, statebus, seam, root),
             "late": _late_subscribers(picture_mod, statebus, seam, root),
             "stale": _stale_rule(picture_mod, statebus, seam, root),
@@ -859,6 +1228,7 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
     defects: list[tuple[str, str]] = []
     _arm_plants(observed["races"], defects, evidence)
     _arm_measured(observed["races"], defects, evidence)
+    _arm_codec(observed["codec"], defects, evidence)
     _arm_bus(observed["bus"], defects, evidence)
     _arm_late(observed["late"], defects, evidence)
     _arm_stale(observed["stale"], defects, evidence)
