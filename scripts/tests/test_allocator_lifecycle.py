@@ -73,6 +73,12 @@ def _row(
         size=size,
         margin=margin,
         state=state,
+        # ARC 032 / Phase 0.4 landed the widening this helper was written in
+        # anticipation of, and it cost exactly the one edit the docstring
+        # promised. A positive literal and not 0: this suite is about §4's
+        # lifecycle screen, and a row that reads as UNPRICED to §7's cap would
+        # make an unrelated finding ride along with every eligibility case.
+        stop_distance=20,
     )
 
 

@@ -96,11 +96,26 @@ pathway (B) → the correlation-bucket cap (C), under one snapshot version.
 
 Absent, and stated rather than implied: the Scoring process and
 performance-weighted contention (R5 — `ContentionPolicy.FCFS` is the only
-policy this system can take, and `contention.rank` is wired here only to prove
-the fallback fires); blackout/calendar pollers (R4); the strategy FSM; the
-Limiter's own Phase B (which re-checks everything this proposes — that
-re-check is the guarantee, not redundancy); and the per-position stop distance
-above.
+policy this system can take); blackout/calendar pollers (R4); the strategy FSM;
+and the Limiter's own Phase B (which re-checks everything this proposes — that
+re-check is the guarantee, not redundancy).
+
+**A SENTENCE THAT WAS HERE AND WAS FALSE, corrected rather than deleted.** This
+paragraph used to read *"`contention.rank` is wired here only to prove the
+fallback fires"*. It was not wired here at all: this module never imported
+`nixalloc.contention`, and nothing on a production path called `rank`. Sub-agent
+C measured it in ARC 032 by grep, from a worktree with no visibility into this
+file, and reported it rather than editing a file it was not given (CHECK-DEBT
+D3.147). It is the same shape as D3.136 one layer up — a docstring asserting a
+composition that does not exist, in the module whose whole job is to state what
+the composition cannot do.
+
+**ARC 032 wired the §4 capital screen, which is the half that was load-bearing**
+(see `_screen_capital` below). Performance-weighted contention still is not
+wired and still cannot be: §6.6's ranking table has no writer, `rank` degrades
+to FCFS by construction, and a §16 U1 single-pass proposal has no race to
+arbitrate — arbitration is the Limiter's, across concurrent proposals. That
+paragraph now says what is true.
 """
 
 from __future__ import annotations
@@ -111,8 +126,11 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from nixalloc import caps
+from nixalloc import lifecycle as lifecycle_mod
 from nixalloc.seam import (
     BUCKET_OF,
+    BindingConstraint,
+    ContentionPolicy,
     CorrelationBucket,
     FinancialPicture,
     MirrorPort,
@@ -121,6 +139,7 @@ from nixalloc.seam import (
     Proposal,
     ProposalOutcome,
     Side,
+    SizingRationale,
     StopMode,
     TradabilityCachePort,
 )
@@ -443,8 +462,17 @@ class AllocatorPathway:
         instruments: Mapping[str, InstrumentSpec],
         knobs: SizingKnobs,
         bucket_cap: BucketCapAdapter | None,
+        lifecycle: lifecycle_mod.LifecycleViewPort | None = None,
     ) -> None:
         self._cap = bucket_cap
+        #: ARC 032. §4:284-286's capital screen. Defaulted to a view over THIS
+        #: pathway's own mirror rather than to `None`, and the default is the
+        #: decision: an opt-in safety screen is off in every caller that
+        #: forgets it, and D3.136 is this arc's evidence that a defaulted-off
+        #: safety input is not a smaller version of a safety input.
+        self._lifecycle = (
+            lifecycle_mod.MirrorLifecycle(mirror) if lifecycle is None else lifecycle
+        )
         self._allocator = SizingAllocator(
             mirror=mirror,
             tradability=tradability,
@@ -463,6 +491,9 @@ class AllocatorPathway:
         signal_ts: float,
     ) -> PathwayReport:
         """One GO in, one report out. Synchronous, single-pass (§16 U1)."""
+        refusal = self._screen_capital(strategy_id, symbol)
+        if refusal is not None:
+            return refusal
         proposal = self._allocator.propose(
             strategy_id=strategy_id,
             symbol=symbol,
@@ -479,6 +510,160 @@ class AllocatorPathway:
             cap_incomplete=bool(blind),
             cap_unbucketed=stray,
         )
+
+    def _screen_capital(self, strategy_id: str, symbol: str) -> PathwayReport | None:
+        """§4:284-286, BEFORE sizing. `None` when the strategy may be sized.
+
+        **ORDER, and it is the rule rather than a preference.** §4:284-285 says a
+        strategy mid-recovery *"is never counted eligible for new capital while
+        dying"*. NEVER COUNTED — so the refusal is prior to §7's arithmetic, not
+        a term inside it. Sizing a dying strategy and then discarding the number
+        would compute a per-trade risk figure, a margin figure and a bucket
+        contribution for capital that was never available, and §16 U5's
+        rationale would carry all three as if they had meant something.
+
+        **IT ABSTAINS ON A NON-FRESH MIRROR, and that boundary was MEASURED, not
+        designed.** The first draft screened unconditionally.
+        `lifecycle.eligibility_from_mirror` folds §12.7's freshness refusal into
+        its own answer — correct for a contention pass, where a stale mirror
+        must refuse and there is nobody else to say so — so an EMPTY, PARTIAL or
+        STALE mirror came back INELIGIBLE and this method returned
+        `NO_SIZE_DENY`. `check_allocator_pathway` reddened immediately: *"the
+        three non-sizing outcomes collapsed into 2 — a pathway that cannot tell
+        a dead signal from a stale mirror hides the §0i class entirely"*.
+
+        §0i is the SIZING pass's to report and it already reports it. So the
+        screen abstains when there is no FRESH picture to screen against
+        (`MirrorLifecycle.pin()` returns `None`) and lets `STALE_MIRROR` reach
+        the caller intact. Two rules, two owners; folding them would have cost
+        the operator the distinction between a dying strategy and a dead feed.
+
+        **It never raises into the pass**, for the reason `BucketCapAdapter`
+        does not: §6.6 says a scoring outage must never halt order flow, and the
+        same holds for a screen. A view that raises becomes a REFUSAL naming the
+        exception — fail-CLOSED, which is the direction §4 wants, and the
+        opposite of the cap's `unpriced` case where silence admitted. Note that
+        abstention and refusal are different answers to different questions: the
+        first says *another rule owns this*, the second says *this rule could
+        not run*.
+
+        **The screen and the sizing pass take TWO reads of the mirror**, and
+        that is stated rather than hidden. §3's atomicity rule is about a
+        consumer observing fields from two DIFFERENT versions inside one answer,
+        and this is not that — the screen's answer is a boolean over one pinned
+        picture and is discarded before sizing begins, so no figure below is
+        computed from the screen's version. What a moving mirror CAN do here is
+        admit a strategy that turned dying one version later, and the Limiter's
+        Phase B re-check is the backstop §3 puts there for exactly that.
+        Recorded in CHECK-DEBT rather than papered over.
+        """
+        try:
+            verdict, abstain = _screen_verdict(self._lifecycle, strategy_id)
+        except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
+            verdict, abstain = (
+                lifecycle_mod.CapitalEligibility(
+                    strategy_id=strategy_id,
+                    eligible=False,
+                    reason=(
+                        "§4:284-286 capital screen REFUSED and the pass denies "
+                        f"rather than dies: {type(exc).__name__}: {exc}"
+                    ),
+                    snapshot_version=None,
+                    closing_trades=(),
+                    observed_states=(),
+                    rows=0,
+                ),
+                False,
+            )
+        if abstain or verdict is None or verdict.eligible:
+            return None
+        return PathwayReport(proposal=_capital_refusal(verdict, symbol))
+
+
+def _screen_verdict(
+    view: lifecycle_mod.LifecycleViewPort, strategy_id: str
+) -> tuple[lifecycle_mod.CapitalEligibility | None, bool]:
+    """`(verdict, abstain)`. Abstain means: no FRESH picture, §0i owns this GO.
+
+    `pin()` is preferred where the view has it, because it is the ONE surface
+    that distinguishes "the mirror has nothing to screen against" from "the
+    strategy is dying" — `LifecycleViewPort.eligibility` deliberately folds them
+    together, which is right for a contention race and wrong here. A view
+    without `pin` cannot make the distinction, so it never abstains and a stale
+    mirror reaches the caller as a capital refusal; that is a property of the
+    injected double, and it is why the production default is `MirrorLifecycle`.
+    """
+    pin = getattr(view, "pin", None)
+    if pin is None:
+        return view.eligibility(strategy_id), False
+    pinned = pin()
+    if pinned is None:
+        return None, True
+    return pinned.eligibility(strategy_id), False
+
+
+def _capital_refusal(
+    verdict: lifecycle_mod.CapitalEligibility, symbol: str
+) -> Proposal:
+    """§4:284-286's refusal, shaped as a `Proposal` so the Limiter still logs it.
+
+    `NO_SIZE_DENY` and not a new outcome, and not `STALE_MIRROR`: §7 already
+    fixes DENY as the shape for "this GO does not become a size", the Allocator
+    never invents a size to make a refusal expressible, and minting a sixth
+    `ProposalOutcome` member would put a lifecycle decision in the seam's own
+    vocabulary. The REASON carries §4's citation, so the Limiter's event log can
+    tell a dying strategy from an invalid stop without reading the enum.
+
+    The rationale reports ZERO for every §7 term and `snapshot_version` from the
+    screen's own verdict. Zeroes, because nothing was sized — a rationale that
+    carried plausible-looking terms for a pass that never ran §7 would be the
+    audit trail asserting arithmetic that did not happen.
+    """
+    return Proposal(
+        outcome=ProposalOutcome.NO_SIZE_DENY,
+        symbol=symbol,
+        strategy_id=verdict.strategy_id,
+        contracts=0,
+        rationale=SizingRationale(
+            binding=BindingConstraint.NONE,
+            snapshot_version=(
+                -1 if verdict.snapshot_version is None else verdict.snapshot_version
+            ),
+            risk_contracts=0,
+            margin_contracts=0,
+            symbol_cap=0,
+            headroom=0.0,
+            bucket=BUCKET_OF.get(symbol),
+            bucket_used=0.0,
+            bucket_ceiling=0.0,
+            contention=ContentionPolicy.FCFS,
+            note=(
+                "§4:284-286 capital screen REFUSED before sizing; no §7 term was "
+                "computed, so every figure here is zero rather than plausible"
+            ),
+        ),
+        reason=verdict.reason,
+    )
+
+
+def lifecycle_check(pathway: AllocatorPathway) -> lifecycle_mod.LifecycleViewPort:
+    """Structural assertion that the screen is still ON the pathway (D3.147).
+
+    `LifecycleViewPort` is `runtime_checkable`, so this is an `isinstance` the
+    interpreter performs — the same move `port_check` makes for the cap, and it
+    exists for the same reason: D3.147 was a docstring claiming a wiring that
+    was not there, and the repair for that class is an assertion, not a sentence.
+    Raises rather than returning `None` on absence: a pathway with no screen is
+    not a pathway with an optional feature off, it is §4:284-286 unenforced.
+    """
+    view = pathway._lifecycle  # pylint: disable=protected-access
+    if not isinstance(view, lifecycle_mod.LifecycleViewPort):
+        raise TypeError(
+            "AllocatorPathway holds no LifecycleViewPort — §4:284-286's capital "
+            "screen is not on the pass, so a strategy mid-recovery would be "
+            "counted normal-and-available while dying"
+        )
+    return view
 
 
 def port_check(pathway: AllocatorPathway) -> BucketCapPort | None:
@@ -504,5 +689,6 @@ __all__ = [
     "PathwayReport",
     "ProposalOutcome",
     "PublishedExposures",
+    "lifecycle_check",
     "port_check",
 ]

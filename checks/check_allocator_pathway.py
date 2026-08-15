@@ -52,6 +52,17 @@ and nothing it emits can reach a broker.* Five arms serve that one property.
     arm additionally proves it moved because a PUBLISHED field moved, not
     because the pathway recomputed anything from the rows.
 
+  * **ARM 6 — ARC 032 / D3.147: §4's capital screen is ON THE PASS.** Sub-agent
+    C proved §4:284-286 as a RULE against the real producer and the real wire,
+    and its gate is green — but it could not prove the rule is on THIS pass,
+    because `wiring.py` was not its file, and `wiring.py` meanwhile carried a
+    docstring asserting a `contention.rank` wiring that did not exist. That pair
+    is D3.136's shape exactly: a rule with a gate, a pathway with a gate, and no
+    gate over the argument between them. This arm is that argument, driven
+    across the TRANSITION — healthy sized, dying refused, flat sized again —
+    because a case where nobody is ever mid-recovery proves nothing and one
+    where nobody is ever healthy proves only that the screen refuses everyone.
+
   * **ARM 5 — 2.3, every output is a proposal (§2).** Across all of ARM 1's
     paths: `reaches_broker` is False, no emitted object carries a venue field
     a broker adapter could consume, and the composed object exposes no
@@ -89,6 +100,11 @@ while measuring nothing?
     gates over a cap that could not run. CLOSED at the SOURCE, not in the arm:
     `PublishedExposures` no longer accepts a stop table, so there is nothing to
     hand it. A gate can only reach the cap by publishing a row.
+ 9. **(ARC 032) ARM 6 could pass with the screen removed**, because a healthy
+    strategy sizes identically whether or not a screen let it through. CLOSED:
+    the arm requires the DYING step to be refused AND the FLAT step to be sized
+    again, so removing the screen reddens on the middle step and latching it
+    reddens on the last.
  8. **(ARC 032) ARM 3's before/after could stop discriminating** — if the
     unpriced and priced cases ever admit the same number, the arm reports green
     while measuring nothing about the fail-open direction. CLOSED: the arm
@@ -106,6 +122,12 @@ and the authority boundary holds at the seam.
 
 from __future__ import annotations
 
+# pylint: disable=too-many-lines
+# Over the 1000-line ceiling since ARC 032, and the excess is ARM 6 plus the
+# prose that says what ARM 3 measures now that D3.136 is closed. Splitting the
+# gate would put arms of ONE property (§5.5) in two files, which is the thing
+# the one-gate-one-property rule exists to prevent.
+import dataclasses
 import importlib.util
 import sys
 from pathlib import Path
@@ -716,6 +738,103 @@ def _arm_unpriceable(loaded: Loaded) -> list[Finding]:
 
 
 # --------------------------------------------------------------------------
+# ARM 6 — ARC 032 / D3.147: §4's capital screen is ON THE PASS, not beside it
+# --------------------------------------------------------------------------
+
+
+def _arm_capital_screen(loaded: Loaded) -> list[Finding]:
+    """A dying strategy gets no capital FROM THE COMPOSED PATHWAY.
+
+    Sub-agent C proved §4:284-286 as a RULE, against the real producer and the
+    real wire, and its gate is green. It could not prove the rule is on this
+    pass, because `wiring.py` was not its file — and `wiring.py` meanwhile
+    carried a docstring asserting a `contention.rank` wiring that did not
+    exist. That pair is D3.136's shape exactly: a rule with a gate, a pathway
+    with a gate, and no gate over the argument between them. This arm is that
+    argument.
+
+    Driven across the TRANSITION and not on one fixture: a strategy holding an
+    OPEN row is sized, the SAME strategy holding a CLOSING row is refused, and
+    the same again returned to flat is sized. A test where nobody is ever
+    mid-recovery proves nothing, and one where nobody is ever healthy proves
+    only that the screen refuses everyone.
+    """
+    site = f"{WIRING}:AllocatorPathway.propose[§4 capital screen]"
+    findings: list[Finding] = []
+    state = loaded.seam.PositionState
+
+    def report(row_state: Any | None) -> Any:
+        """One GO against a table holding one row in `row_state`, or none."""
+        rows: tuple[Any, ...] = ()
+        if row_state is not None:
+            rows = (
+                dataclasses.replace(_row(loaded, "T-ES", "ES", 2), state=row_state),
+            )
+        picture = _picture(loaded, positions=rows)
+        return _go(loaded, _pathway(loaded, _fresh(loaded, picture)))
+
+    held = report(state.OPEN)
+    dying = report(state.CLOSING)
+    flat = report(None)
+
+    if held.proposal.contracts <= 0:
+        findings.append(
+            Finding(
+                site,
+                "the HEALTHY step sized to zero, so the refusal below would "
+                f"prove nothing — a screen that refuses everyone looks "
+                f"identical: {held.proposal.outcome.value} / {held.proposal.reason}",
+            )
+        )
+    if dying.proposal.contracts != 0:
+        findings.append(
+            Finding(
+                site,
+                f"a strategy whose published row reads CLOSING was handed "
+                f"{dying.proposal.contracts} contract(s) — §4:284-286 says a "
+                "strategy mid-recovery is NEVER counted eligible for new "
+                "capital while dying, and the screen is not on this pass",
+            )
+        )
+    if "§4:284-286" not in (dying.proposal.reason or ""):
+        findings.append(
+            Finding(
+                site,
+                "the refusal does not cite §4:284-286, so the Limiter's event "
+                "log cannot tell a dying strategy from an invalid stop: "
+                f"{dying.proposal.reason!r}",
+            )
+        )
+    if dying.proposal.rationale.risk_contracts != 0:
+        findings.append(
+            Finding(
+                site,
+                "the refusal carries a non-zero §7 risk term "
+                f"({dying.proposal.rationale.risk_contracts}) — the screen is "
+                "PRIOR to sizing, so a rationale reporting arithmetic that "
+                "never ran is an audit trail asserting a fiction",
+            )
+        )
+    if flat.proposal.contracts <= 0:
+        findings.append(
+            Finding(
+                site,
+                "the strategy returned to FLAT was still refused "
+                f"({flat.proposal.outcome.value}: {flat.proposal.reason}) — "
+                "eligibility must change back with the transition, or the "
+                "screen is a latch and not a screen",
+            )
+        )
+    try:
+        loaded.wiring.lifecycle_check(
+            _pathway(loaded, _fresh(loaded, _picture(loaded)))
+        )
+    except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
+        findings.append(Finding(site, f"the pathway holds no LifecycleViewPort: {exc}"))
+    return findings
+
+
+# --------------------------------------------------------------------------
 # ARM 4 — 2.2: partial-fill reflection (§4)
 # --------------------------------------------------------------------------
 
@@ -852,7 +971,7 @@ def _arm_authority(loaded: Loaded) -> list[Finding]:
     return findings
 
 
-ARMS = 5
+ARMS = 6
 
 
 def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argument
@@ -867,6 +986,7 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
         findings += _arm_unpriceable(loaded)
         findings += _arm_partial_fill(loaded)
         findings += _arm_authority(loaded)
+        findings += _arm_capital_screen(loaded)
         evidence = (
             f"{WIRING}: {ARMS} arms over the COMPOSED pathway (mirror consumer "
             "-> tradability fast-drop -> sizing -> §7 cap), driven against one "

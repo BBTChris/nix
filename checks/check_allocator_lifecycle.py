@@ -255,6 +255,11 @@ BALANCE = 100_000.0
 MARGIN_PER_CONTRACT = 1_000.0
 SIZE = 2
 TRADE_ID = "T-transition-1"
+#: ARC 032 / SPEC-A9: the published row's stop distance in ticks. Positive so
+#: §7's correlation cap could price this row if it ever saw it — this gate is
+#: about §4's screen, and a zero would make every fixture here simultaneously a
+#: D3.136 fail-open case, which is a second subject in one gate (§5.5).
+STOP_DISTANCE_TICKS = 20
 
 #: Recovery verbs whose presence on the Allocator's lifecycle module would be it
 #: DRIVING recovery rather than reflecting it. §4:260-274 gives every one of
@@ -642,6 +647,12 @@ def _row(driven: Driven, state: Any) -> Any:
         size=SIZE,
         margin=MARGIN_PER_CONTRACT * SIZE,
         state=state,
+        # ARC 032 / Phase 0.4: `stop_distance` is a published field now
+        # (`SEAM_REV 1.1.0`, `SPEC-A9`). One edit, as this function's docstring
+        # predicted. `STOP_DISTANCE_TICKS` and not a bare literal so the number
+        # has a name, and positive so §7's cap would price this row — a zero
+        # here would be a §4 fixture that is also a §7 finding.
+        stop_distance=STOP_DISTANCE_TICKS,
     )
 
 

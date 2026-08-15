@@ -448,6 +448,7 @@ def test_an_ALLOCATOR_SIDE_PRODUCER_of_the_screened_state_reddens(home: Path) ->
         "        size=row.size,\n"
         "        margin=row.margin,\n"
         "        state=PositionState.CLOSING,\n"
+        "        stop_distance=row.stop_distance,\n"
         "    )\n",
     )
     _red(

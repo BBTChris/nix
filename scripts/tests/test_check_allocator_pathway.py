@@ -38,6 +38,14 @@ COPIED = (
     "scripts/nixalloc/seam.py",
     "scripts/nixalloc/caps.py",
     "scripts/nixalloc/contention.py",
+    # ARC 032: `wiring.py` imports this, and the list is HAND-MAINTAINED — which
+    # is the defect sub-agent C measured live from its own worktree: one new
+    # first-party import inside a subject silences most of a can-fail suite with
+    # "cannot load out of /tmp/... ModuleNotFoundError" while the gate stays
+    # green on the real tree. Added here; the general repair (derive this tuple
+    # from the subjects' own import graph, in this suite and its three siblings)
+    # is a CHECK-DEBT row, not a line.
+    "scripts/nixalloc/lifecycle.py",
     "scripts/nixalloc/mirror.py",
     "scripts/nixalloc/sizing.py",
     "scripts/nixalloc/wiring.py",
@@ -97,7 +105,10 @@ def test_the_REAL_tree_and_the_COPY_both_pass(home: Path) -> None:
     """A gate that cannot pass on a clean pathway measures nothing on a dirty one."""
     live = _run(REPO)
     assert live.status is Status.PASS, live.detail
-    assert "5 arms" in (live.evidence or ""), live.evidence
+    # Derived from the gate's own ARMS, never typed: ARC 032 added ARM 6 and a
+    # literal "5 arms" here would have been a moving anchor (doctrine C.4)
+    # asserting the gate had fewer arms than it ran.
+    assert f"{gate.ARMS} arms" in (live.evidence or ""), live.evidence
     assert "NOT proven here" in (live.evidence or ""), (
         "the evidence must state its own ceiling, or a green reads as coverage "
         "of the wire and of the Limiter's Phase B"
@@ -440,4 +451,103 @@ def test_the_plant_REMOVED_returns_the_same_tree_to_green(home: Path) -> None:
     assert restored.status is Status.PASS, restored.detail
     assert (home / WIRING).read_bytes() == (REPO / WIRING).read_bytes(), (
         "the restored copy is not byte-identical to the shipped subject"
+    )
+
+
+# --------------------------------------------------------------------------
+# ARM 6 — ARC 032 / D3.147: the capital screen, and the plants that unwire it
+# --------------------------------------------------------------------------
+
+
+def test_ARM6_a_pathway_with_the_screen_REMOVED_reddens(home: Path) -> None:
+    """The plant is the tree AS IT SHIPPED BEFORE ARC 032 — no screen at all.
+
+    Replacing the screen call with `None` restores exactly the pre-ARC-032
+    pathway: `propose` goes straight to sizing, §4:284-286 is unenforced, and
+    every other arm stays green. If ARM 6 does not redden here it is measuring
+    the presence of a method rather than the effect of one.
+    """
+    _plant(
+        home,
+        WIRING,
+        "        refusal = self._screen_capital(strategy_id, symbol)\n",
+        "        refusal = None\n",
+    )
+    _red(
+        _run(home),
+        site_contains="§4 capital screen",
+        why_contains="NEVER counted eligible for new capital while dying",
+    )
+
+
+def test_ARM6_a_screen_that_LATCHES_reddens(home: Path) -> None:
+    """The other direction: refusing forever is not a screen, it is a stop.
+
+    A latched screen passes any control that only asks "is the dying strategy
+    refused?". The transition is what tells them apart, and this is the plant
+    that proves the transition is doing work.
+    """
+    _plant(
+        home,
+        WIRING,
+        "        if abstain or verdict is None or verdict.eligible:\n",
+        "        if abstain or verdict is None or False:\n",
+    )
+    _red(
+        _run(home),
+        site_contains="§4 capital screen",
+        why_contains="eligibility must change back with the transition",
+    )
+
+
+def test_ARM6_a_refusal_that_does_NOT_CITE_the_spec_reddens(home: Path) -> None:
+    """§18: the reason, never the code. A bare DENY is unactionable."""
+    _plant(
+        home,
+        WIRING,
+        "        reason=verdict.reason,\n",
+        '        reason="denied",\n',
+    )
+    _red(
+        _run(home),
+        site_contains="§4 capital screen",
+        why_contains="does not cite §4:284-286",
+    )
+
+
+def test_ARM6_a_refusal_carrying_FICTIONAL_sizing_terms_reddens(home: Path) -> None:
+    """The screen is PRIOR to sizing, so its rationale must report nothing."""
+    _plant(
+        home,
+        WIRING,
+        "            risk_contracts=0,\n            margin_contracts=0,\n",
+        "            risk_contracts=7,\n            margin_contracts=0,\n",
+    )
+    _red(
+        _run(home),
+        site_contains="§4 capital screen",
+        why_contains="a rationale reporting arithmetic that",
+    )
+
+
+def test_ARM6_a_screen_that_SWALLOWS_the_stale_mirror_reddens(home: Path) -> None:
+    """THE BOUNDARY THAT WAS MEASURED, planted so it stays measured.
+
+    The first draft of `_screen_capital` screened unconditionally, and
+    `lifecycle.eligibility_from_mirror` folds §12.7's freshness refusal into its
+    own answer — so an EMPTY / PARTIAL / STALE mirror came back INELIGIBLE and
+    the pathway reported `NO_SIZE_DENY`. ARM 1 caught it: *"the three
+    non-sizing outcomes collapsed into 2"*. Removing the abstain path plants
+    that draft back.
+    """
+    _plant(
+        home,
+        WIRING,
+        '    pin = getattr(view, "pin", None)\n    if pin is None:\n',
+        "    pin = None\n    if pin is None:\n",
+    )
+    _red(
+        _run(home),
+        site_contains="[distinct]",
+        why_contains="the three non-sizing outcomes collapsed",
     )
