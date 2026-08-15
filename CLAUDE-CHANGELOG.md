@@ -331,3 +331,34 @@ fold reproduces that exactly. The collision is the architect's to rule on.
   growing ledgers, restated in a third file, which this very edit would have made staler. The
   row now states the **mechanism** (the two ledgers are numbered independently and their ranges
   OVERLAP, which is why a bare "AMENDMENT 6" named two different rulings) and no number.
+
+## ARC 033 — WAYPOINTS: a progress banner at the start of every stage (2026-08-15)
+
+- **`CLAUDE.md` §Design and Development Structures — new standing rule, every arc.** At kickoff
+  `cc` echoes the TOTAL stage count ONCE, **enumerated**, so the denominator cannot move
+  mid-run; then prints a ruled banner at the START of each stage, before that stage's work
+  begins.
+- **Form:** `ARC <n> · <Module>/<Stage> — STAGE <k>/<total>: <short name>`, followed by an
+  **elapsed / rough-ETA line** (`~<elapsed> in · ~<rough eta> left`), in a ruled box (or `===`
+  lines) on its own lines. **Never a bare sentence buried in output** — the whole point is that
+  an operator can read position from a glance at the terminal without reading the run.
+- **The ETA is derived from the arc's TIME BUDGET and is labelled rough. It is not a live
+  measurement, and it RESETS when a stage overruns.** The label is the load-bearing part: a
+  figure derived from a budget is a plan, and presenting a plan as a measurement is exactly the
+  restatement core directive 3 forbids — the same failure class as a series-table cell that
+  stops matching the rows it summarises.
+- **Granularity is fixed so the denominator is honest:** EVERY phase, stage, sub-agent and
+  convergence step counts. Four parallel sub-agents are four stages; `3.1`–`3.4` are four, not
+  one. Stating the enumeration at kickoff is what stops the denominator drifting as the arc
+  discovers work — and this arc has already discovered three scope changes in Phase 0, so the
+  risk is real rather than theoretical.
+- **Pauses are visible:** on a pause or a stop-for-ruling the banner is reprinted with
+  `— PAUSED, awaiting operator`, so a stopped run is distinguishable from a slow one at a
+  glance. That is the same reasoning as §16.4/`CHECK-A10`'s `STATUS: IN FLIGHT`, one layer up:
+  a run that has stopped must say so where the operator is already looking.
+- **Not recorded in `nix_check_contract.md`, deliberately, and the distinction is the same one
+  `CHECK-A10` had to make.** §16.4 governs the CLOSE-OUT certificate, which is a claim about a
+  banked state; this rule governs MID-RUN progress reporting, which certifies nothing and gates
+  nothing. Putting it in the check contract would imply a check could observe it — and like
+  §16.4's marker ordering, its subject is terminal output written to no file in this tree, so
+  no `checks/check_*.py` can see it and none is owed.

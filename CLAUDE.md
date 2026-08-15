@@ -111,5 +111,21 @@ Append all instruction changes to `~/nix/CLAUDE-CHANGELOG.md`. Treat this file a
 - `cc` is the writer, debugger, and execution agent, with authority to do what it needs to accomplish the goal.
 - `cc` writes logs exclusively by appending `~/nix/sessions/SESSION.md` (singular filename is canonical). `cc` creates or overwrites the arc's summary and comms back to claude.ai in `~/nix/downloads/RESULTS.md`.
 - `cc` should use sub-agents when possible.
+- **WAYPOINT BANNERS — standing rule, ALL ARCS.** At kickoff `cc` echoes the TOTAL stage count ONCE, enumerated. Then at the START of every phase / stage / sub-agent / convergence step — **before** that stage's work begins, never after — `cc` prints a visually obvious banner on its own lines:
+
+  ```
+  ════════════════════════════════════════════════════════
+   ARC <n> · <Module>/<Stage> — STAGE <k>/<total>: <short name>
+   ~<elapsed> in · ~<rough eta> left
+  ════════════════════════════════════════════════════════
+  ```
+
+  - `<Module>/<Stage>`, then `<stage#>/<total stages>` and a short name, then an **elapsed / rough-ETA line**.
+  - **The total is FIXED AT KICKOFF (echoed once) and counts every phase, stage, sub-agent and convergence step**, so the denominator never moves mid-run. Four parallel sub-agents are four stages; `3.1`–`3.4` are four, not one.
+  - **ETA is DERIVED FROM THE ARC'S TIME BUDGET and labelled rough — it is not a live measurement**, and it **resets when a stage overruns**. Labelling it rough is the honest part: a figure derived from a budget is a plan, and presenting a plan as a measurement is the restatement directive 3 forbids.
+  - Made to STAND OUT — ruled box or `===` lines — **never a bare sentence buried in output**.
+  - On a pause or a stop-for-ruling, the banner is tagged **`— PAUSED, awaiting operator`**, so a stopped run is distinguishable from a slow one at a glance. Same reasoning as §16.4/`CHECK-A10`'s `STATUS: IN FLIGHT`, one layer up: a run that has stopped must say so where the operator is already looking.
+
+  The purpose is that an operator reads position from a glance at the terminal without reading the run.
 - End of each arc: `cc` cleans up temporary files created in the arc.
 - End of each arc: `cc` approximates what percent this arc moved development forward for this module and the whole project, and states `**** ARC completed ****` **LAST — the marker is the final token, with nothing after it** (`nix_check_contract.md` §16.4 / `CHECK-A10`). The percentage precedes it. If the arc cannot reach a stable state, `cc` prints no marker and reports `STATUS: IN FLIGHT` naming what is still moving.
