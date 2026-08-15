@@ -38,19 +38,45 @@ from nixverify.contract import (  # pylint: disable=wrong-import-position
     Status,
 )
 
-#: Everything the gate reads outside `risks/` itself.
-_COPIED = (
-    "docs/nics_risk_subsystem_spec_v1.3.md",
-    "scripts/risk_config.py",
-    "scripts/broker/broker_order_config.py",
-)
+#: The one thing the gate reads outside `risks/` that nothing in `risks/` names.
+_COPIED = ("docs/nics_risk_subsystem_spec_v1.3.md",)
+
+
+def _validators() -> tuple[str, ...]:
+    """Every module a config in `risks/` names as its validator. DERIVED.
+
+    This was a hand-maintained tuple listing `scripts/risk_config.py` and
+    `scripts/broker/broker_order_config.py`, and it went stale the moment a new
+    config landed naming a new validator: ARC 031 added
+    `risks/allocator_caps.config.json`, whose `_meta.validated_by` is
+    `scripts/nixalloc/caps.py`, and the fixture then built a tree in which that
+    module did not exist — so ARM 4 correctly reported "is named as a validator
+    and is not on disk" and the *clean copy passes* control failed for a reason
+    that had nothing to do with any plant. Deriving the list from the same
+    field the GATE reads means the fixture cannot go stale again, which is
+    doctrine C.4 applied to a test's own scaffolding.
+    """
+    named: set[str] = set()
+    for path in sorted((REPO / gate.RISKS).glob(f"*{gate.CONFIG_SUFFIX}")):
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        meta = raw.get("_meta") if isinstance(raw, dict) else None
+        rel = (
+            str(meta.get("validated_by", "")).strip() if isinstance(meta, dict) else ""
+        )
+        if rel and (REPO / rel).is_file():
+            named.add(rel)
+    assert named, (
+        "no config in risks/ names a validator that exists — the fixture would "
+        "build a tree with no validators at all and ARM 4 would iterate nothing"
+    )
+    return tuple(sorted(named))
 
 
 @pytest.fixture
 def home(tmp_path: Path) -> Path:
     """A throwaway tree carrying COPIES of risks/, the spec and the validators."""
     shutil.copytree(REPO / gate.RISKS, tmp_path / gate.RISKS)
-    for rel in _COPIED:
+    for rel in _COPIED + _validators():
         target = tmp_path / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(REPO / rel, target)

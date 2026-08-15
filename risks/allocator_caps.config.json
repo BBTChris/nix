@@ -1,0 +1,47 @@
+{
+  "_meta": {
+    "role": "config",
+    "module": "allocator_caps",
+    "component": "The Allocator's §7 correlation-bucket cap — nics_risk_subsystem_spec_v1.3.md §7:497-515 (the locked combination formula) and §13 V35:949 (the objective it must satisfy). Consumed by scripts/nixalloc/caps.py, which is the Allocator's own module (§2:40, separate process, Core 3).",
+    "authority": "nics_risk_subsystem_spec_v1.3.md is the SEMANTIC authority for every value below; §7:500-504 is the sentence each one serves. This file is the PHYSICAL layout only. NEITHER value below is a §12A knob — §12A names no tick value and no micro weight — and each derivation says so outright rather than leaving the origin unstated.",
+    "role_separation": "CONFIG-ROLE ONLY. Every value is a NUMBER; every word is under a `_`-prefixed documentation key that no loader reads. The cap arithmetic of §7:511 lives in scripts/nixalloc/caps.py, never here.",
+    "lifecycle": "§12.11 — boot-loaded, restart-only. scripts/nixalloc/caps.py has no reload verb, watches no path and reads no mtime.",
+    "validated_by": "scripts/nixalloc/caps.py",
+    "landed_by": "ARC 031 Stage 1 sub-agent C.",
+    "bucket_cap_pct_is_NOT_here_and_that_is_the_point": "BUCKET_CAP_PCT is a §12A knob (§12A:816) and it already has its ONE physical home in risks/allocator.config.json. MEASURED, not reasoned: a second copy here makes checks/check_risks_data_only.py ARM 2 report `risks/allocator_caps.config.json:bucket_cap_pct: is a SECOND physical home for §12A knob BUCKET_CAP_PCT`. So scripts/nixalloc/caps.py reads the ceiling percentage — and the slippage pad, §12A:806, same situation — from risks/allocator.config.json through the loader that validates it, and this file holds only what has no home anywhere.",
+    "not_implemented_here": "No Allocator process exists. scripts/nixalloc/caps.py computes §7's cap on demand and nothing calls it on a live order path yet. Contention (§6.6) has no knob at all in this file, because §12A defines no staleness threshold for the ranking table and this project does not invent one — CHECK-DEBT D3.133.",
+    "cc_verify": "Every tick value below is a PEER-BROKER/EXCHANGE FIGURE TO BE VERIFIED ON THE BOX, in the same posture §7:484-487 takes with its margin figures ('peer-broker estimates, CC-verify'). None of them is a measured figure and none is a spec-stated one."
+  },
+
+  "tick_value_usd": {
+    "ES": 12.5,
+    "NQ": 5.0,
+    "CL": 10.0,
+    "GC": 10.0,
+    "ZN": 15.625
+  },
+  "micro_weight": 0.1,
+
+  "_derivations": {
+    "tick_value_usd": "NOT A §12A KNOB — this is not a §12A knob, and §12A names no tick value anywhere. It is an EXCHANGE CONTRACT CONSTANT that §7:476 and §7:501 both require by name: `risk_contracts = floor( per_trade_risk_$ / ((stop_ticks + slippage_pad) × tick_value) )` and `dollar_risk = (stop_ticks + slippage_pad) × tick_value × contracts`. It has no other physical home in the tree: risks/ carries no instrument table, and the live margin/instrument cache that will eventually own these numbers is R3-B/R4 work that does not exist. The KEYS are §7:495's symbol scope ('up to 5 top-liquid (ES, NQ, CL, GC, ZN)') transcribed rather than invented, and boot-validated against the seam's §7:498 bucket membership so a bucketed symbol can never lack a tick value. The NUMBERS are standard CME contract arithmetic (ES 0.25pt x $50, NQ 0.25pt x $20, CL 0.01 x $1000, GC 0.10 x $100, ZN 1/64 x $1000) and are CC-verify placeholders until read off the venue. docs/nix_strategy_contract_v1.1.md:81 makes tick_value informational on the STRATEGY side; that says nothing about the Allocator, which §7:501 requires to compute dollar risk with it.",
+    "micro_weight": "NOT A §12A KNOB — this is not a §12A knob. §7:502-504 states the figure outright in prose rather than as a named tunable: 'Correlation buckets count micros at 1/10 weight' (§7:493) and 'Micros count at 1/10 weight (their dollar risk falls out naturally)' (§7:502). 0.1 is that stated 1/10, unmodified, and it is the one value in this file that is NOT a CC-calibrate placeholder. It is expressed as a knob rather than a literal in code so the §7:502 figure has exactly one physical home, and scripts/tests/test_allocator_caps.py asserts that applying it to a full contract's tick value equals using the micro instrument's own tick value — the 'falls out naturally' equivalence, checked rather than assumed."
+  },
+
+  "_boot_validation": [
+    {
+      "id": "caps.tick_values_are_positive",
+      "why": "Every tick value must be > 0. A zero or negative tick value makes per-contract dollar risk zero or negative, at which point §7:511's inequality admits every size under every ceiling — a cap that cannot bind is not a cap, and it would fail SILENTLY rather than loudly.",
+      "spec": "§7:501"
+    },
+    {
+      "id": "caps.micro_weight_is_a_fraction",
+      "why": "The micro weight must lie in (0, 1]. §7:502 makes a micro's dollar risk a FRACTION of a full contract's; a weight above 1 would make micros count for MORE than fulls in a concentration measure, inverting the rule it implements.",
+      "spec": "§7:502"
+    },
+    {
+      "id": "caps.tick_values_cover_every_bucketed_symbol",
+      "why": "Every symbol §7:498 places in a correlation bucket must have a tick value here. The two sets are checked against scripts/nixalloc/seam.py's BUCKET_OF rather than against a list typed in the validator, so a symbol added to a bucket with no tick value is a loud boot failure instead of a cap computed against a number that does not exist.",
+      "spec": "§7:498"
+    }
+  ]
+}
