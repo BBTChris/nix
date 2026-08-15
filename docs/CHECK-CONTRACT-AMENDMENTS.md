@@ -749,3 +749,89 @@ D3.138 is **discharged as a ruling** and the exclusion is temporary by declarati
 *instance* is either real per-artifact coverage that this gate can see, or an architect retiring the
 rows — the bucket is a holding state, not a resting place. See `CHECK-A8` for the mechanism, D3.104
 for its instance, and D3.120 for the measured cost of the move this ruling exists to avoid.
+
+---
+
+## CHECK-A10 — `**** ARC completed ****` is the LAST token, or the arc reports IN FLIGHT (ARC 033)
+
+| field | value |
+|---|---|
+| origin | Architect ruling, issued to ARC 033. Not doctrine text — `VERIFY-AND-CHECKS.md` is external, unversioned and has no amendment mechanism, so the change is implemented in `nix_check_contract.md` §16.4 and recorded here |
+| status | **LIVE.** A reporting-protocol rule, binding on every arc close-out from ARC 033 forward |
+| governs | `cc`'s close-out REPORT — the order of tokens in the final chat response. It governs no check's verdict and mutates no artifact |
+| scope | The completion marker and everything that may precede or follow it. It does not touch §16.1's three obligations, does not waive §16.2's re-measurement, and does not change what an arc must bank |
+
+### The rule
+
+**`**** ARC completed ****` is the last token printed. Nothing follows it** — no re-measure, no
+`cat`, no summary, no percentage, no commentary.
+
+If a post-write-back re-measure is required, it runs and is reported **before** the marker, and the
+marker is printed only once that final measurement is **itself banked**. If the arc cannot reach a
+stable state where the marker is last, it prints **no marker** and reports `STATUS: IN FLIGHT`,
+naming what is still moving.
+
+### Why this is a ruling and not a style preference
+
+The marker is a **certificate over a state**, and its entire content is *the banked state is final
+and nothing followed it*. That makes trailing output not untidy but self-contradicting:
+
+  * a trailing **measurement** either agrees with the certificate (making the marker redundant) or
+    disagrees with it (making the marker false at the moment it was printed) — and §16.2 exists
+    precisely because figures move, so disagreement is the expected case, not the unlucky one;
+  * a trailing **remark** is indistinguishable, to a reader, from a trailing measurement. The reader
+    cannot classify what they are looking at, because classifying it is what the marker was for.
+
+**The asymmetry that decides it:** an arc loses nothing by printing its percentage and its run summary
+first, and loses the certificate entirely by printing anything after the marker. One ordering has no
+cost and the other has no recovery.
+
+### What it does NOT do — the misreading this section exists to prevent
+
+**It does not waive the post-write-back re-measure, and reading it that way inverts it.** Some
+transitions can only be observed after the write-back: `contract.completed_arcs()` reads
+`sessions/SESSION.md`'s `##` headings, so an owner naming the arc in flight becomes an owner naming a
+COMPLETED arc the instant that arc appends its own summary, and `check_artifact_gate_coverage` moves
+GUARDED → CANNOT_MEASURE. That is D3.40's mechanism; ARC 031 met it on D3.138 and ARC 032 met it again
+on D3.144, both predicted in writing before the commit that caused them.
+
+This amendment **orders** that work rather than removing it: write back and commit → re-measure the
+merged tree → record the re-measurement forward-only (§0h) into both files **and commit it** → show
+§16.1's three obligations against that commit → print the marker. An arc that reports a figure it has
+not banked has not finished; it has narrated.
+
+### The measured counter-example is ARC 032's own close-out
+
+ARC 032 did the hard half right and the easy half wrong, which is why it is the example rather than a
+hypothetical. It ran the re-measure, observed the predicted GUARDED → CANNOT_MEASURE, appended the
+observation forward-only to both files and **committed it** (`125e8d5`) before reporting — and then
+printed the marker, followed by a forward-movement percentage and a `===RUN SUMMARY: …===` line.
+
+**Nothing false was said and no figure moved.** The defect is structural: the arc's last banked act
+was a commit and its last printed act was a summary, and nothing in the transcript tells a reader that
+the two tokens after the marker were commentary rather than a late measurement.
+
+### The collision with the brief format, resolved
+
+`CLAUDE.md`'s arc-end rule asks for the marker **and** an approximate percentage, and arc briefs
+routinely require a `===RUN SUMMARY: …===` line "alongside the arc". Both are commentary about a
+finished arc and both precede the marker. Where a brief's wording places the marker first, §16.4
+governs — **§0b: the spelling was a sketch, the invariant binds.**
+
+### NO CHECK IS OWED, and that is a real difference from every other §16 obligation
+
+§16.1–§16.3 are properties of the repository and are owed checks under §1 as broadened by
+`CHECK-A3`. **§16.4 is not.** Its subject is the order of tokens in a chat response — output that
+reaches the operator's terminal and is written to no file in this tree — so no `checks/check_*.py`
+can observe it, and recording a phantom debt for a check nobody could write would put a permanent
+unpayable row on the §1 list. An unowed check is not an owed check nobody wrote.
+
+The residual is stated rather than implied: this rule is enforced by reading, which is the weakest
+enforcement this project has. It is accepted because the alternative — writing the marker into a file
+so a gate could see it — would make the marker a property of a FILE, and the thing being certified is
+the REPORT.
+
+### Exit
+
+None. This amendment has no holding state and no instance to discharge: it is a standing rule, not a
+temporary authorisation. It is revocable by the architect like every ruling in this ledger.

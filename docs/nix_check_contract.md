@@ -1,4 +1,4 @@
-# nix_check_contract — Nix provisioning engine and check contract — v1.4.0
+# nix_check_contract — Nix provisioning engine and check contract — v1.5.0
 
 **Status: derived implementation spec, subordinate to `VERIFY-AND-CHECKS.md`.** Governs
 `bootstrap.sh`, `install.sh`, `scripts/verify.py`, and every `checks/check_*.py`.
@@ -913,6 +913,95 @@ and the merge commit is the evidence.
 **This gate is mechanically checkable and is therefore owed a check** under §1 as broadened by
 AMENDMENT 3. None exists; the debt is recorded rather than blocking, per the same section.
 
+### §16.4 `**** ARC completed ****` IS THE LAST TOKEN (AMENDMENT 10, ARC 033) [ARCHITECT RULING — revocable]
+
+**The marker is the last token `cc` prints. Nothing follows it — no re-measure, no `cat`, no summary,
+no percentage, no commentary, no closing remark.**
+
+The marker is not a section heading and it is not a sign-off. It is a **certificate over a state**:
+*the banked state is final and nothing followed it.* Everything §16.1 obliges an arc to show — `HEAD`
+advanced, `HEAD`'s tree carrying the arc's paths, `git status --short` empty for them — is a claim
+about the tree **at the moment the marker is printed**. A token printed after the marker is either
+irrelevant, in which case it dilutes a certificate, or it is a measurement, in which case it is
+worse:
+
+**A MEASUREMENT PRINTED AFTER THE MARKER RETROACTIVELY FALSIFIES IT.** The marker certified a state;
+the measurement then reports that state, or a later one. If the figure agrees, the marker was
+redundant at best. If it disagrees — and §16.2 exists precisely because figures move — then the
+marker certified a state that had already stopped being true when it was printed. Neither reading is
+one an arc may leave for a reader to pick between, and the reader cannot tell which they are looking
+at, because the marker's whole content is *nothing followed this*.
+
+#### The post-write-back re-measure runs BEFORE the marker, and is itself banked before it
+
+This is not a licence to skip the re-measure. §16.2 requires the figures to be re-taken against the
+merged tree, and some transitions **can only** be observed after the write-back — the guard-owner
+transition is the standing example: `contract.completed_arcs()` reads `sessions/SESSION.md`'s `##`
+headings, so an owner naming the arc in flight becomes an owner naming a COMPLETED arc the instant
+that arc appends its own summary, and `check_artifact_gate_coverage` moves GUARDED → CANNOT_MEASURE
+(D3.40's mechanism; ARC 031 met it on D3.138 and ARC 032 met it again on D3.144, both predicted in
+writing before the commit that caused them).
+
+The ordering that satisfies both rules is fixed and is not a preference:
+
+1. write back — `SESSION.md` appended, `RESULTS.md` overwritten — and **commit**;
+2. re-measure against the merged tree, including whatever the write-back itself moved;
+3. record that re-measurement **forward-only** (§0h) into `SESSION.md` and `RESULTS.md`, and
+   **commit it**, so the final figure is banked rather than only reported;
+4. show §16.1's three obligations against *that* commit;
+5. **then** print the marker, last.
+
+**The marker is printed only once the final measurement is itself in history.** An arc that reports a
+figure it has not banked has not finished; it has narrated.
+
+#### The percentage and the run summary come BEFORE the marker
+
+`CLAUDE.md`'s arc-end rule asks for a completion statement **and** an approximate percentage of
+forward movement, and arc briefs routinely require a `===RUN SUMMARY: …===` line. Those are commentary
+about a finished arc, so they are printed **before** the marker, not after it. Where a brief's wording
+places the marker first, this section governs: **§0b — the spelling was a sketch, the invariant binds.**
+
+#### If the arc cannot reach a stable state, it does not print the marker at all
+
+An arc whose tree is still moving — a measurement still running, a figure still unbanked, a
+transition still unresolved — **does not print the marker and does not print a weakened version of
+it.** It reports:
+
+```
+STATUS: IN FLIGHT
+```
+
+and names what is still moving, in what direction, and what would settle it. A marker qualified into
+truthfulness (*"completed, pending X"*) is the defect this section exists to remove, wearing an
+apology: it is still a certificate over a state, and the state is still moving.
+
+#### The measured counter-example is ARC 032's own close-out
+
+ARC 032 did the hard half correctly and the easy half wrong, which is why it is the example rather
+than a hypothetical. It ran the post-write-back re-measure, observed the predicted GUARDED →
+CANNOT_MEASURE on `check_artifact_gate_coverage`, appended that observation forward-only to both
+files, and **committed it** (`125e8d5`) before reporting. Then it printed `**** ARC completed ****`,
+and after the marker printed a forward-movement percentage and a `===RUN SUMMARY: …===` line.
+
+Nothing false was said and no figure moved. **The defect is structural, not factual:** the arc's last
+banked act was a commit, its last *printed* act was a summary, and a reader has no way to know that
+the two tokens after the marker were commentary rather than a late measurement — which is exactly the
+distinction the marker exists to make unnecessary.
+
+#### THIS SECTION IS NOT MECHANICALLY CHECKABLE, AND THAT IS A REAL DIFFERENCE FROM §16.1–§16.3
+
+Every other obligation in §16 is a property of the repository and is therefore owed a check under §1
+as broadened by AMENDMENT 3. **This one is not.** Its subject is the ORDER OF TOKENS IN A CHAT
+RESPONSE — output that reaches the operator's terminal and is written to no file in this tree, so no
+`checks/check_*.py` can observe it and none is owed. Stating that plainly is the point: an unowed
+check is not the same as an owed check nobody wrote, and recording this rule without the distinction
+would put a permanent phantom on the §1 debt list.
+
+What that leaves is a rule enforced by reading, which is the weakest enforcement this project has.
+It is accepted here because the alternative — writing the marker into a file so a gate could see it —
+would make the marker a *file's* property rather than a *report's*, and the thing being certified is
+the report.
+
 ---
 
 ## 17. The masked hazard — a property proven while its subject is unavailable is not proven (AMENDMENT 5, ARC 025)
@@ -1050,6 +1139,27 @@ derivation was still met. A halting check is emitted as its **own single-check b
 whole level `halt` is worse than the defect, because `engine.run_blocks` halts on ANY member's
 failure and `check_ibgateway_service` FAILs by design on this tree. §16 stands as written; §16.2's
 "any delta is a finding, including an environmental one" was exercised at ARC 025 Phase 0 and held.
+
+**v1.5.0 (ARC 033)** — **AMENDMENT 10:** §16.4 (new) — **`**** ARC completed ****` is the LAST
+token printed, with nothing after it.** The marker is a certificate over a state — *the banked state
+is final and nothing followed it* — so a token printed after it either dilutes the certificate or,
+if it is a measurement, retroactively falsifies it: the marker certified a state that had already
+stopped being true. §16.2's re-measurement is NOT waived; it is ORDERED — write back and commit,
+re-measure the merged tree including whatever the write-back itself moved, record that re-measurement
+forward-only into `SESSION.md`/`RESULTS.md` **and commit it**, show §16.1's three obligations against
+that commit, then print the marker. The percentage `CLAUDE.md` asks for and any `===RUN SUMMARY: …===`
+a brief requires are commentary about a finished arc and come BEFORE the marker; where a brief's
+wording puts the marker first, §16.4 governs under §0b. An arc that cannot reach a stable state prints
+no marker and no weakened version of one — it reports `STATUS: IN FLIGHT` and names what is still
+moving, because a marker qualified into truthfulness is the same defect wearing an apology. **The
+counter-example is measured, not hypothetical:** ARC 032 ran its post-write-back re-measure, observed
+the predicted GUARDED → CANNOT_MEASURE on `check_artifact_gate_coverage`, banked it forward-only at
+`125e8d5` — and then printed the marker with a percentage and a run-summary line after it. Nothing
+false was said; the defect is structural, and a reader cannot tell trailing commentary from a late
+measurement, which is the distinction the marker exists to make unnecessary. **Unlike §16.1–§16.3 this
+section is NOT mechanically checkable** — its subject is the order of tokens in a chat response, which
+is written to no file in this tree — so no check is owed and none is recorded as debt. Amendment
+recorded in `docs/CHECK-CONTRACT-AMENDMENTS.md` as `CHECK-A10`.
 
 **v1.3.0 (ARC 025)** — **AMENDMENT 4:** §16 (new) — the arc close-out gate must prove **durability**,
 not authorship. `CLAUDE.md`'s write-back rule is satisfiable by a file that exists only in a working

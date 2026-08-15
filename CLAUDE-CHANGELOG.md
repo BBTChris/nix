@@ -278,3 +278,56 @@ fold reproduces that exactly. The collision is the architect's to rule on.
   `directory_structure.md`, in the same table, found the same way: by opening the
   file the row indexes. The check contract itself is NOT bumped by `CHECK-A9`;
   §19.1 is an amendment recorded in place, exactly as `CHECK-A8`'s §19 was.
+
+## ARC 033 / close-out contract — the completion marker is the LAST token (2026-08-15)
+
+- **`CLAUDE.md` close-out contract (§Rules block) — new paragraph, and it ORDERS work rather
+  than removing any.** `**** ARC completed ****` is the **last token printed, with nothing
+  after it** — no re-measure, no `cat`, no summary, no percentage, no commentary. The marker
+  is a **certificate over a state** (*the banked state is final and nothing followed it*), so a
+  measurement printed after it **retroactively falsifies it**: the marker certified a state
+  that then changed, and a reader cannot tell trailing commentary from a late measurement,
+  which is the one distinction the marker exists to make unnecessary.
+- **The post-write-back re-measure is NOT waived — it is ordered.** Where one is required (the
+  D3.40 / D3.144 guard-owner transition, which fires the instant `sessions/SESSION.md` names
+  the arc complete and `contract.completed_arcs()` sees it), the sequence is fixed: write back
+  and commit → re-measure the merged tree → record that re-measurement **forward-only** (§0h)
+  into `SESSION.md` and `RESULTS.md` **and commit it** → show §16.1's three obligations against
+  that commit → print the marker. **The marker is printed only once the final measurement is
+  itself banked.** An arc that reports a figure it has not banked has not finished; it has
+  narrated.
+- **`CLAUDE.md` arc-end rule (§Design and Development Structures) reordered to match.** The
+  forward-movement percentage now explicitly PRECEDES the marker, as does any
+  `===RUN SUMMARY: …===` an arc brief requires "alongside the arc". Where a brief's wording
+  places the marker first, the contract governs — **§0b: the spelling was a sketch, the
+  invariant binds.** This collision is real and recurring, not hypothetical: it is how ARC 032
+  ended.
+- **No marker at all where the state will not settle.** An arc whose tree is still moving prints
+  **no marker and no weakened version of one** — it reports `STATUS: IN FLIGHT` and names what
+  is still moving, in what direction, and what would settle it. A marker qualified into
+  truthfulness (*"completed, pending X"*) is the same defect wearing an apology: still a
+  certificate, still over a moving state.
+- **Recorded per rule 13** in `docs/nix_check_contract.md` **§16.4** and
+  `docs/CHECK-CONTRACT-AMENDMENTS.md` **`CHECK-A10`**. The check contract bumps
+  **v1.4.0 → v1.5.0** (§16.4 is a new section, not an in-place clarification like `CHECK-A9`'s
+  §19.1), and **both** of `CLAUDE.md`'s version references were moved with it — the spec table
+  row and the check-contract header line — because ARC 031 recorded exactly that drift in this
+  same table one arc earlier.
+- **The measured counter-example is ARC 032's own close-out, and it is why this is a ruling.**
+  ARC 032 did the hard half right: it ran the post-write-back re-measure, observed the predicted
+  GUARDED → CANNOT_MEASURE on `check_artifact_gate_coverage`, appended it forward-only to both
+  files and **committed it** (`125e8d5`) before reporting. Then it printed the marker and
+  followed it with a forward-movement percentage and a run-summary line. **Nothing false was
+  said and no figure moved — the defect is structural**, and that is precisely why a rule was
+  needed rather than more care.
+- **NO CHECK IS OWED, stated so it does not become a phantom debt row.** Every other §16
+  obligation is a property of the repository and is owed a check under §1 as broadened by
+  `CHECK-A3`. §16.4's subject is the **order of tokens in a chat response**, written to no file
+  in this tree, so no `checks/check_*.py` can observe it. Enforcement is by reading — the
+  weakest this project has — and it is accepted because writing the marker into a file so a gate
+  could see it would make the marker a property of a FILE when the thing certified is the REPORT.
+- **One stale restatement corrected in passing** (core directive 3). The spec table's
+  `CHECK-CONTRACT-AMENDMENTS.md` row read *"both hold six"* — a count of two independently
+  growing ledgers, restated in a third file, which this very edit would have made staler. The
+  row now states the **mechanism** (the two ledgers are numbered independently and their ranges
+  OVERLAP, which is why a bare "AMENDMENT 6" named two different rulings) and no number.
