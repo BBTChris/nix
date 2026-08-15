@@ -27,6 +27,7 @@
         "check_crucible_calendar",
         "check_d1_12_reboot_capture",
         "check_datafeed_bar_seal",
+        "check_execution_ledger",
         "check_extract_sources",
         "check_flatten",
         "check_ibgateway_config",
