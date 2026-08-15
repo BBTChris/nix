@@ -240,3 +240,16 @@ fold reproduces that exactly. The collision is the architect's to rule on.
   library/network dependency and answers for all six locked product groups. Registered via
   `verify.py --optimize --commit`.
 - No risk-spec or check-contract rule changes this arc -- new subsystem, existing contract applies.
+
+## ARC 031 / Phase 0.6 (2026-08-15)
+
+- `docs/directory_structure.md` v1.6.0 -> **v1.7.0**: the `scripts/` line now names
+  `nixrisk/`, `nixalloc/` and `nixbus/`. `nixalloc/` is this arc's (the Allocator's
+  frozen consumer-side seam). `nixrisk/` (ARC 028) and `nixbus/` (ARC 021) were
+  already on disk and had never been named there — measured while adding the third,
+  and fixed in the same motion rather than left to be rediscovered.
+- The spec table above said `directory_structure.md` was **v1.5.0**; the file on
+  disk was already **v1.6.0** (ARC CRUCIBLE-DEPSPLIT's venv split). Corrected to
+  v1.7.0. Recorded rather than quietly overwritten: a version number in this table
+  that trails the file it indexes is the "restate a mutable fact" failure core
+  directive 3 forbids, and it went one whole arc unnoticed.

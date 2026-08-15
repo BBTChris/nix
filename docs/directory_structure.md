@@ -1,4 +1,4 @@
-# directory_structure — `~/nix` directory topology — v1.6.0
+# directory_structure — `~/nix` directory topology — v1.7.0
 
 Application root: `~/nix`. Everything for Nix is self-contained here, **except the system PostgreSQL
 cluster** (lives at the OS default per CLAUDE.md).
@@ -7,8 +7,11 @@ cluster** (lives at the OS default per CLAUDE.md).
 ~/nix
   |-- scripts      All Python and shell scripts; verify.py engine (nixverify/),
   |                the vendor-neutral broker seam + vendor adapters (broker/),
-  |                the Crucible strategy-evaluation pipeline (crucible/, calendar
-  |                infra so far), and the test suite (scripts/tests/)
+  |                the Risk Engine / Limiter — the PROHIBITIVE side (nixrisk/),
+  |                the Allocator — the PERMISSIVE side (nixalloc/), the bus and
+  |                price ring (nixbus/), the Crucible strategy-evaluation
+  |                pipeline (crucible/, calendar infra so far), and the test
+  |                suite (scripts/tests/)
   |-- docs         Reference documentation and markdown files (incl. the frozen risk spec)
   |-- checks       Check modules for verify.py and JSON execution map
   |-- risks        Library of risk rules and JSON execution map — data-role expression of the
@@ -25,6 +28,22 @@ cluster** (lives at the OS default per CLAUDE.md).
   |-- state        Hardware identity + encrypted credential storage. `chmod 600` throughout;
                    gitignored wholesale (defense in depth beyond the `*credentials*.json` rule).
 ```
+
+**v1.7.0 changes — the three unnamed subpackages, and one of them is this arc's:**
+the `scripts/` line now names `nixrisk/`, `nixalloc/` and `nixbus/`.
+
+`nixalloc/` is ARC 031's: the Allocator (§2, Core 3), the PERMISSIVE side —
+`seam.py` is its frozen consumer-side boundary (the read-only mirror port, the
+proposal it emits, the §6.6 ranking-table READ port whose writer does not exist
+yet, the §7 correlation buckets), gated by `checks/check_allocator_seam.py`.
+
+`nixrisk/` (ARC 028) and `nixbus/` (ARC 021) were **already on disk and never
+named here**, which this arc measured rather than assumed while adding
+`nixalloc/`. That is a real gap in this document, not a formality: v1.3.0,
+v1.4.0 and v1.5.0 each expanded this line for exactly this reason ("All Python
+and shell scripts" covers a subpackage but does not make it FINDABLE), and two
+subpackages then landed without the expansion. Both are named now, in the same
+motion as the third, rather than left for a future arc to rediscover.
 
 **v1.6.0 changes — which venv, canonically:** ARC CRUCIBLE-DEPSPLIT split the single
 shared venv into two, gitignored the same way (`.venv-dev` / `.venv-dev/`, mirroring

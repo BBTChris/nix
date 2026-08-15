@@ -16,6 +16,7 @@
       "parallel": false,
       "on_fail": "continue",
       "checks": [
+        "check_allocator_seam",
         "check_artifact_gate_coverage",
         "check_broker_order_config",
         "check_canonical_tree",
