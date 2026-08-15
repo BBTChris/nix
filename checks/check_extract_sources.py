@@ -70,11 +70,22 @@ DISRUPTIVE = False
 TIME_BOUND = True
 EXPECTED_S = 5.0
 DEPENDS_ON: tuple[str, ...] = ()
-#: Spawns a python subprocess with a tempdir cwd; writes land only there.
-#: `subprocess:python` matches by basename (nixverify.observe.covers), so it
-#: accounts for the interpreter this gate spawns regardless of which venv's
-#: `python` answers on this box.
-RESOURCES: tuple[str, ...] = ("file-write:/tmp", "subprocess:python")
+#: Spawns `sys.executable` with a tempdir cwd; writes land only there.
+#: `subprocess:python` matches by BASENAME (`nixverify.observe.covers`), and
+#: **basename matching is what makes this declaration launch-mode dependent, not
+#: what makes it safe** (CHECK-DEBT D3.140). One token covers every venv on this
+#: box, because a venv interpreter is named `python` — and it covers NONE of the
+#: one documented interpreter that is not in a venv, `/usr/bin/python3`, whose
+#: basename is `python3`. `verify.py` documents itself as running under system
+#: python3 and every `nix-verify*.service` unit pins it, so this gate really is
+#: launched both ways and BOTH basenames are spawned in production. Both are
+#: therefore declared; dropping either makes this declaration false under the
+#: launch mode it dropped.
+RESOURCES: tuple[str, ...] = (
+    "file-write:/tmp",
+    "subprocess:python",
+    "subprocess:python3",
+)
 CORRECTABLE = False
 NON_CORRECTABLE_REASON = (
     "a defect here is in the logic that decides WHAT lands on disk from a "

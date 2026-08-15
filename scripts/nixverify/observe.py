@@ -101,6 +101,29 @@ one property. The wrapper is *defeatable* and that is acceptable precisely
 because it is not the one carrying the safety claim; if it is bypassed, the
 audit hook still records the claim and the check is compared as if reachable,
 which is the strict direction.
+
+## THE INTERPRETER IS AN INPUT TO THE OBSERVATION (CHECK-DEBT D3.140)
+
+An observation is made by a CHILD PROCESS, and until ARC 032 that child was
+always `sys.executable` — whatever launched the observer. That made the
+interpreter an unstated parameter of every result, and D3.140 measured what it
+hides: `check_extract_sources` spawns `sys.executable` and declares
+`subprocess:python`, which `covers` matches by BASENAME. Under
+`.venv/bin/python` the declaration is TRUE; under `/usr/bin/python3` — the
+launch mode `verify.py`'s own docstring names, and the one every
+`nix-verify*.service` unit pins — it is FALSE. **Same tree, same commit, same
+check, opposite verdicts, and which one you got depended entirely on how the
+run was launched.**
+
+So the interpreter is now EXPLICIT in three places, and all three are needed:
+
+* `observe_check(..., executable=...)` lets the caller choose the launch mode;
+* the child REPORTS its own `sys.executable` back in the record, so the caller
+  learns what it actually ran rather than what it asked for — a caller that
+  trusted its own argv could sweep the same interpreter twice and call that
+  "both launch modes";
+* `documented_interpreters()` names the modes `verify.py` documents, so the
+  consumer gate does not invent its own list.
 """
 
 from __future__ import annotations
@@ -189,6 +212,50 @@ _DIR_FD_ARG: dict[str, int | None] = {
 _SHM_ROOT = "/dev/shm"  # nosec B108
 
 
+#: CHECK-DEBT D3.140. The SYSTEM launch mode: the interpreter `install.sh` pins
+#: in every `nix-verify*.service` `ExecStart` and the one `verify.py`'s own
+#: docstring names ("Stdlib only (§9.1) so it runs under system python3 before
+#: .venv exists"). A literal here that drifted from what the units actually run
+#: would make the both-interpreters gate sweep ONE launch mode twice and call it
+#: two, so it is cross-checked against `install.sh` mechanically —
+#: `test_observe.py::test_the_SYSTEM_INTERPRETER_constant_is_what_install_sh_pins`.
+SYSTEM_INTERPRETER = "/usr/bin/python3"
+
+#: Label for each documented launch mode. Labels, not paths, because the venv
+#: path is a function of the tree and the system path is not.
+VENV_MODE = "venv"
+SYSTEM_MODE = "system"
+
+
+def documented_interpreters(nix_home: Path) -> tuple[tuple[str, str], ...]:
+    """The launch modes `verify.py` documents for itself, as `(label, path)`.
+
+    Two, and they are NOT interchangeable — see the interpreter section of the
+    module docstring. Ordered venv-first only for readability; no consumer may
+    depend on the order.
+
+    **The venv path has a named fallback and it is not a convenience.** On the
+    real tree the venv launch mode is `<nix_home>/.venv/bin/python`. Against a
+    SYNTHETIC tree (every test population, every scratch home) there is no venv
+    under `nix_home` at all, and returning a path that does not exist would make
+    the consumer report "one launch mode unavailable" for a reason that has
+    nothing to do with the property under test — a gate that goes blind on its
+    own fixtures measures nothing on them. So when `nix_home` has no venv and
+    THIS process is itself running from one, that venv is the venv launch mode.
+    The consumer prints the path it actually used, so the substitution is
+    visible in the evidence rather than silent.
+
+    Nothing here checks that either path exists or runs. That is deliberate:
+    availability is proven by RUNNING the interpreter and reading back what it
+    says it is (`ObservedRun.interpreter`), never by a path test — an executable
+    bit is not an interpreter.
+    """
+    venv_python = nix_home / ".venv" / "bin" / "python"
+    if not venv_python.exists() and sys.prefix != sys.base_prefix:
+        venv_python = Path(sys.executable)
+    return ((VENV_MODE, str(venv_python)), (SYSTEM_MODE, SYSTEM_INTERPRETER))
+
+
 def resolve_fd(fd: int) -> str:
     """The path an open descriptor names, via `/proc/self/fd/<n>`, or ''.
 
@@ -226,6 +293,12 @@ class ObservedRun:
     status: str = ""
     #: Why nothing could be observed. Empty on a completed observation.
     error: str = ""
+    #: The child's OWN `sys.executable` (D3.140) — what actually made this
+    #: observation, not what the parent asked for. Empty when the child never
+    #: got far enough to say, which is itself an unmeasured run. A caller that
+    #: compared its own argv instead of this could sweep one interpreter twice
+    #: and report "both documented launch modes".
+    interpreter: str = ""
 
     @property
     def measured(self) -> bool:
@@ -438,7 +511,9 @@ def _child(checks_dir: Path, name: str, nix_home: Path, record: Path) -> int:
 
     loaded = load_check(checks_dir, name)
     recorder = _Recorder()
-    payload: dict[str, object] = {"check": name}
+    # Recorded BEFORE anything can go wrong: an observation that failed still
+    # has to be able to say which interpreter it failed under (D3.140).
+    payload: dict[str, object] = {"check": name, "interpreter": sys.executable}
     if loaded.load_error or loaded.run is None:
         # The loader's message does not carry the check's name (it is supplied by
         # the engine downstream), and an observation record that cannot say WHICH
@@ -486,6 +561,7 @@ def observe_check(
     name: str,
     nix_home: Path,
     timeout: float = PER_CHECK_TIMEOUT_S,
+    executable: str | None = None,
 ) -> ObservedRun:
     """Run one check under the observer, in a FRESH process, and read the record.
 
@@ -495,11 +571,18 @@ def observe_check(
     or segfaults must cost one observation rather than the whole gate. It is also
     the same shape as `actuation.reverify` — the process doing the measuring is
     not the process being measured.
+
+    `executable` selects the LAUNCH MODE (D3.140). It defaults to
+    `sys.executable`, which is what every caller got implicitly before the
+    parameter existed — so the default preserves the old behaviour rather than
+    quietly changing every existing observation. The returned
+    `ObservedRun.interpreter` is the child's own report, NOT this argument: a
+    caller must be able to tell "I asked for X" from "X is what ran".
     """
     with tempfile.TemporaryDirectory(prefix="nix-observe-") as tmp:
         record = Path(tmp) / "record.json"
         argv = [
-            sys.executable,
+            executable or sys.executable,
             str(Path(__file__).resolve()),
             str(checks_dir),
             name,
@@ -552,6 +635,7 @@ def _read_record(name: str, record: Path) -> ObservedRun:
         ),
         status=str(payload.get("status", "")),
         error=str(payload.get("error", "")),
+        interpreter=str(payload.get("interpreter", "")),
     )
 
 

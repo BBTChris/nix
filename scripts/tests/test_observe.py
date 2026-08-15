@@ -12,6 +12,7 @@ would be `check_datafeed_granted_mode`'s D3.16 rebuilt in a new file.
 from __future__ import annotations
 
 import socket
+import subprocess
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -22,8 +23,10 @@ REPO = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 
 from nixverify.observe import (  # pylint: disable=wrong-import-position
+    SYSTEM_INTERPRETER,
     _Recorder,
     covers,
+    documented_interpreters,
     format_address,
     observe_check,
     resolve_fd,
@@ -450,3 +453,113 @@ def test_covers_shm_matches_dev_shm_and_nothing_else(tmp_path: Path) -> None:
     )
     assert not covers("shm", f"file-write:{tmp_path}/x", tmp_path)
     assert not covers("shm", "socket:127.0.0.1:4002", tmp_path)
+
+
+# --- THE INTERPRETER IS AN INPUT TO THE OBSERVATION (ARC 032, D3.140) --------
+
+
+def test_the_SYSTEM_INTERPRETER_constant_is_what_install_sh_pins() -> None:
+    """The constant is DERIVED from the units, not a second source of truth.
+
+    `SYSTEM_INTERPRETER` names one of the two launch modes the both-interpreters
+    gate sweeps under. If it drifted from what `install.sh` actually puts in the
+    `nix-verify*.service` `ExecStart` lines, the gate would sweep an interpreter
+    nothing runs `verify.py` under and report "both documented launch modes" —
+    directive 3's restated mutable fact, wearing a safety gate.
+
+    Reads the ExecStart lines rather than asserting a count of them (doctrine
+    C.4): the number of units is free to change, the interpreter they pin is
+    not.
+    """
+    install = (REPO / "install.sh").read_text(encoding="utf-8")
+    pinned = {
+        line.split("ExecStart=", 1)[1].split()[0]
+        for line in install.splitlines()
+        if "ExecStart=" in line and "verify.py" in line
+    }
+    assert pinned, "no nix-verify ExecStart line found — this test lost its subject"
+    assert pinned == {SYSTEM_INTERPRETER}, (
+        f"install.sh runs verify.py under {sorted(pinned)} but observe.py calls "
+        f"the system launch mode {SYSTEM_INTERPRETER!r}"
+    )
+
+
+def test_the_documented_launch_modes_are_TWO_DISTINCT_interpreters() -> None:
+    """Two modes, and the discriminator is `sys.executable` — NOT `realpath`.
+
+    Measured on this box, ARC 032: `.venv/bin/python` and `/usr/bin/python3`
+    both resolve through `os.path.realpath` to `/usr/bin/python3.14`. A gate
+    that proved its two launch modes distinct by comparing realpaths would
+    therefore refuse to measure a split that is live and reproducible here —
+    `covers` matches a `subprocess:` token by BASENAME, and the basenames
+    (`python` vs `python3`) are exactly what differs.
+
+    So this asserts the property the gate actually relies on: run each
+    documented interpreter and the `sys.executable` it reports for itself must
+    differ. Nothing here asserts what the realpaths are; that is a fact about
+    this box and doctrine C.4 forbids anchoring to it.
+    """
+    modes = documented_interpreters(REPO)
+    assert len(modes) == 2, modes
+    reported = []
+    for label, path in modes:
+        proc = subprocess.run(
+            [path, "-c", "import sys; sys.stdout.write(sys.executable)"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        assert proc.returncode == 0, f"{label} ({path}) would not run: {proc.stderr}"
+        reported.append(proc.stdout.strip())
+    assert len(set(reported)) == 2, (
+        f"the two documented launch modes report the same sys.executable "
+        f"{reported} — sweeping both would measure one"
+    )
+
+
+def test_observe_check_runs_under_the_INTERPRETER_IT_IS_GIVEN_and_reports_it(
+    tmp_path: Path,
+) -> None:
+    """The whole of D3.140's mechanism, driven: same check, two launch modes.
+
+    The planted check spawns `sys.executable`, which is exactly what
+    `check_extract_sources` does. Under each documented interpreter the observed
+    `subprocess:` claim must name THAT interpreter — if it did not, an
+    observation would be silently attributed to a launch mode that never ran,
+    and the both-interpreters gate above it would be sweeping a fiction.
+    """
+    plant(
+        tmp_path / "checks",
+        "check_spawn_self",
+        "import subprocess, sys\n"
+        "subprocess.run([sys.executable, '-c', 'pass'], check=False, "
+        "capture_output=True)",
+    )
+    seen = {}
+    for label, path in documented_interpreters(REPO):
+        run = observe_check(
+            tmp_path / "checks", "check_spawn_self", tmp_path, executable=path
+        )
+        assert run.measured, run.error
+        assert run.interpreter, f"{label} child reported no sys.executable"
+        assert f"subprocess:{run.interpreter}" in run.claims, (
+            f"{label}: child reported {run.interpreter} but claimed {run.claims}"
+        )
+        seen[label] = run.interpreter
+    assert len(set(seen.values())) == 2, (
+        f"both launch modes observed the same interpreter {seen} — the parameter "
+        "is not reaching the child"
+    )
+
+
+def test_the_DEFAULT_interpreter_is_the_RUNNING_one(tmp_path: Path) -> None:
+    """The control for the parameter: omitting it must not change behaviour.
+
+    `executable=None` is what every caller got before the parameter existed. A
+    default that quietly picked something else would have re-pointed every
+    existing observation in the tree as a side effect of adding an option.
+    """
+    plant(tmp_path / "checks", "check_quiet", "pass")
+    run = observe_check(tmp_path / "checks", "check_quiet", tmp_path)
+    assert run.interpreter == sys.executable, run.interpreter

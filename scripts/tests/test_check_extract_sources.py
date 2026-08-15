@@ -10,6 +10,10 @@ subprocess's cwd to a tempdir so no plant or real run ever writes into the
 working tree.
 """
 # pylint: disable=invalid-name,redefined-outer-name,duplicate-code
+# pylint: disable=missing-function-docstring
+# Test names SHOUT the property under test and the fixtures are one-liners, so
+# a docstring here would restate the name. The pragma is per-file and named,
+# matching `test_check_observed_resource_claims.py`.
 
 from __future__ import annotations
 
@@ -70,6 +74,45 @@ def test_the_GATE_DECLARES_the_script_as_a_SUBJECT_so_coverage_is_real() -> None
     assert gate.CORRECTABLE is False
 
 
+def test_the_RESOURCES_declaration_holds_under_BOTH_documented_interpreters() -> None:
+    """CHECK-DEBT D3.140 — the defect this gate's declaration actually had.
+
+    This gate spawns `sys.executable`, so the interpreter it claims is whichever
+    one launched `verify.py`, and `nixverify.observe.covers` matches a
+    `subprocess:` token by BASENAME. `subprocess:python` alone was therefore
+    TRUE under `.venv/bin/python` and FALSE under `/usr/bin/python3` — the
+    launch mode every `nix-verify*.service` unit pins.
+
+    Derived from `documented_interpreters`, never from a literal path list: a
+    second copy of "which interpreters exist" here would be the restated mutable
+    fact directive 3 forbids, and would go stale silently.
+
+    The second half is the control, and it is the load-bearing half: each token
+    must be the ONLY one covering its interpreter. Without it this test passes
+    on a declaration containing one token and a decorative one.
+    """
+    sys.path.insert(0, str(REPO / "scripts"))
+    from nixverify.observe import (  # pylint: disable=import-outside-toplevel
+        covers,
+        documented_interpreters,
+    )
+
+    modes = documented_interpreters(REPO)
+    assert len(modes) > 1, modes
+    for label, path in modes:
+        claim = f"subprocess:{path}"
+        matching = [t for t in gate.RESOURCES if covers(t, claim, REPO)]
+        assert matching, (
+            f"RESOURCES={list(gate.RESOURCES)} accounts for nothing this gate "
+            f"spawns under the {label} launch mode ({claim}) — a false "
+            "declaration under a documented invocation (D3.140)"
+        )
+        assert len(matching) == 1, (
+            f"{matching} all cover the {label} launch mode; one of them is "
+            "decorative and could be deleted without this test noticing"
+        )
+
+
 # --------------------------------------------------------------------------
 # PLANT 1 — the executable-bit chmod removed
 # --------------------------------------------------------------------------
@@ -98,7 +141,8 @@ def test_an_OVER_BROAD_CHMOD_fails_and_NAMES_the_non_sh_file(home: Path) -> None
     _plant(
         home,
         _CHMOD_ANCHOR,
-        "if True:  # PLANTED: chmod applied to every extraction, not just .sh\n        os.chmod(name, 0o755)",
+        "if True:  # PLANTED: chmod applied to every extraction, not just .sh\n"
+        "        os.chmod(name, 0o755)",
     )
 
     result = _run(home)

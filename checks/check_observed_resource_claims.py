@@ -42,6 +42,41 @@ the exact collision ARC 024 measured (D1.41). So:
   never `PASS`**, naming the endpoint and the errno, because everything
   downstream of that connect did not execute and is therefore unobserved.
 
+## BOTH DOCUMENTED LAUNCH MODES, OR IT IS NOT MEASURED (CHECK-DEBT D3.140)
+
+An observation is made by a child process, and the interpreter that runs that
+child is an INPUT to the result. D3.140 measured what that hides, on this tree,
+at one commit, with nothing changed but the launch: `check_extract_sources`
+spawns `sys.executable` and declares `subprocess:python`, which `covers` matches
+by basename. Under `.venv/bin/python` the declaration is TRUE and this gate said
+CANNOT_MEASURE; under `/usr/bin/python3` the same declaration is FALSE and this
+gate said FAIL. **Both verdicts were correct. Which one you got depended on how
+the run was launched, and nothing in the report said so.**
+
+`verify.py` documents both launch modes — its own docstring ("Stdlib only (§9.1)
+so it runs under system python3 before .venv exists") and every
+`nix-verify*.service` `ExecStart` pin the system interpreter, while a developer
+runs it from the venv. So a declaration verified under ONE of two supported
+launch modes is UNMEASURED in the other, and this gate now sweeps the population
+under BOTH before it may report PASS.
+
+**The gate that would measure nothing here is the one that runs the same
+interpreter twice**, so the distinction is PROVEN rather than assumed, and it is
+proven from what the children report about themselves:
+
+* each documented interpreter is RUN and asked for its own `sys.executable`
+  before any sweep starts — an executable bit is not an interpreter;
+* the two reported values must DIFFER, and if they do not, the verdict is
+  CANNOT_MEASURE naming both. **`os.path.realpath` is deliberately NOT the
+  discriminator**: on this box `.venv/bin/python` is a symlink to
+  `/usr/bin/python3.14` and so is `/usr/bin/python3`, so realpath collapses the
+  two launch modes into one and a realpath test would refuse to measure a split
+  that is live and reproducible. What differs — and what `covers` matches on —
+  is `sys.executable` itself, and its basename;
+* every child's reported interpreter is compared against the one that was
+  requested, so "I asked for the system interpreter" cannot be mistaken for
+  "the system interpreter ran".
+
 ## debug.md §7.12 — the standing question
 
 **What would have to be true for this gate to PASS while measuring nothing?**
@@ -64,6 +99,18 @@ the exact collision ARC 024 measured (D1.41). So:
 5. **The observations could all have failed** — a child that crashes for every
    check leaves an empty finding set. *Closed:* an unmeasured observation is a
    `CANNOT_MEASURE` finding for that check, never an absence.
+6. **The two "different" interpreters could be the same one** (ARC 032, D3.140)
+   — sweeping `sys.executable` twice, or resolving both launch modes to one
+   path, produces two identical passes and reads exactly like a declaration
+   proven under both. *Closed:* each documented interpreter is run and asked for
+   its own `sys.executable` before any sweep, the two answers must DIFFER, and
+   every child's reported interpreter is compared against the one requested. Any
+   of those failing is `CANNOT_MEASURE` naming the interpreters — never PASS.
+7. **One documented launch mode could be absent from the box** (ARC 032, D3.140)
+   — a missing `/usr/bin/python3` would leave one sweep to carry a verdict about
+   two. *Closed:* an interpreter that cannot be run is `CANNOT_MEASURE` naming
+   which one and why, per check-contract rule 10 / §17. A safety property proven
+   while one of its two subjects is unavailable is not proven.
 
 ## What this gate CANNOT prove
 
@@ -77,6 +124,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import subprocess  # nosec B404 - fixed argv, shell=False, interpreter probe only
 import sys
 import time
 from pathlib import Path
@@ -84,7 +132,12 @@ from pathlib import Path
 import _preamble  # noqa: F401  pylint: disable=unused-import,wrong-import-order
 from nixverify.contract import CheckResult, Context, Mode, Status
 from nixverify.declarations import Declaration, read_all
-from nixverify.observe import ObservedRun, observe_check, undeclared
+from nixverify.observe import (
+    ObservedRun,
+    documented_interpreters,
+    observe_check,
+    undeclared,
+)
 
 PRIVILEGE = "user"
 INTERACTIVE = False
@@ -101,8 +154,13 @@ DEPENDS_ON: tuple[str, ...] = ()
 RESOURCES: tuple[str, ...] = ("reexecution-of-every-registered-check",)
 TIME_BOUND = True
 #: Derived from TOTAL_BUDGET_S below — this gate's own bound — never from an
-#: observed run (§4.4).
-EXPECTED_S = 120.0
+#: observed run (§4.4). It moved 120 -> 240 in ARC 032 because the BOUND moved:
+#: the gate now sweeps the population once per documented launch mode. The real
+#: wall clock WAS measured (ARC 032, this tree: 43.337s + 43.212s = 86.7s over
+#: 50 checks) and it is evidence that the bound is adequate — it is NOT where
+#: this number comes from, and moving it to track a measured run would be the
+#: moving anchor §4.4 and doctrine C.4 both forbid.
+EXPECTED_S = 240.0
 CORRECTABLE = False
 NON_CORRECTABLE_REASON = (
     "the repair for a false declaration is a human deciding what the check really "
@@ -119,10 +177,15 @@ REGISTRY = "registry.json"
 #: anchor that moves (doctrine C.4).
 MIN_CREDIBLE_CHECKS = 5
 
-#: Wall-clock ceiling on the WHOLE sweep. Exhausting it makes the remaining
-#: checks CANNOT_MEASURE, never silently-absent: a gate whose scope quietly
-#: shrinks under load is this project's recurring defect class.
-TOTAL_BUDGET_S = 120.0
+#: Wall-clock ceiling on the WHOLE gate — BOTH launch-mode sweeps together, not
+#: each. Exhausting it makes the remaining checks CANNOT_MEASURE, never
+#: silently-absent: a gate whose scope quietly shrinks under load is this
+#: project's recurring defect class. Doubled in ARC 032 with the second sweep.
+TOTAL_BUDGET_S = 240.0
+
+#: Ceiling on the one-line "what are you?" probe. An interpreter that cannot
+#: answer that in this long is not one this gate can sweep under.
+PROBE_TIMEOUT_S = 30.0
 
 FAIL = "fail"
 UNKNOWN = "cannot_measure"
@@ -137,12 +200,35 @@ class Finding:
     verdict: str
     site: str
     reason: str
+    #: Every launch mode under which this exact finding was observed (D3.140).
+    #: A tuple and not a string because the same finding usually holds under
+    #: both, and a report that printed it twice would bury the one that holds
+    #: under only ONE — which is the entire subject of D3.140. Empty for
+    #: findings that are not an observation at all (the registry arm below).
+    interpreters: tuple[str, ...] = ()
 
 
 def classify(
     observed: ObservedRun, declaration: Declaration, nix_home: Path
 ) -> tuple[Finding, ...]:
-    """Compare one observation with one declaration. The whole rule, in one place.
+    """Compare one observation with one declaration, TAGGED with its launch mode.
+
+    The comparison is `_compare`'s; this adds the one fact D3.140 proved the
+    result is meaningless without — WHICH interpreter made the observation. It
+    is taken from the child's own report (`ObservedRun.interpreter`), never from
+    what the caller asked for.
+    """
+    modes = (observed.interpreter,) if observed.interpreter else ()
+    return tuple(
+        dataclasses.replace(finding, interpreters=modes)
+        for finding in _compare(observed, declaration, nix_home)
+    )
+
+
+def _compare(
+    observed: ObservedRun, declaration: Declaration, nix_home: Path
+) -> tuple[Finding, ...]:
+    """The comparison rule itself, in one place, launch mode aside.
 
     **Order is the ruling.** A positively-observed undeclared claim outranks
     masking: it is direct evidence of a false declaration, and a check that was
@@ -252,25 +338,245 @@ def _coscheduling_defect(home: Path) -> Finding | None:
     return None
 
 
-def _sweep(home: Path, subjects: list[str]) -> tuple[list[ObservedRun], float]:
-    """Observe each subject in turn, inside the gate's own wall-clock budget."""
+def _sweep(
+    home: Path, subjects: list[str], executable: str, deadline: float
+) -> tuple[list[ObservedRun], float]:
+    """Observe each subject in turn under ONE launch mode, inside the budget.
+
+    `deadline` is an absolute `perf_counter` instant shared by every sweep, not
+    a per-sweep allowance: the budget is the GATE's, and a second sweep given a
+    fresh budget would let the gate run for twice its declared bound.
+    """
     checks_dir = home / "checks"
     started = time.perf_counter()
     runs: list[ObservedRun] = []
     for name in subjects:
-        if time.perf_counter() - started > TOTAL_BUDGET_S:
+        if time.perf_counter() > deadline:
             runs.append(
                 ObservedRun(
                     check=name,
                     error=(
                         f"observation budget of {TOTAL_BUDGET_S}s exhausted before "
-                        "this check was reached — UNOBSERVED, not clean"
+                        f"this check was reached under {executable} — UNOBSERVED, "
+                        "not clean"
                     ),
                 )
             )
             continue
-        runs.append(observe_check(checks_dir, name, home))
+        runs.append(observe_check(checks_dir, name, home, executable=executable))
     return runs, round(time.perf_counter() - started, 3)
+
+
+def _probe_interpreter(path: str) -> tuple[str, str]:
+    """RUN one interpreter and ask what it is. Returns (sys.executable, error).
+
+    A path test is not an answer: an executable bit, a dangling symlink and a
+    shell wrapper all pass `Path.exists()` and none of them is an interpreter
+    this gate can sweep under. The reported `sys.executable` is also the only
+    value that can be compared against what the observed children report, which
+    is what makes "I ran both launch modes" checkable rather than asserted.
+    """
+    try:
+        proc = subprocess.run(  # nosec B603 - argv built here, no shell
+            [path, "-c", "import sys; sys.stdout.write(sys.executable)"],
+            capture_output=True,
+            text=True,
+            timeout=PROBE_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return "", f"could not be run: {exc!r}"
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout or "").strip()[-200:]
+        return "", f"exited {proc.returncode}: {tail or '-'}"
+    reported = proc.stdout.strip()
+    if not reported:
+        return "", "ran but reported an empty sys.executable"
+    return reported, ""
+
+
+@dataclasses.dataclass(frozen=True)
+class LaunchMode:
+    """One documented way to launch `verify.py`, PROVEN present (D3.140)."""
+
+    label: str
+    #: What this gate asked for.
+    requested: str
+    #: What the interpreter said it was. The two differ legitimately (a `python3`
+    #: symlink), and the REPORTED value is the one every comparison uses.
+    reported: str
+
+
+def _launch_modes(home: Path) -> tuple[tuple[LaunchMode, ...], str]:
+    """The documented launch modes, each RUN and identified. Or the refusal.
+
+    Returns `((), reason)` whenever this gate cannot honestly claim to have two
+    distinct launch modes to sweep under — a missing interpreter, one that will
+    not run, or two that turn out to be the same one. Every one of those is
+    CANNOT_MEASURE at the call site and never PASS (rule 10 / §17): a
+    declaration verified under one of two supported launch modes is UNMEASURED
+    in the other, and two sweeps of the same interpreter measure one.
+    """
+    modes: list[LaunchMode] = []
+    for label, path in documented_interpreters(home):
+        reported, error = _probe_interpreter(path)
+        if error:
+            return (), (
+                f"the {label} launch mode ({path}) is UNAVAILABLE — it {error}. "
+                "This gate compares declarations against reality under BOTH "
+                "interpreters verify.py documents; with one of them missing, "
+                "every declaration is UNMEASURED under that launch mode. A "
+                "safety property proven while its subject is unavailable is not "
+                "proven — CANNOT_MEASURE, never PASS"
+            )
+        modes.append(LaunchMode(label=label, requested=path, reported=reported))
+    identities = [mode.reported for mode in modes]
+    if len(set(identities)) < len(identities):
+        return (), (
+            "the documented launch modes resolved to the SAME interpreter — "
+            + "; ".join(f"{m.label} {m.requested} -> {m.reported}" for m in modes)
+            + ". Sweeping one interpreter twice measures one launch mode, not "
+            "two, and would report a declaration proven under both when it was "
+            "proven under neither — CANNOT_MEASURE, never PASS"
+        )
+    return tuple(modes), ""
+
+
+def _interpreter_conformance(
+    runs: list[ObservedRun], mode: LaunchMode
+) -> tuple[Finding, ...]:
+    """Findings for children that did not run under the interpreter requested.
+
+    The gap between "I launched `/usr/bin/python3`" and "`/usr/bin/python3` ran"
+    is exactly the gap D3.140 lived in, one level down. A child that re-execs,
+    that a wrapper redirects, or that a venv `pyvenv.cfg` reparents would report
+    a different `sys.executable`, and this mode's sweep would then be a sweep of
+    something else wearing its label.
+    """
+    return tuple(
+        Finding(
+            check=run_.check,
+            verdict=UNKNOWN,
+            site=f"{run_.check}:{mode.label}",
+            reason=(
+                f"{run_.check} was observed for the {mode.label} launch mode "
+                f"{mode.requested} (which reports {mode.reported}) but the child "
+                f"reported sys.executable={run_.interpreter!r} — this observation "
+                f"is not of the {mode.label} launch mode, so that mode is "
+                "UNOBSERVED for this check"
+            ),
+        )
+        for run_ in runs
+        if run_.measured and run_.interpreter != mode.reported
+    )
+
+
+def _merge(findings: list[Finding]) -> list[Finding]:
+    """Collapse one finding seen under several launch modes into one, union-tagged.
+
+    Not cosmetic. A declaration that is false under BOTH interpreters and one
+    that is false under ONE are different findings with different repairs, and a
+    report that printed each sweep's findings end to end would render them
+    identically apart from a duplicate line.
+    """
+    order: list[tuple[str, str, str, str]] = []
+    modes: dict[tuple[str, str, str, str], list[str]] = {}
+    for finding in findings:
+        key = (finding.check, finding.verdict, finding.site, finding.reason)
+        if key not in modes:
+            modes[key] = []
+            order.append(key)
+        for interpreter in finding.interpreters:
+            if interpreter not in modes[key]:
+                modes[key].append(interpreter)
+    return [
+        Finding(
+            check=key[0],
+            verdict=key[1],
+            site=key[2],
+            reason=key[3],
+            interpreters=tuple(modes[key]),
+        )
+        for key in order
+    ]
+
+
+def _detail(finding: Finding) -> str:
+    """One finding's message, NAMING the launch mode(s) it was observed under.
+
+    Rule 11 / §18: a can-fail control asserts the REASON, and after D3.140 the
+    reason for a resource finding is incomplete without the interpreter — the
+    same declaration was true under one and false under the other, and a message
+    that omitted which would send a reader to look for a defect that is only
+    there half the time.
+    """
+    if not finding.interpreters:
+        return finding.reason
+    return f"{finding.reason} [observed under: {', '.join(finding.interpreters)}]"
+
+
+#: One launch mode's whole sweep: what ran it, what it saw, how long it took.
+Sweep = tuple[LaunchMode, list[ObservedRun], float]
+
+
+def _sweep_all(
+    home: Path, subjects: list[str], modes: tuple[LaunchMode, ...]
+) -> list[Sweep]:
+    """One sweep of the whole population per launch mode, under ONE budget.
+
+    The deadline is computed once and shared: the budget is the GATE's, and
+    giving each sweep a fresh one would let the gate run for as many times its
+    declared bound as there are launch modes.
+    """
+    deadline = time.perf_counter() + TOTAL_BUDGET_S
+    sweeps: list[Sweep] = []
+    for launch in modes:
+        # The REQUESTED path, not the reported one: the documented launch mode
+        # is the argv `install.sh` and a developer actually type, and a sweep
+        # that silently substituted the resolved path would stop exercising it.
+        runs, elapsed = _sweep(home, subjects, launch.requested, deadline)
+        sweeps.append((launch, runs, elapsed))
+    return sweeps
+
+
+def _findings(
+    sweeps: list[Sweep], declarations: dict[str, Declaration], home: Path
+) -> list[Finding]:
+    """Every sweep's comparison, plus its interpreter-conformance arm, merged."""
+    findings: list[Finding] = []
+    for launch, runs, _ in sweeps:
+        for run_ in runs:
+            findings.extend(classify(run_, declarations[run_.check], home))
+        findings.extend(_interpreter_conformance(runs, launch))
+    return _merge(findings)
+
+
+def _evidence(
+    sweeps: list[Sweep],
+    subjects: list[str],
+    declarations: dict[str, Declaration],
+) -> str:
+    """What was measured, stated so a reader can tell it apart from an opinion.
+
+    Names EVERY launch mode, both the requested path and what that interpreter
+    reported itself to be, and each sweep's wall clock — because after D3.140
+    "the declarations were checked" is not a claim anyone can act on without
+    knowing which interpreters did the checking.
+    """
+    per_mode = "; ".join(
+        f"{launch.label}={launch.requested} -> {launch.reported} ({elapsed}s)"
+        for launch, _, elapsed in sweeps
+    )
+    observed_total = sum(len(r.claims) for _, runs, _ in sweeps for r in runs)
+    compared = sum(1 for name in subjects if declarations[name].declares_resources)
+    return (
+        f"{len(subjects)} check(s) observed under {len(sweeps)} DISTINCT documented "
+        f"launch mode(s) [{per_mode}]; {observed_total} runtime resource claim(s) "
+        f"recorded; {compared} check(s) had a RESOURCES declaration to compare "
+        "against. Observed classes: sockets, unix sockets, file WRITES, "
+        "subprocesses. NOT observed: file reads, resource use inside spawned "
+        "children, and code paths this run did not take."
+    )
 
 
 def _verdict(findings: list[Finding], evidence: str) -> CheckResult:
@@ -282,7 +588,7 @@ def _verdict(findings: list[Finding], evidence: str) -> CheckResult:
             status=Status.FAIL_NEEDS_OPERATOR,
             site="; ".join(f.site for f in failures),
             evidence=evidence,
-            detail="; ".join(f.reason for f in failures),
+            detail="; ".join(_detail(f) for f in failures),
         )
     unknowns = [f for f in findings if f.verdict == UNKNOWN]
     if unknowns:
@@ -290,13 +596,18 @@ def _verdict(findings: list[Finding], evidence: str) -> CheckResult:
             name=NAME,
             status=Status.CANNOT_MEASURE,
             evidence=evidence,
-            detail="; ".join(f.reason for f in unknowns),
+            detail="; ".join(_detail(f) for f in unknowns),
         )
     return CheckResult(name=NAME, status=Status.PASS, evidence=evidence)
 
 
 def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argument
-    """Observe the whole registered population and compare against declarations."""
+    """Observe the population under BOTH documented launch modes and compare.
+
+    Both, before it may report PASS (CHECK-DEBT D3.140). The launch mode is an
+    input to every observation this gate makes, and one sweep answers for one
+    input.
+    """
     home = Path(ctx.nix_home)
     declarations = read_all(home / "checks")
     # Never observe itself: the child would load this module and sweep again.
@@ -313,8 +624,13 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
             ),
         )
 
-    runs, elapsed = _sweep(home, subjects)
-    if not any(run_.claims for run_ in runs):
+    modes, refusal = _launch_modes(home)
+    if refusal:
+        return CheckResult(name=NAME, status=Status.CANNOT_MEASURE, detail=refusal)
+
+    sweeps = _sweep_all(home, subjects, modes)
+    every_run = [run_ for _, runs, _ in sweeps for run_ in runs]
+    if not any(run_.claims for run_ in every_run):
         # NON-VACUITY, ASSERTED EVERY RUN (doctrine C.3, §5.3). Not one claim
         # anywhere means the audit hook is not firing, and a disarmed observer
         # reports a clean tree that it never looked at.
@@ -323,28 +639,16 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
             status=Status.CANNOT_MEASURE,
             detail=(
                 f"the observer recorded ZERO claims across all {len(subjects)} "
-                "checks — that is the signature of a disarmed observer, not of a "
-                "population that touches nothing"
+                f"checks under {len(modes)} launch mode(s) — that is the signature "
+                "of a disarmed observer, not of a population that touches nothing"
             ),
         )
 
-    findings: list[Finding] = []
-    for run_ in runs:
-        findings.extend(classify(run_, declarations[run_.check], home))
+    findings = _findings(sweeps, declarations, home)
     coschedule = _coscheduling_defect(home)
     if coschedule is not None:
         findings.append(coschedule)
-
-    observed_total = sum(len(run_.claims) for run_ in runs)
-    compared = sum(1 for name in subjects if declarations[name].declares_resources)
-    evidence = (
-        f"{len(subjects)} check(s) observed in {elapsed}s; {observed_total} runtime "
-        f"resource claim(s) recorded; {compared} check(s) had a RESOURCES "
-        f"declaration to compare against. Observed classes: sockets, unix sockets, "
-        f"file WRITES, subprocesses. NOT observed: file reads, resource use inside "
-        f"spawned children, and code paths this run did not take."
-    )
-    return _verdict(findings, evidence)
+    return _verdict(findings, _evidence(sweeps, subjects, declarations))
 
 
 # pylint: disable=duplicate-code
