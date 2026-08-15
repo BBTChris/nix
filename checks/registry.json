@@ -22,6 +22,7 @@
         "check_allocator_sizing",
         "check_artifact_gate_coverage",
         "check_broker_order_config",
+        "check_calendar_schema",
         "check_canonical_tree",
         "check_coldstart",
         "check_crucible_calendar",

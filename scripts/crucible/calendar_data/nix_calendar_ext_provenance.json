@@ -1,0 +1,56 @@
+{
+  "break_class_counts": {
+    "DAILY_BREAK": 28121,
+    "HOLIDAY_BREAK": 528,
+    "WEEKEND": 6829
+  },
+  "content_hash_covers": [
+    "nix_symbol_map.csv",
+    "nix_break_windows.csv",
+    "nix_roll_schedule.csv"
+  ],
+  "content_hash_excludes": [
+    "nix_calendar_ext_provenance.json",
+    "generated_utc"
+  ],
+  "content_hash_sha256": "23169539717f537c0d4bc607a33ebd9ab67478413ecfe6d7b619c785f2961ef8",
+  "generated_utc": "2026-08-15T21:28:21Z",
+  "generator": "scripts/crucible/calendar_ext_gen.py",
+  "generator_dependencies": "python stdlib only",
+  "roll_schedule_sources": {
+    "fetch_status": "every cmegroup.com URL below was UNFETCHABLE at authoring time (WebFetch timeout; direct request returned 'This IP address is blocked due to suspected web scraping activity'). CME-attributed facts rest on search-engine extracts, not rendered documents",
+    "unresolved": [
+      "ES/NQ roll: CME 'Monday prior to the third Friday' (used) vs trade press 'Thursday ~8 days before' (recorded, not used)",
+      "GC active months: CME TAS list G/J/M/Q/Z (used) vs third-party sets that add V (October)",
+      "CL and GC roll leads: no exchange-published roll date found for either; broker figures conflict"
+    ],
+    "urls": [
+      "https://www.cmegroup.com/markets/equities/sp/e-mini-sandp500.contractSpecs.html",
+      "https://www.cmegroup.com/trading/equity-index/rolldates.html",
+      "https://www.cmegroup.com/rulebook/NYMEX/2/200.pdf",
+      "https://www.cmegroup.com/markets/metals/precious/gold.contractSpecs.html",
+      "https://www.cmegroup.com/rulebook/COMEX/1a/113.pdf",
+      "https://www.cmegroup.com/trading/interest-rates/files/ir-roll-description.pdf",
+      "https://ninjatrader.com/futures/futures-contracts/energy/crude-oil/",
+      "https://ninjatrader.com/futures/futures-contracts/metals/gold/",
+      "https://help.metrotrade.com/kb/10-year-u.s.-treasury-note-futures-zn-contract-specifications"
+    ]
+  },
+  "roll_schedule_status": "PROVISIONAL \u2014 rule-derived from the vendored session calendar, every row high_risk=1. \u00a77.5 sources the live roll schedule from the calendar poller (front month = volume leader), which no offline artifact can observe. Replacing these rows is a data swap: the schema and every reader are unchanged.",
+  "row_counts": {
+    "nix_break_windows.csv": 35478,
+    "nix_roll_schedule.csv": 661,
+    "nix_symbol_map.csv": 5
+  },
+  "upstream_artifact": [
+    "cme_calendar_sessions.csv",
+    "cme_calendar_reconciliation.csv"
+  ],
+  "upstream_content_hash_sha256": "dbb01cc55e2d9f2d66502b769d0211611cbbcc4a4281c0342bfcc91fc53b4f67",
+  "upstream_span": {
+    "end": "2030-12-31",
+    "start": "2008-01-01"
+  },
+  "upstream_stamped_hash_sha256": "dbb01cc55e2d9f2d66502b769d0211611cbbcc4a4281c0342bfcc91fc53b4f67",
+  "utc_canonical": "every column named *_utc is a UTC instant in ...Z form; no exchange-local column appears in any file this stamp covers (\u00a712.3 \u2014 exchange-local is converted exactly once at window generation and never stored on a decision path)"
+}

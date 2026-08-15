@@ -1,0 +1,6 @@
+symbol,product_group,source
+CL,energy,calendar_gen.RTH_HOURS_CT: energy CL-representative
+ES,equity_index,calendar_gen.RTH_HOURS_CT: equity_index ES-representative
+GC,metals,calendar_gen.RTH_HOURS_CT: metals GC-representative
+NQ,equity_index,"spec §7:498 equities {ES, NQ} + ES->equity_index"
+ZN,interest_rates,calendar_gen.RTH_HOURS_CT: interest_rates ZN-representative

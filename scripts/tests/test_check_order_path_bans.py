@@ -282,7 +282,16 @@ def test_the_control_passes_and_its_evidence_names_what_it_read(
     # half), so arm(ii) now imports the broker modules AND the nixrisk package
     # modules — 16 in this tree. The literal is banked evidence; it moves when a
     # module is added to either home, which is the point of asserting it.
-    assert "arm(ii) imported 16 order-path module(s)" in evidence, evidence
+    #
+    # ARC 033 / 0.4: 16 -> 17. The tripwire FIRED, exactly as the paragraph
+    # above says it should, on `scripts/nixrisk/calendar_seam.py` — the §6.4
+    # calendar/poller seam. Re-banked rather than loosened: the module is a
+    # `Protocol`-and-dataclass declaration with no send, no retry shape and no
+    # banned import, and the gate itself stays PASS with `0 banned` over the
+    # widened scope. That is the whole point of a floor that moves — a new
+    # module in the order path's package home is admitted deliberately and
+    # visibly, or not at all.
+    assert "arm(ii) imported 17 order-path module(s)" in evidence, evidence
 
 
 def test_the_reviewed_suppressions_are_the_two_known_fanouts_and_no_plant_is_pre_silenced(
