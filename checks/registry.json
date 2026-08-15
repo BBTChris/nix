@@ -84,6 +84,7 @@
       "parallel": false,
       "on_fail": "continue",
       "checks": [
+        "check_allocator_lifecycle",
         "check_allocator_mirror",
         "check_capture_plane2",
         "check_core_map",
