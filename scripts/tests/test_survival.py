@@ -111,6 +111,7 @@ def pos(margin: float, state: PositionState = PositionState.OPEN) -> PositionRow
         size=1,
         margin=margin,
         state=state,
+        stop_distance=20,
     )
 
 

@@ -834,6 +834,7 @@ def _measure_shape(
         size=1,
         margin=1.0,
         state=seam.PositionState.OPEN,
+        stop_distance=20,
     )
     order = _order(seam)
     shape: list[tuple[int, int, int, float]] = []

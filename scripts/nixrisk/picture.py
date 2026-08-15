@@ -135,7 +135,14 @@ TOPIC: Final[str] = "tbl.financial_picture"
 #: exactly zero pictures, which the gate reported as CANNOT_MEASURE rather than
 #: as agreement. A leading underscore on this wire is the transport's namespace,
 #: not ours.
-WIRE_SCHEMA: Final[int] = 1
+#:
+#: **BUMPED 1 -> 2 by ARC 032**, in the same edit that put `stop_distance` on
+#: `PositionRow`. The bump is not bookkeeping: `_decode_row` requires the key,
+#: so a version-1 body decoded by this code would raise `PictureError` naming a
+#: missing key rather than naming the schema. Bumping makes the refusal say the
+#: true thing — *this consumer does not understand that shape* — at the one
+#: place a consumer can act on it, which is the whole reason the stamp exists.
+WIRE_SCHEMA: Final[int] = 2
 
 
 class PictureError(RuntimeError):
@@ -452,6 +459,10 @@ def encode_picture(picture: FinancialPicture) -> dict[str, Any]:
                 "size": row.size,
                 "margin": row.margin,
                 "state": row.state.value,
+                # ARC 032 / SEAM_REV 1.1.0. On the SAME message as balance and
+                # the rest — §7:501 needs it to price a held position and §6.4
+                # forbids a second table, so it rides here or it skews.
+                "stop_distance": row.stop_distance,
             }
             for row in picture.positions
         ],
@@ -473,6 +484,13 @@ def _decode_row(raw: Mapping[str, Any]) -> PositionRow:
             size=int(raw["size"]),
             margin=float(raw["margin"]),
             state=PositionState(raw["state"]),
+            # `raw["stop_distance"]` and NOT `raw.get("stop_distance", 0)`:
+            # a defaulted decode would turn a version-1 body into a picture
+            # whose held positions price at zero dollar risk, which is D3.136's
+            # fail-open reintroduced by the codec. Missing key -> KeyError ->
+            # PictureError, and the mirror stays STALE rather than sizing on a
+            # table it invented.
+            stop_distance=int(raw["stop_distance"]),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise PictureError(f"undecodable position row {raw!r}: {exc!r}") from exc

@@ -337,7 +337,24 @@ class PositionState(enum.Enum):
 
 @dataclass(frozen=True)
 class PositionRow:
-    """§3's per-position row, keyed by `trade_id`."""
+    """§3's per-position row, keyed by `trade_id`.
+
+    **WIDENED IN ARC 032 (`SEAM_REV 1.0.0 -> 1.1.0`, `WIRE_SCHEMA 1 -> 2`).**
+    §3:159 enumerates the row as `symbol, strategy_id, size, margin, state`.
+    `stop_distance` is a SIXTH field and therefore an extension of a frozen
+    enumeration, recorded as **`SPEC-A9`** rather than slipped in — the frozen
+    document is not edited.
+
+    WHY, in one sentence with both citations: §7:501 prices bucket exposure as
+    `(stop_ticks + slippage_pad) × tick_value × contracts`, so applying §7's
+    correlation cap to the positions ALREADY HELD needs each one's stop
+    distance, and §6.4 forbids getting it by joining a second table.
+
+    The direction is what forced it: the published row carried no distance, so
+    a held position priced at ZERO, the bucket read EMPTIER than it was, and
+    the cap **failed OPEN by admitting more** (CHECK-DEBT D3.136). A safety
+    input that fails open is not merely incomplete.
+    """
 
     trade_id: str
     symbol: str
@@ -345,6 +362,25 @@ class PositionRow:
     size: int
     margin: float
     state: PositionState
+    #: The stop distance in TICKS this position was sized against — §2:38's GO
+    #: shape and `caps.Exposure.stop_ticks`, the same unit, never a price and
+    #: never a dollar figure.
+    #:
+    #: **REQUIRED, with no default, and that is the load-bearing choice.** A
+    #: default of `0` would let every existing construction site keep compiling
+    #: while publishing "this position has no stop distance", which is exactly
+    #: the zero-priced row that made the bucket look emptier than it was. The
+    #: field is required so that a writer which does not know the distance
+    #: fails LOUDLY at construction (directive 4) instead of silently
+    #: re-opening D3.136's fail-open under a new spelling.
+    #:
+    #: **It rides THIS snapshot, under ONE writer and ONE version stamp**
+    #: (§6.4b's principle, §9's sole writer). It is explicitly NOT a read of
+    #: the Limiter's stop book: that book is a SECOND table on its own clock,
+    #: and joining it to this one is the cross-table skew §6.4 forbids in the
+    #: same breath as it fixes one snapshot. That was Option B and it was
+    #: refused by name.
+    stop_distance: int
 
 
 @dataclass(frozen=True)

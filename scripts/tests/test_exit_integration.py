@@ -136,6 +136,7 @@ class SimBroker:
                 size=abs(p.net_qty),
                 margin=1000.0,
                 state=PositionState.OPEN,
+                stop_distance=20,
             )
             for sym, p in self._positions.items()
         )
@@ -325,6 +326,7 @@ async def test_SYNTHETIC_STOP_a_price_through_the_stop_flattens_and_books_the_ro
                 size=1,
                 margin=1000.0,
                 state=PositionState.OPEN,
+                stop_distance=20,
             )
         ],
     )
@@ -429,6 +431,7 @@ async def test_UNCERTAINTY_flatten_then_publish_the_CONFIRMED_state_not_the_inte
                 size=1,
                 margin=1000.0,
                 state=PositionState.OPEN,
+                stop_distance=20,
             )
         ],
     )
