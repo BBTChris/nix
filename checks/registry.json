@@ -81,6 +81,7 @@
       "parallel": false,
       "on_fail": "continue",
       "checks": [
+        "check_allocator_mirror",
         "check_capture_plane2",
         "check_core_map",
         "check_datafeed_granted_mode",
@@ -101,6 +102,8 @@
         "cpu-affinity",
         "file-write:/tmp",
         "git-hooks",
+        "interpreter:sys.modules",
+        "interpreter:sys.path",
         "journal",
         "network:pypi",
         "pre-commit-store",
