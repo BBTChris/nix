@@ -3278,3 +3278,15 @@ input path (D3.136), `tick_value` has no source on this box (D3.128), and FCFS i
 policy the system can currently take because no Scoring writer exists. Estimate this arc moves the
 Allocator module ~55-60% of the way to R3-complete, and the whole project meaningfully forward — the
 debt rose 155 → 173 and that is the direction that means the work was measured rather than assumed.
+
+**POST-WRITE-BACK RE-MEASURE — D3.138's prediction, confirmed by the event it predicted.**
+`verify.py` was run once BEFORE this summary landed and once AFTER. Before:
+**47 passed | 1 failed | 2 cannot measure | 0 skipped | 1 guarded**. After:
+**47 passed | 1 failed | 3 cannot measure | 0 skipped | 0 guarded**, exit 1.
+The single moved verdict is `check_artifact_gate_coverage`, GUARDED -> CANNOT_MEASURE, and it names
+its own cause verbatim: *"2 rows [gitenv.py:owner, registry.py:owner]: 'ARC 031' has ALREADY
+COMPLETED — its close-out summary is in sessions/SESSION.md. A guard may only name an arc that can
+still discharge it (doctrine B.3)."* That is the trap D3.138 was opened to name, fired by the append
+of this very paragraph's file, on the two rows the per-row headroom measurement refused to move.
+Predicted before the fact, not explained after it. **It is not a further failure and its cause IS
+named** — it is one CANNOT_MEASURE with a written owner-ruling attached, awaiting `CHECK-A9`.

@@ -75,14 +75,24 @@ consumer · sizing pathway · correlation-bucket cap · FCFS contention · Stage
 
 | | ARC 030 close | ARC 031 close |
 |---|---|---|
-| `verify.py` | 40 pass / **3 fail** / 1 cannot-measure / 0 skip / 1 guarded | **47 pass / 1 fail / 2 cannot-measure / 0 skip / 1 guarded** |
+| `verify.py` | 40 pass / **3 fail** / 1 cannot-measure / 0 skip / 1 guarded | **47 pass / 1 fail / 2 cannot-measure / 0 skip / 1 guarded** (before write-back)<br>**47 / 1 / 3 / 0 / 0** (after — see below) |
 | registered checks | 45 | **51** |
 | `pytest` | 1,620 passed / 2 skipped / 2 xfailed | **1,858 passed / 2 skipped / 2 xfailed / 0 failed** |
 | binding | 43 BOUND / 2 ENR / 0 UNBOUND | **49 BOUND / 2 ENR / 0 UNBOUND** |
 | CHECK-DEBT open | 155 | **173** |
 
-**FAILs went 3 → 1.** The one that remains is `check_ibgateway_service`; both CANNOT_MEASUREs trace
-to the same dead port. D3.120 and D3.118 were discharged **by measurement**, not by exemption.
+**FAILs went 3 → 1.** The one that remains is `check_ibgateway_service`; two of the three
+CANNOT_MEASUREs trace to that same dead port. D3.120 and D3.118 were discharged **by measurement**,
+not by exemption.
+
+**D3.138 predicted the third, and then caused it on purpose.** `verify.py` was run once before this
+arc's summary landed in `SESSION.md` and once after. The single moved verdict is
+`check_artifact_gate_coverage`, **GUARDED → CANNOT_MEASURE**, naming its own cause verbatim: *"2
+rows [`gitenv.py:owner`, `registry.py:owner`]: 'ARC 031' has ALREADY COMPLETED — its close-out
+summary is in sessions/SESSION.md. A guard may only name an arc that can still discharge it
+(doctrine B.3)."* That is the trap D3.138 was opened to name, fired by the write-back itself, on
+exactly the two rows the per-row headroom measurement refused to move. **Predicted before the fact,
+not explained after it** — and it clears the moment you rule on `CHECK-A9`.
 
 ---
 
