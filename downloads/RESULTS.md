@@ -1,213 +1,153 @@
-# ARC 030 — Trunk Reconciliation, Enforced Isolation, and the Coverage Close
+# ARC 031 — R3-A: The Allocator (Sizing Off the Mirror)
 
-**Canonical path:** `/home/bbt/nix` (absolute, unmoved). **Final `main` HEAD:** `9858b37`.
-**`origin/main`:** still `0f9c5b9` — local `main` is 92 commits ahead, **not pushed**. Outward-facing;
-left for explicit operator confirmation rather than pushed unilaterally.
-
----
-
-## PHASE 0 — measured, changed nothing
-
-The brief asserted a topology the architect had not fully verified (§0a). Measured instead:
-
-- **`main` already contained ARC 022–025** (PR #25 merge, `0f9c5b9`). The real unmerged column
-  started at **ARC 026**, not 022 — a finding, reported to the operator before any merge.
-- The unmerged set was a **clean, linear, single-parent, 81-commit chain**:
-  `main → 026(+17) → 027(+11) → 028(+20) → 029-integration(+30, incl. interleaved MON-1) →
-  calendar-infra(+1) → depsplit(+2)`. No forks, no divergent branches to reconcile.
-- MON-1 commits (`42fb3fd`, `b7f5b79`) sit inside `arc-029-integration`'s first-parent chain.
-  `check_monitor` FAILED for real on the pre-arc branch tip (harness glyph/ETA mismatches).
-- Baseline `verify.py` on `arc-crucible-depsplit`: **29 passed | 3 failed | 2 cannot-measure |
-  1 guarded**. FAILs: `check_ibgateway_service` (tap session, owned), `check_monitor` (deprecated),
-  `check_untracked_attribution` (real untracked cruft — `.ua/` graphify cache, `scripts/m.sh`,
-  incidental to this session, not any arc's work).
-- Only the canonical worktree existed. Zero live parallel-arc collision risk.
-
-**Operator confirmed:** proceed on the measured topology (not the brief's 022 assumption); delete
-the untracked cruft before gating.
+**Canonical path:** `/home/bbt/nix` (absolute, unmoved).
+**`origin/main`:** `0f9c5b9` — **NOT pushed.** 0.2 is an operator ruling and it is still open.
 
 ---
 
-## PHASE 1 — reconciled
+## OPEN RULINGS RETURNED TO YOU
 
-Six forward promotions, oldest-unmerged-first, each a genuine fast-forward (verified, not narrated),
-`verify.py` + `pytest` gated at every step (full suite at three checkpoints given ~9–10 min/run;
-intermediate-commit `verify.py` runs were confounded by testing old checkouts against today's
-filesystem — `.venv-dev` and AppleDouble sidecars didn't exist when those commits were made — treated
-as environment noise, not regressions, and **fed directly into Stage 2 A2/C3 as real evidence**).
-
-`main` landed at `6c7e9c9` after **MON-1 disposition (1.2, §0h forward-only)**: `checks/check_monitor.py`
-deleted, removed from `checks/registry.json` by hand (`--optimize` refuses to silently drop an
-orphan — loud by design), its three scripts admitted to the coverage ratchet (CHECK-DEBT D3.113,
-opened+discharged same motion, net 0). History kept intact — MON-1's commits reached trunk via the
-ordinary fast-forward, never rebased out.
-
-**1.3 confirmed:** unmerged set from the six-branch stack is **`0`**; all six branches are ancestors
-of `main`. Final Phase 1 `pytest`: **1498 passed, 2 skipped, 2 xfailed, exit 0.**
-
----
-
-## STAGE 2 — three parallel sub-agents, provisioned worktrees off the reconciled trunk
-
-### A — Isolation, enforced
-
-| item | finding | mechanism built |
-|---|---|---|
-| A1 | `git worktree add` genuinely gives per-worktree index/HEAD — proven, not assumed. **Gap found:** `.git/config`/`.git/hooks` are shared across all worktrees (D3.115, currently unexercised) | — |
-| A2 | Reproduced the CRUCIBLE-DEPSPLIT half-rebuilt-`.venv` hazard directly: a gate against a mutating venv reports spurious artifact failures | `scripts/nixverify/venv_lock.py` (flock, non-blocking), wired into `check_venv`/`check_python_deps`/`check_python_transitive_deps` (mutation → CANNOT_MEASURE, never a false verdict); new `checks/check_venv_isolation.py` gates the `.venv`/`.venv-dev` split against silent re-merge |
-| A3 | `check_untracked_attribution` extended with a foreign-commit arm — **found two real, pre-existing, never-merged stray branches** (`docs/arc002-results`, `docs/arc005-writeback`) touching tracked paths. Honest boundary named: a detached-HEAD commit whose worktree is later removed becomes unattributable (D3.114, unassigned — no git fact recovers it) | `checks/foreign_branch_exceptions.json` |
-| A4 | **Live, unplanned collision, not simulated:** `refs/stash` is ONE ref shared across all worktrees — sub-agent A's own `git stash` raced sub-agent B's concurrent one, one worktree's stash briefly went missing. Recovered via `git fsck --unreachable` + verified byte-identical (D3.119, unassigned — ordinary tooling, not gated) | the single strongest confirmation of Stage 2's own premise: isolation is real work, not a checkbox |
-
-Also found a third, ungated environment surface: `pre-commit`'s own per-hook venvs (D3.116, unassigned, out of A's mandate).
-
-### B — Coverage retrofit, 8 of 16 (all covered, zero exclusions needed)
-
-| artifact | check | tests |
-|---|---|---|
-| `scripts/nixrisk/flatten.py` | `check_flatten.py` | 9 |
-| `scripts/nixrisk/survival.py` | `check_survival_watch.py` | 9 |
-| `scripts/nixrisk/coldstart.py` | `check_coldstart.py` | 8 |
-| `checks/ibgateway_expected.json` | `check_ibgateway_expected_schema.py` | 13 |
-| `risks/broker_order.config.json` | `check_broker_order_config.py` | 8 |
-| `databases/schema/extract_sources.py` | `check_extract_sources.py` | 7 |
-| `scripts/d1_12_reboot_capture.py` | `check_d1_12_reboot_capture.py` | 7 |
-| `scripts/runtime_gate.py` | `check_runtime_gate.py` | 8 |
-
-Discharged D3.105–107. Opened D3.118 — a real `nixverify.observe` `dir_fd`-resolution gap producing
-two false resource-claim positives; left `unassigned` rather than papered over with a literal-token
-anchor doctrine C.4 forbids.
-
-### C — Coverage retrofit, 8 of 16 (2 covered, 6 honestly excluded) + filesystem-walk hardening
-
-| artifact | disposition |
-|---|---|
-| `checks/_preamble.py` | **covered** — `check_preamble_shim.py`, 13 tests |
-| `scripts/nixverify/__init__.py` | **covered** — `check_nixverify_init.py`, 12 tests (the "executed by every import" case) |
-| `actuation.py`, `contract.py`, `engine.py`, `loader.py`, `optimize.py`, `render.py` | **honestly excluded** — each already carries 3–35 pytest modules of real coverage; a `checks/check_*.py` re-driving the same property is doctrine C.9's forbidden second instrument, not new coverage |
-
-**C3 (D3.110, discharged):** audited all 14 filesystem-walking checks for the AppleDouble/`.claude`
-sidecar-crash class. Two real gaps found and fixed (`check_spec_citations`'s missing `.claude` in
-`SKIP_DIRS`; `check_artifact_gate_coverage`'s `_named_by_tests` crashing on a non-UTF-8 sidecar,
-confirmed reproducible before the fix). The rest were confirmed already safe by construction.
-
----
-
-## STAGE 3 — convergence
-
-Merged all three branches into `main`. JSON-object auto-merges landed clean; hand-spliced two
-additive `comment`-array conflicts (both sides' text kept) and **one genuine cross-worktree
-CHECK-DEBT numbering collision** — sub-agents A and B independently opened "D3.117" from separate
-worktrees with no visibility into each other. Caught at integration, A's renumbered to **D3.119**.
-Fixed a real AST-probe break (`check_derived_claims`' `pytest_collected_tests` prober cannot count a
-non-literal `parametrize` — A's new test used `sorted(gate.DEV_ONLY_MARKERS)`; literal-ized it with a
-drift-guard test). Regenerated `registry.json` (`--optimize --commit`, clean, 45 checks).
-
-**Proactively re-pointed ten legacy `ARC 030`-owned coverage rows to `ARC 031`** before this arc's
-own close-out could strand them (once `sessions/SESSION.md` names ARC 030 complete, `guard_owner_defect`'s
-read-time check degrades any row it still owns — D3.40's mechanism). Nine landed safely. **One,
-`scripts/nixverify/measurement_path.py`, was already AT its re-owning ceiling with zero headroom** —
-the re-point burned a third, irreversible re-owning into committed history. §0h means that commit
-cannot be un-made. **Taken as a genuine, self-caused, named FAIL** (CHECK-DEBT **D3.120**, `owner:
-unassigned` — naming a future arc would repeat the mistake, not discharge it) rather than hidden.
-
-Also caught and reverted: `pre-commit run --all-files`, run to verify the fix above, silently
-rewrote MON-1's three byte-frozen architect artifacts (`scripts/{monitor,harness,pty_test}.py`) via
-`ruff-format`. Restored to `HEAD` before it landed in any commit — never shipped.
-
-**Real binding census** (`scripts/tests/binding_census.py`, full suite traced, 1068 observations,
-`.venv`'s interpreter — `.venv-dev` lacks `zmq` and silently drops zmq-dependent test modules, a
-real tooling finding worth noting for future census runs):
-
-**43 BOUND / 2 EXERCISED-NEVER-RED / 0 UNBOUND**, of 45 registered checks.
-
-- EXERCISED-NEVER-RED: `check_crucible_calendar` (only ever observed PASS in this suite run — no
-  can-fail path exercised by the traced tests), `check_untracked_attribution` (only ever observed
-  GUARDED — the two real stray branches keep it there whenever it runs against the live repo).
-
-CHECK-DEBT series row re-derived twice as new debt landed (153 → 154 → 155), each time reconciling
-a hand-tally against `check_derived_claims`' own `derived:ledger_rows` rather than typing a number —
-one hand-tally error (missed B's D3.105–107 discharges) caught and corrected in place.
-
----
-
-## Coverage disposition — the sixteen
-
-| | count |
-|---|---|
-| Bound to real per-artifact checks this arc | **10 / 16** (B: 8/8, C: 2/8) |
-| Honestly excluded, justified, owned | **6 / 16** (all C's: the six `nixverify` modules doctrine C.9 forbids duplicating) |
-| `check_artifact_gate_coverage` exclusion bucket | 13 → **6** |
-
-Every excluded artifact carries: `justification` (specific, not boilerplate), `temporary: true`,
-`owner: ARC 031` (re-pointed from the stale `ARC 030` this same Stage, verified against the
-per-artifact re-owning ceiling before landing — see D3.120 for the one exception).
-
----
-
-## PHASE 4 CLOSE-OUT
-
-**1 — `verify.py` on trunk (`9858b37`):**
+### 1. PUSH `main`? — 0.2, reported and NOT acted on
 
 ```
-40 passed | 3 failed | 1 cannot measure | 0 skipped | 1 guarded          exit 1
+git fetch origin                    → clean
+git log --oneline main..origin/main → 0 commits   (EMPTY — no remote divergence)
+git log --oneline origin/main..main → 103 commits (94 inherited + 9 this arc)
 ```
 
-| verdict | check | owner / status |
-|---|---|---|
-| FAIL | `check_ibgateway_service` | pre-existing, tap session (out of this arc's scope) |
-| FAIL | `check_observed_resource_claims` | D3.118, **owner unassigned** — real `dir_fd`-resolution gap in `nixverify.observe`, understood, deliberately not papered over |
-| FAIL | `check_artifact_gate_coverage` | D3.120, **owner unassigned** — this arc's own self-caused ceiling breach on `measurement_path.py`, named honestly; discharge = real coverage for that one module, or a new `CHECK-A<n>` ruling moving it to exclusions |
-| CANNOT-MEASURE | `check_ibgateway_config` | pre-existing, same tap-session root cause |
-| GUARDED | `check_untracked_attribution` | owner `ARC 031` (both branches in `foreign_branch_exceptions.json`) — an operator decision to delete or merge the two stray branches discharges it |
+**The brief said 92. It was 93 at `9858b37`** — the commit the brief itself names — **and 94 at the
+real `HEAD`** when this arc opened. A fast-forward is mechanically safe. It is outward-facing on a
+public repo, so it is yours.
 
-`check_monitor`: **gone**, not failing, as required by 1.2.
+### 2. D3.138 — two ratchet rows at the ceiling with no legal move (NEW, needs `CHECK-A9`)
 
-**2 — Full pytest:** `1620 passed, 2 skipped, 2 xfailed, exit 0`. Pre-commit: passes on every diff-scoped
-commit made this arc (confirmed at every commit in this arc's log). `pre-commit run --all-files`
-surfaces large pre-existing, out-of-scope repo-wide lint debt (e.g. MON-1's byte-frozen architect
-artifacts, deliberately never ruff-clean by their own original commit's `--no-verify`) — not a
-regression from this arc, not attempted to be cleared here. Claims harness: `check_derived_claims`
-green, 0 restatements, all figures re-derived not typed. CHECK-DEBT: series row `155`, agrees with
-the tool.
+`scripts/nixverify/gitenv.py` and `scripts/nixverify/registry.py` are at **2 of 2** re-ownings and
+owned by `ARC 031`, which stops being able to pay the moment this arc's summary lands in
+`SESSION.md`. Every move is closed to me:
 
-**3 — Binding table with coverage disposition:** see above — **10/16 bound real, 6/16 honestly
-excluded** (owner ARC 031, justified, temporary), exclusion bucket 13→6. Full binding census:
-**43 BOUND / 2 EXERCISED-NEVER-RED / 0 UNBOUND** of 45 registered checks.
+- **Re-point to ARC 032** = a third re-owning = *exactly* the move that produced D3.120. Doing that
+  in the same arc that discharged D3.120 by measurement would demonstrate having learned nothing.
+- **Real coverage** = dishonest here, and this was measured rather than assumed:
+  `test_gitenv_hostile.py` already drives `scrubbed_env` with the both-halves control (each
+  invocation runs UNSCRUBBED first and must report the DECOY repo). A second instrument is what
+  doctrine C.9 forbids.
+- **An `exclusions` move** needs a new `CHECK-A<n>`; CHECK-A8 is scoped to the original thirteen and
+  rule 14 requires the ruling be recorded, because the gate cannot tell an authorized move from a
+  laundering one.
 
-**4 — `git add -A` before every gate measurement:** done throughout; ignore-rule resolution
-(D2.24) held (`._*`/`.DS_Store` correctly gitignored and correctly the subject of D3.103's named,
-pre-existing blind spot — reproduced live during Phase 1, not hypothetical). `gitenv.py`'s scrub
-(D3.22) is the standing mechanism every `verify.py`-internal subprocess `git` call already routes
-through; this session's own interactive `git` calls (merges, commits) are the operator/integrator's,
-outside that scrub's scope by design.
+**Recommend (a): a `CHECK-A9` extending the exclusion to these two on the C.9 grounds above.** The
+alternative is raising the operator's ceiling, which sets the precedent the ceiling exists to refuse.
+Until then `check_artifact_gate_coverage` reads **CANNOT_MEASURE** after this arc closes — the honest
+statement that a real debt has an owner who cannot pay.
 
-**5 — Write-back, on the reconciled trunk:** appended to the end of `sessions/SESSION.md`;
-**this file overwritten**. `cat` of both, and the durability proof, is the next action in this
-session's response.
+### 3. D3.136 — §7's correlation-bucket cap has NO production input path (NEW)
 
-**6 — Clean-up:** three Stage 2 worktrees (`nix-wt-stage2-{a,b,c}`) and their branches removed after
-merge. No other temp files created by this arc remain.
+The cap prices exposure as `(stop_ticks + slippage_pad) × tick_value × contracts`, so applying it to
+positions **already** in a bucket needs each held position's stop distance. The published
+`PositionRow` carries `trade_id, symbol, strategy_id, size, margin, state` — **no stop distance.**
+It lives in the Limiter's stop book, which is not published. Both routes are closed: reading the
+stop book is the cross-table skew §6.4 refuses in the same breath as it fixes one snapshot, and
+putting the distance on the published row is a `SEAM_REV` bump plus your ruling.
 
-**7 — HEAD advanced, `main` authoritative:** `main` at `9858b37`; unmerged set from the reconciled
-stack: **empty**. `origin/main` not yet pushed (outward-facing action, left for explicit operator
-confirmation).
+**Three gates were green while the cap could not run.** C drove `caps.admit` with `Exposure` rows it
+constructed; B drove `BucketCapPort` with `None`. The argument between them was never made until
+Stage 2 made it. The direction is measured, not asserted: an unpriced position valued at zero makes
+the bucket look emptier, and an emptier bucket **admits more**.
 
-**8 — Canonical path:** `/home/bbt/nix` (absolute).
+### 4. D3.126 — the frozen spec contradicts itself on instrument-selection ordering (NEW)
+
+§3:132 puts selection AFTER `min(risk, margin, symbol_cap)`; §7:488-493 makes it a function of the
+risk-ideal ALONE and prior to the rest. They are not the same pipeline: under §3's literal order a
+risk-ideal of 0.6 fulls floors to `min(...) = 0` and denies before micros are ever considered.
+§7's order shipped, because `margin_contracts` divides by live per-symbol margin and `symbol_cap` is
+per-instrument — neither term is DEFINED until the instrument is known. Needs a `SPEC-A<n>`.
+
+### 5. The tap session — unchanged, still the only code-independent FAIL.
 
 ---
 
-## Open items returned to the operator / architect
+## WHAT LANDED
 
-1. **Push `main` to `origin/main`?** 92 commits ahead, clean fast-forward from the remote's
-   perspective (need to confirm no remote-side divergence before pushing).
-2. **`docs/arc002-results` / `docs/arc005-writeback`** — two real, pre-existing, stray branches
-   found by Stage 2 A3, currently GUARDED via a named exception. Recommend delete (superseded
-   `RESULTS.md` snapshots, no unique content) or leave GUARDED indefinitely — operator's call.
-3. **D3.120 (`measurement_path.py` ceiling breach)** — needs either real per-artifact coverage or an
-   architect ruling extending D3.104/CHECK-A8's exclusion mechanism to cover it (a new `CHECK-A<n>`).
-4. **D3.118 (`nixverify.observe` `dir_fd` gap)** — real but structural; fixing it properly needs
-   `/proc/self/fd/<n>` resolution, Linux-specific, matches this project's scope, not attempted here.
-5. **The tap session** — untouched, as instructed. Still the only code-independent FAIL.
-6. **After this arc: R3, the Allocator** — now has a reconciled trunk to build on.
+**`scripts/nixalloc/`** — the Allocator, the PERMISSIVE side (§2). Frozen consumer seam · mirror
+consumer · sizing pathway · correlation-bucket cap · FCFS contention · Stage-2 wiring.
+**Six new gates**, all BOUND: `check_measurement_path`, `check_allocator_seam`, `_mirror`, `_sizing`,
+`_caps`, `_pathway`.
 
-===RUN SUMMARY: ARC 030 — Trunk Reconciliation, Enforced Isolation, and the Coverage Close, Estimated run time: ~5 hours, completes ~25-30% (check-subsystem module: isolation now real and gated, coverage 0/16→10/16 real with the rest honestly excluded); ~10-15% (whole project: clears the "no authoritative trunk" blocker every subsequent arc, starting with R3, depended on)===
+| | ARC 030 close | ARC 031 close |
+|---|---|---|
+| `verify.py` | 40 pass / **3 fail** / 1 cannot-measure / 0 skip / 1 guarded | **47 pass / 1 fail / 2 cannot-measure / 0 skip / 1 guarded** |
+| registered checks | 45 | **51** |
+| `pytest` | 1,620 passed / 2 skipped / 2 xfailed | **1,858 passed / 2 skipped / 2 xfailed / 0 failed** |
+| binding | 43 BOUND / 2 ENR / 0 UNBOUND | **49 BOUND / 2 ENR / 0 UNBOUND** |
+| CHECK-DEBT open | 155 | **173** |
+
+**FAILs went 3 → 1.** The one that remains is `check_ibgateway_service`; both CANNOT_MEASUREs trace
+to the same dead port. D3.120 and D3.118 were discharged **by measurement**, not by exemption.
+
+---
+
+## THE THINGS THAT MEASURED ME WRONG
+
+**Four §0a findings against the brief and against my own work, all of them caught by driving rather
+than reading:**
+
+1. **The 0.6 requirement caught my own seam gate.** "Prove the gate reddens on a change to EACH
+   declared property" — the can-fail enumerates the fields and renames each in turn, and my first
+   draft stayed **GREEN on eight of nine**, because `MIRRORED_FIELDS` was DERIVED from the same
+   dataclass and moved with the rename. That is the ARC 028/029 seam-gate defect rebuilt one arc
+   later, by an argument that sounded like doctrine C.4. Now a pinned literal at `SEAM_REV`.
+2. **`check_measurement_path`'s own §7.12 question caught it mid-build:** `changed_paths` raises the
+   SAME `RangeError` for "git could not answer" as for "the range is empty", so the empty-range arm
+   passed **vacuously against every non-git tree**.
+3. **The observer sweep was unfalsifiable on its first run:** comparing raw claim strings reported 13
+   of 51 checks "differing", all of it random tempdir names — and a real order dependency would have
+   been invisible inside that noise. Re-run at the granularity the gate itself judges: **zero**
+   order-dependent claims across 306 observations.
+4. **`check_coldstart` and `check_survival_watch` returned PASS over a completely empty directory**
+   (D3.124, found by sub-agent A, re-measured here before anything changed). Both fixed.
+
+**And three findings against the brief I wrote for the sub-agents** — each measured independently by
+all three, from three worktrees with no visibility into each other:
+
+- the `risks/allocator_*.config.json` I told them to create would have been a **second home** for
+  §12A knobs that already have one (`check_risks_data_only` ARM 2 goes red — C *built* it in a
+  scratch tree and ran the shipped gate rather than reasoning about it);
+- "append rows, do not touch the series table" is **not satisfiable in this tree**, and a branch
+  obeying both cannot be committed at all;
+- the 0.70 deployable constant **is** a real knob (`limiter.deployable_pct`), read not carved.
+
+---
+
+## HYPOTHESES, AND HOW EACH WAS FALSIFIED-OR-NOT
+
+| | measurement | the falsifier that proves it could have failed |
+|---|---|---|
+| **A1** atomicity | 4,000 generations, **13,924 concurrent observations, 0 torn** | a nine-slot torn mirror through the SAME harness: **83,971 tears caught** |
+| **A2** half-built = stale | EMPTY / PARTIAL / unstamped / FRESH / STALE from one object, each naming itself | `_HeardBlind` collapses PARTIAL into EMPTY; `_AcceptsUnstamped` holds an unstamped picture |
+| **A3** monotonic-by-source | an OLDER reading discarded, ES unmoved AND NQ unmoved (per-key) | `_Unguarded` regresses ES through the same assertions |
+| **A4** read-only | 4 mutations **attempted**, the raised exception IS the evidence | a writable stand-in absorbs 3 of 4 through the same harness |
+| **B1** execution order | a dead signal produces exactly `["tradability.tradable"]` — no mirror read, no arithmetic | `_SizesFirst` driven every run; the arm fails if the instrument reports U1 order for it |
+| **C1** the SUM | two same-bucket positions where sum ⇒ 0 and max ⇒ 1 contract | the `max()` shape driven in **three** places, incl. inside the gate, which REFUSES to report unless the two still disagree |
+
+---
+
+## SAID IN THE GATES, NOT IMPLIED
+
+- **`PERFORMANCE_WEIGHTED` is unreachable in production.** No Scoring writer exists (R5). **FCFS is
+  the only policy this system can take.** A green from the caps gate means the fallback is correct,
+  deterministic, arrival-ordered, symbol-neutral and cannot stall — not that any score was ever
+  computed, published, read or acted on.
+- The §7 cap **runs over an incomplete bucket** on any real snapshot (D3.136), and every §16 U5
+  rationale says so.
+- `tick_value` has **no source on this box** (D3.128) — injected, and every green is over specs the
+  gate constructed.
+- The one-versioned-row identity is proven **within one process** (D3.130); the cross-process wire is
+  `picture.py`'s codec and nothing yet drives both ends together (D3.122).
+- Blackout/calendar pollers (R4) and the strategy FSM: absent, and no gate implies otherwise.
+
+---
+
+## NEXT
+
+**R3-B** — per-strategy state reflection through recovery, the in-flight-closing transitional state,
+and the D3.136 wiring once you rule. Then **R4** blackouts.
