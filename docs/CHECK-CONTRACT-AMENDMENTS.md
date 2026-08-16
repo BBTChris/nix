@@ -620,7 +620,7 @@ level up, and `CHECK-DEBT.md` D3.81.
 | field | value |
 |---|---|
 | origin | Architect ruling on **CHECK-DEBT D3.104**, issued to ARC 029, recorded here in the same arc |
-| status | **LIVE, and explicitly a HOLDING mechanism.** The rule binds; this instance of it (thirteen artifacts) is temporary and owned by ARC 030 |
+| status | **LIVE, and explicitly a HOLDING mechanism.** The rule binds; this instance of it is temporary. **The live owner is `checks/gate_coverage_baseline.json`'s own `exclusions[*].owner`, and is deliberately NOT restated here** — this row said "owned by ARC 030" from ARC 029 until ARC 034, across three re-ownings (ARC 030 → 032 → 033 → 035), and was wrong for all but the first. Directive 3: derive from the single source of truth, do not restate a mutable fact. `guard_owner_defect` reads the JSON, not this table |
 | governs | `check_artifact_gate_coverage` — adds a verdict-deciding classification, so it is written into the check contract (`CLAUDE.md` rule 14) and recorded here, per **check-contract rule 13** |
 
 ### What fired, and why the ceiling could not simply be obeyed
@@ -670,7 +670,7 @@ Verdict under this amendment: **GUARDED**, owner `ARC 030` — a withheld certif
 | field | value |
 |---|---|
 | origin | Architect ruling on **CHECK-DEBT D3.138**, issued to ARC 031, recorded here in the same arc |
-| status | **LIVE, and explicitly a HOLDING mechanism**, exactly as `CHECK-A8` is. The rule binds; this instance (two artifacts, owner `ARC 032`, temporary) is CHECK-DEBT D3.138 |
+| status | **LIVE, and explicitly a HOLDING mechanism**, exactly as `CHECK-A8` is. The rule binds; this instance (two artifacts, temporary) is CHECK-DEBT D3.138. **The live owner is the JSON's own `exclusions[*].owner` and is NOT restated here** — same repair, same reason, as `CHECK-A8`'s status row above |
 | governs | `check_artifact_gate_coverage` — the same verdict-deciding classification `CHECK-A8` created, applied to two named paths. Written into the check contract (`nix_check_contract.md` §19) and recorded here, per **check-contract rule 13** |
 | scope | `scripts/nixverify/gitenv.py` and `scripts/nixverify/registry.py`. **Two paths, named. Nothing else.** `CHECK-A8` was scoped to its thirteen and this is scoped to its two, for the same reason: the gate cannot tell an authorized move from a laundering one, so the authorization enumerates its subjects |
 

@@ -362,3 +362,31 @@ fold reproduces that exactly. The collision is the architect's to rule on.
   nothing. Putting it in the check contract would imply a check could observe it — and like
   §16.4's marker ordering, its subject is terminal output written to no file in this tree, so
   no `checks/check_*.py` can see it and none is owed.
+
+---
+
+## ARC 034 / Phase 0 — check-contract rule 14's "current instance" stops being a restated number
+
+**Changed:** rule 14's closing sentence no longer names a count or an owner arc. It points at
+`checks/gate_coverage_baseline.json`'s own `exclusions` map, which is what `guard_owner_defect`
+actually reads.
+
+**Why, and it is measured rather than argued.** The sentence read *"eight artifacts, owner ARC 032,
+temporary"* from ARC 031 until ARC 034. Over that span the owner walked **ARC 032 → ARC 033 →
+ARC 035** while the text stood still, so it was wrong for three of the four arcs that carried it —
+and nothing noticed, because no instrument reads this file for that figure. That is core directive 3
+(*derive from a single source of truth; do not restate mutable facts*) failing on the very rule that
+governs the ratchet, in exactly the shape ARC 033 repaired one row above it when the amendment-ledger
+counts went stale.
+
+The same repair was applied to `docs/CHECK-CONTRACT-AMENDMENTS.md`'s `CHECK-A8` and `CHECK-A9`
+`status` rows, which named `ARC 030` and `ARC 032` respectively and were stale for the same reason.
+The rule, the scope and the enumeration of paths stay in those amendments — those are not mutable.
+Only the live owner moved out, to the file that holds it.
+
+**Discovered by:** the D3.40/D3.144 guard-owner transition firing one layer below where ARC 033
+predicted it. ARC 033 banked the `verify.py` effect (`check_artifact_gate_coverage` GUARDED →
+CANNOT_MEASURE) and not the pytest one, so ARC 034's 0.1 re-measure opened on
+`test_the_REAL_TREES_THIRTEEN_ceiling_tripped_artifacts_are_the_D3104_EXCLUSION` FAILING with
+*"'ARC 033' has ALREADY COMPLETED"*. Re-owning to `ARC 035` discharged it. **A re-own is not a
+discharge** and the amendments say so; it is the fourth consecutive one.

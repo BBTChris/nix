@@ -308,7 +308,16 @@ def test_the_control_passes_and_its_evidence_names_what_it_read(
     #
     # Kept a LITERAL, deliberately. Deriving it from the gate would make the test
     # agree with its subject by construction and measure nothing.
-    assert "arm(ii) imported 24 order-path module(s)" in evidence, evidence
+    #
+    # ARC 034 / Phase 0.6: 24 -> 25, ONE bump, from `scripts/nixrisk/fill_seam.py`
+    # — the frozen fill-handler seam. The tripwire fired on the very next arc, as
+    # D3.192 said it would, and this time from a SERIAL phase rather than parallel
+    # worktrees, so there was one bump instead of five and no merge conflict. The
+    # admitted module is a declaration surface: `check_order_path_bans` re-scanned
+    # the widened scope and still reports 0 banned calls, 0 banned modules, and no
+    # retry shape. Re-banked at the figure the gate ITSELF reports on the merged
+    # tree, never at arithmetic done here.
+    assert "arm(ii) imported 25 order-path module(s)" in evidence, evidence
 
 
 def test_the_reviewed_suppressions_are_the_two_known_fanouts_and_no_plant_is_pre_silenced(

@@ -1,4 +1,4 @@
-# directory_structure — `~/nix` directory topology — v1.7.0
+# directory_structure — `~/nix` directory topology — v1.8.0
 
 Application root: `~/nix`. Everything for Nix is self-contained here, **except the system PostgreSQL
 cluster** (lives at the OS default per CLAUDE.md).
@@ -8,8 +8,9 @@ cluster** (lives at the OS default per CLAUDE.md).
   |-- scripts      All Python and shell scripts; verify.py engine (nixverify/),
   |                the vendor-neutral broker seam + vendor adapters (broker/),
   |                the Risk Engine / Limiter — the PROHIBITIVE side (nixrisk/),
-  |                the Allocator — the PERMISSIVE side (nixalloc/), the bus and
-  |                price ring (nixbus/), the Crucible strategy-evaluation
+  |                the Allocator — the PERMISSIVE side (nixalloc/), the §12.1
+  |                last-resort deadman on its own code path (nixsentinel/), the
+  |                bus and price ring (nixbus/), the Crucible strategy-evaluation
   |                pipeline (crucible/, calendar infra so far), and the test
   |                suite (scripts/tests/)
   |-- docs         Reference documentation and markdown files (incl. the frozen risk spec)
@@ -28,6 +29,27 @@ cluster** (lives at the OS default per CLAUDE.md).
   |-- state        Hardware identity + encrypted credential storage. `chmod 600` throughout;
                    gitignored wholesale (defense in depth beyond the `*credentials*.json` rule).
 ```
+
+**v1.8.0 changes — `nixsentinel/`, and the separation IS the safety property.**
+ARC 034 / Phase 0.6 added the `scripts/nixsentinel/` package: §12.1's last-resort
+deadman, on §10's Core 4–5 shared pool.
+
+**It is a SEPARATE PACKAGE from `nixrisk/` deliberately, and this is the one
+topology entry where the placement is a safety argument rather than tidiness.**
+§12.1 requires the Sentinel to be *"deliberately dumb, dependency-minimal,
+[on a] separate code path (minimal common-mode failure)"*, and it fires precisely
+when the Risk Engine is dead. A module under `nixrisk/` would share that
+package's import graph, so the defect that killed the Limiter — a bad import, a
+config parse, a shared cache invariant — would take the Sentinel with it. That is
+the definition of the common-mode failure §12.1 names as the reason this
+component exists in the shape it does.
+
+Its marker file's home was already fixed by this document before the package
+existed: the `logs` line names *"Sentinel marker file"* as a Non-Plane artifact.
+That is honoured, not re-decided — §12.1's marker is deliberately not Plane 1
+(it is written when the sole Plane-1 writer is dead) and deliberately not Plane 2
+(§12.10 keeps Plane 2 in journald, and journald is not guaranteed available on
+the path this record exists to survive).
 
 **v1.7.0 changes — the three unnamed subpackages, and one of them is this arc's:**
 the `scripts/` line now names `nixrisk/`, `nixalloc/` and `nixbus/`.
