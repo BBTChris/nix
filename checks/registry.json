@@ -25,6 +25,7 @@
         "check_calendar_schema",
         "check_canonical_tree",
         "check_coldstart",
+        "check_contract_roll",
         "check_crucible_calendar",
         "check_d1_12_reboot_capture",
         "check_datafeed_bar_seal",
@@ -47,6 +48,7 @@
         "check_reservation_lifecycle",
         "check_risks_data_only",
         "check_runtime_gate",
+        "check_session_flatten",
         "check_spec_citations",
         "check_survival_watch",
         "check_synthetic_stop_only",
@@ -69,7 +71,8 @@
         "subprocess:python",
         "subprocess:python3",
         "subprocess:systemctl",
-        "subprocess:xdpyinfo"
+        "subprocess:xdpyinfo",
+        "threads"
       ]
     },
     {

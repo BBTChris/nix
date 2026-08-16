@@ -297,7 +297,25 @@ def test_the_control_passes_and_its_evidence_names_what_it_read(
     # both new modules are declaration-and-dataclass surfaces with no send, no
     # retry shape and no banned import, and `check_order_path_bans` re-scanned the
     # widened scope and still reports 0 banned calls.
-    assert "arm(ii) imported 18 order-path module(s)" in evidence, evidence
+    #
+    # BUMPED 18 -> 20 by ARC 033 / Stage 1 / sub-agent B, and it FIRED AGAIN
+    # rather than being anticipated — which is the third independent time this
+    # literal has caught an order-path module landing, and the reason to keep it
+    # a literal. The two admissions:
+    #   * `scripts/nixrisk/session.py` — §6.1b's session-close flatten DEADLINE.
+    #     It is a DETECTOR, not a second executor: nothing in it reaches the
+    #     broker. It hands `FlattenTrigger.SESSION_CLOSE` to
+    #     `nixrisk.flatten.ProtectiveFlatten`, which is still the one place a
+    #     flatten is issued (§14), so the send path is unchanged and unwidened.
+    #   * `scripts/nixrisk/roll.py` — §7.5's front-month identity book. Pure
+    #     value types plus one attribute store; no send, no broker port, no I/O
+    #     beyond the vendored CSV reader it adapts.
+    # Re-banked rather than loosened, and re-measured rather than reasoned: the
+    # same run's evidence reports 21 files AST-scanned over the two homes with
+    # the send-path roster unchanged at ['cancel_order', 'flatten', 'place_order'],
+    # the SAME three reviewed suppressions as before this arc (no new one), and
+    # `0 banned` at import under the scratch interpreter.
+    assert "arm(ii) imported 20 order-path module(s)" in evidence, evidence
 
 
 def test_the_reviewed_suppressions_are_the_two_known_fanouts_and_no_plant_is_pre_silenced(

@@ -23,6 +23,9 @@
   "eow_blackout_min": 30,
   "news_blackout_min": 20,
 
+  "eod_blackout_min_by_symbol": {},
+  "session_flatten_lead_min_by_symbol": {},
+
   "pending_ack_timeout_ms": 2000,
   "fill_timeout_ms": 10000,
   "go_timeout_s": 10,
@@ -44,6 +47,8 @@
     "eod_blackout_min": "§12A:819 `EOD_BLACKOUT_MIN` = 20 — stated outright (global default, per-symbol override). §6.1:332-334 is the rule: no new entry from 15-20 min before that symbol's session close through its next session open.",
     "session_flatten_lead_min": "§12A:820 `SESSION_FLATTEN_LEAD_MIN` = 10 — stated outright. §6.1b:340-342 is the rule: at this lead before each symbol's session close the Limiter force-flattens all open positions in that symbol, `reason=session`.",
     "session_flatten_lead_pad_min": "NOT a §12A knob, and its absence is a finding rather than an omission here. §6.1b:346 states the boot-validated ordering invariant as `SESSION_FLATTEN_LEAD_MIN < EOD_BLACKOUT_MIN − pad` and §12A:821 repeats it, but §12A names no `pad` knob — so the one invariant §12A:802 singles out by name is UNEXECUTABLE as written. Landed as a declared Nix addition so the rule can run at all; 5 min is a placeholder that keeps 10 < 20 − 5. Recorded in docs/CHECK-DEBT.md.",
+    "eod_blackout_min_by_symbol": "NOT a §12A knob, and the distinction is the point. §12A:819 states the per-symbol override as a PROPERTY of the scalar knob (`EOD_BLACKOUT_MIN` = 20 '(per-symbol override)') and gives no knob NAME for the override table, so there is nothing to cite — the same shape as session_flatten_lead_pad_min below. The scalar `eod_blackout_min` above remains the SINGLE physical home of the §12A knob; this map holds DEVIATIONS ONLY. A symbol appears here only when its value differs from that default, so this file never carries a second copy of a value the scalar already owns (directive 3: do not restate a mutable fact). EMPTY today because no symbol has been CC-calibrated away from 20. §6.1b:346-348 is what needs it: the ordering invariant holds PER SYMBOL, so the validator judges the global pair PLUS every symbol named here, and a deviation that inverts the pair is rejected naming the symbol.",
+    "session_flatten_lead_min_by_symbol": "NOT a §12A knob, for the same reason as the map above: §12A:820 states '(per-symbol override)' as a property of `SESSION_FLATTEN_LEAD_MIN` and names no override knob. §12A:821 makes the lead 'CC-calibrate vs observed close liquidity/slippage', which is a PER-SYMBOL observation, so this is where those figures land once measured. DEVIATIONS ONLY, empty today, single-home rule as above.",
     "eow_blackout_min": "§12A:822 `EOW_BLACKOUT_MIN` = 30 before Friday close — stated outright. §6.2:355-357 is the rule, with window union across overlapping blackouts.",
     "news_blackout_min": "§12A:822 `NEWS_BLACKOUT_MIN` = 20 before scheduled event — stated outright. §6.3:360 is the leading (predictive, clock-driven) edge; the trailing edge is live margin and is not a clock knob.",
     "pending_ack_timeout_ms": "§12A:830 `PENDING_ACK_TIMEOUT_MS` (~1-2s) — 'status query, never resend'. The spec gives a RANGE, not a value; the upper end is taken because the failure of a too-short ack timeout is a spurious status query on every marketable order, and §4 makes the query the resolution path rather than an exception. CC-calibrate. THIS FILE IS THE SINGLE PHYSICAL HOME: risks/broker_order.config.json READS this value rather than restating it (ARC 020's `obligation_when_R2_lands`, honoured here).",
@@ -72,7 +77,7 @@
     },
     {
       "id": "ordering.session_flatten_before_eod_blackout",
-      "why": "session_flatten_lead_min < eod_blackout_min − session_flatten_lead_pad_min. This is the ONE invariant §12A:802 names as boot-validated, stated at §6.1b:346-348: the entry blackout must lead the flatten deadline, and config validation REJECTS any per-symbol set violating it. Otherwise the system could open a position after the deadline that force-flattens it.",
+      "why": "session_flatten_lead_min < eod_blackout_min − session_flatten_lead_pad_min, PER SYMBOL. This is the ONE invariant §12A:802 names as boot-validated, stated at §6.1b:346-348: the entry blackout must lead the flatten deadline, and config validation REJECTS any per-symbol set violating it. Otherwise the system could open a position after the deadline that force-flattens it. ARC 033 / Stage 1 / B widened the rule from the single global pair to the global pair PLUS every symbol named in eod_blackout_min_by_symbol or session_flatten_lead_min_by_symbol, and every rejection NAMES the offending symbol: with per-symbol overrides in play, judging only the global pair would pass a set in which an individual symbol is inverted.",
       "spec": "§6.1b:346"
     },
     {

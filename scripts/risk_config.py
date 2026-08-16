@@ -251,24 +251,141 @@ def _margin_cap_within_deployable(loaded: Mapping[str, ModuleConfig]) -> list[st
     return []
 
 
+#: The label the ordering rule reports the GLOBAL default pair under. Not a
+#: symbol, and shaped so it can never collide with one: §12A:819-820 give a
+#: global default with a per-symbol override, so the pair that governs every
+#: unlisted symbol has to be judged too, and it needs a name in the message.
+_GLOBAL_SET = "<global default>"
+
+#: The two per-symbol override maps §12A:819-820 authorise ("per-symbol
+#: override", stated for BOTH knobs). Keys are symbols; values are that symbol's
+#: effective minutes. A symbol absent from a map inherits the global default.
+_LEAD_BY_SYMBOL = "session_flatten_lead_min_by_symbol"
+_BLACKOUT_BY_SYMBOL = "eod_blackout_min_by_symbol"
+
+
+def _override(cfg: ModuleConfig, key: str) -> Mapping[str, object]:
+    """A per-symbol override map, or an empty one when the knob is absent.
+
+    The ONLY defaulted read in this module, and the default is the EMPTY set
+    rather than a value. That distinction is what keeps `_require`'s no-defaults
+    rule intact: an absent override map means "no symbol overrides anything", so
+    every symbol falls through to the global pair, which IS read by `_number`
+    and does raise when absent. A defaulted NUMBER would let a missing knob
+    validate; a defaulted empty MAP cannot hide one.
+    """
+    if key not in cfg.values:
+        return {}
+    return _mapping(cfg, key)
+
+
+def _symbol_minutes(
+    cfg: ModuleConfig, overrides: Mapping[str, object], symbol: str, default: float
+) -> tuple[float | None, str | None]:
+    """One symbol's effective minutes, or `(None, problem)` if unusable."""
+    if symbol not in overrides:
+        return default, None
+    value = overrides[symbol]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None, (
+            f"{cfg.source.name}: per-symbol override for {symbol!r} is "
+            f"{value!r} ({type(value).__name__}), expected a number"
+        )
+    return float(value), None
+
+
+def _session_pairs(
+    cfg: ModuleConfig,
+) -> list[tuple[str, float | None, float | None, list[str]]]:
+    """THE ONE RESOLUTION of §6.1b's per-symbol pairs. Validator AND consumer.
+
+    Returns `(symbol, lead_min, eod_blackout_min, defects)` for the global
+    default and for every symbol named in either override map.
+
+    **It is one function because a second resolution is a second authority**
+    (directive 3). The rule below judges these pairs; `session_flatten_lead_min`
+    below hands the SAME pairs to `nixrisk.session.SessionFlattener`. If the
+    scheduler re-derived the effective lead from the raw knobs, a divergence
+    between the two would mean the deadline that fires is not the one the boot
+    validation approved — and nothing would disagree out loud.
+    """
+    lead_default = _number(cfg, "session_flatten_lead_min")
+    blackout_default = _number(cfg, "eod_blackout_min")
+    lead_overrides = _override(cfg, _LEAD_BY_SYMBOL)
+    blackout_overrides = _override(cfg, _BLACKOUT_BY_SYMBOL)
+    rows: list[tuple[str, float | None, float | None, list[str]]] = []
+    for symbol in [_GLOBAL_SET, *sorted(set(lead_overrides) | set(blackout_overrides))]:
+        lead, lead_problem = _symbol_minutes(cfg, lead_overrides, symbol, lead_default)
+        blackout, blackout_problem = _symbol_minutes(
+            cfg, blackout_overrides, symbol, blackout_default
+        )
+        defects = [p for p in (lead_problem, blackout_problem) if p is not None]
+        rows.append((symbol, lead, blackout, defects))
+    return rows
+
+
+def session_flatten_lead_min(config: RiskConfigSet) -> Mapping[str, float]:
+    """§6.1b:340's per-symbol lead, for every symbol the config names.
+
+    The map `nixrisk.session.SessionFlattener` takes as `lead_min`. Read off the
+    SAME `_session_pairs` the boot rule judged, so the deadline that fires is
+    the one boot validation approved (see that helper's docstring).
+
+    The global-default row is deliberately NOT in the result: it is not a symbol,
+    and a scheduler handed `{"<global default>": 10}` would happily manage an
+    instrument by that name. A symbol with no override has no row here, and
+    `SessionFlattener` refuses at construction rather than defaulting — which is
+    the loud direction (directive 4).
+    """
+    pairs = _session_pairs(config.modules["limiter"])
+    return MappingProxyType(
+        {
+            symbol: lead
+            for symbol, lead, _blackout, defects in pairs
+            if symbol != _GLOBAL_SET and lead is not None and not defects
+        }
+    )
+
+
 def _session_flatten_before_eod_blackout(
     loaded: Mapping[str, ModuleConfig],
 ) -> list[str]:
-    """The §6.1b ordering invariant — the one §12A:802 names as boot-validated."""
+    """The §6.1b ordering invariant — the one §12A:802 names as boot-validated.
+
+    §6.1b:346-348, verbatim: *"`SESSION_FLATTEN_LEAD_MIN < EOD_BLACKOUT_MIN −
+    pad` **per symbol** — the entry blackout must lead the flatten deadline ...
+    Config validation **rejects** any per-symbol set violating it."*
+
+    **PER SYMBOL is the load-bearing phrase and it is why this rule iterates.**
+    Through ARC 032 this predicate compared exactly one pair — the global
+    default — which is the vacuous case the moment a per-symbol override exists:
+    §12A:819-820 authorise an override on BOTH knobs, so an operator could set
+    `ES` to a lead of 25 against a global blackout of 20 and the rule would have
+    passed on the untouched global pair while `ES` was inverted. The set judged
+    here is therefore the global default PLUS every symbol named in either
+    override map, and every message NAMES the symbol, because "the config is
+    invalid" is not an operator instruction.
+
+    Extended, not duplicated (doctrine C.9): same `BootRule`, same id, same
+    `_boot_validation` entry. A second rule id would have made the global pair
+    and the per-symbol pairs two authorities over one invariant.
+    """
     cfg = loaded["limiter"]
-    lead = _number(cfg, "session_flatten_lead_min")
-    blackout = _number(cfg, "eod_blackout_min")
     pad = _number(cfg, "session_flatten_lead_pad_min")
-    if lead >= blackout - pad:
-        return [
-            (
-                f"limiter.session_flatten_lead_min={lead} is not < "
+    problems: list[str] = []
+    for symbol, lead, blackout, defects in _session_pairs(cfg):
+        problems.extend(defects)
+        if lead is None or blackout is None:
+            continue
+        if lead >= blackout - pad:
+            problems.append(
+                f"symbol {symbol}: session_flatten_lead_min={lead} is not < "
                 f"eod_blackout_min={blackout} - pad={pad} — the entry blackout "
-                "must LEAD the session-close flatten deadline, or the system "
-                "can open a position after the deadline that force-flattens it"
+                "must LEAD the session-close flatten deadline for THIS symbol, "
+                "or the system can open a position in it after the deadline "
+                "that force-flattens it (§6.1b:346-348, per symbol)"
             )
-        ]
-    return []
+    return problems
 
 
 def _go_timeout_outlasts_pending_ack(loaded: Mapping[str, ModuleConfig]) -> list[str]:

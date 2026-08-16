@@ -41,9 +41,14 @@ HONEST LIMITATIONS — carried in the verdicts, never implied away
   exists a killed Risk Engine is an unprotected position, and nothing here may be
   read as covering it. That is why `SENTINEL` is REFUSED by `fire()` — the
   Sentinel is not the Limiter and is not this module.
-* `SESSION_CLOSE` needs the session calendar (**R4**); its trigger is declared in
-  the frozen `FlattenTrigger` vocabulary and REFUSED here — the calendar that
-  would fire it is not built (§6.1b).
+* `SESSION_CLOSE` was REFUSED here through ARC 032 because the session calendar
+  that would fire it did not exist. **ARC 033 landed it** — Phase 0.4's calendar
+  extensions and `nixrisk/calendar_seam.py`, then Stage 1/B's
+  `scripts/nixrisk/session.py`, which is the §6.1b deadline. The trigger is now
+  FIREABLE and the refusal is gone; see `_R4_TRIGGERS` for the full note. This
+  module still does not DETECT the deadline — `session.py` does, and hands the
+  trigger here, the same detection/execution split §14 requires of every other
+  trigger.
 * `ORPHAN` detection needs the heartbeat machinery (**R5**). This module can
   EXECUTE a flatten given an orphan trigger — the execution is identical — but
   nothing here DETECTS an orphan.
@@ -106,12 +111,18 @@ from nixrisk.seam import (
 # no-op that would read as "flattened".
 
 #: Triggers the Limiter cannot fire in this arc, each REFUSED with its own reason.
-#: `SESSION_CLOSE` needs the R4 session calendar (§6.1b); `SENTINEL` is the R4
-#: last-resort executor that runs when the Limiter is DEAD (§14) — by definition
-#: not something the live Limiter's own module issues.
-_R4_TRIGGERS: frozenset[FlattenTrigger] = frozenset(
-    {FlattenTrigger.SESSION_CLOSE, FlattenTrigger.SENTINEL}
-)
+#: `SENTINEL` is the R4 last-resort executor that runs when the Limiter is DEAD
+#: (§14) — by definition not something the live Limiter's own module issues.
+#:
+#: **`SESSION_CLOSE` LEFT THIS SET IN ARC 033 / Stage 1 / B.** ARC 029 refused it
+#: on one stated ground — *"needs the R4 session calendar (§6.1b)"* — and that
+#: calendar landed in ARC 033 / Phase 0.4 (`scripts/crucible/calendar.py`'s
+#: per-symbol extensions, `nixrisk/calendar_seam.py`'s `WindowSetReadPort` /
+#: `RollScheduleReadPort`). The refusal was a statement about an unbuilt
+#: mechanism, not a permanent policy, so it expires with the mechanism it named;
+#: `scripts/nixrisk/session.py` is the §6.1b deadline that now fires it.
+#: `SENTINEL`'s reason has NOT changed and it stays refused.
+_R4_TRIGGERS: frozenset[FlattenTrigger] = frozenset({FlattenTrigger.SENTINEL})
 
 #: The onset causes an entry-cancel may release a reservation under. SPEC-A7:
 #: `HALT_ONSET` is DISTINCT from `BLACKOUT_ONSET` — booking a HALT cancel as a
@@ -416,15 +427,25 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
         *,
         symbol: str | None = None,
         targets: Sequence[CloseTarget] = (),
+        reason: str | None = None,
     ) -> FlattenAction:
         """Fire a protective flatten. ZERO wire: a direct in-process broker call.
 
-        Refuses an R4 trigger loudly (`SESSION_CLOSE`, `SENTINEL`) rather than
-        no-op'ing, so an unbuilt mechanism can never read as "flattened". For a
-        trigger with known targets each is closed under PROTECTIVE authority; for
-        the §4 uncertainty case — a flatten sent to be safe with no known trade —
-        the symbol is flattened at the broker and the intent recorded so reconcile
-        can attribute whatever it turns out to have closed.
+        Refuses an R4 trigger loudly (`SENTINEL`) rather than no-op'ing, so an
+        unbuilt mechanism can never read as "flattened". For a trigger with known
+        targets each is closed under PROTECTIVE authority; for the §4 uncertainty
+        case — a flatten sent to be safe with no known trade — the symbol is
+        flattened at the broker and the intent recorded so reconcile can attribute
+        whatever it turns out to have closed.
+
+        `reason` is OPTIONAL and defaults to the string this method has always
+        derived from the trigger name. It exists (ARC 033 / Stage 1 / B) because
+        §6.1b:352 fixes the word the strategy must receive — *"strategy receives
+        `closed, reason=session`"* — and the derived string is `protective flatten
+        (trigger=session_close)`, a DIFFERENT string. A caller that has a
+        spec-named reason passes it; every other caller is unchanged. The reason
+        rides through `request_close` into the §4 fan-out and onto the Plane-1
+        row, so the word §6.1b names is the word §9's record keeps.
 
         The broker call is `flatten`, a SYNC §2A verb reached in-process. Nothing
         on this path publishes a picture, touches the state bus, or awaits, which
@@ -434,13 +455,14 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
         if trigger in _R4_TRIGGERS:
             raise TriggerNotFireable(
                 f"{trigger.value}: the Limiter does not fire this trigger in this "
-                "arc. SESSION_CLOSE needs the R4 session calendar (§6.1b); SENTINEL "
-                "is the R4 last-resort executor that runs only when the Limiter is "
-                "DEAD (§14), so the live Limiter never issues it. Declared in the "
-                "frozen FlattenTrigger vocabulary, refused here — not a no-op"
+                "arc. SENTINEL is the R4 last-resort executor that runs only when "
+                "the Limiter is DEAD (§14), so the live Limiter never issues it. "
+                "Declared in the frozen FlattenTrigger vocabulary, refused here — "
+                "not a no-op"
             )
         now = self._clock()
-        reason = f"protective flatten (trigger={trigger.value})"
+        if reason is None:
+            reason = f"protective flatten (trigger={trigger.value})"
         if symbol is not None:
             self._intents[symbol] = _Intent(trigger, reason, now)
         if not targets:
