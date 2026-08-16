@@ -280,7 +280,26 @@ def test_the_control_passes_and_its_evidence_names_what_it_read(
     assert "send-path ['cancel_order', 'flatten', 'place_order']" in evidence
     # ARC 029: the order path acquired a package home (scripts/nixrisk, the exit
     # half), so arm(ii) now imports the broker modules AND the nixrisk package
-    # modules — 21 in this tree. The literal is banked evidence; it moves when a
+    # ARC 033 / Stage 1, integration: 18 -> 23, reached by FIVE independent bumps
+    # from five worktrees none of which could see the others. Each branch was
+    # right about its own modules and wrong about the total, and this one line
+    # caught every collision:
+    #   1A  +1  blackout.py                (§6.1-6.3 window evaluator)
+    #   1B  +2  session.py, roll.py        (§6.1b deadline, §7.5 roll instant)
+    #   1C  +2  pollers.py, freshness.py   (§6.4 pollers, §6.4/§12.3 detector)
+    #   1D  +1  halt.py                    (§12.5 HALT state machine)
+    # Two of those bumps were made by the INTEGRATOR, because a session cap killed
+    # 1C's and 1D's authors inside this very gate and nobody was left to answer
+    # the tripwire.
+    #
+    # Re-banked at the figure `check_order_path_bans` ITSELF reports on the merged
+    # tree, never at any branch's arithmetic — that distinction is the whole
+    # lesson: five correct local answers summed to a wrong global one, and only a
+    # literal a human must meet made the disagreement visible.
+    #
+    # Kept a LITERAL, deliberately. Deriving it from the gate would make the test
+    # agree with its subject by construction and measure nothing.
+    assert "arm(ii) imported 23 order-path module(s)" in evidence, evidence
     # module is added to either home, which is the point of asserting it.
     # BUMPED 16 -> 18 by ARC 033, and it took TWO bumps to get there because the
     # tripwire FIRED TWICE, independently, in two worktrees with no visibility
@@ -298,30 +317,32 @@ def test_the_control_passes_and_its_evidence_names_what_it_read(
     # retry shape and no banned import, and `check_order_path_bans` re-scanned the
     # widened scope and still reports 0 banned calls.
     #
-    # BUMPED 18 -> 21 by ARC 033 / Stage 1, and it took THREE independent bumps
-    # from two parallel worktrees to get there, neither of which could see the
-    # other. 1A bumped 18 -> 19 for `scripts/nixrisk/blackout.py` (the §6.1-6.3
-    # window evaluator that produces `gate.py`'s `blackout` port). 1B bumped
-    # 18 -> 20 for `scripts/nixrisk/session.py` (§6.1b's session-close DEADLINE
-    # detector -- nothing in it reaches the broker; it hands
-    # `FlattenTrigger.SESSION_CLOSE` to the executor that already exists) and
-    # `scripts/nixrisk/roll.py` (§7.5's roll instant). Each branch was right about
-    # its own modules and wrong about the total; the integration merge caught it
-    # as a conflict on this exact line, for the second time this arc.
+    # ARC 033 / Stage 1, integration: 18 -> 23, reached by FIVE independent bumps
+    # from five worktrees none of which could see the others:
+    #   1A  +1  blackout.py                (§6.1-6.3 window evaluator)
+    #   1B  +2  session.py, roll.py        (§6.1b deadline, §7.5 roll instant)
+    #   1C  +2  pollers.py, freshness.py   (§6.4 pollers, §6.4/§12.3 detector)
+    # Each branch was right about its own modules and wrong about the total, and
+    # this one line caught every collision. TWO of the bumps were made by the
+    # INTEGRATOR, because a session cap killed 1C's and 1D's authors inside this
+    # very gate and nobody was left to answer the tripwire.
     #
-    # 1A's own comment PREDICTED this conflict in writing -- "if another Stage 1
+    # 1A's own comment PREDICTED the collision in writing -- "if another Stage 1
     # sub-agent adds a scripts/nixrisk/ module in a parallel worktree, this line
-    # conflicts at integration, which is the tripwire doing its job". It did.
+    # conflicts at integration, which is the tripwire doing its job". It did,
+    # twice.
     #
-    # Re-banked at the figure `check_order_path_bans` ITSELF reports, never at any
-    # branch's arithmetic: all three modules declare no order-port verb, send
-    # nothing, carry no retry shape and import nothing banned, and the gate
+    # Re-banked at the figure `check_order_path_bans` ITSELF reports on the MERGED
+    # tree, never at any branch's arithmetic -- that distinction is the lesson:
+    # five correct local answers summed to a wrong global one, and only a literal
+    # a human must meet made the disagreement visible. Every admitted module is a
+    # declaration/detector surface: none declares an order-port verb, sends
+    # anything, carries a retry shape or imports anything banned, and the gate
     # re-scanned the widened scope and still reports 0 banned calls.
-    # A LITERAL, deliberately. Deriving this from the gate would make the test
-    # agree with the subject by construction and measure nothing — the number is
-    # banked evidence a human must meet, which is the only reason it has caught
-    # five landings across this arc.
-    assert "arm(ii) imported 21 order-path module(s)" in evidence, evidence
+    #
+    # Kept a LITERAL, deliberately. Deriving it from the gate would make the test
+    # agree with its subject by construction and measure nothing.
+    assert "arm(ii) imported 23 order-path module(s)" in evidence, evidence
 
 
 def test_the_reviewed_suppressions_are_the_two_known_fanouts_and_no_plant_is_pre_silenced(
