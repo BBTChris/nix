@@ -36,6 +36,14 @@
     "margin_session": 900
   },
 
+  "halt_cooldown_floor_s": {
+    "stale_data": 60,
+    "clock_skew": 300,
+    "crash_loop": 900,
+    "invariant_breach": 900,
+    "aggregate_drift": 900
+  },
+
   "_derivations": {
     "deployable_pct": "§12A:811 `DEPLOYABLE_PCT` = 0.70 — stated outright by the spec, not chosen here. §6.5:411 gives the same number as '30% buffer / 70% deployable — single number'.",
     "agg_margin_cap_pct": "§12A:811 `AGG_MARGIN_CAP_PCT` = 0.70 of balance — stated outright. §6.5:412-413 is the rule it feeds: `Σ committed intraday margin (open + pending reservations + proposed) < 70% × balance`, hard, 100% of the time.",
@@ -51,6 +59,7 @@
     "go_timeout_s": "§12A:831 `GO_TIMEOUT_T` — 'strategy resets to flat-and-free if no feedback within T'. CC-calibrate per §13 objective 10. The value 10 is not invented: nix_strategy_contract_v1.1.md §4.2 puts `go_timeout_s` in the platform's own REGISTER_ACK payload at 10, so the platform ISSUES this number to every strategy and it must have a physical home on the Nix side. §4:210-212 is the rule it feeds — the deadlock breaker on the one-in-flight lock.",
     "heartbeat_interval_s": "§12A:832 `HEARTBEAT_INTERVAL` = 1s — stated outright, and matched by nix_strategy_contract_v1.1.md §4.6 ('Every `hb_interval_s` (default 1 s)') which the platform likewise issues at registration.",
     "heartbeat_miss_grace_cycles": "§12A:832 `HEARTBEAT_MISS_GRACE` = 1 cycle before presumed-dead — stated outright. §4:260-261 is the rule: heartbeat miss ⇒ wait exactly one cycle (1s); a second consecutive miss ⇒ strategy presumed dead.",
+    "halt_cooldown_floor_s": "NOT a §12A knob, and its absence is a finding rather than an omission here — the same shape as `session_flatten_lead_pad_min` above. §12.5:632 states the rule outright ('Auto-set conditions may auto-clear on condition-clear + minimum floor (cooldown discipline)') and §12A names NO knob for that floor. The nearest thing it has is `COOLDOWN_MIN_TIME` at §12A line 839, which is §4:300-302's POST-PROTECTIVE cooldown, keyed by EXIT CLASS (discretionary / stop / uncertainty / margin_session), which is a different ladder for a different subject and is already landed above. Reusing it would make one number govern both how long a strategy waits after a stop and how long the whole system stays halted after a clock-skew event. Landed as a declared Nix addition so the §12.5:632 rule can run at all, keyed by the §12.5:631 CAUSE. `operator` is deliberately absent: §12.5:633 gives an operator HALT no auto-clear, so a floor for it would imply one exists — `scripts/nixrisk/halt.py` REFUSES to construct if the key appears. Every value is a CC-calibrate placeholder that errs LARGE, because the two directions are not symmetric: too short and the system resumes trading into a condition that has only just stopped flapping, too long and it sits flat, which costs opportunity and never solvency. The ladder mirrors §4:301's order — the fast-recovering data condition shortest, the ones that mean the system's own arithmetic or supervision was wrong the longest. Recorded in docs/CHECK-DEBT.md.",
     "cooldown_min_time_s": "§12A:839 `COOLDOWN_MIN_TIME` — 'floor + condition-clear (hybrid), per exit class'. CC-calibrate. The KEYS are the exit classes §4:301 enumerates, transcribed rather than invented: 'Discretionary exit → none. Ordinary stop → short. Feed/uncertainty/stale → longer. Margin/session → longest or until condition clears.' The spec fixes the ORDER and not the seconds, so the ladder is boot-validated (rule `cooldown.ladder_is_ordered`) and the four numbers are placeholders. `discretionary` is 0 because §4:301 says 'none', which is a value and not a missing one."
   },
 

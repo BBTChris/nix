@@ -448,9 +448,21 @@ class EventKind(enum.Enum):
     these on a distinct channel while the seam was frozen for Stage 1, collapses
     onto `Plane1Port` in the same arc.
 
+    **ARC 033 (Stage 1 / D) landed the HALT pair.** `scripts/nixrisk/halt.py` is
+    the §12.5 state machine — six setters, the hybrid auto-clear, the operator-only
+    clear, and the §12.1-pattern marker replay — so the machinery that emits these
+    two rows now exists and the members land WITH it, the rule this docstring
+    states. §12.10's inventory routes *"HALT set / cleared + cause"* to **Plane 1
+    ✅ (added)** (*"it gates money; Limiter-down ⇒ booked at next boot, §12.5"*)
+    **and Plane 2 ✅**, which is why the pair is here and not on the ops plane only.
+    A retroactively-booked `HALT_SET` is distinguished by its FIELDS
+    (`source=marker_replay`), not by a third member: the event is the same event
+    whenever it was written, and a separate kind would let a reader filter the
+    replayed HALTs out of the money record by kind alone.
+
     STILL OMITTED, and still for the same reason (no emitting code): `filled`
-    (entry-fill confirmation), `GO-timeout`, `HALT set/clear`, operator-control
-    actions and strategy-lifecycle rows. They land in the arcs that build them.
+    (entry-fill confirmation), `GO-timeout`, operator-control actions and
+    strategy-lifecycle rows. They land in the arcs that build them.
     """
 
     SIGNAL = "signal"
@@ -465,6 +477,10 @@ class EventKind(enum.Enum):
     CLOSED = "closed"
     CANCEL = "cancel"
     COLD_START = "cold_start"
+    #: ARC 033 (Stage 1 / D) — §12.10's `HALT set / cleared + cause`, mechanism
+    #: now built (`nixrisk.halt`). Plane 1 AND Plane 2, per the inventory table.
+    HALT_SET = "halt_set"
+    HALT_CLEARED = "halt_cleared"
 
 
 @dataclass(frozen=True)

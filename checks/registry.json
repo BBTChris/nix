@@ -95,6 +95,7 @@
         "check_datafeed_granted_mode",
         "check_derived_claims",
         "check_feed_kill_drill",
+        "check_halt",
         "check_hook_suite",
         "check_order_path_bans",
         "check_picture_atomicity",
