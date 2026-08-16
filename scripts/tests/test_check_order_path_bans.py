@@ -297,7 +297,18 @@ def test_the_control_passes_and_its_evidence_names_what_it_read(
     # both new modules are declaration-and-dataclass surfaces with no send, no
     # retry shape and no banned import, and `check_order_path_bans` re-scanned the
     # widened scope and still reports 0 banned calls.
-    assert "arm(ii) imported 18 order-path module(s)" in evidence, evidence
+    #
+    # BUMPED 18 -> 19 by ARC 033 / Stage 1A, and it is the THIRD firing: the new
+    # module is `scripts/nixrisk/blackout.py` (the §6.1-6.3 window evaluator that
+    # produces `gate.py`'s `blackout` port). Same admission as the two above and
+    # made on the same terms -- it declares no order-port verb, sends nothing,
+    # carries no retry shape and imports nothing banned, and
+    # `check_order_path_bans` re-scanned the widened scope (20 files over 2 dirs)
+    # and still reports 0 banned. **If another Stage 1 sub-agent adds a
+    # `scripts/nixrisk/` module in a parallel worktree, this line conflicts at
+    # integration -- which is the tripwire doing its job for the fourth time, not
+    # a defect in either branch.**
+    assert "arm(ii) imported 19 order-path module(s)" in evidence, evidence
 
 
 def test_the_reviewed_suppressions_are_the_two_known_fanouts_and_no_plant_is_pre_silenced(
