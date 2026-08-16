@@ -169,3 +169,26 @@ assumed `GateOutcome` carried a verdict list; it carries the binding rule and re
 4. **SPEC-A10's vendor** — `Econoday` is UNRATIFIED and an arc may not mint a vendor.
 5. **D3.191** — the §0a review pass over the four rescued modules.
 6. **The tap session** — still the only code-independent FAIL.
+
+---
+
+## POST-WRITE-BACK RE-MEASURE — banked BEFORE the marker (§16.4 / `CHECK-A10`)
+
+The write-back appended ARC 033's summary to `sessions/SESSION.md`, which makes ARC 033 a COMPLETED
+arc to `contract.completed_arcs`. All twelve remaining coverage rows are owned by ARC 033, so:
+
+```
+check_artifact_gate_coverage:  GUARDED (exit 3)  ->  CANNOT_MEASURE (exit 2)
+  12 rows [gate_coverage_baseline.json:artifacts:scripts/harness.py:owner, …:monitor.py:owner,
+           …:nixverify/venv_lock.py:owner, …] — owner 'ARC 033' has ALREADY COMPLETED
+
+verify.py  →  57 passed | 1 failed | 3 cannot measure | 0 skipped   exit 1
+```
+
+**Predicted in writing before the commit that caused it.** This is D3.40's mechanism met for the
+third arc running — ARC 031 on D3.138, ARC 032 on D3.144, ARC 033 on all twelve — and it is exactly
+why §16.4 orders the re-measure BEFORE the marker rather than waiving it. Nothing else moved.
+
+**Both figures are true of different moments**, and quoting only one would hide something:
+`57 | 1 | 2 | 0 | 1` immediately before the write-back, identical under both interpreters, and
+`57 | 1 | 3 | 0 | 0` immediately after.

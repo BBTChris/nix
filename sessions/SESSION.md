@@ -3712,3 +3712,13 @@ session, by design); the two cannot-measures are `check_ibgateway_config` and
 **BOUND=59, EXERCISED-NEVER-RED=2, UNBOUND=0** over 1,913 observations — all nine new gates BOUND,
 floor 48. **Ledger 186 → 201**, re-derived rather than typed: `check_derived_claims` FAILED against
 the stale 186 inside the same edit that staled it.
+
+**POST-WRITE-BACK RE-MEASURE, appended forward-only (§0h) and BANKED BEFORE THE MARKER (§16.4 /
+`CHECK-A10`).** The write-back made ARC 033 a completed arc to `contract.completed_arcs`, and all
+twelve remaining coverage rows are owned by ARC 033, so `check_artifact_gate_coverage` went
+**GUARDED → CANNOT_MEASURE** naming all twelve owners. `verify.py` **57 passed | 1 failed | 3 cannot
+measure | 0 skipped**, exit 1. **Predicted in writing before the commit that caused it** — D3.40's
+mechanism, met for the third arc running (ARC 031 on D3.138, ARC 032 on D3.144, ARC 033 on all
+twelve). Nothing else moved. Both figures are true of different moments: `57 | 1 | 2 | 0 | 1`
+immediately before the write-back **under both interpreters**, `57 | 1 | 3 | 0 | 0` immediately
+after.
