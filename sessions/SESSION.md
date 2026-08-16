@@ -3602,3 +3602,113 @@ in sessions/SESSION.md"*. `verify.py` **48 passed | 1 failed | 3 cannot measure 
 the write-back commit's own message. Nothing else moved. Both figures are true of different moments:
 `48 | 1 | 2 | 0 | 1` immediately before the write-back under BOTH interpreters, `48 | 1 | 3 | 0 | 0`
 immediately after.
+
+## ARC 033 — R4-A: Blackouts, Pollers, and the Origin Write (2026-08-16)
+
+**Canonical path `/home/bbt/nix`, absolute, unmoved. Not pushed — the push is the operator's.**
+
+**THE HEADLINE IS WHAT WAS ALREADY BUILT.** §6.5's unified pre-size denial —
+`HALT ∨ now ∈ any window ∨ margin elevated ∨ data stale ∨ clock skewed` — has been ASSEMBLED BY NAME
+in `scripts/nixrisk/gate.py` since ARC 028: `SymbolFlagRule("blackout_window", …, "§6.1-6.3")`,
+`SymbolFlagRule("data_staleness", …, "§6.4")`, `GlobalFlagRule("clock_skew", …, "§12.3")`, and HALT
+read as **branch 0** through `HaltFlagPort` before the manifest on every pass, with
+`check_limiter_gate` ARM 3 already proving it. **NOTHING IMPLEMENTED ANY OF THE FOUR PORTS.** The
+rules were wired to inputs that did not exist — the inverse of ARC 031's three green gates over a cap
+that could not run. So Stage 1 built PRODUCERS, not rule classes, and that distinction is the spec's
+own: §6.5 says new blackout types are **data (a window), not code**, and `SymbolFlagRule`'s docstring
+says outright that a class per window type *"would be the code the spec says not to write"*. A brief
+read literally would have minted four such classes.
+
+**THE §6.5 INTERLOCK IS NOW A FIGURE.** §6.5 claims the 70% cap is only safe because the blackouts
+keep the book out of the close-snap — *"cap + blackout calendar are one coupled system"*. Driven with
+ONE cap-breaching proposal, run twice:
+
+```
+window CLEAR : size_down by aggregate_margin_cap, 10 rules evaluated
+window OPEN  : deny      by blackout_window,       2 rules evaluated
+               and aggregate_margin_cap NEVER RAN
+```
+
+The calendar keeps the book from ever reaching the state the cap exists to refuse. The first half
+exists so the second half means something: a test that never builds a breaching proposal proves
+nothing about a coupling.
+
+**§12.10's TABLE CONTRADICTS THE BRIEF, AND THE SPEC WON.** Stage 2.3 asked for Plane-1 rows for
+*blackout opened/closed* and *roll seam*. §12.10's event inventory routes both to **Plane 2 ONLY** —
+its Plane-1 cell is an em dash. Writing them to Plane 1 would add diagnostic events to §9's
+append-only record of money truth, against *"Plane 1 … No new writers, ever"*. HALT set/cleared IS
+both, and the spec gives the reason: *"it gates money"*. The correction is pinned by **reading the
+frozen spec at run time**, so if a later arc amends §12.10 the test fails and the correction is
+revisited deliberately rather than surviving as a stale opinion.
+
+**D3.144 DISCHARGED BY REAL COVERAGE**, which is what the architect ruled instead of an exclusion.
+Five arms over nine plants, every plant a defect in the SUBJECT driven with a stream §4 requires the
+ledger to absorb. Doctrine C.9 was answered by MEASUREMENT: a running-total plant is
+permutation-invariant AND duplicate-immune, so every behavioural arm and every property
+`test_execution.py` owns stays green over it, and only the structural arm reddens.
+`check_artifact_gate_coverage` CANNOT_MEASURE → **GUARDED**, uncovered 13 → 12.
+
+**D3.150 NARROWED AND DELIBERATELY LEFT OPEN.** The origin write is built and gated — it takes
+`stop_distance` from the stop book's own `initial_distance_ticks` onto the same versioned snapshot,
+and its gate reddens on a value that is present, positive, plausible **and wrong**, which a null-check
+would pass. But `StopBook.arm` and `on_fill` both have **zero production callers** (D3.178), so
+production still never CHOOSES a distance. Closing the row on a built mechanism would be the move
+D3.136 was closed against: **a decision recorded is not a mechanism landed, and a mechanism landed is
+not a mechanism CALLED.**
+
+**THE TRADE↔ORDER JOIN DID NOT EXIST, and was made a SURFACE rather than an equality.** §3:159 keys
+the position table by `trade_id`; `StopState`, `ProposedOrder`, `Reservation` and §4's dedup tuple all
+key by `client_order_id`; nothing joins them. The brief's own success criterion — *"the published
+stop_distance for the same trade"* — was not expressible. Under the plausible default the two ids are
+EQUAL, so a hard-coded equality emits byte-identical rows and no drive over the default can see it;
+the gate re-drives the population under a NON-IDENTITY mint, which is the only way that defect is
+visible. D3.177 returns the ruling.
+
+**THE CALENDAR ALREADY EXISTED and was EXTENDED, not rebuilt** (C.9). And the brief's rule, taken
+literally, would have reddened the shipped tree: *"never stored Central"* is violated today by
+`eth_open_ct`/`eth_close_ct` — generated via tzdb, DST-correct, and **read by nothing**. The invariant
+enforced is therefore **no decision path may READ a stored local-time field**, which is true, is
+mechanically checkable, and keeps a stored-but-unread column from becoming the next arc's shortcut.
+
+**SPEC-A10 — A RULE WITH NO AUTHORITY GOT A LEDGER ID.** The brief cited a *"calendar-source-conflict
+addendum (locked, Econoday live vs historical)"*. Measured: **"Econoday" appears nowhere in this tree
+except the brief**, no addendum exists, the frozen spec names no calendar vendor, and neither does the
+staging plan. §0b/D3.81 forbids acting on a labelled rule with no ledger id, so it was given one — and
+the amendment names why it cannot be BUILT: there is exactly ONE calendar source, so a conflict cannot
+occur, and a gate over it would drive a disagreement it manufactured between two halves of one
+artifact.
+
+**A SESSION CAP KILLED FOUR SUB-AGENTS MID-FLIGHT, AND THE ARC HAD TO DECIDE WHAT A RESCUED
+DELIVERABLE IS WORTH.** 1C and 1D were terminated inside the commit gate with their work complete on
+disk and never committed — and §0d is explicit that an mtime is not history. The integrator measured
+the delivered code before banking it (`check_pollers` 8 arms, `check_staleness` 10 arms, `check_halt`,
+all PASS; 99 + 51 tests green) and banked it rather than discarding ~150 passing tests to re-run the
+work. **What could not be rescued is each author's own §0a self-audit** — the audit that caught a
+scope error in every sub-agent that did report, across two arcs. D3.191 records that the four modules'
+gates are UNAUDITED until a review pass asks §0a directly; inventing an audit the integrator cannot
+perform would be the restatement this ledger exists to refuse.
+
+**THE ORDER-PATH LITERAL WAS BUMPED FIVE TIMES FROM FIVE BLIND WORKTREES.** 1A 18→19, 1B 18→20,
+1C 18→20, 1D 18→19 — each locally right, all globally wrong, caught as three separate merge conflicts
+on one line and resolved every time at the figure `check_order_path_bans` itself reports on the merged
+tree: **24**. Two of the five bumps had to be made by the integrator because the authors were dead.
+The literal is KEPT a literal: deriving it from the gate would make the test agree with its subject by
+construction and measure nothing. D3.192 records that N parallel worktrees adding modules to one
+package home produce N−1 guaranteed conflicts on it.
+
+**THE SUBJECTS CORRECTED ME TWICE, and the refusals are the measurement.** `halt.HaltFlag` refused to
+construct against my integration fixture: *"halt cooldown floors name ['operator'], which is not an
+auto-clearing §12.5:631 cause … 'operator' in particular clears ONLY by operator (§12.5:633), so a
+floor for it would imply an auto-clear that does not exist."* The fixture was wrong and the module was
+right. And my first draft assumed `GateOutcome` carried a verdict LIST; it carries the binding rule
+and reason directly.
+
+**CLOSE-OUT GATES.** `verify.py` **57 passed | 1 failed | 2 cannot measure | 0 skipped | 1 guarded**,
+exit 1 — **identical under BOTH documented interpreters**. The FAIL is `check_ibgateway_service` (tap
+session, by design); the two cannot-measures are `check_ibgateway_config` and
+`check_observed_resource_claims`, both §17 masking by the same dead port; the guard is
+`check_artifact_gate_coverage`, owner ARC 033. pytest **2343 passed, 2 skipped, 2 xfailed** (from
+1982). Claims harness green. Plan re-derived identical. Census **61 == 61**. Binding rebuilt:
+**BOUND=59, EXERCISED-NEVER-RED=2, UNBOUND=0** over 1,913 observations — all nine new gates BOUND,
+floor 48. **Ledger 186 → 201**, re-derived rather than typed: `check_derived_claims` FAILED against
+the stale 186 inside the same edit that staled it.
