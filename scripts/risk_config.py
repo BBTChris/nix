@@ -92,6 +92,7 @@ OWNED_MODULES: tuple[str, ...] = (
     "allocator",
     "limiter",
     "scoring",
+    "sentinel",
     "staleness",
     "supervision",
 )
@@ -176,6 +177,19 @@ def _number(cfg: ModuleConfig, key: str) -> float:
             f"{cfg.source}: {key}={value!r} is {type(value).__name__}, expected a number"
         )
     return float(value)
+
+
+def knob(cfg: ModuleConfig, key: str) -> float:
+    """`_number` under a PUBLIC name, for readers outside this module.
+
+    ARC 034 / sub-agent B. `scripts/nixsentinel/config.py` is a legitimate second
+    READER of `risks/` — never a second authority; it calls the rule callables
+    below rather than restating them — and it needs the same by-name, no-default,
+    type-checked read every rule here uses. Giving it a public name is better
+    than either reaching into a `_`-private from another package or growing a
+    parallel accessor that could accept a default and quietly diverge.
+    """
+    return _number(cfg, key)
 
 
 def _mapping(cfg: ModuleConfig, key: str) -> Mapping[str, object]:
@@ -558,6 +572,94 @@ def _span_is_whole_days(loaded: Mapping[str, ModuleConfig]) -> list[str]:
     return []
 
 
+#: The Sentinel's threshold is a MULTIPLE of the Limiter's §12A:832 interval,
+#: which has one physical home in `risks/limiter.config.json`. Both rules below
+#: therefore read TWO modules while being FILED under `sentinel` alone: the
+#: limiter's numbers are §12A figures stated outright and are the fixed reference
+#: side, and the sentinel's are the Nix additions that must fit around them. A
+#: rule filed under both would oblige `risks/limiter.config.json` to declare an id
+#: about a module it knows nothing about.
+_SENTINEL_REFERENCE = "limiter"
+
+
+def _sentinel_pair(
+    loaded: Mapping[str, ModuleConfig],
+) -> tuple[ModuleConfig, ModuleConfig]:
+    """`(sentinel, limiter)`, or a loud refusal. Never a defaulted reference.
+
+    A rule that silently skipped itself because its reference module was not in
+    the loaded set would be a rule that is off exactly when a partial load is
+    what produced the mistake — the shape `docs/debug.md` §7.12 exists to catch.
+    """
+    if _SENTINEL_REFERENCE not in loaded:
+        raise RiskConfigError(
+            f"the sentinel rules read {_SENTINEL_REFERENCE!r} for §12A:832's "
+            "heartbeat interval and it is not in the loaded set — refusing to "
+            "validate the Sentinel's threshold against a reference that is absent"
+        )
+    return loaded["sentinel"], loaded[_SENTINEL_REFERENCE]
+
+
+def _sentinel_loss_outlasts_limiter_grace(
+    loaded: Mapping[str, ModuleConfig],
+) -> list[str]:
+    """The deadman must not declare death before the system it watches would.
+
+    `docs/nics_risk_subsystem_spec_v1.3.md` §4:260-261 fixes the grace on a
+    heartbeat at exactly one cycle before a second consecutive miss presumes
+    death. The Sentinel's response to presumed death is an EMERGENCY FLATTEN of
+    the whole account (§12.1:604-606), which is the most expensive action in the
+    system, so its own threshold must be strictly longer than that grace. Equal is
+    not enough: at equality a single scheduling jitter puts the deadman ahead of
+    the supervisor, and §12.1:605's nuisance-flatten hazard fires on a blip.
+    """
+    sentinel, limiter = _sentinel_pair(loaded)
+    multiple = _number(sentinel, "heartbeat_loss_multiple")
+    grace = _number(limiter, "heartbeat_miss_grace_cycles")
+    floor = 1.0 + grace
+    if multiple <= floor:
+        return [
+            (
+                f"sentinel.heartbeat_loss_multiple={multiple} does not exceed "
+                f"1 + limiter.heartbeat_miss_grace_cycles={grace} (={floor}) — the "
+                "Sentinel would presume the Risk Engine dead and flatten the whole "
+                "account no later than the system's own one-cycle grace, so a "
+                "single missed beat becomes an emergency flatten"
+            )
+        ]
+    return []
+
+
+def _sentinel_poll_fits_loss_threshold(
+    loaded: Mapping[str, ModuleConfig],
+) -> list[str]:
+    """A watcher that sleeps longer than the window cannot see the window.
+
+    The threshold is `heartbeat_interval_s x heartbeat_loss_multiple`. If the
+    poll interval reaches it, detection latency is bounded below by the very
+    quantity that defines the condition, and the deadman's response time becomes
+    a property of its sleep rather than of the loss. `docs/nics_risk_subsystem
+    _spec_v1.3.md` §12.1:603-606 gives the Sentinel no other timing discipline,
+    so this is the one that has to hold.
+    """
+    sentinel, limiter = _sentinel_pair(loaded)
+    poll = _number(sentinel, "poll_interval_s")
+    threshold = _number(limiter, "heartbeat_interval_s") * _number(
+        sentinel, "heartbeat_loss_multiple"
+    )
+    if poll >= threshold:
+        return [
+            (
+                f"sentinel.poll_interval_s={poll} is not below the loss threshold "
+                f"{threshold} (limiter.heartbeat_interval_s x "
+                "sentinel.heartbeat_loss_multiple) — a watchdog whose sleep is as "
+                "long as the window it watches can miss the whole window, and its "
+                "detection time stops being a property of the loss"
+            )
+        ]
+    return []
+
+
 #: THE RULE SET. Every id here appears in the `_boot_validation` block of every
 #: module it names, and the gate proves the correspondence in both directions.
 BOOT_RULES: tuple[BootRule, ...] = (
@@ -620,6 +722,18 @@ BOOT_RULES: tuple[BootRule, ...] = (
         modules=("scoring",),
         spec="§6.6:438",
         check=_span_is_whole_days,
+    ),
+    BootRule(
+        id="sentinel.loss_outlasts_limiter_grace",
+        modules=("sentinel",),
+        spec="§4:260",
+        check=_sentinel_loss_outlasts_limiter_grace,
+    ),
+    BootRule(
+        id="sentinel.poll_fits_loss_threshold",
+        modules=("sentinel",),
+        spec="§12.1:603",
+        check=_sentinel_poll_fits_loss_threshold,
     ),
 )
 

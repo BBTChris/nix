@@ -51,6 +51,7 @@
         "check_reservation_lifecycle",
         "check_risks_data_only",
         "check_runtime_gate",
+        "check_sentinel_deadman",
         "check_sentinel_seam",
         "check_session_flatten",
         "check_spec_citations",

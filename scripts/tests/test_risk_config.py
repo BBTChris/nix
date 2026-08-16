@@ -406,6 +406,53 @@ def test_the_EMA_SPAN_REJECTS_a_fractional_day(home: Path) -> None:
     assert "[scoring.span_is_whole_days" in message, message
 
 
+def test_the_SENTINEL_THRESHOLD_REJECTS_a_multiple_inside_the_limiter_grace(
+    home: Path,
+) -> None:
+    """ARC 034 / B. §4:260-261 grants a heartbeat one cycle of grace before death
+    is presumed. The Sentinel's answer to presumed death is an EMERGENCY FLATTEN
+    of the whole account (§12.1:604-606), so its own threshold must strictly
+    outlast that grace — a deadman that fires inside the system's own tolerance
+    turns one missed beat into the most expensive action there is."""
+    _edit(home, "sentinel", lambda raw: raw.__setitem__("heartbeat_loss_multiple", 2))
+
+    message = _rejection(home)
+
+    assert "[sentinel.loss_outlasts_limiter_grace" in message, message
+    assert "does not exceed" in message, message
+
+
+def test_the_SENTINEL_POLL_REJECTS_a_sleep_as_long_as_the_window_it_watches(
+    home: Path,
+) -> None:
+    """ARC 034 / B. A watchdog whose sleep reaches the loss threshold can sleep
+    through the whole window; its detection time then measures its own scheduling
+    rather than the loss."""
+    _edit(home, "sentinel", lambda raw: raw.__setitem__("poll_interval_s", 99))
+
+    message = _rejection(home)
+
+    assert "[sentinel.poll_fits_loss_threshold" in message, message
+    assert "not below the loss threshold" in message, message
+
+
+def test_the_SENTINEL_RULES_REFUSE_LOUDLY_when_their_reference_module_is_absent() -> (
+    None
+):
+    """ARC 034 / B. Both sentinel rules read `limiter` for §12A:832's interval,
+    which has one physical home. A rule that quietly skipped itself because its
+    reference was missing would be off exactly when a partial load is what
+    produced the mistake — the shape docs/debug.md §7.12 exists to catch."""
+    loaded = rc.load_risk_configs(REPO)
+    sentinel_only = {"sentinel": loaded.modules["sentinel"]}
+
+    with pytest.raises(rc.RiskConfigError) as caught:
+        rc.validate_all(sentinel_only)
+
+    assert "not in the loaded set" in str(caught.value), caught.value
+    assert "'limiter'" in str(caught.value), caught.value
+
+
 def test_EVERY_RULE_IN_THE_SET_HAS_BEEN_DRIVEN_RED_BY_THIS_MODULE() -> None:
     """The census that keeps the can-fail suite honest as rules are added.
 

@@ -66,6 +66,25 @@ records the reasoning so a future reader does not mistake a definite ownerless
 position for an indeterminate one.
 
 ------------------------------------------------------------------------------
+§12.1:612's SENTINEL MARKER REPLAY LIVES HERE (ARC 034 / sub-agent B)
+------------------------------------------------------------------------------
+*"On next boot, cold-start reconciliation reads the marker and books the flatten
+into the real event log retroactively (rows tagged `source=sentinel`), then
+archives the marker."* The spec names THIS component, so the replay is a method
+on this class rather than a second boot-time reader: §9's sole-writer invariant
+means the retroactive rows must ride the Limiter's own `Plane1Port`, and a
+separate replayer would be a second thing that books money rows.
+
+It runs FIRST inside `reconcile`, before the broker is polled, because what the
+Sentinel did happened on the PREVIOUS boot. It does not decide anything about the
+position an interrupted flatten names — §4's ordinary broker-truth reconcile
+below is the authority on that and runs on this same boot.
+
+The port is OPTIONAL. A box that has never run a Sentinel has no marker, and
+requiring the reader would force every caller to construct one for a file that
+does not exist.
+
+------------------------------------------------------------------------------
 WHAT THIS MODULE DOES NOT DO — stated, so no green here implies it
 ------------------------------------------------------------------------------
 It does not OPEN the broker session (§2A's port owns that) — it is handed a
@@ -86,6 +105,17 @@ import dataclasses
 import enum
 from typing import Protocol, runtime_checkable
 
+# ARC 034 / sub-agent B. The import edge runs `nixrisk -> nixsentinel`, and the
+# DIRECTION is the safety property. §12.1:603 requires the Sentinel to sit on a
+# separate code path so that a defect which kills the Risk Engine cannot take its
+# watcher with it; that forbids `nixsentinel -> nixrisk`, and says nothing about
+# this way round. Cold start runs when the Sentinel is not running, on the same
+# boot that the Sentinel is absent from, so nothing here is in the deadman's
+# import graph. `nixsentinel.seam` imports only `enum`, `dataclasses` and
+# `typing`; `nixsentinel.marker` adds `json`, `os` and `time`.
+from nixsentinel.marker import pending_acts, unbracketed
+from nixsentinel.seam import MarkerRecord, MarkerReplayPort
+
 from nixrisk.seam import (
     BrokerTruth,
     EventKind,
@@ -99,6 +129,13 @@ from nixrisk.seam import (
 #: §9 row cannot name one. A sentinel actor is honest where borrowing a real
 #: strategy_id would attribute a system boot to a strategy that has not registered.
 SYSTEM_ACTOR = "__system__"
+
+#: §12.1:612-613's tag, transcribed rather than invented: *"books the flatten
+#: into the real event log retroactively (rows tagged `source=sentinel`)"*.
+#: `nixrisk/halt.py` uses `marker_replay` for the §12.5:637 HALT rows, and the
+#: two must stay distinct — a reader has to be able to tell a retroactive HALT
+#: from a retroactive emergency flatten by the field the spec names.
+SOURCE_SENTINEL = "sentinel"
 
 
 class ColdStartError(RuntimeError):
@@ -173,6 +210,152 @@ class HaltAlertPort(Protocol):
 
 
 # ---------------------------------------------------------------------------
+# §12.1:612's marker replay — the rows, built as pure functions
+# ---------------------------------------------------------------------------
+#
+# Module-level and side-effect-free on purpose. They turn a marker record into
+# `EventRow`s and touch nothing; the ONE place a row reaches Plane 1 is
+# `ColdStart.replay_sentinel_marker`, through the Limiter's own sole-writer port
+# (§9:557). A builder that could also write would be a second writer wearing a
+# helper's name.
+
+
+def _sentinel_row(  # pylint: disable=too-many-arguments
+    before: MarkerRecord,
+    symbol: str,
+    now: float,
+    *,
+    interrupted: bool,
+    ack_ok: str,
+    ack_detail: str,
+) -> EventRow:
+    """One retroactive §12.10 row for one symbol the Sentinel closed, or tried to.
+
+    `ts` is the SENTINEL's stamp, never `now`. A retroactive row carrying the
+    boot time would move a money event by however long the box was down, and the
+    delay itself is preserved separately in `booked_at` so it is on the record
+    rather than lost in the difference.
+    """
+    reason = (
+        f"retroactive: the §12.1 Sentinel fired an emergency flatten on {symbol} "
+        f"while the Limiter was dead (heartbeat silent {before.heartbeat_age_s:.3f}s, "
+        f"cause {before.cause.value})"
+    )
+    if interrupted:
+        reason += (
+            " — and the marker holds NO 'after' record, so this Sentinel died "
+            "MID-FLATTEN. The close is UNCONFIRMED; §4's broker-truth reconcile "
+            "on this same boot is the authority on the resulting position"
+        )
+    return EventRow(
+        kind=EventKind.PROTECTIVE_EXIT,
+        ts=before.ts,
+        strategy_id=SYSTEM_ACTOR,
+        reason=reason,
+        fields={
+            "symbol": symbol,
+            "source": SOURCE_SENTINEL,
+            "retroactive": "true",
+            "interrupted": "true" if interrupted else "false",
+            "trigger": FlattenTrigger.SENTINEL.value,
+            "cause": before.cause.value,
+            "ack_ok": ack_ok,
+            "ack_detail": ack_detail,
+            "sentinel_pid": str(before.sentinel_pid),
+            "heartbeat_age_s": repr(before.heartbeat_age_s),
+            "booked_at": repr(now),
+        },
+    )
+
+
+def _act_rows(
+    before: MarkerRecord, after: MarkerRecord | None, now: float
+) -> list[EventRow]:
+    """Every row one bracketed (or interrupted) act produces, in symbol order."""
+    if after is None:
+        return [
+            _sentinel_row(
+                before,
+                symbol,
+                now,
+                interrupted=True,
+                ack_ok="unknown",
+                ack_detail="no 'after' record — the Sentinel did not survive the act",
+            )
+            for symbol in before.symbols
+        ]
+    by_symbol = {ack.symbol: ack for ack in after.acks}
+    # UNION, not the `before` list alone: a venue may acknowledge a symbol the
+    # Sentinel had not enumerated (a leg opened between the read and the send),
+    # and a replay that booked only what was expected would drop the surprise —
+    # which is the one thing an operator most needs to see.
+    symbols = tuple(dict.fromkeys(before.symbols + tuple(by_symbol)))
+    rows: list[EventRow] = []
+    for symbol in symbols:
+        ack = by_symbol.get(symbol)
+        rows.append(
+            _sentinel_row(
+                before,
+                symbol,
+                now,
+                interrupted=False,
+                ack_ok="true" if ack is not None and ack.ok else "false",
+                ack_detail=(
+                    ack.detail
+                    if ack is not None
+                    else "no broker acknowledgement for this symbol in the "
+                    "'after' record — the close was attempted and never answered"
+                ),
+            )
+        )
+    return rows
+
+
+def sentinel_replay_rows(
+    records: tuple[MarkerRecord, ...], now: float
+) -> tuple[EventRow, ...]:
+    """Every Plane-1 row a marker's flatten records produce, in write order."""
+    rows: list[EventRow] = []
+    for before, after in pending_acts(records):
+        rows += _act_rows(before, after, now)
+    return tuple(rows)
+
+
+def _sentinel_summary_row(records: tuple[MarkerRecord, ...], now: float) -> EventRow:
+    """ONE §12.10 cold-start row saying that a marker was found and replayed.
+
+    Booked under `COLD_START` and not under an exit kind, because that is what it
+    is: cold-start reconciliation's own account of what it read. It is also where
+    the NON-FLATTEN wake-ups land — the `HEARTBEAT_LOST_NO_POSITIONS` and
+    `HEARTBEAT_RECOVERED` records — which are deliberately NOT booked as exits.
+    A wake that did not flatten is not a flatten, and putting it in the money
+    record under an exit kind would place a non-event in §9's ledger; it stays
+    countable here and readable in full in the archived marker.
+    """
+    acts = pending_acts(records)
+    interrupted = sum(1 for _before, after in acts if after is None)
+    quiet = unbracketed(records)
+    return EventRow(
+        kind=EventKind.COLD_START,
+        ts=now,
+        strategy_id=SYSTEM_ACTOR,
+        reason=(
+            f"§12.1 Sentinel marker replayed: {len(records)} record(s), "
+            f"{len(acts)} flatten act(s) of which {interrupted} INTERRUPTED, "
+            f"{len(quiet)} wake(s) that decided not to flatten. Marker archived"
+        ),
+        fields={
+            "source": SOURCE_SENTINEL,
+            "records": str(len(records)),
+            "acts": str(len(acts)),
+            "interrupted": str(interrupted),
+            "non_flatten_wakes": str(len(quiet)),
+            "causes": ",".join(sorted({record.cause.value for record in quiet})),
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # The outcome of one reconcile pass
 # ---------------------------------------------------------------------------
 
@@ -231,16 +414,25 @@ class ColdStart:
     instead, which is a measurement rather than a nominal claim.
     """
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments
         self,
         broker: BrokerSessionPort,
         flattener: FlattenExecutorPort,
         halt: HaltAlertPort,
         plane1: Plane1Port,
+        sentinel_marker: MarkerReplayPort | None = None,
     ) -> None:
         self._broker = broker
         self._flattener = flattener
         self._halt = halt
+        #: §12.1:612's replay side. OPTIONAL and defaulting to `None` because a
+        #: box that has never run a Sentinel has no marker to replay, and a
+        #: required port would force every caller to construct a reader for a
+        #: file that does not exist. `None` means the replay is OFF and
+        #: `replay_sentinel_marker` says so in its return rather than pretending
+        #: it found nothing.
+        self._sentinel_marker = sentinel_marker
+        self._sentinel_replayed = False
         #: §9: the Limiter is the SOLE writer of Plane 1, and §12.10 books the
         #: cold-start outcome there. Required, never defaulted to a sink — a
         #: reconciler that quietly discarded its own held-in-HALT row would leave
@@ -301,6 +493,46 @@ class ColdStart:
 
     # -- the driver and the registration surface ----------------------------
 
+    def replay_sentinel_marker(self, now: float) -> tuple[EventRow, ...]:
+        """§12.1:612-613's retroactive booking. Runs at NEXT BOOT, once.
+
+        *"On next boot, cold-start reconciliation reads the marker and books the
+        flatten into the real event log retroactively (rows tagged
+        `source=sentinel`), then archives the marker."*
+
+        THE ORDER IS THE PROPERTY, and it is the seam's own rule: read, book,
+        make the rows DURABLE, and only then archive. Archiving first — or
+        archiving on the strength of an `enqueue` that has not fsynced — would
+        destroy the only account of an emergency flatten on the exact boot where
+        the WAL then failed to reach the disk, which converts a recoverable
+        replay into a silent gap in §9's record of money truth.
+
+        An INTERRUPTED act — a `BEFORE` with no `AFTER` — is booked, flagged, and
+        never discarded. It is the record of a Sentinel that died mid-flatten and
+        it is the single most valuable line the file can hold. This method does
+        NOT decide what to do about the position it names: §4's ordinary
+        broker-truth reconcile below is the authority on that, it runs on this
+        same boot, and inventing a second disposition here would be a second
+        authority over the same question.
+
+        Returns the rows booked; empty when there was no marker, which is the
+        ordinary case and is not an error.
+        """
+        if self._sentinel_marker is None:
+            return ()
+        records = self._sentinel_marker.read_pending()
+        if not records:
+            self._sentinel_replayed = True
+            return ()
+        rows = list(sentinel_replay_rows(records, now))
+        rows.append(_sentinel_summary_row(records, now))
+        for row in rows:
+            self._plane1.enqueue(row)
+        self._plane1.sync_to_disk()
+        self._sentinel_marker.archive()
+        self._sentinel_replayed = True
+        return tuple(rows)
+
     def reconcile(self, now: float) -> ReconcileOutcome:
         """Run one cold-start pass and return where it landed.
 
@@ -310,7 +542,17 @@ class ColdStart:
         loud alert and admit nothing — the flatten waits for the market. Callable
         again from `HELD_IN_HALT`: that re-run is how the held position flattens
         the instant the market becomes tradable (§4, D4).
+
+        §12.1:612 puts the Sentinel marker replay HERE, in cold-start
+        reconciliation, and it runs FIRST — before the broker is queried. The
+        ordering is chronological rather than convenient: what the Sentinel did
+        happened on the PREVIOUS boot, and a Plane-1 log whose retroactive rows
+        landed after this boot's own reconciliation would read as if the
+        emergency followed the recovery. It runs once; the marker is archived,
+        so a second call finds nothing.
         """
+        if not self._sentinel_replayed:
+            self.replay_sentinel_marker(now)
         truth = self.query_truth()
         if truth.is_flat:
             return self._admit(truth, (), now, "already flat")

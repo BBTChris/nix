@@ -1,0 +1,41 @@
+{
+  "_meta": {
+    "role": "config",
+    "module": "sentinel",
+    "component": "The last-resort deadman — nics_risk_subsystem_spec_v1.3.md §12.1:603-606 ('Tiny, dependency-minimal independent process (shared pool). Watches the Risk-Engine heartbeat. Heartbeat lost and positions possibly open => emergency flatten-all via its own broker session + operator alert'). §10:551 places it on the Core 4-5 shared pool. §14:977-978 makes it the ONE exception to Limiter-only flatten execution.",
+    "authority": "nics_risk_subsystem_spec_v1.3.md §12A is the SEMANTIC authority for tunables. This file is the PHYSICAL layout only. Where the two disagree, §12A wins and this file is wrong. §12A NAMES NO SENTINEL THRESHOLD AT ALL — both knobs below are declared Nix additions with stated derivations, the same shape as limiter.session_flatten_lead_pad_min and limiter.halt_cooldown_floor_s. That is a finding recorded here rather than a gap papered over.",
+    "role_separation": "CONFIG-ROLE ONLY. Every value is a NUMBER; every word is under a `_`-prefixed documentation key that no loader reads.",
+    "lifecycle": "§12.11 — boot-loaded, restart-only. There is no reload verb on the Sentinel's load path, and there must not be: a deadman that changed its idea of 'dead' while it was watching would have two thresholds live inside one silence.",
+    "validated_by": "scripts/risk_config.py",
+    "second_reader": "scripts/nixsentinel/config.py reads THIS FILE and risks/limiter.config.json directly, and runs only the rules in risk_config.BOOT_RULES that name this module. It is a second READER, never a second authority: it calls those rule callables rather than restating them. The narrowing is the §12.1:603 'minimal common-mode failure' property — a deadman that refused to start because risks/scoring.config.json had a typo would be absent exactly when the box is sick enough to produce one.",
+    "landed_by": "ARC 034 sub-agent B (B1).",
+    "single_home": "The Sentinel's threshold is a MULTIPLE of §12A:832's heartbeat interval, and that interval's single physical home is risks/limiter.config.json. It is deliberately NOT copied here — one number, one home (CLAUDE.md directive 3). limiter.heartbeat_miss_grace_cycles is likewise read there and never restated here.",
+    "not_implemented_here": "Landing a knob as DATA is not implementing the process that reads it. The Sentinel's own broker session, its alert channel, and the systemd unit that supervises it are OUT of this arc; a value below existing proves only that the value has a home."
+  },
+
+  "heartbeat_loss_multiple": 5,
+  "poll_interval_s": 0.25,
+
+  "_derivations": {
+    "heartbeat_loss_multiple": "NOT A §12A KNOB, and its absence is a finding rather than an omission here. §12A:832 gives HEARTBEAT_INTERVAL = 1s and HEARTBEAT_MISS_GRACE = 1 cycle, and §4:260-261 spends both of them on the STRATEGY heartbeat's presumed-dead rule — a different signal, a different watcher, and a different response. §12.1:604 says only 'Watches the Risk-Engine heartbeat. Heartbeat lost', and names no number for 'lost'. This knob is therefore a declared Nix addition: the number of HEARTBEAT_INTERVAL periods of silence after which the Risk Engine is presumed dead. 5 is a CC-calibrate placeholder and it errs LARGE, because the two directions are not symmetric — too SMALL fires §12.1:605's nuisance flatten on a scheduling hiccup, which costs money and reputation on the most routine event there is; too LARGE leaves an unprotected position exposed for a few extra seconds, which is the condition that already existed before this component and is bounded by the broker's own margin regime. Boot-validated against the limiter's grace by rule sentinel.loss_outlasts_limiter_grace.",
+    "poll_interval_s": "NOT A §12A KNOB, for the same reason as the knob above: §12.1:603-606 gives the Sentinel no timing discipline beyond 'watches'. How often it wakes is a Nix decision. 0.25 s is a CC-calibrate placeholder chosen so that at least a handful of polls fall inside the 5 s loss threshold, so detection time is a property of the LOSS rather than of the sleep. It errs SMALL: a tighter poll costs a few wakeups per second on the Core 4-5 shared pool (§10:551), where nothing is latency-critical, while a poll that approaches the threshold makes the deadman's response time indistinguishable from its own scheduling. Boot-validated against the derived threshold by rule sentinel.poll_fits_loss_threshold."
+  },
+
+  "_boot_validation": [
+    {
+      "id": "positive.scalars",
+      "why": "Both knobs must be > 0. §12A:801-802 requires boot validation to reject an invalid set. A zero or negative loss multiple makes every poll a heartbeat loss and turns the deadman into a continuous flatten; a zero poll interval is a busy loop on a shared pool core.",
+      "spec": "§12A:801"
+    },
+    {
+      "id": "sentinel.loss_outlasts_limiter_grace",
+      "why": "heartbeat_loss_multiple must strictly exceed 1 + limiter.heartbeat_miss_grace_cycles. §4:260-261 fixes the grace on a heartbeat at exactly one cycle before a second consecutive miss presumes death, and the Sentinel's response to presumed death is an emergency flatten of the WHOLE account (§12.1:604-606) — the most expensive action in the system. Its threshold must therefore outlast the grace the system it watches already grants. Equality is refused deliberately: at equality one scheduling jitter puts the deadman ahead of the supervisor and a single missed beat becomes a flatten.",
+      "spec": "§4:260"
+    },
+    {
+      "id": "sentinel.poll_fits_loss_threshold",
+      "why": "poll_interval_s must be strictly below limiter.heartbeat_interval_s x heartbeat_loss_multiple. A watchdog whose sleep is as long as the window it watches can sleep through the whole window; its detection latency would then be bounded below by the quantity that defines the condition, so the number would stop measuring the loss and start measuring the sleep.",
+      "spec": "§12.1:603"
+    }
+  ]
+}
