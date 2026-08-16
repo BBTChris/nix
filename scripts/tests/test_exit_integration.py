@@ -496,16 +496,22 @@ def test_ONSET_a_NON_onset_cause_is_REFUSED_naming_the_wrong_cause_hazard() -> N
 # ==========================================================================
 
 
-@pytest.mark.parametrize(
-    "trigger", [FlattenTrigger.SESSION_CLOSE, FlattenTrigger.SENTINEL]
-)
+@pytest.mark.parametrize("trigger", [FlattenTrigger.SENTINEL])
 def test_R4_triggers_are_REFUSED_not_silently_no_opped(
     trigger: FlattenTrigger,
 ) -> None:
-    """§2.4: SESSION_CLOSE (R4 calendar) and SENTINEL (R4) are refused LOUDLY.
+    """§2.4: SENTINEL (R4) is refused LOUDLY.
 
     A silent no-op would read as "flattened" — the one thing a protective path
     may never do. The refusal is the honest statement that the mechanism is unbuilt.
+
+    **SESSION_CLOSE LEFT THIS LIST IN ARC 033 / Stage 1 / B**, because the one
+    mechanism its refusal named — the R4 session calendar (§6.1b) — was built in
+    the same arc (`scripts/nixrisk/session.py` over Phase 0.4's calendar). The
+    parametrize is kept with one member rather than collapsed to a plain test:
+    the shape is the R4 PARTITION, and a future R4 mechanism landing puts a
+    member back. `test_flatten.py` proves the partition still covers the whole
+    enum.
     """
     rig = _rig(positions=[Position("MESU6", 1, 7800.0)], cash=20000.0)
 

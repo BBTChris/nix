@@ -280,7 +280,7 @@ def test_the_control_passes_and_its_evidence_names_what_it_read(
     assert "send-path ['cancel_order', 'flatten', 'place_order']" in evidence
     # ARC 029: the order path acquired a package home (scripts/nixrisk, the exit
     # half), so arm(ii) now imports the broker modules AND the nixrisk package
-    # modules — 18 in this tree. The literal is banked evidence; it moves when a
+    # modules — 21 in this tree. The literal is banked evidence; it moves when a
     # module is added to either home, which is the point of asserting it.
     # BUMPED 16 -> 18 by ARC 033, and it took TWO bumps to get there because the
     # tripwire FIRED TWICE, independently, in two worktrees with no visibility
@@ -298,17 +298,30 @@ def test_the_control_passes_and_its_evidence_names_what_it_read(
     # retry shape and no banned import, and `check_order_path_bans` re-scanned the
     # widened scope and still reports 0 banned calls.
     #
-    # BUMPED 18 -> 19 by ARC 033 / Stage 1A, and it is the THIRD firing: the new
-    # module is `scripts/nixrisk/blackout.py` (the §6.1-6.3 window evaluator that
-    # produces `gate.py`'s `blackout` port). Same admission as the two above and
-    # made on the same terms -- it declares no order-port verb, sends nothing,
-    # carries no retry shape and imports nothing banned, and
-    # `check_order_path_bans` re-scanned the widened scope (20 files over 2 dirs)
-    # and still reports 0 banned. **If another Stage 1 sub-agent adds a
-    # `scripts/nixrisk/` module in a parallel worktree, this line conflicts at
-    # integration -- which is the tripwire doing its job for the fourth time, not
-    # a defect in either branch.**
-    assert "arm(ii) imported 19 order-path module(s)" in evidence, evidence
+    # BUMPED 18 -> 21 by ARC 033 / Stage 1, and it took THREE independent bumps
+    # from two parallel worktrees to get there, neither of which could see the
+    # other. 1A bumped 18 -> 19 for `scripts/nixrisk/blackout.py` (the §6.1-6.3
+    # window evaluator that produces `gate.py`'s `blackout` port). 1B bumped
+    # 18 -> 20 for `scripts/nixrisk/session.py` (§6.1b's session-close DEADLINE
+    # detector -- nothing in it reaches the broker; it hands
+    # `FlattenTrigger.SESSION_CLOSE` to the executor that already exists) and
+    # `scripts/nixrisk/roll.py` (§7.5's roll instant). Each branch was right about
+    # its own modules and wrong about the total; the integration merge caught it
+    # as a conflict on this exact line, for the second time this arc.
+    #
+    # 1A's own comment PREDICTED this conflict in writing -- "if another Stage 1
+    # sub-agent adds a scripts/nixrisk/ module in a parallel worktree, this line
+    # conflicts at integration, which is the tripwire doing its job". It did.
+    #
+    # Re-banked at the figure `check_order_path_bans` ITSELF reports, never at any
+    # branch's arithmetic: all three modules declare no order-port verb, send
+    # nothing, carry no retry shape and import nothing banned, and the gate
+    # re-scanned the widened scope and still reports 0 banned calls.
+    # A LITERAL, deliberately. Deriving this from the gate would make the test
+    # agree with the subject by construction and measure nothing — the number is
+    # banked evidence a human must meet, which is the only reason it has caught
+    # five landings across this arc.
+    assert "arm(ii) imported 21 order-path module(s)" in evidence, evidence
 
 
 def test_the_reviewed_suppressions_are_the_two_known_fanouts_and_no_plant_is_pre_silenced(

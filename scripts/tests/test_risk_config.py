@@ -21,6 +21,10 @@ Two properties, both driven rather than asserted:
 configs are read and never written.
 """
 # pylint: disable=invalid-name,redefined-outer-name,duplicate-code
+# pylint: disable=protected-access
+# protected-access: `rc._GLOBAL_SET` is the LABEL the ordering rule reports the
+# global-default pair under. Retyping the string here would let the rule rename
+# it and these controls keep passing against a literal nothing produces.
 # Test names SHOUT the property; the sys.path bootstrap is identical in every
 # test module by requirement.
 
@@ -158,6 +162,163 @@ def test_the_SECTION_6_1b_ORDERING_INVARIANT_REJECTS_an_inverted_set(
 
     assert "[ordering.session_flatten_before_eod_blackout" in message, message
     assert "must LEAD" in message, message
+
+
+# --------------------------------------------------------------------------
+# §6.1b:346-348 IS A **PER-SYMBOL** INVARIANT — ARC 033 / Stage 1 / B
+#
+# The arm above inverts the GLOBAL pair, which the pre-ARC-033 predicate
+# already caught. What it could NOT catch is a set whose global pair is
+# perfectly ordered and whose ES row is inverted, because it only ever
+# compared two numbers. These arms drive exactly that.
+# --------------------------------------------------------------------------
+
+
+def test_the_ORDERING_RULE_REJECTS_an_INVERTED_PER_SYMBOL_PAIR_and_NAMES_it(
+    home: Path,
+) -> None:
+    """A single inverted SYMBOL is rejected while the global pair stays valid.
+
+    This is the case §6.1b:348 means by *"rejects any per-symbol set violating
+    it"*. NQ gets a 25-minute flatten lead against its own 20-minute entry
+    blackout; every other symbol and the global default are untouched and legal.
+    """
+    _edit(
+        home,
+        "limiter",
+        lambda raw: raw["session_flatten_lead_min_by_symbol"].__setitem__("NQ", 25),
+    )
+
+    message = _rejection(home)
+
+    assert "[ordering.session_flatten_before_eod_blackout" in message, message
+    assert "symbol NQ" in message, message
+    assert "must LEAD" in message, message
+    # The GLOBAL pair is still valid, so the rejection cannot have come from it.
+    assert f"symbol {rc._GLOBAL_SET}" not in message, message
+
+
+def test_the_ORDERING_RULE_REJECTS_an_INVERTED_BLACKOUT_OVERRIDE_too(
+    home: Path,
+) -> None:
+    """The inversion can come from EITHER side of the comparison.
+
+    A symbol whose ENTRY BLACKOUT was narrowed below the global flatten lead is
+    the same defect arriving through the other knob, and a rule that only read
+    the lead override would miss it.
+    """
+    _edit(
+        home,
+        "limiter",
+        lambda raw: raw["eod_blackout_min_by_symbol"].__setitem__("CL", 12),
+    )
+
+    message = _rejection(home)
+
+    assert "[ordering.session_flatten_before_eod_blackout" in message, message
+    assert "symbol CL" in message, message
+
+
+def test_the_PER_SYMBOL_ARM_IS_NOT_VACUOUS_the_OLD_predicate_would_have_PASSED(
+    home: Path,
+) -> None:
+    """§0-style non-vacuity: the widened rule catches what the narrow one could not.
+
+    Reconstructs the pre-ARC-033 predicate — the global pair, and only the
+    global pair — and shows it returns NO problem for the very set the widened
+    rule rejects. Without this, "the rule fires" would be consistent with the
+    rule having always fired, and the widening would prove nothing.
+    """
+    _edit(
+        home,
+        "limiter",
+        lambda raw: raw["session_flatten_lead_min_by_symbol"].__setitem__("NQ", 25),
+    )
+    path = home / "risks" / f"limiter{rc.CONFIG_SUFFIX}"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    values = {k: v for k, v in raw.items() if not k.startswith(rc.DOC_KEY_PREFIX)}
+
+    # The OLD predicate, verbatim in behaviour: three scalars, one comparison.
+    old_verdict = (
+        values["session_flatten_lead_min"]
+        >= values["eod_blackout_min"] - values["session_flatten_lead_pad_min"]
+    )
+    assert old_verdict is False, (
+        "the reconstructed pre-ARC-033 predicate already objects to this set, so "
+        "the per-symbol arm above would prove nothing about the widening"
+    )
+
+    assert "symbol NQ" in _rejection(home)
+
+
+def test_a_SYMBOL_WITH_NO_OVERRIDE_INHERITS_THE_GLOBAL_PAIR_and_is_still_judged(
+    home: Path,
+) -> None:
+    """An override map is not an allow-list: the global default is judged too.
+
+    The shipped maps are EMPTY — they hold deviations only — so this is also the
+    shipped shape. If the rule had started iterating override keys ONLY, an
+    empty map would have made it evaluate nothing, which is the vacuous shape a
+    per-symbol rewrite invites and the reason this control exists.
+    """
+    _edit(home, "limiter", lambda raw: raw.__setitem__("session_flatten_lead_min", 16))
+
+    message = _rejection(home)
+
+    assert "[ordering.session_flatten_before_eod_blackout" in message, message
+    assert f"symbol {rc._GLOBAL_SET}" in message, message
+
+
+def test_a_NON_NUMERIC_PER_SYMBOL_OVERRIDE_is_REJECTED_not_coerced(
+    home: Path,
+) -> None:
+    """A string minute count is a defect, never a value to `float()` and hope."""
+    _edit(
+        home,
+        "limiter",
+        lambda raw: raw["session_flatten_lead_min_by_symbol"].__setitem__("ES", "ten"),
+    )
+
+    message = _rejection(home)
+
+    # positive.scalars sees the non-number first and breaks the chain (by
+    # design); either rule naming ES is a correct rejection, and the assertion
+    # is that the SET does not load with a string in it.
+    assert "ES" in message, message
+    assert "expected a number" in message, message
+
+
+def test_the_SCHEDULER_S_LEAD_MAP_comes_from_the_SAME_RESOLUTION_the_RULE_JUDGED(
+    home: Path,
+) -> None:
+    """Directive 3: one resolution, one authority.
+
+    `session_flatten_lead_min` is what `nixrisk.session.SessionFlattener` takes
+    as `lead_min`. If it re-derived the effective lead from the raw knobs, the
+    deadline that fires could differ from the one boot validation approved and
+    nothing would say so. Driven by moving ONE symbol's override and requiring
+    the map to move with it.
+    """
+    _edit(
+        home,
+        "limiter",
+        lambda raw: raw["session_flatten_lead_min_by_symbol"].__setitem__("ES", 7),
+    )
+    loaded = rc.load_risk_configs(home)
+
+    leads = rc.session_flatten_lead_min(loaded)
+
+    assert leads["ES"] == 7.0, dict(leads)
+    # A symbol with NO override has no row here at all — the map holds
+    # DEVIATIONS, and `SessionFlattener` refuses a managed symbol it was given
+    # no lead for rather than defaulting one (directive 4).
+    assert "NQ" not in leads, dict(leads)
+    assert loaded.value("limiter", "session_flatten_lead_min") == 10
+    # The global-default ROW is not a symbol and must not reach a scheduler.
+    assert rc._GLOBAL_SET not in leads, dict(leads)
+    # And the map is a read-only view: a consumer cannot retune a booted set.
+    with pytest.raises(TypeError):
+        leads["ES"] = 99  # type: ignore[index]
 
 
 def test_go_timeout_REJECTS_a_breaker_that_outruns_the_resolution(home: Path) -> None:

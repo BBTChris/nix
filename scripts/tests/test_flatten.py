@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import re
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -312,15 +313,17 @@ def test_the_TRIGGER_SET_is_SS3_s_own_list_transcribed_and_CLOSED() -> None:
 def test_fire_REFUSES_the_R4_triggers_LOUDLY_and_names_the_MECHANISM() -> None:
     """§7.12: a silent no-op would 'succeed' while flattening nothing, which reads
     exactly like a flatten. So the refusal must be loud AND name the unbuilt
-    mechanism, not merely return. SESSION_CLOSE names the R4 calendar; SENTINEL
-    names the R4 last-resort executor and that it is not the live Limiter's."""
+    mechanism, not merely return. SENTINEL names the R4 last-resort executor and
+    that it is not the live Limiter's.
+
+    **SESSION_CLOSE IS NO LONGER HERE (ARC 033 / Stage 1 / B).** Its refusal
+    named exactly one unbuilt mechanism — the R4 session calendar (§6.1b) — and
+    ARC 033 built it (Phase 0.4's calendar, then `scripts/nixrisk/session.py`).
+    A refusal that outlived its stated reason would block the one trigger the
+    §6.1b deadline exists to fire. The trigger's acceptance is driven below.
+    """
     broker = ReconcileBroker(cash=20344.34)
     ex = _executor(broker, picture=_flat_book(RecordingPictureSink()))
-
-    with pytest.raises(TriggerNotFireable) as session:
-        ex.fire(FlattenTrigger.SESSION_CLOSE, symbol="MESU6")
-    assert "session calendar" in str(session.value), str(session.value)
-    assert "§6.1b" in str(session.value), str(session.value)
 
     with pytest.raises(TriggerNotFireable) as sentinel:
         ex.fire(FlattenTrigger.SENTINEL, symbol="MESU6")
@@ -331,12 +334,46 @@ def test_fire_REFUSES_the_R4_triggers_LOUDLY_and_names_the_MECHANISM() -> None:
     assert not broker.flatten_calls, broker.flatten_calls
 
 
+def test_SESSION_CLOSE_is_FIREABLE_now_that_the_R4_CALENDAR_EXISTS() -> None:
+    """§6.1b's trigger reaches the broker, and carries §6.1b:342's own reason.
+
+    Two facts in one drive, because either alone is misleading: the trigger is
+    accepted (so `session.py` can fire it at all), AND the reason the strategy
+    receives is the spec's word `session` rather than the string derived from
+    the trigger NAME (`session_close`). §6.1b:352 fixes that word.
+    """
+    broker = ReconcileBroker(cash=20344.34)
+    ex = _executor(broker, picture=_flat_book(RecordingPictureSink()))
+    target = CloseTarget(trade_id="T-9", symbol="MESU6", strategy_id="S-1")
+
+    action = ex.fire(FlattenTrigger.SESSION_CLOSE, symbol="MESU6", targets=[target])
+
+    assert broker.flatten_calls == ["MESU6"], broker.flatten_calls
+    assert action.trigger is FlattenTrigger.SESSION_CLOSE
+    default_reason = action.outcomes[0].record.reason
+    assert "session_close" in default_reason, default_reason
+
+    # And with the explicit §6.1b reason, which is a DIFFERENT string.
+    broker2 = ReconcileBroker(cash=20344.34)
+    ex2 = _executor(broker2, picture=_flat_book(RecordingPictureSink()))
+    action2 = ex2.fire(
+        FlattenTrigger.SESSION_CLOSE,
+        symbol="MESU6",
+        targets=[target],
+        reason="session",
+    )
+
+    assert action2.outcomes[0].record.reason == "session", action2.outcomes[0].record
+    assert action2.outcomes[0].record.reason != default_reason
+
+
 @pytest.mark.parametrize(
     "trigger",
     [
         FlattenTrigger.SYNTHETIC_STOP,
         FlattenTrigger.STALE_PRICE,
         FlattenTrigger.NET_LIQ_FLOOR,
+        FlattenTrigger.SESSION_CLOSE,
         FlattenTrigger.UNCERTAINTY,
         FlattenTrigger.ORPHAN,
     ],
@@ -344,7 +381,7 @@ def test_fire_REFUSES_the_R4_triggers_LOUDLY_and_names_the_MECHANISM() -> None:
 def test_fire_ACCEPTS_every_LIMITER_FIRED_trigger_and_issues_the_flatten(
     trigger: FlattenTrigger,
 ) -> None:
-    """The five Limiter-fired triggers each reach the broker. The R4 partition is
+    """The six Limiter-fired triggers each reach the broker. The R4 partition is
     proven CLOSED against the whole enum by the union check below."""
     broker = ReconcileBroker(cash=20344.34)
     ex = _executor(broker, picture=_flat_book(RecordingPictureSink()))
@@ -373,7 +410,9 @@ def test_the_R4_partition_covers_the_WHOLE_enum_no_trigger_unhandled() -> None:
             ex.fire(trigger, symbol="MESU6")
             fired += 1
     assert fired + refused == len(FlattenTrigger), (fired, refused)
-    assert refused == 2 and fired == 5, (fired, refused)
+    # ARC 033 / Stage 1 / B: SESSION_CLOSE moved from refused to fired when its
+    # named mechanism (the R4 session calendar, §6.1b) landed. 5+2 -> 6+1.
+    assert refused == 1 and fired == 6, (fired, refused)
 
 
 # ==========================================================================
@@ -395,11 +434,12 @@ class _WireCoupledFlatten(ProtectiveFlatten):
         trigger: FlattenTrigger,
         *,
         symbol: str | None = None,
-        targets: object = (),
+        targets: Sequence[CloseTarget] = (),
+        reason: str | None = None,
     ) -> FlattenAction:
         # WRONG: the wire, on the protective path.
         self._picture.publish(self._picture.current())
-        return super().fire(trigger, symbol=symbol, targets=targets)  # type: ignore[arg-type]
+        return super().fire(trigger, symbol=symbol, targets=targets, reason=reason)
 
 
 def test_zero_wire_the_EXIT_FIRES_with_the_WIRE_REMOVED() -> None:
