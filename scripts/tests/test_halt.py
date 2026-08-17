@@ -496,7 +496,22 @@ def test_the_PRODUCER_and_AWAITED_maps_together_cover_every_cause() -> None:
     assert covered == set(HaltCause)
 
 
-def test_CRASH_LOOP_is_declared_AWAITED_because_supervision_is_R4B() -> None:
-    assert HaltCause.CRASH_LOOP not in PRODUCERS
-    assert HaltCause.CRASH_LOOP in AWAITED
-    assert not any((REPO / rel).exists() for rel in AWAITED[HaltCause.CRASH_LOOP])
+def test_CRASH_LOOP_is_declared_a_PRODUCER_because_ARC_034_built_supervision() -> None:
+    """ARC 034 / sub-agent C landed §12.2's breaker, so this test is the INVERSE
+    of the one it replaces — and the flip is the point: the AWAITED map exists so
+    a "no producer" claim cannot age into false coverage. The claim is checked by
+    EXISTENCE, not by a name."""
+    assert HaltCause.CRASH_LOOP not in AWAITED
+    assert HaltCause.CRASH_LOOP in PRODUCERS
+    assert all((REPO / rel).exists() for rel in PRODUCERS[HaltCause.CRASH_LOOP])
+
+
+def test_every_still_AWAITED_artifact_really_is_ABSENT() -> None:
+    """The other half: a still-awaited path that has quietly landed makes the
+    map's own claim false, which is exactly what ARC 034 had to repair."""
+    for cause, paths in AWAITED.items():
+        for rel in paths:
+            assert not (REPO / rel).exists(), (
+                f"{rel} is declared AWAITED for {cause.value} and EXISTS — "
+                "re-measure the claim"
+            )

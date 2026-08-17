@@ -128,10 +128,16 @@ WHAT THIS MODULE DOES NOT DO — stated, so no green here implies it
   the marker-replay PATTERN and nothing else. A killed Risk Engine is still an
   unprotected position until the Sentinel exists: synthetic stops die with the
   process holding them.
-* **Supervision and the crash-loop breaker (§12.2) are NOT built. They are
-  R4-B.** `HaltCause.CRASH_LOOP` therefore has no producer: nothing counts
-  restarts, so nothing can declare that HALT today. `risks/supervision.config.json`
-  holds the knobs and a config is not a mechanism.
+* **Supervision and the crash-loop breaker (§12.2) LANDED IN ARC 034** (sub-agent
+  C), and this bullet says so because it previously said the opposite and the
+  gate that reads it was built to redden on exactly this transition.
+  `scripts/nixrisk/supervision.py` counts restarts against
+  `risks/supervision.config.json`'s two knobs and declares
+  `HaltCause.CRASH_LOOP` at the cap, so the cause has a producer now. Read the
+  qualifier exactly, because it is the same one every other entry in `PRODUCERS`
+  carries: the producer's own output drives this setter end-to-end, and NO unit
+  on this box is wired to that producer — adopting it is an `OnFailure=` line
+  per unit and is OWED work, not done work.
 * **Stale-data and clock-skew conditions are produced elsewhere in this arc** and
   are not in this worktree. The machine accepts them; no detector calls it here.
 * **Nothing calls `replay_markers` at boot, because nothing in this tree HAS a
@@ -154,6 +160,15 @@ from typing import Any, Protocol, runtime_checkable
 
 from nixrisk.seam import EventKind, EventRow, Plane1Port, TerminalPath
 
+# duplicate-code: ARC 034's `nixrisk/supervision.py` writes its restart ledger
+# with the same append-and-fsync-per-record discipline `HaltMarker` uses, and
+# reads it back with the same refuse-rather-than-skip rule. That is the SAME
+# construction §12.1:610 fixes ("a local append-only marker file ... nothing to
+# fail") applied to a second thing that must survive the process writing it, not
+# copied logic. Factoring the two together would put the §12.5 HALT marker and
+# the §12.2 restart counter behind one abstraction either could change
+# underneath the other.
+# pylint: disable=duplicate-code
 # pylint: disable=too-many-lines
 # The module is over the 1000-line default and the overflow is DOCSTRING, not
 # code: §12.5 is nine lines of frozen spec that decide when money stops, and the
@@ -192,10 +207,10 @@ class HaltCause(enum.Enum):
     a member added here, because deriving the cause set from the code and then
     proving the code covers it is circular and passes while measuring nothing.
 
-    Two of the six name mechanisms that are R4-B and do not exist
-    (`CRASH_LOOP` — §12.2 supervision) or are produced outside this worktree
-    (`STALE_DATA`, `CLOCK_SKEW`). Declaring the cause fixes the vocabulary; it
-    does not claim the detector. See `PRODUCERS` / `AWAITED`.
+    Some of the six name mechanisms produced outside this worktree
+    (`STALE_DATA`, `CLOCK_SKEW`) or by a human (`OPERATOR`). Declaring the cause
+    fixes the vocabulary; it does not claim the detector. `CRASH_LOOP` was in
+    that set until ARC 034 built §12.2's counter. See `PRODUCERS` / `AWAITED`.
     """
 
     STALE_DATA = "stale_data"
@@ -233,6 +248,11 @@ PRODUCERS: Mapping[HaltCause, tuple[str, ...]] = {
         "scripts/nixrisk/survival.py",
         "scripts/nixrisk/gate.py",
     ),
+    #: ARC 034 / sub-agent C. §12.2's breaker counts restarts against
+    #: `risks/supervision.config.json` and calls `set(CRASH_LOOP, ...)` at the
+    #: cap. It moved here FROM `AWAITED` because the artifact landed, which is
+    #: the re-measurement this pair of maps was built to force.
+    HaltCause.CRASH_LOOP: ("scripts/nixrisk/supervision.py",),
 }
 
 #: **The other half of the same measurement, and the more important half.** For
@@ -241,13 +261,11 @@ PRODUCERS: Mapping[HaltCause, tuple[str, ...]] = {
 #: gate goes red and the claim below must be re-measured rather than aging into a
 #: false statement of coverage.
 #:
-#: `CRASH_LOOP` is §12.2's supervision breaker and is R4-B: nothing counts
-#: restarts in this tree, so nothing can declare that HALT. `STALE_DATA` and
-#: `CLOCK_SKEW` are produced by another sub-agent of this arc, in another
-#: worktree. `OPERATOR`'s "producer" is a human, and §12.11's authenticated
-#: transport that carries the verb to the Limiter does not exist either.
+#: `STALE_DATA` and `CLOCK_SKEW` are produced by another sub-agent of this arc,
+#: in another worktree. `OPERATOR`'s "producer" is a human, and §12.11's
+#: authenticated transport that carries the verb to the Limiter does not exist
+#: either. `CRASH_LOOP` LEFT THIS SET in ARC 034 — see `PRODUCERS`.
 AWAITED: Mapping[HaltCause, tuple[str, ...]] = {
-    HaltCause.CRASH_LOOP: ("scripts/nixrisk/supervision.py",),
     HaltCause.STALE_DATA: ("scripts/nixrisk/staleness.py",),
     HaltCause.CLOCK_SKEW: ("scripts/nixrisk/clock.py",),
     HaltCause.OPERATOR: ("scripts/nixrisk/operator.py",),

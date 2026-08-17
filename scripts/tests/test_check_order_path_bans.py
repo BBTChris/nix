@@ -317,7 +317,19 @@ def test_the_control_passes_and_its_evidence_names_what_it_read(
     # the widened scope and still reports 0 banned calls, 0 banned modules, and no
     # retry shape. Re-banked at the figure the gate ITSELF reports on the merged
     # tree, never at arithmetic done here.
-    assert "arm(ii) imported 25 order-path module(s)" in evidence, evidence
+    # ARC 034 / sub-agent C: 25 -> 27, TWO bumps, from
+    # `scripts/nixrisk/supervision.py` (§12.2's crash-loop breaker) and
+    # `scripts/nixrisk/recovery.py` (§4:260-274's orphan/strategy-death
+    # sequencer). D3.192's known cost again, and again from a landed module
+    # rather than a defect: neither declares an order-port verb, neither sends
+    # anything, neither carries a retry shape, and `recovery.py` reaches the
+    # broker only by handing a `FlattenTrigger` to `nixrisk.flatten` — the one
+    # place a flatten is issued (§14). The gate re-scanned the widened scope and
+    # still reports 0 banned calls, 0 banned modules and no retry shape in
+    # arm(ii). Re-banked at the figure the gate ITSELF reported on this tree,
+    # never at arithmetic done here; the integrator re-banks at the MERGED
+    # figure if another sub-agent also adds a module.
+    assert "arm(ii) imported 27 order-path module(s)" in evidence, evidence
 
 
 def test_the_reviewed_suppressions_are_the_two_known_fanouts_and_no_plant_is_pre_silenced(

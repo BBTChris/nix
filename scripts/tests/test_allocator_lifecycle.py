@@ -416,7 +416,12 @@ def test_the_module_states_BOTH_boundaries_in_ONE_place_each() -> None:
     """Directive 3: the gate PRINTS these constants rather than restating them."""
     assert "R5" in lifecycle.RECOVERY_PRODUCER
     assert "flatten.py" in lifecycle.RECOVERY_PRODUCER
-    assert "DOES NOT EXIST" in lifecycle.RECOVERY_PRODUCER
+    # ARC 034 / sub-agent C: the second producer §4:260-274 names LANDED, so the
+    # sentence that said it did not exist would now be false. What must survive
+    # is that the constant still names what is STILL ABSENT — the boundary is
+    # the point, not the particular absence.
+    assert "recovery.py" in lifecycle.RECOVERY_PRODUCER
+    assert "STILL ABSENT" in lifecycle.RECOVERY_PRODUCER
     assert "Scoring process" in lifecycle.SCORE_BOUNDARY
     assert "no persistence, no archive and no EMA" in lifecycle.SCORE_BOUNDARY
 

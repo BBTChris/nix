@@ -510,7 +510,10 @@ def test_the_gate_PRINTS_the_absent_producer_rather_than_restating_it() -> None:
     """
     evidence = _run(REPO).evidence or ""
     assert "WHAT PRODUCES THIS STATE" in evidence
-    assert "DOES NOT EXIST in this tree" in evidence
+    # ARC 034 / sub-agent C: the recovery producer landed, so the old
+    # "DOES NOT EXIST in this tree" clause became false and was replaced. The
+    # gate must still PRINT what is absent — that is the property, not the text.
+    assert "WHAT IS STILL ABSENT" in evidence
     assert "WHAT IS NOT HERE" in evidence
     assert "Scoring process" in evidence
 
