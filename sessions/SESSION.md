@@ -4031,3 +4031,22 @@ The tap session · the push (`main` 22 ahead / 0 behind, clean fast-forward, NOT
 calendar vendor (still unratified; all three preconditions re-measured as unmet, so the conflict gate
 stays unbuilt with its reason recorded) · branch protection · provenance on five untracked artifacts ·
 backup/DR as a gated safety property.
+
+## THE POST-WRITE-BACK RE-MEASURE — MEASURED, and the prediction held
+
+`verify.py` after the write-back commit: **73 passed | 3 failed | 2 cannot measure | 0 skipped |
+1 guarded, exit 1** — byte-identical to the figure immediately before it, same five non-passes, same
+one guarded.
+
+**`ARC 035` IS now in `completed_arcs`, measured directly** — so the D3.40/D3.144 mechanism was live
+and simply had nothing to fire on. That is the difference between this arc's absence-of-transition and
+ARC 034's: ARC 034 predicted absence because no guard happened to name it, while here the eight
+CHECK-A8/CHECK-A9 exclusions **did** name `ARC 035` and were re-owned to `ARC 036` earlier in this same
+phase, deliberately, so that appending this summary could not strand them. A mechanism you defuse on
+purpose and then watch not fire is better evidence than one that never pointed at you.
+
+Banked forward-only (§0h) BEFORE the marker (§16.4 / `CHECK-A10`).
+
+**Cleanup:** the four `arc-035-*` worktrees and branches this arc created are removed
+(`git worktree list` shows only `/home/bbt/nix`); scratch Plane-1 databases dropped; the
+`registry.json.proposed` scratch file removed. **Canonical path: `/home/bbt/nix`.**
