@@ -3941,3 +3941,93 @@ predicted. **This arc predicted its ABSENCE and got it** — every guard and exc
 `ARC 035`, so `completed_arcs` gaining ARC 034 could not change `guard_owner_defect`'s answer for any
 row. A mechanism you can only predict in one direction is a mechanism you have not understood; this is
 the same one read forwards, and it was falsifiable in exactly the same way.
+
+---
+
+# ARC 035 — Plane-1: The Durable Record (2026-08-17)
+
+**Canonical path: `/home/bbt/nix`** (absolute; never relocated).
+
+**Shape:** Phase 0 serial and blocking · Stage 1 four parallel sub-agents from provisioned worktrees ·
+Stage 2 serial integration · Phase 4 close-out. 17 stages, echoed at kickoff.
+
+## What landed
+
+**Phase 0.2 — the four-artifact ceiling breach discharged BY REAL COVERAGE**, not by a fourth walk and
+not by an exclusion. `checks/check_venv_lock.py` drives six arms of real two-process `flock`
+contention (the probe must name the holder's pid; the refusal must name the lock path; the blocking
+acquire must actually wait; `SIGKILL` of the holder must free it). `checks/check_monitor_tui.py`
+executes all three MON-1 artifacts and pins `harness.py`'s failing set **two-way**. D3.113 had recorded
+that *"a plant here would measure nothing"*; the plants redden, so that sentence is refuted by
+measurement rather than argued with. The `artifacts` bucket is empty; the gate is GUARDED, not FAIL.
+
+**Phase 0.4 — Plane 1 frozen.** `databases/schema/plane1.sql` v1.0.0 + `docs/nix_plane1_schema_spec.md`
++ `checks/check_plane1_schema.py`, live on PostgreSQL 18.4 as `nix_plane1`. Append-only enforced by
+**privilege, not trigger**, and proven **by attempt**: UPDATE/DELETE/TRUNCATE as `nix_limiter` and
+INSERT as `nix_reader` all refused with SQLSTATE 42501, against a control INSERT that succeeds. Sixteen
+plants, including a grant on ONE PARTITION — which the parent-level catalog read and the parent-level
+attempt both walk straight past.
+
+**Stage 1 — four sub-agents** built the Postgres commit sink and sole-writer proof (A), the positions
+projection and cold-start reconciliation against broker truth (B), §12.4's degraded-persistence ladder
+against a real ephemeral cluster crashed with `pg_ctl -m immediate` (C), and the §11-item-7 full-scan
+drift audit with materiality derived rather than typed (D).
+
+## The three things this arc learned
+
+**1. A CORRECTNESS FIX ARMED A LATENT DEFECT AND IT CORRUPTED THE REPOSITORY.** `harness.py` made five
+git subprocess calls without the D3.22 scrub. Under a hook git exports `GIT_DIR`/`GIT_INDEX_FILE` and
+`git -C` does not override them. It rewrote a live worktree's index (~430 paths staged as deletions,
+`seed.txt` staged into a repository that never contained it) and wrote **`core.bare = true` into the
+canonical tree**. It was dormant for four arcs behind a hard-coded path from another machine — and
+ARC 035 Phase 0.2 fixed that path AND registered a check that executes the harness inside every commit.
+Repaired, and held by a both-halves regression suite. **D3.205.** Writing that suite then found the
+same class twice more, both times in the instrument: `GIT_WORK_TREE` masked the control completely, and
+an unscrubbed `git status` in the test's own reporting call reported the whole tree as deleted.
+
+**2. A FULL DISK REPORTS AS 234 TEST REGRESSIONS.** `shutil.ignore_patterns` matches exactly, so
+`".venv"` never matched `.venv-dev`, and zero of seven tree-copying fixtures named it — 15 G of a 31 G
+tmpfs. Every one of the 234 failures looked like a regression in the running arc. **D3.206.**
+
+**3. ALL FOUR SUB-AGENT SELF-AUDITS SURVIVED A SESSION CAP** that killed all four mid-flight — the
+third arc running (D3.191). The difference is that the dispatch brief required them written and
+committed BEFORE the code. Sub-agent D's audit corrected this arc's own brief: §12.10 has six
+dual-plane rows, not one.
+
+## Integration found four defects every branch was green over
+
+The sole-writer detector firing on a sibling's fixture conduit (ruled, and the exemption is now
+MEASURED by a new arm that drives its two premises); a seam member one branch added and another's
+mapping did not cover, caught only by a totality test — without it the sink would have raised in
+production on the one event whose purpose is to report that the books disagree; four false RESOURCES
+declarations, two of them in this arc's own Phase-0.2 gates (D3.140's interpreter split); and D3.192's
+literal bumped to 30/31/30 by three blind worktrees when the merged gate's own figure is 34.
+
+## Close-out, measured
+
+`verify.py` **73 passed | 3 failed | 2 cannot measure | 0 skipped | 1 guarded, exit 1 — identical under
+both documented interpreters.** pytest **2885 passed, 0 failed, 2 skipped, 2 xfailed** (+239 on ARC
+034). Census **79 three ways**; derived plan identical to the live registry. CHECK-DEBT **211 → 220**,
+derived by the tool's own row scan and never typed.
+
+The three FAILs, each named: `check_ibgateway_service` (the tap session, owed by twenty-two arcs);
+`check_uncalled_entry_points` (carried — the baseline was NOT widened to absorb this arc's own growth);
+`check_untracked_attribution` (five artifacts in the canonical tree that no commit accounts for, two of
+which appeared today and were not created by this arc). Both cannot-measures are §17 masking by the
+dead Gateway port.
+
+## What this arc did NOT do
+
+**Plane 1 is BUILT and NOT WIRED**, and no green here may be read as *"Plane 1 is recording"*: every
+new module's only callers are gates, tests and drills, because there is no Limiter run loop to call
+them from, and `seam.EventKind` still cannot emit `filled` — the event the projection is mostly a fold
+of. **D3.213.** Stage 2's drills were not run as a single composed end-to-end run; Stage 3.2's
+observer sweep and Stage 3.4's binding table were not run and are owed. Nothing here drops the page
+cache, so no claim is a power-loss test. The live `nix_plane1` database was never taken down.
+
+## Operator items still open
+
+The tap session · the push (`main` 22 ahead / 0 behind, clean fast-forward, NOT pushed) · the SPEC-A10
+calendar vendor (still unratified; all three preconditions re-measured as unmet, so the conflict gate
+stays unbuilt with its reason recorded) · branch protection · provenance on five untracked artifacts ·
+backup/DR as a gated safety property.

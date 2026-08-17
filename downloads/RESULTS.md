@@ -1,214 +1,290 @@
-# ARC 034 — R4-B: The Sentinel and the Called Cap — RESULTS
+# ARC 035 — Plane-1: The Durable Record
 
-**Canonical path: `/home/bbt/nix` (absolute).** Overwritten per arc, not appended.
+**Canonical path: `/home/bbt/nix`** (absolute; never relocated).
+**Module:** Postgres / Plane-1 (Core 4–5 shared pool) + the Limiter's persistence path (sole writer).
 
+---
 
-# ARC 034 — R4-B: The Sentinel and the Called Cap (2026-08-17)
+## THE HEADLINE: A CORRECTNESS FIX ARMED A LATENT DEFECT AND IT CORRUPTED THE REPOSITORY
 
-**Canonical path: `/home/bbt/nix` (absolute).** Interpreters stated: `/usr/bin/python3` **3.14.4**
-and `/home/bbt/nix/.venv/bin/python` **3.14.4**. (`.venv-dev` lacks `zmq` — 8 collection errors; it
-is not the test interpreter, measured rather than assumed.)
+`scripts/harness.py` made five `git` subprocess calls without the D3.22 scrubbed environment. Under a
+git hook, git **exports** `GIT_DIR` and `GIT_INDEX_FILE`, and **`git -C <fixture>` does not override
+them** — `-C` changes the working directory; repository discovery stops at the inherited `GIT_DIR`.
 
-## THE CAVEAT EVERY ARC SINCE R2-B CARRIED IS GONE
+Measured consequences, not inferred: a live worktree's index reduced to one entry with ~430 tracked
+paths staged as deletions; `seed.txt` — a string that exists nowhere but `harness.py` — staged into a
+repository that has never contained it; and **`core.bare = true` written into the canonical tree's own
+config**, which is why `git status` in `/home/bbt/nix` began answering *"this operation must be run in
+a work tree."* Seven `git ls-files`-based gates below it then failed their non-vacuity floors, because
+the tree they measure had been emptied. **Seven "regressions" with one cause, none of them in the code
+they named.**
 
-A killed Risk Engine is no longer an unprotected position. The §12.1 Sentinel exists, on its own
-package and its own code path, and it was proven against a **genuinely killed Limiter** — not a mock
-of one: a real publisher subprocess SIGKILLed by pid, kernel-reaped `-9`, with a **separate real
-process** observing `first_seen → progressing ×7 → frozen`, firing both detectors, and flattening
-`['MES','MNQ']` while attributing the act to that exact pid. The control arm — identical but with the
-kill removed — produced 75 wakes, **zero** causes, **zero** broker calls and no marker file at all.
-`nixrisk` in the Sentinel's import closure, measured in a clean child interpreter: **`[]`**.
+It had been dormant for four arcs behind a hard-coded `/home/claude/work/monitor.py` — an absolute
+path from another machine — which made the module `sys.exit` before `build()` ever ran. **ARC 035
+Phase 0.2 fixed that path, and in the same phase registered `check_monitor_tui`, which EXECUTES the
+harness inside every commit.** A latent defect plus a correctness fix equals an outage, and nothing in
+this tree gates for that pairing. Found by sub-agent C from a worktree, reproduced by the integrator
+against a throwaway victim, repaired at all five call sites, and now held by
+`scripts/tests/test_harness_git_isolation.py` — which carries a **both-halves control**: the
+unscrubbed copy must corrupt a victim, the shipped one must leave its index byte-identical.
 
-**And the cap is CALLED.** `StopBook.arm` and `PositionOriginWriter.on_fill` had zero production
-callers since ARC 029 and ARC 033 respectively, so §7:501's bucket cap priced held positions off a
-field nothing populated. `check_fill_handler` drove **4 confirmed fills** through the shipped
-`LimiterFillSink → FillHandler` and **observed** the steps as `[ARM_STOP+RELEASE_REMAINDER+ORIGIN_WRITE]`.
-The brief was sharp about this and it was honoured: a test that calls `arm` directly re-proves ARC 033's
-mechanism — the new thing is that a **fill** calls it, and the sequence is read off what ran.
+**Writing that test found a second §7.12 hazard in the instrument itself.** The first draft exported
+`GIT_WORK_TREE` as well, and that **masks the defect completely** — with it set the fixture's
+`git -C <fixture> add -A` resolves its worktree to the victim and re-adds the victim's own files, so
+the index comes back byte-identical and the control goes silent: `30d7c773 -> c46768e2` without it,
+`0df6ce02 -> 0df6ce02` with it, same code, same harness. The control passed vacuously and the only
+reason anyone knows is that a control was written at all. **Then the commit gate caught the same class
+a third time**, in this test's own reporting call: an unscrubbed `git status` inside a hook compares
+the REAL repository's index against the victim's working tree and reports the entire Nix tree as
+deleted. D3.22, three times in one arc, twice on the instrument built to police it. Recorded as
+**D3.205**.
 
-## THE BRIEF'S §0a PREDICTION WAS RIGHT, AT FIVE TIMES THE SCALE IT GUESSED
+---
 
-It said to assume one more "built but never called" gap. Phase 0.5's audit of ARC 033's six gates
-found **five of six modules with ZERO production importers** and **170 of 176 public symbols with zero
-production callers** — `pollers.py`, `halt.py`, `blackout.py`, `session.py`, `roll.py`, with
-`freshness.py` imported only by `pollers.py`, which nothing reaches. **91 findings, six of six gates
-AUDITED-WITH-FINDINGS, none clean**, most CONFIRMED by breaking the subject in a scratch tree and
-watching the shipped gate still pass. Recurring shapes: the gate reads its expected value out of the
-subject it polices (**all six**); fail-closed branches undriven because the gate's own doubles cannot
-produce the input (five of six); non-vacuity floors that are arithmetic identities (`300 < 100`);
-boundary instants never driven; and `debug.md` §7.12 *"Closed:"* claims that are **false** — in three
-cases the sentence naming the closure describes the hole.
+## PHASE 0 — CORRECTIONS, CARRIED RULINGS, AND THE SCHEMA FREEZE
 
-**Three of those were fail-open hazards in shipped safety code and were fixed this arc:**
-`blackout.py` fail-closed on `CacheState.EMPTY` only, so `STALE` read as CLEAR while §6.5's
-disjunction includes data-stale; `pollers.py` set the push stamp unconditionally against a SIGNED idle
-comparison, so one future-dated push pinned `FALLBACK_AUDIT` through 24 h of total websocket silence;
-`halt.py` keyed marker replay on a per-instance `seq` with no boot identity, so a HALT booked in one
-boot suppressed a DIFFERENT unbooked HALT in the next and `archive` renamed the evidence away.
+### 0.1 — the re-measure, and a self-inflicted measurement error reported against myself
 
-**Also measured false, and it had been load-bearing:** two gates justified their own under-measurement
-with *"the runtime `.venv` `verify.py` runs under has no pytest."* **pytest 9.1.1 IS in
-`/home/bbt/nix/.venv`.** Coverage had been displaced into suites `verify.py` never runs, on a claim
-false on the shipped tree.
+`verify.py` on trunk under **both documented interpreters** — `.venv/bin/python` (3.14.4) and
+`/usr/bin/python3.14` — returned **64 passed | 3 failed | 2 cannot measure | 0 skipped, exit 1**:
+byte-identical to ARC 034's banked close. Census 69 three ways. No delta. (`.venv-dev` returns
+`57 | 3 | 9 | 0`; it is the *test* venv with no `zmq`, not a documented launch mode, and that
+distinction is why the figures differ.)
 
-## THE NEW DETECTOR'S FIRST ARMED RUN CAUGHT THE ARC THAT BUILT IT
+**The pytest half of 0.1 is CONTAMINATED and is reported as such rather than quietly re-run.** A
+24-minute full-suite run was started and then the tree was edited under it, so its `2 failed, 2645
+passed` mixes two tree states. It is not a valid ARC 034 baseline. The honest figure is the quiescent
+close-out run below.
 
-`check_uncalled_entry_points` generalises D3.178 to the production level: 850 public entry points over
-78 shipped + 70 gate modules — 503 CALLED, 43 GATE-ONLY, 153 UNCALLED, 151 CANNOT-RESOLVE *reported
-and never counted as a finding*, 7901 references ruled out by receiver type. **Its non-vacuity is
-measured, not a floor picked to pass:** with receiver resolution OFF it yields 94 findings against 196
-ON, so 102 findings exist ONLY because a receiver was resolved — a gate that could not tell those
-apart would be a grep. Its limits are in its own evidence: dynamic dispatch is invisible, and a call
-SITE is not proof the site executes.
+### 0.2 — the four-artifact ceiling breach, DISCHARGED BY REAL COVERAGE
 
-On the merged tree its baseline gained commit history, the ratchet armed at high-water 193, and it
-immediately reported **17 rows of NEW uncalled surface in ARC 034's own modules**. **The baseline was
-NOT widened to swallow them.** The gate offers three outs — *wire it, delete it, or admit it by name* —
-and admitting an arc's own growth into the baseline of the detector that arc just built would make the
-instrument's debut a demonstration of how to route around it. The red is **CARRIED**, recorded as
-D3.203 naming every row.
+ARC 034 carried `check_artifact_gate_coverage` as a FAIL: four `artifacts` rows re-owned
+`ARC 031 -> 032 -> 033 -> 035`, three re-ownings against an operator ceiling of two (D2.31). The brief
+forbade both cheap discharges — another walk, and an exclusion. Neither was taken.
 
-## WHAT THE MERGED TREE FOUND THAT FOUR GREEN WORKTREES COULD NOT
+* **`checks/check_venv_lock.py`** — six arms of REAL two-process `flock` contention. A child
+  interpreter takes the lock; the parent's `probe_lock` must report HELD **and name the child's pid**
+  (a probe seeing its own hold is otherwise indistinguishable from a correct one); a non-blocking
+  acquire must raise `VenvLockHeld` **naming the lock path**; `blocking=True, timeout=T` must **wait at
+  least T** and then raise; and `SIGKILL` of the holder must free it — the arm that separates a real
+  `flock` from a hand-rolled lockfile that wedges the box forever when its owner dies. Ten plants, one
+  unmutated CONTROL.
+* **`checks/check_monitor_tui.py`** — executes all three MON-1 artifacts for real. D3.113 recorded the
+  disposition as *"a plant here would measure nothing"*; **the plants redden, so that sentence is
+  refuted by measurement rather than argued with.** `harness.py`'s failing set is pinned **two-way**: a
+  failure not in the pin is a regression, a pinned failure that stops failing is a stale pin. A
+  one-directional accepted set rots.
 
-**A real cross-branch defect.** Sub-agent D added a required `boot` argument to
-`HaltMarker.record_set`; sub-agent C's `nix_crash_loop_halt.py` calls the old signature. Both branches
-were internally consistent and `check_supervision` PASSED in C's worktree; on the merged tree the
-actuator raised `TypeError`. Fixed at the call site with the KERNEL's `boot_id` rather than a fresh
-uuid — a uuid per invocation would make every systemd restart look like its own boot and defeat the
-exact collision the argument exists to prevent.
+`artifacts` is now empty — a SHRINK, which needs no admitting arc — and the gate is **GUARDED**, not
+FAIL.
 
-**D3.192's literal caught a THIRD arc's blind bump.** Sub-agents A and C each independently measured
-the order-path count as `25 → 27`; both were locally right and globally wrong. The merged figure the
-gate itself reports is **29**. The literal is the only reason the disagreement was ever visible, and it
-is re-banked at the gate's own merged measurement, never at either branch's arithmetic.
+**A real flake was measured, on the same page as the §7.12 sentence predicting it.**
+`pty: survives resize storm` passed 5/5 serially and 4/4 under four-way concurrency, and failed once
+inside a loaded pytest run. It is a deadline assertion, so a busy scheduler and a broken subject are
+indistinguishable there. **Widening ARM 2 to tolerate it was the cheap fix and is refused** — a
+tolerated failure is invisible, a CANNOT_MEASURE is loud. One arm is listed because one was observed;
+`pty: still alive after force probe` is arguably the same class and is deliberately NOT listed, because
+adding an arm on suspicion converts a real future break into a shrug. **D3.204** — which sub-agent D
+then measured was cited by *seven* places in shipped code and *zero* in the ledger, one of them printed
+into an operator-facing verdict. The number was free; the row is now written.
 
-## A SESSION CAP KILLED THREE SUB-AGENTS MID-FLIGHT — THE SAME SHAPE AS ARC 033'S D3.191
+### 0.3 — carried operator rulings: reported, not acted on
 
-1A, 1C and 1D were terminated with complete work staged on disk and uncommitted. §0d is explicit that
-an mtime is not history. Each was **measured before being banked, never after**: 1A's four gates PASS
-with 86 tests; 1C's four gates PASS with 192 tests; 1D's six gates PASS with 173 tests. Then committed,
-then merged. **What was lost is each author's own §0a self-audit for 1A, 1C and 1D** — the same loss
-D3.191 records, and the integrator cannot reconstruct reasoning it did not do. **Sub-agent B's survived
-and it is worth reading:** it found the hazard stated backwards it was told to expect — the acted-latch
-was set on the *flat* path, on reasoning true only *after* a flatten, so an order in flight at the
-instant the Risk Engine died would have been ignored for the rest of the episode. **The one case where
-re-asking the broker matters most was the one it stopped asking in.**
+* **PUSH.** `main` is **22 ahead / 0 behind** `origin/main` — a clean fast-forward, re-confirmed after
+  `git fetch --prune`. **NOT PUSHED.** Operator's call.
+* **SPEC-A10 vendor.** Still **UNRATIFIED**, and all three preconditions re-measured as unmet:
+  `blackout.CALENDAR_SOURCES` is `("scripts/crucible/calendar_data",)` — exactly one source;
+  `dev_and_services_plan.md` names no calendar vendor; there is no live calendar poller. The
+  conflict gate therefore stays **unbuilt with its reason recorded**, and no second source is
+  manufactured. The buildable half — the ratchet that reddens if a second source ever appears without
+  a flagging path — is built and live.
+* **Branch protection.** ARC 032's ruleset is drafted and **NOT APPLIED**. Outward-facing GitHub
+  state, operator's alone. D3.141 still stands: there is no CI, so applying it today would block every
+  PR rather than protect anything.
 
-## THE RE-OWNING CEILING REFUSED MY OWN COMMIT, AND THAT IS THE RATCHET WORKING
+### 0.4 — the Plane-1 schema, FROZEN
 
-Phase 0.6 re-owned twelve stale `ARC 033` guard owners to `ARC 035`. Eight are ceiling-exempt
-exclusions; **four `artifacts` rows were already at 2-of-2 and my commit banked the third move**,
-exceeding the operator-ruled ceiling of two (D2.31, ARC 027). `check_artifact_gate_coverage` is
-therefore **FAIL** and carried. Three of the four are the deprecated MON-1 TUI whose own row says *"a
-plant here would measure nothing"*; the fourth is textbook CHECK-A9 shape. Both are exclusion-shaped —
-**but moving them there requires a recorded `CHECK-A<n>` architect ruling, and rule 14 exists precisely
-because the gate cannot tell an authorised move from a laundering one.** Doing it on my own authority
-to escape a ceiling I had just tripped would BE the laundering. It is put to the architect, not taken.
+`databases/schema/plane1.sql` (v1.0.0), `docs/nix_plane1_schema_spec.md`,
+`checks/check_plane1_schema.py`, live database `nix_plane1` on PostgreSQL **18.4**.
 
-## SEAMS, AND THE PROOF THAT THEY MEASURE SOMETHING
+**Append-only is enforced by PRIVILEGE, not by trigger,** and the argument is in the file: a
+`BEFORE UPDATE ... RAISE` trigger is dropped by the owner, disabled by one `ALTER TABLE`, skipped
+wholesale by `session_replication_role = replica`, and **never fires on `TRUNCATE` at all**. A missing
+GRANT has none of those bypasses. The gate treats the *presence* of a trigger on the log as a defect,
+even though a trigger only adds a restriction — because it would make the weak mechanism look like the
+strong one to whoever reads the DDL next.
 
-Two frozen in Phase 0.6 and each gated: the **Sentinel seam** (its own broker session, the watched
-heartbeat, the append-only marker format) and the **fill-handler seam** (where `on_fill` arms the stop
-and calls the origin write). `SentinelBrokerPort`'s verb list IS §14's authority boundary as a type —
-`connect`, `open_positions`, `flatten_all`, `disconnect`, and nothing that opens, sizes, amends or
-routes. `FillStep` is an `IntEnum` whose **values are the order**, so a gate asserts the sequence from
-observed values rather than source order.
+**Proven BY ATTEMPT, which is what the brief demanded:** `UPDATE`, `DELETE` and `TRUNCATE` as
+`nix_limiter`, and `INSERT` as `nix_reader`, are each refused with **SQLSTATE 42501** — against a
+CONTROL `INSERT` as `nix_limiter` that SUCCEEDS, because a refusal is only evidence beside a permission
+that works.
 
-**40 tests prove the gates redden**, each copying the subtree to a scratch home, mutating ONE declared
-property, and driving the SHIPPED gate against the broken tree: a dropped marker field, a **renamed**
-marker field, a removed `MarkerPhase` member, an `async def` verb, a widened broker port, a `truncate`
-on the writer, behaviour in the seam, a reordered `FillStep`, `IntEnum` downgraded to `Enum`,
-`StopArmPort` gaining `forget`, the mint rule flipped. An unmutated control PASSES, so every red is
-attributable to its mutation rather than to the harness.
+**The gate's own can-fail suite found a hole in the gate.** The reader-INSERT probe was refused with
+the right SQLSTATE over a database where the reader really DID hold INSERT — because the reader lacks
+`USAGE` on the sequence the `event_id` DEFAULT calls, and **a sequence refusal carries the same
+42501**. Check-contract rule 11 recurring one level down: the code was right and the OBJECT was wrong.
+The arm now asserts `permission denied for table plane1_event_log` as well.
 
-**D3.177's collapse was already shipped and is now closed.** `positions.identity_trade_id` returns
-`order.client_order_id` unchanged — the exact hard-coded equality the architect ruling forbids, and
-unfalsifiable because no observation could contradict it. Production now mints distinct ids, measured:
-`TRD-00000003-strat-es`, `TRD-00000004-strat-nq`.
+**Sixteen plants.** The brief's named one — `GRANT UPDATE ON plane1_event_log TO nix_limiter` — reddens
+both the catalog arm and the attempt arm. The sibling that matters almost as much is a grant on **one
+partition**: PostgreSQL checks the table a statement *names*, so `UPDATE plane1_event_log` stays refused
+while `UPDATE plane1_event_log_2026_08` succeeds, and a parent-only audit would call that database
+append-only. Also planted: DELETE, TRUNCATE, a second writer, an enum member missing, an enum member
+§12.10 never authorised, a nullable `reason`, a trigger, the exactly-once index dropped, an
+*over*-restricted projection (a schema that is beautifully append-only and impossible to reconcile),
+and a writer with no rights at all — which is CANNOT_MEASURE, not four free greens.
 
-## CLOSE-OUT
+### And the disk, which reported as 234 test failures
 
-`verify.py` **64 passed | 3 failed | 2 cannot measure | 0 skipped**, exit 1 — **identical under both
-documented interpreters**. pytest **2646 passed, 1 failed, 2 skipped, 2 xfailed** (from ARC 033's
-2343 — **+303 tests**); the single failure is the carried re-owning ceiling above. Census **69 three ways** (69 on disk, 69 in `registry.json`, 64+3+2+0=69 in
-the run); the derived plan is identical to the live registry. CHECK-DEBT **201 → 211**, re-derived
-rather than typed: row scan and series table both read 211, `check_derived_claims` reports 0
-restatements across 13 claims.
+The first attempt to bank Phase 0 returned `45 failed, 189 errors`. Every one resolved to
+**`[Errno 28] No space left on device`**. `/tmp` is a 31 G tmpfs; `/tmp/pytest-of-bbt` held 15 G across
+27 retained sessions. Cause: `shutil.ignore_patterns` matches **exactly**, so `".venv"` does not match
+`.venv-dev`, and **zero of the seven tree-copying fixtures named it** — `test_check_halt.py` ignored
+only `__pycache__` and copied both venvs and `.git` besides. Fixed at all seven and **measured**: the
+same suites now run 83 passed and grow `/tmp` by 0.4 G where they previously grew it by gigabytes.
 
-The three FAILs, every one named: `check_ibgateway_service` (the tap session, by design, owed by twenty
-arcs); `check_artifact_gate_coverage` (the re-owning ceiling above, awaiting an architect ruling);
-`check_uncalled_entry_points` (the new detector's carried red, D3.203). The two cannot-measures are
-`check_ibgateway_config` and `check_observed_resource_claims`, both §17 masking by the same dead port.
+**The failure mode is the part worth keeping: a full disk does not report itself as a full disk.** It
+reports as 234 failing tests across twenty unrelated subjects, every one of which looks like a
+regression in whatever arc is running. **D3.206.**
 
-**WHAT WAS NOT RUN, stated rather than implied.** Stage 2's drills were not executed as separate
-integrated end-to-end runs; their substance is carried by gates that drive the real thing
-(`check_sentinel_deadman` performs the actual kill, `check_fill_handler` drives real fills,
-`check_orphan_recovery` drives the real flatten executor), but a single composed drill across all three
-was not run. **The binding census was not re-run on the merged tree** — the ARC 033 figure (BOUND=60,
-ENR=1, UNBOUND=0 over 1912 observations, measured at Phase 0.1) is the last one taken and it predates
-six new gates. Both are owed. A non-stop guarantee proven in sim is **not** proven live; there is no
-venue on this node and every broker in every arm is a double. Scoring/EMA persistence is R5 — the
-lifecycle transitions are wired and the boundary is stated. No systemd unit was enabled, started or
-installed and no `daemon-reload` was run: this box carries a live IB Gateway service.
+---
 
-**Operator items still open:** the push (`main` measured **11 ahead / 0 behind**, a clean fast-forward
-— the brief's "~105" was stale); the SPEC-A10 calendar vendor (still unratified, so the
-calendar-source-conflict gate stays unbuilt with its reason recorded and no second source
-manufactured); the re-owning-ceiling ruling; and provenance on three untracked status-board artifacts
-that sit in the canonical tree in no commit on any branch — **not committed, not moved, not deleted.**
+## STAGE 1 — FOUR PARALLEL SUB-AGENTS, ALL KILLED, ALL FOUR SELF-AUDITS SURVIVED
 
-## WHAT INTEGRATION FOUND THAT NO WORKTREE COULD — 25 RED TESTS, EVERY CAUSE NAMED
+A session cap terminated all four mid-flight — the **third arc running** (D3.191). What is different
+is a measurement, not a hope: **the dispatch brief required the §0a self-audit written and committed
+BEFORE the code**, and all four survived. ARC 033 and ARC 034 lost exactly this, and an integrator
+cannot reconstruct reasoning nobody wrote down.
 
-The four sub-agents' suites were green in their own worktrees and **25 tests failed on the merged
-tree.** Not one was a defect in the subject; every one was a cross-branch effect, which is the whole
-argument for measuring where the code will actually live.
+Sub-agent B's worktree index showed 412 phantom staged deletions — the harness defect above, caught in
+the act. Rebuilt from HEAD without touching its working tree; every file was intact.
 
-**Eleven + eight from one root cause.** `test_check_supervision.py` and `test_check_orphan_recovery.py`
-copy a scratch home from a hand-written manifest of five `risks/*.config.json`. Sub-agent B added
-`risks/sentinel.config.json` and widened `risk_config.OWNED_MODULES` in a parallel worktree, so on the
-merged tree the validator refused a config the scratch home did not contain and **the CONTROL went
-CANNOT_MEASURE before a single plant had been applied** — nineteen red tests, none of them about
-either gate's subject. Both manifests now DERIVE the config set from the directory, because the
-authority for which configs must exist is `risk_config.OWNED_MODULES` and not a list in a test file.
-That is deliberately not the self-agreement shape §0a warns about: nothing is asserted against it, it
-is only what gets copied into the venue.
+Each branch's own suite was measured **before** being banked, never after: **A 121 passed · B 88 ·
+C 77 · D committed with its gate PASS**.
 
-**One stale literal anchor, failing exactly as designed.** `test_an_ACTUATOR_THAT_WRITES_NO_HALT_MARKER`
-plants a removal keyed on the verbatim `record_set(...)` call, which the `boot`-argument fix moved. It
-reported *"anchor appears 0 times, not once"* and went red rather than silently planting nothing —
-`debug.md` §8 failure mode #4 caught by the instrument written against it.
+**What the four built.** A: the Postgres commit sink (`plane1_sink.py`), the provisioner, the
+sole-writer gate proven by attempt, the §11-item-6 hot-path drill with a slow-sink control, and the
+per-event-type coverage gate. B: the positions fold (`projection.py`), the fixture conduit
+(`plane1_seed.py`), cold-start reconciliation against broker truth, and the crash-gap drill on its own
+ephemeral cluster crashed with `pg_ctl -m immediate`. C: `degraded.py` — §12.4's ladder, including the
+`PersistenceHaltFlag` wiring that did not exist, so that "the gate still approves during a Postgres
+outage" is only evidence next to "the gate denies under disk-critical". D: the §11-item-7 full-scan
+drift audit over all six of §11 item 3's aggregates, with materiality **derived** from
+`reservations.AUDIT_TOLERANCE` and `reservations.MIN_MARGIN` rather than typed.
 
-**And the two best failures in the arc, both from `check_uncalled_entry_points`:**
+**Sub-agent D corrected this arc's own dispatch brief.** I wrote that §12.10's table *"marks
+drift-audit as the one event ✅ in both planes"*. Read against the frozen document that is false in the
+direction that matters — **six** rows are dual-plane. A gate anchored to that misreading would be green
+today and red the moment anything else was wired. D asserted the both-planes requirement and asserted
+nothing about uniqueness.
 
-The calibration test asserted `StopBook.arm` and `PositionOriginWriter.on_fill` are UNCALLED — the
-D3.178 pair the detector was built around. On the merged tree it reports both as **`called`**. *A
-second instrument, written by a different author against a different question, independently confirms
-that D3.178 is closed.* The assertion is INVERTED rather than deleted, so removing the wiring reddens
-it instead of letting the fix rot silently.
+---
 
-The ratchet then **TIGHTENED by 16 rows** — all six `fill_seam.py` ports, five `nixsentinel/seam.py`
-ports, `StopBook.arm`, `PositionOriginWriter.on_fill`, `HaltFlag.set`, `CommitResult.ok`, `Plan.ok` —
-every one of which is now genuinely wired in shipped code. A one-way ratchet is allowed to move in
-exactly that direction and did.
+## STAGE 2 — INTEGRATION: FOUR DEFECTS EVERY BRANCH WAS GREEN OVER
 
-**One transient observed and reported rather than hidden:** an intermediate `verify.py` run showed
-`check_plane2_across_kill` as cannot-measure; the authoritative final run does not. It is a kill-drill
-check on a loaded box and this is recorded as an observed flake, not as a clean result.
+1. **The sole-writer collision.** A built the §12.10 detector; B built a module that composes INSERTs
+   against the log. Neither could see the other; A's ARM B1 fired on B's file the first time both were
+   in one tree. **RULED, and the exemption is MEASURED rather than argued:** a new ARM B1b drives the
+   two properties it rests on — writes only under `SET ROLE nix_limiter`, and `seed()` **REFUSES the
+   production database, proven by calling it** and requiring a raise that names the database. Strike
+   either and the gate reddens. That is the difference between an exemption and a hole.
+2. **The `EventKind` gap.** D added `EventKind.DRIFT_AUDIT` to the frozen seam; A wrote the sink's
+   event-type map against a seam that did not have it.
+   `test_the_mapping_is_TOTAL_over_the_frozen_EventKind` named exactly one member. **Without that
+   totality test the sink would have raised at group-commit time in production, on the one event whose
+   entire purpose is to report that the books disagree.** The schema needed nothing —
+   `plane1_event_enum` already carried `drift_audit` from the Phase-0.4 freeze. A's
+   `UNROUTABLE_PLANE1_EVENTS` census then went 5 → 4, and its own entry had predicted it: *"the audit
+   itself is sub-agent D's mandate; no `EventKind` member exists for it yet."*
+3. **Four false resource declarations**, all caught by `check_observed_resource_claims` on the merged
+   tree. Two were the new gates' ephemeral clusters writing thousands of files under `/tmp` while
+   declaring only subprocesses. **Two were this arc's own Phase-0.2 gates**: `check_monitor_tui` and
+   `check_venv_lock` declared `subprocess:python`, `covers()` matches by BASENAME, and under the system
+   interpreter they spawn `/usr/bin/python3` — a declaration TRUE under one documented launch mode and
+   FALSE under the other. D3.140 exactly, landing on my own work.
+4. **D3.192's shape, for the fourth arc running.** Three sub-agents each bumped
+   `check_order_path_bans`' module-count literal from a blind worktree: A said 30, B said 31, C said
+   30. **The merged gate's own figure is 34** — larger than all three. The literal is the only reason
+   the disagreement was ever visible, and it is re-banked at the gate's printed evidence, never at
+   anybody's arithmetic.
 
-## THE POST-WRITE-BACK RE-MEASURE, PREDICTED IN WRITING BEFORE THE COMMIT THAT COULD CAUSE IT
+**The two-way pin caught its own arc.** `check_monitor_tui`'s KNOWN_RED moved by exactly two arms —
+`3a ETA is None` FAILING → PASSING and `4I whole-job ETA present` PASSING → FAILING — and both moves
+have one cause: before the git-scrub repair the fixture repository was never actually created, so
+`monitor.py` computed its ETAs against a repository with no history. A one-directional accepted set
+would have swallowed the regression and never noticed the repair.
 
-D3.40/D3.144's mechanism fires when a write-back makes this arc a completed arc and a guard names it.
-**Prediction, recorded before the write-back commit: NOTHING MOVES.** Every guard owner and every
-exclusion owner in `checks/gate_coverage_baseline.json` names `ARC 035`, not ARC 034, so
-`completed_arcs` gaining ARC 034 cannot change `guard_owner_defect`'s answer for any row. The three
-arcs before this one each predicted a transition and got one; this arc predicts the absence of one,
-which is the same mechanism read forwards and is falsifiable in exactly the same way.
+---
 
-Banked forward-only (§0h) BEFORE the marker (§16.4 / `CHECK-A10`), whichever way it comes out.
+## CLOSE-OUT — MEASURED
 
-### THE POST-WRITE-BACK RE-MEASURE — MEASURED, and the prediction held
+`verify.py` on trunk: **73 passed | 3 failed | 2 cannot measure | 0 skipped | 1 guarded, exit 1** —
+**identical under BOTH documented interpreters** (`.venv/bin/python` and `/usr/bin/python3.14`).
 
-`verify.py` after the write-back commit: **64 passed | 3 failed | 2 cannot measure | 0 skipped**,
-exit 1 — byte-identical to the figure immediately before it, same five non-passes. The predicted
-ABSENCE of a D3.40/D3.144 transition is what was measured. Banked forward-only (§0h) before the
-marker (§16.4 / `CHECK-A10`).
+pytest: **2885 passed, 0 failed, 2 skipped, 2 xfailed** (ARC 034 closed at 2646 — **+239 tests**),
+taken on a quiescent tree.
+
+Census **79 three ways**: 79 `checks/check_*.py` on disk, 79 in `registry.json`, and
+`73+3+2+0+1 = 79` in the run. `--optimize` reports the derived plan identical to the live registry.
+
+CHECK-DEBT **211 → 220**, and nothing in that figure was typed: 220 is `check_derived_claims`' own
+`derived:ledger_rows`, which FAILED against the stale 211 inside the same edit that staled it.
+
+**Every non-PASS, named.**
+* `check_ibgateway_service` **FAIL** — the tap session, by design, owed by twenty-two arcs.
+* `check_uncalled_entry_points` **FAIL** — carried. D3.203's seventeen rows plus this arc's own new
+  uncalled surface (`drift_audit`'s verbs). **The baseline was NOT widened to absorb any of it**,
+  exactly as ARC 034 refused for its own growth. D3.209, D3.213.
+* `check_untracked_attribution` **FAIL** — five artifacts sit in the canonical tree that no commit
+  accounts for: three status-board files carried from ARC 034, plus
+  `DASHBOARD_PY_TECHNICAL_REFERENCE.md` and `Nix_Logo_Package.zip`, which appeared at 17:44 and 18:30
+  today and were not created by this arc. **Not committed, not moved, not deleted** — provenance is
+  the operator's.
+* `check_ibgateway_config` and `check_observed_resource_claims` **CANNOT_MEASURE** — both §17 masking
+  by the same dead port.
+* `check_artifact_gate_coverage` **GUARDED** — eight verify-machinery exclusions, owner **ARC 036**.
+
+---
+
+## WHAT WAS NOT DONE, STATED RATHER THAN IMPLIED BY GREEN
+
+**PLANE 1 IS BUILT AND NOT WIRED, and no green here may be read as "Plane 1 is recording."** The sink,
+the projection, the reconciler, the degraded-persistence flag and the §11-item-7 audit are reachable
+production code whose only callers are gates, tests and drills — because there is no Limiter run loop
+in this tree to call them from. `seam.EventKind` still cannot emit `filled` at all, and `filled` is the
+event the positions projection is mostly a fold *of*. **D3.213.**
+
+* **Stage 2's drills were not run as separate composed end-to-end runs.** Their substance is carried by
+  gates that drive the real thing — a real `pg_ctl -m immediate` crash of a real ephemeral cluster, a
+  real `EFBIG` from the kernel, a real two-process `flock` — but a single composed drill across all
+  three was not executed. Owed.
+* **Stage 3.2's observer sweep was not run** (three orders × two sweeps × two interpreters). The
+  merged tree was measured under both interpreters and they agree, but the order-dependence sweep is
+  not that measurement. Owed.
+* **Stage 3.4's binding table was not rebuilt.** The last binding census is ARC 033's
+  (BOUND=60, ENR=1, UNBOUND=0) and it now predates sixteen gates. Owed, and it was owed before this
+  arc too.
+* **A power cut is not tested.** Nothing here drops the page cache. Postgres durability rests on
+  `pg_ctl -m immediate` + `synchronous_commit=on` + observed recovery; the local WAL's rests on an
+  observed `fsync` syscall with a both-halves control. Neither is a power-loss test.
+* **The live `nix_plane1` database was never taken down.** Every real-outage claim is about an
+  ephemeral cluster running the same frozen DDL.
+* R5 Scoring reads Plane 1 and is not built. Backup/DR (`elements_v2.md` §4) is a later arc — and a
+  durable record with no proven-restorable backup survives a process crash, not a disk. The analytics
+  trade-history store is a separate database and the migration seam is **declared, not built**. No
+  systemd unit was enabled, started, installed or reloaded. A non-stop guarantee proven in sim is not
+  proven live; there is no venue on this node and every broker in every arm is a double.
+
+---
+
+## OPERATOR / ARCHITECT ITEMS STILL OPEN
+
+1. **The tap session** — console task, ~40 min, owed by twenty-two arcs. The only code-independent FAIL.
+2. **The push** (22 ahead, clean fast-forward), **the SPEC-A10 calendar vendor**, and **branch
+   protection** — all outward-facing, all still open.
+3. **Provenance on five untracked artifacts** in the canonical tree.
+4. **Backup/DR** as a gated safety property — a backup that silently stops is the "green while
+   measuring nothing" class.
+5. **v1.4 fold + D3.33** — amendments run to SPEC-A10 and the v1.4 file lags.
+
+**Canonical path: `/home/bbt/nix`.**
