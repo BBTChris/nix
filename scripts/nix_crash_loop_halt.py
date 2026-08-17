@@ -48,8 +48,39 @@ import argparse
 import json
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any
+
+#: The kernel's own per-boot identity. `HaltMarker.record_set` requires a `boot`
+#: because ARC 034 / D3.195 measured a per-instance `seq` colliding ACROSS boots:
+#: boot 1's `booked` suppressed boot 2's UNBOOKED `set`, and `archive` then
+#: renamed the evidence away, so §12.5:637's Plane-1 completeness did not hold.
+#:
+#: This actuator is a SHORT-LIVED PROCESS invoked by systemd, so it cannot take
+#: its boot identity the way `HaltFlag` does — that one mints a uuid per
+#: long-lived instance, which is right for a daemon and WRONG here: a fresh uuid
+#: per invocation would make every restart look like its own boot and defeat the
+#: very collision the argument exists to prevent. The kernel's `boot_id` is
+#: stable for the whole boot and changes across boots, which is exactly the
+#: identity the marker needs, and it costs one file read with no state to keep.
+_KERNEL_BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
+
+
+def current_boot_id() -> str:
+    """This boot's identity — the kernel's, or a uuid when it is unreadable.
+
+    The fallback is deliberately NOT a constant: an unreadable `boot_id` (a
+    non-Linux host, a restricted container) must not make two boots share an
+    identity, because that reintroduces D3.195's collision silently. A fresh uuid
+    over-separates instead, which errs toward replaying a row twice rather than
+    toward losing one — and §9's log is append-only, so a duplicate is visible
+    where a silent omission is not.
+    """
+    try:
+        return _KERNEL_BOOT_ID.read_text(encoding="utf-8").strip()
+    except OSError:
+        return uuid.uuid4().hex
 
 REPO = Path(__file__).resolve().parent.parent
 if str(REPO / "scripts") not in sys.path:
@@ -142,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
     if cap_hit:
         marker = HaltMarker(args.marker or (home / DEFAULT_MARKER))
         seq = len(marker.entries()) + 1
-        marker.record_set(HaltCause.CRASH_LOOP, reason, now, seq)
+        marker.record_set(HaltCause.CRASH_LOOP, reason, now, seq, current_boot_id())
         marker_path = str(marker.path)
 
     print(
