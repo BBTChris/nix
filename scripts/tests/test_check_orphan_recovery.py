@@ -52,13 +52,19 @@ NIXRISK = (
 )
 NIXALLOC = ("__init__.py", "lifecycle.py", "seam.py", "mirror.py", "contention.py")
 OTHER = ("scripts/risk_config.py",)
-RISKS = (
-    "supervision.config.json",
-    "limiter.config.json",
-    "allocator.config.json",
-    "scoring.config.json",
-    "staleness.config.json",
-)
+#: DERIVED, not enumerated, and the change is a measured one. This tuple used to
+#: name five configs by hand and was correct for the tree it was written against;
+#: ARC 034's sub-agent B then added `risks/sentinel.config.json` and widened
+#: `risk_config.OWNED_MODULES` in a parallel worktree, so on the MERGED tree the
+#: scratch home was missing a config the validator requires and the CONTROL went
+#: CANNOT_MEASURE before a single plant had been applied — eleven red tests, none
+#: of them about this gate's subject.
+#:
+#: The authority for which configs must exist is `risk_config.OWNED_MODULES`, not
+#: a list in a test file. This is deliberately NOT the self-agreement shape §0a
+#: warns about: nothing here is asserted against, it is only what gets copied into
+#: the venue, so the gate's findings stay independent of it.
+RISKS = tuple(path.name for path in sorted((REPO / "risks").glob("*.json")))
 
 
 @pytest.fixture

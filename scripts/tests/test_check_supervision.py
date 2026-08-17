@@ -46,11 +46,25 @@ COPIED = (
     "scripts/nix_crash_loop_halt.py",
     "scripts/nix-supervision.conf",
     "scripts/nix-crash-loop-halt@.service",
-    "risks/supervision.config.json",
-    "risks/limiter.config.json",
-    "risks/allocator.config.json",
-    "risks/scoring.config.json",
-    "risks/staleness.config.json",
+    "scripts/nixsentinel/__init__.py",
+    "scripts/nixsentinel/config.py",
+)
+
+#: The `risks/` half of the manifest, DERIVED rather than enumerated — and the
+#: change is a measured one, not a tidy-up. This tuple used to name five configs
+#: by hand and was correct for the tree it was written against; ARC 034's
+#: sub-agent B then added `risks/sentinel.config.json` and widened
+#: `risk_config.OWNED_MODULES` in a parallel worktree, so on the merged tree the
+#: scratch home was missing a config the validator requires and the CONTROL went
+#: CANNOT_MEASURE — before a single plant had been applied.
+#:
+#: The authority for which configs must exist is `risk_config.OWNED_MODULES`, not
+#: a list in a test file, so this reads the directory. That is deliberately NOT
+#: the same call as deriving an expected VALUE from the subject: nothing here is
+#: asserted against, it is only what gets copied into the venue, so the gate's
+#: own findings stay independent of it.
+_RISK_CONFIGS = tuple(
+    f"risks/{path.name}" for path in sorted((REPO / "risks").glob("*.json"))
 )
 
 
@@ -59,7 +73,8 @@ def home(tmp_path: Path) -> Path:
     """A throwaway tree carrying COPIES of the breaker, its knobs and its units."""
     (tmp_path / "scripts" / "nixrisk").mkdir(parents=True)
     (tmp_path / "risks").mkdir(parents=True)
-    for rel in COPIED:
+    (tmp_path / "scripts" / "nixsentinel").mkdir(parents=True)
+    for rel in (*COPIED, *_RISK_CONFIGS):
         shutil.copy(REPO / rel, tmp_path / rel)
     return tmp_path
 
@@ -298,7 +313,8 @@ def test_an_ACTUATOR_THAT_WRITES_NO_HALT_MARKER_fails(home: Path) -> None:
     _plant(
         home,
         "scripts/nix_crash_loop_halt.py",
-        "        marker.record_set(HaltCause.CRASH_LOOP, reason, now, seq)",
+        "        marker.record_set("
+        "HaltCause.CRASH_LOOP, reason, now, seq, current_boot_id())",
         "        pass  # PLANTED: no marker",
     )
 

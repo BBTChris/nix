@@ -592,36 +592,6 @@
         }
       }
     },
-    "scripts/nixrisk/fill_seam.py": {
-      "owner": "unassigned",
-      "reason": "The fill seam Protocols \u2014 StopArmPort.arm, OriginWritePort.on_fill and the rest. These are the DECLARATIONS behind CHECK-DEBT D3.150/D3.178: the seam names the steps, ARC 033 built two of the producers, and nothing on a production path drives the sequence. This module is the reason this gate exists.",
-      "symbols": {
-        "ApprovedOrderPort.order_for": {
-          "bucket": "uncalled",
-          "admitted": "ARC 034"
-        },
-        "FillHandlerPort.on_fill": {
-          "bucket": "uncalled",
-          "admitted": "ARC 034"
-        },
-        "OriginWritePort.on_fill": {
-          "bucket": "uncalled",
-          "admitted": "ARC 034"
-        },
-        "RemainderPort.release_remainder": {
-          "bucket": "uncalled",
-          "admitted": "ARC 034"
-        },
-        "StopArmPort.arm": {
-          "bucket": "uncalled",
-          "admitted": "ARC 034"
-        },
-        "TradeIdMintPort.mint": {
-          "bucket": "uncalled",
-          "admitted": "ARC 034"
-        }
-      }
-    },
     "scripts/nixrisk/freshness.py": {
       "owner": "unassigned",
       "reason": "ARC 033 Stage 1. SourceMonotonicGuard.keys and ClockSkewMonitor.latest are two of the four symbols D3.191 measured as referenced NOWHERE but their own definition. The module has exactly one importer in the tree (pollers.py), which itself has no production importer.",
@@ -682,10 +652,6 @@
           "bucket": "uncalled",
           "admitted": "ARC 034"
         },
-        "HaltFlag.set": {
-          "bucket": "gate_only",
-          "admitted": "ARC 034"
-        },
         "HaltFlag.sweep_wired": {
           "bucket": "uncalled",
           "admitted": "ARC 034"
@@ -729,10 +695,6 @@
           "admitted": "ARC 034"
         },
         "EntryOrderOrigins.record": {
-          "bucket": "gate_only",
-          "admitted": "ARC 034"
-        },
-        "PositionOriginWriter.on_fill": {
           "bucket": "gate_only",
           "admitted": "ARC 034"
         },
@@ -874,10 +836,6 @@
       "owner": "unassigned",
       "reason": "StopBook.arm is \u00a74's distance-to-price conversion, ARC 029, and its only non-test caller is checks/check_origin_write.py. Production never arms a stop, which is the other half of CHECK-DEBT D3.150.",
       "symbols": {
-        "StopBook.arm": {
-          "bucket": "gate_only",
-          "admitted": "ARC 034"
-        },
         "StopBook.breached": {
           "bucket": "uncalled",
           "admitted": "ARC 034"
@@ -910,41 +868,11 @@
       "owner": "unassigned",
       "reason": "The Plane-1 write-ahead log. Three verbs whose consumer is the Limiter process that does not run.",
       "symbols": {
-        "CommitResult.ok": {
-          "bucket": "uncalled",
-          "admitted": "ARC 034"
-        },
         "GroupCommitWriter.cursor": {
           "bucket": "uncalled",
           "admitted": "ARC 034"
         },
         "Recovery.intact": {
-          "bucket": "uncalled",
-          "admitted": "ARC 034"
-        }
-      }
-    },
-    "scripts/nixsentinel/seam.py": {
-      "owner": "unassigned",
-      "reason": "The Sentinel seam declarations, frozen by ARC 034 Phase 0.6. Five declared verbs authored ahead of the Sentinel that will implement them.",
-      "symbols": {
-        "AlertPort.raise_alert": {
-          "bucket": "uncalled",
-          "admitted": "ARC 034"
-        },
-        "MarkerReplayPort.archive": {
-          "bucket": "uncalled",
-          "admitted": "ARC 034"
-        },
-        "MarkerReplayPort.read_pending": {
-          "bucket": "uncalled",
-          "admitted": "ARC 034"
-        },
-        "SentinelBrokerPort.flatten_all": {
-          "bucket": "uncalled",
-          "admitted": "ARC 034"
-        },
-        "SentinelBrokerPort.open_positions": {
           "bucket": "uncalled",
           "admitted": "ARC 034"
         }
@@ -1014,16 +942,6 @@
         },
         "observe_check": {
           "bucket": "gate_only",
-          "admitted": "ARC 034"
-        }
-      }
-    },
-    "scripts/nixverify/optimize.py": {
-      "owner": "unassigned",
-      "reason": "Verify machinery. One reporting verb on the plan object.",
-      "symbols": {
-        "Plan.ok": {
-          "bucket": "uncalled",
           "admitted": "ARC 034"
         }
       }

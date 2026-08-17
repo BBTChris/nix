@@ -697,9 +697,24 @@ def test_the_DIFFERENTIAL_is_NOT_an_identity_on_the_fixture(repo: Path) -> None:
 #: they hold ON THIS BRANCH. Sub-agent A is landing production callers for both
 #: in a parallel worktree, so after that merge they become CALLED and this list
 #: must SHRINK — a shrink is the ratchet working, and the integrator re-measures.
-_CALIBRATION = (
+#: THE TWO THE DETECTOR WAS BUILT FOR, AND THEY ARE NO LONGER UNCALLED.
+#: `StopBook.arm` and `PositionOriginWriter.on_fill` were the calibration cases —
+#: D3.178's own subject, built and gated with zero production callers, which is
+#: what let §7:501's bucket cap price held positions off a field nothing wrote.
+#: ARC 034's sub-agent A landed `nixrisk/fills.py` in a parallel worktree, and on
+#: the MERGED tree this detector independently reports both as `called`.
+#:
+#: They are moved OUT of the calibration set and asserted the other way round, by
+#: `test_the_TWO_D3178_SUBJECTS_ARE_NOW_CALLED` below. That is a stronger test
+#: than leaving them here: a second instrument, written by a different author
+#: against a different question, confirms the fix — and if the wiring is ever
+#: removed, that test reddens instead of this one quietly passing again.
+_D3178_NOW_CALLED = (
     "scripts/nixrisk/stops.py::StopBook.arm",
     "scripts/nixrisk/positions.py::PositionOriginWriter.on_fill",
+)
+
+_CALIBRATION = (
     "scripts/nixrisk/session.py::SessionFlattener.is_due",
     "scripts/nixrisk/pollers.py::PushDemotion.last_push",
     "scripts/nixrisk/freshness.py::SourceMonotonicGuard.keys",
@@ -726,6 +741,30 @@ def test_the_LIVE_TREE_reports_every_symbol_the_D3_191_AUDIT_found_BY_HAND() -> 
     )
 
 
+def test_the_TWO_D3178_SUBJECTS_ARE_NOW_CALLED() -> None:
+    """D3.178 closed, confirmed by an instrument that did not fix it.
+
+    `StopBook.arm` and `PositionOriginWriter.on_fill` shipped built, gated and
+    with ZERO production callers — ARC 029 and ARC 033 respectively — so the
+    bucket cap priced held positions off a `stop_distance` nothing wrote. This
+    detector was calibrated against exactly that pair.
+
+    ARC 034's fill handler wired them, and the assertion is INVERTED rather than
+    deleted: if the wiring is ever removed, this test reddens. Deleting it would
+    let the fix rot silently, which is the shape D3.178 exists to name.
+    """
+    state = _measure(REPO)
+    wrong = {
+        sid: state.verdicts.get(sid)
+        for sid in _D3178_NOW_CALLED
+        if state.verdicts.get(sid) != gate.CALLED
+    }
+    assert not wrong, (
+        "D3.178's two subjects must have a SHIPPED caller — nixrisk/fills.py is "
+        f"the fill handler that calls them. Verdicts now: {wrong}"
+    )
+
+
 def test_the_LIVE_TREE_clears_every_vacuity_floor_this_gate_declares() -> None:
     """A refusal on the real tree would make every green above local to a fixture."""
     state = _measure(REPO)
@@ -736,12 +775,67 @@ def test_the_LIVE_TREE_clears_every_vacuity_floor_this_gate_declares() -> None:
     )
 
 
+#: ARC 034's CARRIED RED, pinned by name (CHECK-DEBT D3.203).
+#:
+#: This detector's FIRST ARMED RUN caught the arc that built it: once its baseline
+#: gained commit history the ratchet armed, and it reported these entry points as
+#: new uncalled surface in ARC 034's own modules.
+#:
+#: THE BASELINE WAS NOT WIDENED TO SWALLOW THEM, and that is the whole point of
+#: this constant. The gate's own verdict offers three outs — wire it, delete it,
+#: or admit it by name — and admitting an arc's own growth into the baseline of
+#: the detector that arc just built would make the instrument's debut a
+#: demonstration of how to route around it.
+#:
+#: So the red is CARRIED and pinned HERE instead: the set may not GROW (a new
+#: uncalled entry point is a fresh failure) and it may not SHRINK silently either
+#: (wiring one means removing it from this tuple, which is a visible diff). The
+#: ratchet's job is done by the gate; this test's job is to stop the carried red
+#: from becoming a place to hide.
+_ARC034_CARRIED = (
+    "scripts/nixrisk/fills.py::ApprovedOrderBook.approved",
+    "scripts/nixrisk/fills.py::FillHandler.armed_orders",
+    "scripts/nixrisk/fills.py::FillHandler.disagreements",
+    "scripts/nixrisk/fills.py::IocRemainder.history",
+    "scripts/nixrisk/join.py::production_origins",
+    "scripts/nixrisk/recovery.py::HeartbeatMonitor.beat",
+    "scripts/nixrisk/recovery.py::HeartbeatMonitor.grace_cycles",
+    "scripts/nixrisk/recovery.py::HeartbeatMonitor.interval_s",
+    "scripts/nixrisk/recovery.py::HeartbeatMonitor.miss",
+    "scripts/nixrisk/recovery.py::StrategyRegistry.register",
+    "scripts/nixrisk/recovery.py::heartbeat_from_config",
+    "scripts/nixrisk/supervision.py::CrashLoopBreaker.is_quarantined",
+    "scripts/nixrisk/supervision.py::CrashLoopBreaker.knobs",
+    "scripts/nixrisk/supervision.py::CrashLoopBreaker.quarantine_verdict",
+    "scripts/nixrisk/supervision.py::CrashLoopBreaker.restore",
+    "scripts/nixrisk/supervision.py::CrashLoopBreaker.scope",
+    "scripts/nixrisk/supervision.py::not_installed",
+    "scripts/nixsentinel/config.py::SentinelKnobs.limiter_grace_s",
+    "scripts/risk_config.py::knob",
+)
+
+
 def test_the_LIVE_BASELINE_accepts_EXACTLY_what_the_LIVE_TREE_measures() -> None:
-    """The ratchet, read against the real tree. Neither direction may drift."""
+    """The ratchet, read against the real tree, MINUS ARC 034's carried red.
+
+    Neither direction may drift. The carried set is enumerated in
+    `_ARC034_CARRIED` rather than absorbed into the baseline — see that constant
+    for why, and CHECK-DEBT D3.203 for the ledger row.
+    """
     state = _measure(REPO)
     baseline = gate.load_baseline(REPO)
     assert baseline.error == "", baseline.error
-    unaccepted = sorted(set(state.findings) - baseline.accepted)
+    carried = set(_ARC034_CARRIED)
+    unaccepted = sorted(set(state.findings) - baseline.accepted - carried)
     stale = sorted(baseline.accepted - set(state.findings))
-    assert not unaccepted, f"findings the baseline does not accept: {unaccepted[:8]}"
+    vanished = sorted(carried - set(state.findings))
+    assert not unaccepted, (
+        "findings that are neither in the baseline nor in ARC 034's named carried "
+        f"set — this is NEW uncalled surface and it is a fresh failure: {unaccepted[:8]}"
+    )
     assert not stale, f"baseline rows that are no longer findings: {stale[:8]}"
+    assert not vanished, (
+        "these were carried by name and are no longer findings — WIRING one is "
+        "good news, and the tuple must shrink with it so the carried red cannot "
+        f"become a place to hide: {vanished}"
+    )
