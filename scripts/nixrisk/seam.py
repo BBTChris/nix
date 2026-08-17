@@ -78,6 +78,13 @@ yet**, and no type in here should be read as implying otherwise.
 
 from __future__ import annotations
 
+# pylint: disable=duplicate-code
+# R0801 across this arc's Plane-1 modules pairs their DECLARATION BLOCKS,
+# their `psql` subprocess helpers and their scratch-cluster fixtures. That
+# shape is REQUIRED, not accidental: §4.2 makes every check independently
+# runnable and self-contained, and four sub-agents wrote against the same
+# frozen schema in worktrees that could not see each other. The same
+# reasoning a dozen existing checks already state at this exact site.
 import enum
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -494,6 +501,17 @@ class EventKind(enum.Enum):
     #: now built (`nixrisk.halt`). Plane 1 AND Plane 2, per the inventory table.
     HALT_SET = "halt_set"
     HALT_CLEARED = "halt_cleared"
+    #: ARC 035 (sub-agent D) — §12.10:751's `drift-audit event`, mechanism now
+    #: built (`nixrisk.drift_audit`, §11.7's periodic full-scan reconcile of every
+    #: §11.3 running aggregate against ground truth). The member lands WITH the
+    #: mechanism, which is the rule this docstring states. §12.10:751 routes the
+    #: event to **Plane 1 ✅** and **Plane 2 ✅**, so it is here and not on the ops
+    #: plane only, and `plane1_event_enum` in `databases/schema/plane1.sql`
+    #: already carries the matching `drift_audit` value — the gap was seam-side
+    #: alone. Emitting a §11.7 finding under a borrowed kind would make it
+    #: unfindable by `event_type`, which is the one indexed column a
+    #: reconciliation reader has.
+    DRIFT_AUDIT = "drift_audit"
     #: ARC 034 (sub-agent C) — §12.10:757's strategy-lifecycle rows, the DEATH
     #: half, mechanism now built (`nixrisk.recovery`). Plane 1 AND Plane 2.
     FORCE_DEREGISTER = "force_deregister"

@@ -101,8 +101,21 @@ is an integration debt, not a member quietly invented here.
 
 from __future__ import annotations
 
+# pylint: disable=duplicate-code
+# R0801 across this arc's Plane-1 modules pairs their DECLARATION BLOCKS,
+# their `psql` subprocess helpers and their scratch-cluster fixtures. That
+# shape is REQUIRED, not accidental: §4.2 makes every check independently
+# runnable and self-contained, and four sub-agents wrote against the same
+# frozen schema in worktrees that could not see each other. The same
+# reasoning a dozen existing checks already state at this exact site.
+# pylint: disable=too-many-positional-arguments
+# §4's reconciliation takes the ports it reconciles ACROSS — broker session,
+# flatten executor, halt alert, the projection reader — and each is passed
+# explicitly so a test can substitute one. Collapsing them into a config object
+# would hide which port a given drive actually exercised.
 import dataclasses
 import enum
+from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
 # ARC 034 / sub-agent B. The import edge runs `nixrisk -> nixsentinel`, and the
@@ -116,12 +129,18 @@ from typing import Protocol, runtime_checkable
 from nixsentinel.marker import pending_acts, unbracketed
 from nixsentinel.seam import MarkerRecord, MarkerReplayPort
 
+# ARC 035 / sub-agent B. §12.5:637 names cold-start reconciliation as the
+# thing that books a Limiter-down HALT retroactively, so the CALL lives here
+# and the booking stays in `nixrisk.halt`, beside the marker it reads. The
+# edge is acyclic: `halt.py` imports only stdlib and `nixrisk.seam`.
+from nixrisk.halt import HaltMarker, replay_markers
 from nixrisk.seam import (
     BrokerTruth,
     EventKind,
     EventRow,
     FlattenTrigger,
     Plane1Port,
+    PositionRow,
 )
 
 #: The `strategy_id` a system-level Plane-1 row carries. Cold-start reconciliation
@@ -207,6 +226,30 @@ class HaltAlertPort(Protocol):
 
     def hold_in_halt(self, reason: str) -> None:
         """Set the global HALT and raise the Critical alert, with the reason."""
+
+
+@runtime_checkable
+class ProjectionPort(Protocol):
+    """§9's REBUILDABLE positions projection, as cold start reads it.
+
+    §9: *"Positions table = projection (rebuildable; dashboard + reconciliation
+    read it)."* This is the "reconciliation reads it" half.
+
+    ONE verb, and it is `rebuild` rather than `read`. At cold start the local
+    state is empty and TRUSTLESS (§4) — a projection READ without re-folding is
+    exactly the stale local state §4 says not to trust, and a port that offered
+    only a read would make trusting it the path of least resistance.
+
+    It returns `PositionRow` — the same type `BrokerTruth` carries — so the two
+    sides of the reconciliation are the same shape and the comparison is a
+    comparison rather than a translation. The implementation over a real Plane-1
+    database is `nixrisk.projection.PostgresProjection`; nothing here imports it,
+    because a reconciler that constructed its own database handle would decide
+    which database the money truth lives in.
+    """
+
+    def rebuild(self) -> tuple[PositionRow, ...]:
+        """Re-fold the event log and return the OPEN positions it yields."""
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +436,173 @@ class ReconcileOutcome:
     reason: str
 
 
+# ---------------------------------------------------------------------------
+# ARC 035 / sub-agent B — the CRASH GAP, and what heals it (§9, §4, §12.5)
+# ---------------------------------------------------------------------------
+#
+# §9, verbatim: *"Enqueue -> durable local WAL -> shared-pool writer ->
+# group-commit to Postgres. CRASH GAP HEALED BY STARTUP RECONCILIATION VS BROKER
+# TRUTH."*
+#
+# The gap is structural and it is not a defect: group-commit exists precisely so
+# the hot path does not wait on Postgres (§11.6), which means there is ALWAYS a
+# window of rows that happened and have not committed. A crash inside that window
+# leaves the projection BEHIND reality by however much was in flight.
+#
+# §4 already fixes what to do about the difference — *"any unexpected open
+# position ⇒ flatten to flat before any strategy registers"*, *"we never adopt or
+# reason about an inherited position"* — so this section adds NO new disposition.
+# What it adds is the MEASUREMENT: naming the gap, so the `cold_start_outcome`
+# row records what the record was missing rather than only what was done about it.
+#
+# **The broker may not know our `trade_id`.** It is our mint (§4), not the
+# venue's. A broker adapter that cannot round-trip it returns positions whose
+# trade_ids match nothing, and every one of them is then reported UNEXPECTED —
+# which is the FAIL-CLOSED direction and is correct: §4 flattens an unowned
+# position and never adopts one. It is recorded here so a future reader does not
+# mistake a coarse match for a bug.
+
+
+class GapKind(enum.Enum):
+    """The three ways a rebuilt projection and broker truth can disagree."""
+
+    #: At the broker, absent from the projection. The crash-gap signature: the
+    #: fill happened and its row never committed. §4 flattens it.
+    UNEXPECTED = "unexpected"
+    #: In the projection, absent from the broker. The exit happened and its row
+    #: never committed — or the Sentinel flattened it while we were down.
+    VANISHED = "vanished"
+    #: Both sides hold it and the sizes differ. A partial fill whose later legs
+    #: are in the gap.
+    SIZE = "size"
+
+
+@dataclasses.dataclass(frozen=True)
+class CrashGap:
+    """One disagreement between the rebuilt projection and broker truth.
+
+    Frozen and carrying BOTH sizes: a finding that recorded only "they differ"
+    could not tell an under-reported position (dangerous — real exposure the
+    record does not know about) from an over-reported one (stale, and merely
+    wrong).
+    """
+
+    kind: GapKind
+    trade_id: str
+    symbol: str
+    projection_size: int
+    broker_size: int
+    detail: str
+
+
+def crash_gap(
+    projection: Sequence[PositionRow], truth: BrokerTruth
+) -> tuple[CrashGap, ...]:
+    """§9's crash gap, MEASURED: the rebuilt projection against broker truth.
+
+    Pure. Takes two position sets and returns their disagreements; it decides
+    nothing and fires nothing, because §4 owns the disposition and a second
+    authority over the same question is how two reconcilers end up disagreeing.
+
+    Broker truth WINS wherever they differ — §4, locked: *"if projection and
+    broker truth disagree beyond tolerance, broker wins and we correct."* There
+    is no tolerance band on a contract count: a position is a whole number of
+    contracts and "close enough" is not a state a futures account can be in.
+    """
+    ours = {row.trade_id: row for row in projection}
+    theirs = {row.trade_id: row for row in truth.positions}
+    gaps: list[CrashGap] = []
+    for trade_id in sorted(set(theirs) - set(ours)):
+        row = theirs[trade_id]
+        gaps.append(
+            CrashGap(
+                kind=GapKind.UNEXPECTED,
+                trade_id=trade_id,
+                symbol=row.symbol,
+                projection_size=0,
+                broker_size=row.size,
+                detail=(
+                    f"broker holds {row.size} {row.symbol} under trade {trade_id} "
+                    f"and the rebuilt projection has NO such position — the "
+                    f"record is behind reality (§9 crash gap). §4: flatten, never "
+                    f"adopt"
+                ),
+            )
+        )
+    for trade_id in sorted(set(ours) - set(theirs)):
+        row = ours[trade_id]
+        gaps.append(
+            CrashGap(
+                kind=GapKind.VANISHED,
+                trade_id=trade_id,
+                symbol=row.symbol,
+                projection_size=row.size,
+                broker_size=0,
+                detail=(
+                    f"the projection holds {row.size} {row.symbol} under trade "
+                    f"{trade_id} and the broker reports none — the exit committed "
+                    f"at the venue and its Plane-1 row did not. Broker wins (§4)"
+                ),
+            )
+        )
+    for trade_id in sorted(set(ours) & set(theirs)):
+        ours_row, theirs_row = ours[trade_id], theirs[trade_id]
+        if ours_row.size == theirs_row.size:
+            continue
+        gaps.append(
+            CrashGap(
+                kind=GapKind.SIZE,
+                trade_id=trade_id,
+                symbol=theirs_row.symbol,
+                projection_size=ours_row.size,
+                broker_size=theirs_row.size,
+                detail=(
+                    f"trade {trade_id} ({theirs_row.symbol}): the projection says "
+                    f"{ours_row.size}, the broker says {theirs_row.size}. A fill "
+                    f"leg in the crash gap. Broker wins (§4)"
+                ),
+            )
+        )
+    return tuple(gaps)
+
+
+def unexpected(gaps: Sequence[CrashGap]) -> tuple[CrashGap, ...]:
+    """§4's own category: at the broker, UNKNOWN to the record.
+
+    A module function rather than a property on the record below, because `boot`
+    itself needs it — the `cold_start_outcome` row names the unexpected trades —
+    and a helper only the tests reached would be a verb with no production
+    caller, which is the finding `check_uncalled_entry_points` exists to make.
+
+    These are the positions §4 flattens: *"any unexpected open position ⇒ flatten
+    to flat before any strategy registers … we never adopt or reason about an
+    inherited position."*
+    """
+    return tuple(gap for gap in gaps if gap.kind is GapKind.UNEXPECTED)
+
+
+@dataclasses.dataclass(frozen=True)
+class BootReconciliation:
+    """One whole boot: replay, rebuild, gap, and §4's disposition, in order.
+
+    Every field is something that was MEASURED on this boot. `outcome` is §4's
+    existing verdict object and is not restated here — a second copy of
+    `admitted` in this record would be the mutable-fact restatement directive 3
+    forbids, and the two could drift.
+    """
+
+    outcome: ReconcileOutcome
+    #: The projection as REBUILT on this boot, from the log alone (§9).
+    projection: tuple[PositionRow, ...]
+    #: Broker truth as polled BEFORE any flatten fired. The pre-flatten poll is
+    #: the only one the gap can be measured against: after the flatten the two
+    #: sides agree by construction and the gap would read as zero.
+    truth_before: BrokerTruth
+    gap: tuple[CrashGap, ...]
+    sentinel_rows: tuple[EventRow, ...]
+    retroactive_halts: tuple[EventRow, ...]
+
+
 # pylint: disable=too-many-instance-attributes
 # NINE attributes: three injected collaborators (broker, flattener, halt), the
 # required Plane-1 sink, and five pieces of the ordering state this class exists
@@ -421,6 +631,8 @@ class ColdStart:
         halt: HaltAlertPort,
         plane1: Plane1Port,
         sentinel_marker: MarkerReplayPort | None = None,
+        projection: ProjectionPort | None = None,
+        halt_marker: HaltMarker | None = None,
     ) -> None:
         self._broker = broker
         self._flattener = flattener
@@ -445,6 +657,19 @@ class ColdStart:
         #: halves in ONE motion rather than two reads that could tear (§4).
         self._polls = 0
         self._registered: list[str] = []
+        #: §9's rebuildable projection. OPTIONAL: a box whose Plane-1
+        #: database has never been built has no projection to rebuild, and a
+        #: required port would force every caller to construct one for a
+        #: table that does not exist. `None` is reported as `absent` in the
+        #: cold-start row, never as a zero-row projection.
+        self._projection = projection
+        #: §12.5:637's marker. OPTIONAL for the same reason: most boots
+        #: follow a clean shutdown and have no HALT to recover.
+        self._halt_marker = halt_marker
+        #: What `boot` learned, merged into the §12.10 cold-start row by
+        #: `_book` and cleared immediately after. Empty on a bare
+        #: `reconcile`, so that call's row is exactly what it always was.
+        self._boot_fields: dict[str, str] = {}
 
     # -- the frozen port ----------------------------------------------------
 
@@ -532,6 +757,99 @@ class ColdStart:
         self._sentinel_marker.archive()
         self._sentinel_replayed = True
         return tuple(rows)
+
+    def book_retroactive_halts(self, now: float) -> tuple[EventRow, ...]:
+        """§12.5:634-638's Limiter-down case. Runs at NEXT BOOT, once.
+
+        Verbatim: *"if a HALT condition arises while the Limiter is unavailable
+        (e.g. the Risk Engine itself is the crash-looping process), the system is
+        already **fail-closed** — nothing reaches the broker without the Limiter
+        — so no separate flag is needed for safety. The `HALT set` row is booked
+        retroactively at next boot by cold-start reconciliation, same pattern as
+        the Sentinel marker replay (§12.1): Plane-1 completeness holds without a
+        second writer."*
+
+        **Read what that says and what it does not.** The retroactive row exists
+        for Plane-1 COMPLETENESS. It is NOT what makes the down-Limiter safe —
+        the fail-closed architecture already did that, before this method ran and
+        whether or not it ever runs. A reader who took this booking for the safety
+        mechanism would conclude that a failure to replay leaves the box unsafe,
+        and it does not: it leaves the RECORD incomplete, which is a different and
+        smaller problem.
+
+        The booking itself is `halt.replay_markers`, which lives beside the marker
+        it reads and takes the Limiter's own `Plane1Port` as an argument. §12.5
+        names cold-start reconciliation as the thing that calls it, so the CALL is
+        here; a second boot-time reader would be the second writer §12.10 forbids.
+        `halt.py`'s own module docstring recorded that *"nothing calls
+        `replay_markers` at boot, because nothing in this tree HAS a boot"*. This
+        is that boot.
+        """
+        if self._halt_marker is None:
+            return ()
+        return replay_markers(self._halt_marker, self._plane1, now)
+
+    def boot(self, now: float) -> BootReconciliation:
+        """ONE whole cold start, in the order the spec fixes between four sections.
+
+        The order is not a convenience and each step is owed to a different
+        paragraph:
+
+        1. **§12.1:612 — the Sentinel marker replays FIRST.** What the Sentinel
+           did happened on the PREVIOUS boot; a log whose retroactive rows landed
+           after this boot's own reconciliation would read as if the emergency
+           followed the recovery.
+        2. **§12.5:637 — a HALT that arose while the Limiter was down is booked
+           retroactively**, same pattern, same reason, same sole writer.
+        3. **§9 — the projection is REBUILT FROM THE LOG**, including the rows
+           steps 1 and 2 just added. Rebuilt rather than read: see `ProjectionPort`.
+        4. **§9 — the CRASH GAP is measured** against a broker poll taken BEFORE
+           anything is flattened. This is the only moment it can be measured: after
+           §4 acts the two sides agree by construction and the gap reads as zero.
+        5. **§4 — the ordinary reconcile decides and acts**, unchanged. It flattens
+           an unexpected position before any registration, holds in HALT on a shut
+           market, and books the `cold_start_outcome` row — which now carries the
+           four numbers above, so §9's record says what the boot SAW and not only
+           what it did.
+
+        Step 5 polls the broker a second time, and that is correct rather than
+        wasteful: §4 requires *"a direct broker balance + position poll in the same
+        motion"* on EVERY reconciliation event, and the poll after a flatten is
+        what turns "we sent a flatten" into "here is the CONFIRMED flat state".
+        """
+        sentinel_rows = self.replay_sentinel_marker(now)
+        retroactive = self.book_retroactive_halts(now)
+        rebuilt = self._projection is not None
+        projection: tuple[PositionRow, ...] = (
+            tuple(self._projection.rebuild()) if self._projection is not None else ()
+        )
+        truth_before = self.query_truth()
+        gap = crash_gap(projection, truth_before)
+        #: Merged into the `cold_start_outcome` row by `_book`. `absent` rather
+        #: than `0` where there is no projection port at all: "nothing was
+        #: rebuilt" and "the rebuild found nothing" are different facts and a
+        #: zero would spell them the same way.
+        self._boot_fields = {
+            "sentinel_rows": str(len(sentinel_rows)),
+            "retroactive_halts": str(len(retroactive)),
+            "projection_rows": str(len(projection)) if rebuilt else "absent",
+            "crash_gap": str(len(gap)),
+            "crash_gap_kinds": ",".join(sorted({g.kind.value for g in gap})),
+            "crash_gap_trades": ",".join(g.trade_id for g in gap),
+            "unexpected_trades": ",".join(g.trade_id for g in unexpected(gap)),
+        }
+        try:
+            outcome = self.reconcile(now)
+        finally:
+            self._boot_fields = {}
+        return BootReconciliation(
+            outcome=outcome,
+            projection=projection,
+            truth_before=truth_before,
+            gap=gap,
+            sentinel_rows=sentinel_rows,
+            retroactive_halts=retroactive,
+        )
 
     def reconcile(self, now: float) -> ReconcileOutcome:
         """Run one cold-start pass and return where it landed.
@@ -664,6 +982,7 @@ class ColdStart:
                 fields={
                     "state": self._state.value,
                     "admitted": repr(self._admitted),
+                    **self._boot_fields,
                 },
             )
         )

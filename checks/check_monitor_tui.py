@@ -112,7 +112,19 @@ EXPECTED_S = 75.0
 DEPENDS_ON: tuple[str, ...] = ()
 #: `harness.py` and `pty_test.py` each `mkdtemp` their own fixture root and set
 #: HOME into it; all three are real child interpreters.
-RESOURCES: tuple[str, ...] = ("file-write:/tmp", "subprocess:python")
+# ARC 035 Stage 2: BOTH interpreter spellings, and the second one is not
+# belt-and-braces. `nixverify.observe.covers` matches a `subprocess:` token by
+# BASENAME, and this gate spawns `sys.executable` — which is
+# `/home/bbt/nix/.venv/bin/python` under the venv interpreter and
+# `/usr/bin/python3` under the system one. One spelling is a declaration that is
+# TRUE under one documented launch mode and FALSE under the other: D3.140
+# exactly. `check_observed_resource_claims` measured it on the merged tree
+# rather than taking the branch's word for it.
+RESOURCES: tuple[str, ...] = (
+    "file-write:/tmp",
+    "subprocess:python",
+    "subprocess:python3",
+)
 CORRECTABLE = False
 NON_CORRECTABLE_REASON = (
     "the subject is deprecated operator tooling under the MON-1 ruling "
@@ -129,6 +141,23 @@ SUBJECTS: tuple[str, ...] = (
 
 NAME = "check_monitor_tui"
 
+#: RE-BANKED, ARC 035 Stage 2 integration, at the gate's OWN merged measurement
+#: and never at any branch's arithmetic. The set moved by exactly two arms and
+#: BOTH moves are attributable to one fix:
+#:
+#:   `3a ETA is None`            FAILING -> PASSING   (stale pin)
+#:   `4I whole-job ETA present`  PASSING -> FAILING   (regression)
+#:
+#: The cause is `scripts/harness.py`'s D3.22 repair. Before it, `build()`'s five
+#: git calls were hijacked by the ambient `GIT_DIR`, so the fixture repository
+#: was never actually created and `monitor.py` computed its ETAs against a
+#: repository with no history. With the scrub in place the fixture is a real
+#: repository with a real commit, and two ETA arms changed answer.
+#:
+#: This is the two-way pin doing the only job it has. A one-directional
+#: accepted set would have swallowed the regression and never noticed the
+#: repair; the pin reported BOTH and forced this re-measurement. Taken from two
+#: consecutive runs whose failing sets were byte-identical.
 #: The harness arms that FAIL on this node, measured on two consecutive runs
 #: whose failing sets were identical, at ARC 035 / Phase 0.2. Hand-entered.
 #: Nothing in this file writes this tuple.
@@ -137,9 +166,9 @@ NAME = "check_monitor_tui"
 #: call sites (harness.py lines 467 and 489) and both fail; a set would have
 #: silently collapsed them and hidden the repair of exactly one.
 KNOWN_RED: tuple[str, ...] = (
-    "3a ETA is None",
     "3d dict-form todos read",
     "4I eta basis names obs",
+    "4I whole-job ETA present",
     "4I whole-job ETA sane",
     "4K points to statusline",
     "4K shows wtok used",

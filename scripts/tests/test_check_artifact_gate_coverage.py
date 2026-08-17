@@ -719,18 +719,42 @@ def test_NONVACUITY_the_real_trees_owner_lineage_is_derived_from_COMMITTED_blobs
     assert not head_error, head_error
     committed = json.loads(head_blob)
     working = json.loads((REPO / gate.BASELINE).read_text(encoding="utf-8"))
-    lengths = []
     for path, row in committed["artifacts"].items():
         lineage = gate._row_lineage(history, path)
         assert lineage, f"{path}: no committed lineage at all"
         assert lineage[-1] == row["owner"], (path, lineage, row["owner"])
-        lengths.append(len(lineage))
     # The WORKING tree is still held to the shape rule — one arc identifier, never
     # a range and never a phrase — which is the property `guard_owner_defect`
     # enforces and which must hold whether or not an edit is in flight.
     for path, row in working["artifacts"].items():
         assert re.fullmatch(r"ARC \d+", row["owner"]), (path, row["owner"])
-    assert max(lengths) > 1, (
+    # ARC 035 / Stage 1 / sub-agent A — DEFECT FOUND AND FIXED, said loudly.
+    #
+    # This read `max(lengths)` over `committed["artifacts"]` alone. Phase 0.2 of
+    # THIS arc discharged the last four `artifacts` rows with real coverage, so
+    # that map is now `{}` and the call raised `ValueError: max() arg is an empty
+    # sequence` — blocking EVERY commit on EVERY branch of this arc. Phase 0
+    # could not have caught it in its own run: pre-commit executes before the
+    # commit exists, so it measured ARC 034's baseline (four rows) and passed,
+    # and the failure armed itself for the next commit anyone attempted.
+    #
+    # An empty `artifacts` map is the RATCHET WORKING — the debt was paid — so
+    # the repair is not to weaken the claim but to take the population from rows
+    # that still exist. The EXCLUSIONS were `artifacts` rows until ARC 029 moved
+    # them, they live in the same file, and their lineage comes from the SAME
+    # committed walk, so the property this test is about — *the derivation reads
+    # committed blobs and not the working tree* — is measured over them
+    # unchanged. Measured at the time of the fix: eight exclusion rows, lineages
+    # of length 3 and 4.
+    lineages = [
+        gate._row_lineage(history, path)
+        for path in (*committed["artifacts"], *committed["exclusions"])
+    ]
+    assert lineages, (
+        "the committed baseline holds neither an accepted artifact nor an "
+        "exclusion, so this assertion has no population and measures nothing"
+    )
+    assert max(len(lineage) for lineage in lineages) > 1, (
         "no row's lineage exceeds one value, so the derivation is reading the "
         "working tree rather than committed blobs and the ceiling arm is off"
     )

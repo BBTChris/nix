@@ -102,7 +102,8 @@ against these, because a gate that over-reports is a gate people route around
    `cannot_resolve` — a resolver that has stopped working collapses `called` and
    inflates `cannot_resolve`, and the inequality inverts.
 4. **THE DIFFERENTIAL COULD BE THE ONLY THING KEEPING IT HONEST AND COULD
-   ITSELF BE VACUOUS.** It compares two computations of one function; if both walks shared a broken helper they would agree and the
+   ITSELF BE VACUOUS.** It compares two computations of one function; if both
+   walks shared a broken helper they would agree and the
    control would pass. *Stated, and narrowed rather than claimed closed:* the
    two walks differ ONLY in the `resolve` flag, so a defect in the shared
    reference collector moves both. What it does prove is that receiver
@@ -211,7 +212,13 @@ BUCKETS = (UNCALLED, GATE_ONLY)
 #: collector counts attribute ACCESS and not only `ast.Call`.
 _PROPERTY_DECORATORS = ("property", "cached_property")
 
-_CONTAINER_LITERALS: tuple[tuple[type, ...], str] = (
+#: ARC 035 (sub-agent D). The annotation was `tuple[tuple[type, ...], str]`,
+#: which describes ONE pair rather than the tuple OF pairs this actually is, so
+#: `for kinds, name in _CONTAINER_LITERALS` type-checked as unpacking a `str`.
+#: The three errors it produced had never been seen: mypy resolves this module
+#: only when a `checks/*.py` file is in the same hook invocation as a test that
+#: imports it, and no commit had ever passed both until a new check landed.
+_CONTAINER_LITERALS: tuple[tuple[tuple[type[ast.AST], ...], str], ...] = (
     ((ast.Dict, ast.DictComp), "dict"),
     ((ast.List, ast.ListComp), "list"),
     ((ast.Tuple, ast.GeneratorExp), "tuple"),
@@ -425,9 +432,12 @@ def _class_info(path: str, node: ast.ClassDef) -> ClassInfo:
             found = type_name(item.annotation)
             if found:
                 info.attrs[item.target.id] = found
-    for item in ast.walk(node):
-        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            _learn_attrs(info, item)
+    # A SECOND name for the second loop: `item` above is bound over `node.body`
+    # and is a `stmt`, while `ast.walk` yields `AST`. Reusing the name narrowed
+    # the walk to `stmt` and was the fourth latent error (ARC 035 / D).
+    for walked in ast.walk(node):
+        if isinstance(walked, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            _learn_attrs(info, walked)
     return info
 
 

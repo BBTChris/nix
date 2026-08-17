@@ -346,7 +346,32 @@ def test_the_control_passes_and_its_evidence_names_what_it_read(
     # Re-banked at the figure `check_order_path_bans` ITSELF reports on the MERGED
     # tree, never at either branch's arithmetic. Kept a LITERAL: deriving it from
     # the gate would make this test agree with its subject by construction.
-    assert "arm(ii) imported 29 order-path module(s)" in evidence, evidence
+    # RE-BANKED ARC 035 / Stage 1 / sub-agent B: 29 -> 31. `scripts/nixrisk/`
+    # gained `projection.py` (§9's positions fold) and `plane1_seed.py` (the
+    # scratch-log fixture conduit), and arm(ii) imports the directory. The gate
+    # itself is UNCHANGED and still reports 0 banned modules and 0 banned calls
+    # under arm(ii) — the literal went stale, not the property.
+    #
+    # **INTEGRATOR: THIS FIGURE IS BRANCH ARITHMETIC AND MUST BE RE-MEASURED ON
+    # THE MERGED TREE.** The comment above says the figure is banked at what the
+    # gate reports on the MERGED tree, never at a branch's; three sibling
+    # branches may also add `scripts/nixrisk/` modules, and every one of them
+    # moves this number. 31 is what arc-035-b alone measures.
+    # RE-BANKED AT THE GATE'S OWN MERGED MEASUREMENT — ARC 035 Stage 2, and this
+    # is D3.192's shape for the FOURTH arc running. Three parallel sub-agents
+    # each bumped this literal from a worktree that could not see the other two:
+    # A said 30 (plane1_sink.py), B said 31 (projection.py + plane1_seed.py),
+    # C said 30 (degraded.py). Every one of them was locally right and globally
+    # wrong; the merged tree's own figure is 34, larger than all three, because
+    # `scripts/nixrisk/` gained six modules across four branches and arm(ii)
+    # imports the directory.
+    #
+    # The literal is the ONLY reason that disagreement was ever visible, and it
+    # is re-banked from the gate's printed evidence rather than from anybody's
+    # arithmetic. Re-read rather than assumed: over the widened scope the gate
+    # still reports 0 banned modules and 0 banned calls under arm(ii) — the
+    # literal went stale, the property did not.
+    assert "arm(ii) imported 34 order-path module(s)" in evidence, evidence
 
 
 def test_the_reviewed_suppressions_are_the_two_known_fanouts_and_no_plant_is_pre_silenced(

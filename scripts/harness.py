@@ -22,8 +22,40 @@ M = importlib.util.module_from_spec(spec); spec.loader.exec_module(M)
 
 # Fixture root is a private temp dir. build() rmtree's this path, so it must
 # never resolve to anything real: mkdtemp guarantees a fresh, unique dir.
+
+# D3.22 — THE GIT SUBPROCESSES IN build() MUST NOT INHERIT THE AMBIENT GIT_*.
+#
+# Under a git hook — which is how this file is reached in anger, since
+# `checks/check_monitor_tui.py` executes it and the pre-commit runtime gate runs
+# that check — git EXPORTS `GIT_DIR` and `GIT_INDEX_FILE` into the hook's
+# environment. `git -C <fixture>` does NOT override them: -C changes the working
+# directory, and repository discovery stops at the inherited `GIT_DIR`. So
+# `git add -A` in the fixture wrote `seed.txt` into the INVOKING repository's
+# index and dropped every other entry from it.
+#
+# MEASURED, ARC 035 sub-agent C: that is exactly what it did to a live worktree
+# mid-commit — index reduced to one entry, ~430 tracked paths staged as deletions,
+# and the seven `git ls-files`-based gates below it (artifact-gate-coverage,
+# name-coherence, order-path-bans, uncalled-entry-points) all failing their
+# NON-VACUITY floors because the tree they measure had become empty. Reproduced
+# outside this repo with a throwaway victim: same `D <file>` / `AD seed.txt`.
+#
+# The environment stops being ambient and becomes an argument.
 ROOT = Path(tempfile.mkdtemp(prefix="nixmon-fixture-"))
 assert "nixmon-fixture-" in ROOT.name, "refusing to use a non-fixture root"
+try:
+    from nixverify.gitenv import scrubbed_env  # noqa: E402
+except ImportError:  # pragma: no cover - harness runs standalone in some trees
+    def scrubbed_env(env=None, extra=None):
+        """Local fallback with the same contract: no GIT_* survives."""
+        src = os.environ if env is None else env
+        out = {k: v for k, v in src.items() if not k.startswith("GIT_")}
+        if extra:
+            out.update(extra)
+        return out
+
+GIT_ENV = scrubbed_env()
+
 FAILS, WARNS = [], []
 
 
@@ -49,12 +81,12 @@ def build(scn="normal", n_msgs=40, sidechains=2, ctx=118_000,
     todos = ch / "todos"; repo = ROOT / "nix"; dl = repo / "downloads"
     for d in (proj, todos, repo / "checks", dl, repo / "sessions"):
         d.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "-q", str(repo)], capture_output=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], capture_output=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], capture_output=True)
+    subprocess.run(["git", "init", "-q", str(repo)], capture_output=True, env=GIT_ENV)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], capture_output=True, env=GIT_ENV)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], capture_output=True, env=GIT_ENV)
     (repo / "seed.txt").write_text("x")
-    subprocess.run(["git", "-C", str(repo), "add", "-A"], capture_output=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "ARC016 close debt"], capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], capture_output=True, env=GIT_ENV)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "ARC016 close debt"], capture_output=True, env=GIT_ENV)
 
     now = time.time()
     t0 = now - 3600 * (5.2 if gap_hours else 1.2)

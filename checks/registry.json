@@ -30,6 +30,7 @@
         "check_crucible_calendar",
         "check_d1_12_reboot_capture",
         "check_datafeed_bar_seal",
+        "check_drift_audit",
         "check_execution_ledger",
         "check_extract_sources",
         "check_fill_handler",
@@ -48,6 +49,7 @@
         "check_observed_resource_claims",
         "check_origin_write",
         "check_orphan_recovery",
+        "check_plane1_crash_gap",
         "check_plane1_schema",
         "check_pollers",
         "check_preamble_shim",
@@ -80,11 +82,17 @@
         "shm",
         "state/node_identity.json",
         "subprocess:blkid",
+        "subprocess:createdb",
         "subprocess:findmnt",
         "subprocess:git",
+        "subprocess:initdb",
+        "subprocess:pg_ctl",
+        "subprocess:pg_isready",
+        "subprocess:postgres",
         "subprocess:psql",
         "subprocess:python",
         "subprocess:python3",
+        "subprocess:strace",
         "subprocess:systemctl",
         "subprocess:xdpyinfo",
         "threads"
@@ -99,6 +107,23 @@
       ],
       "claims": [
         "venv"
+      ]
+    },
+    {
+      "name": "level-1",
+      "parallel": false,
+      "on_fail": "continue",
+      "checks": [
+        "check_plane1_event_coverage",
+        "check_plane1_hot_path",
+        "check_plane1_projection",
+        "check_plane1_sole_writer"
+      ],
+      "claims": [
+        "file-write:/tmp",
+        "subprocess:createdb",
+        "subprocess:dropdb",
+        "subprocess:psql"
       ]
     },
     {
@@ -117,6 +142,7 @@
         "check_hook_suite",
         "check_order_path_bans",
         "check_picture_atomicity",
+        "check_plane1_degraded",
         "check_plane1_wal",
         "check_plane2_across_kill",
         "check_python_deps",
@@ -136,7 +162,12 @@
         "pre-commit-store",
         "ptrace",
         "shm",
+        "subprocess:createdb",
         "subprocess:git",
+        "subprocess:initdb",
+        "subprocess:pg_ctl",
+        "subprocess:postgres",
+        "subprocess:psql",
         "subprocess:python",
         "subprocess:python3",
         "subprocess:strace",

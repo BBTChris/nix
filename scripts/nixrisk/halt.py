@@ -238,16 +238,36 @@ class HaltCause(enum.Enum):
 #: here to exist under the tree it is judging — so a claim that rots (a module
 #: renamed or deleted) reddens instead of quietly becoming false.
 #:
-#: Read the qualifier exactly: these modules produce the SIGNAL. **None of them
-#: calls this machine yet** — wiring a detector to a setter means editing that
-#: detector, and this arc owns none of these files. What the check proves is that
-#: the DETECTOR'S OWN OUTPUT drives the setter end-to-end, not that the call site
+#: Read the qualifier exactly: most of these modules produce the SIGNAL and stop
+#: there — wiring a detector to a setter means editing that detector, and ARC 033
+#: owned none of those files. What the check proves for them is that the
+#: DETECTOR'S OWN OUTPUT drives the setter end-to-end, not that the call site
 #: exists in production.
+#:
+#: **TWO ENTRIES ARE NOW STRONGER THAN THAT AND THE DIFFERENCE IS RECORDED RATHER
+#: THAN AVERAGED AWAY.** `scripts/nixrisk/supervision.py` (ARC 034) calls
+#: `set(CRASH_LOOP, ...)` at §12.2's cap, and `scripts/nixrisk/drift_audit.py`
+#: (ARC 035) calls `set(AGGREGATE_DRIFT, ...)` on §11.7 material drift. Those two
+#: are call sites in shipped code, not signals awaiting a wire. The blanket
+#: sentence that used to stand here — *"None of them calls this machine yet"* —
+#: was true when it was written and is now false for two causes, which is exactly
+#: the stale restatement directive 3 forbids leaving in place.
+#:
+#: What is STILL true of all of them, including those two, is one layer up: no
+#: daemon in `scripts/` constructs a `HaltFlag` or a `DriftAudit` at all, so a
+#: call site here is a call site inside an object graph nothing roots. That bound
+#: belongs to the uncalled-entry-point ledger, not to this map.
 PRODUCERS: Mapping[HaltCause, tuple[str, ...]] = {
     HaltCause.INVARIANT_BREACH: ("scripts/nixrisk/picture.py",),
+    #: ARC 035 / sub-agent D. `drift_audit.py` is §11.7's full-scan reconcile and
+    #: it ACTUATES this setter — the first AGGREGATE_DRIFT producer that does.
+    #: `survival.py` and `gate.py` remain: both detect a drift of their own and
+    #: neither calls `set`, and dropping them because a third arrived would
+    #: shrink the claim rather than sharpen it.
     HaltCause.AGGREGATE_DRIFT: (
         "scripts/nixrisk/survival.py",
         "scripts/nixrisk/gate.py",
+        "scripts/nixrisk/drift_audit.py",
     ),
     #: ARC 034 / sub-agent C. §12.2's breaker counts restarts against
     #: `risks/supervision.config.json` and calls `set(CRASH_LOOP, ...)` at the

@@ -44,6 +44,13 @@ exit code is a courtesy for `systemctl status`. Both instruments read the JSON.
 
 from __future__ import annotations
 
+# pylint: disable=duplicate-code
+# R0801 across this arc's Plane-1 modules pairs their DECLARATION BLOCKS,
+# their `psql` subprocess helpers and their scratch-cluster fixtures. That
+# shape is REQUIRED, not accidental: §4.2 makes every check independently
+# runnable and self-contained, and four sub-agents wrote against the same
+# frozen schema in worktrees that could not see each other. The same
+# reasoning a dozen existing checks already state at this exact site.
 import argparse
 import json
 import sys
@@ -81,6 +88,7 @@ def current_boot_id() -> str:
         return _KERNEL_BOOT_ID.read_text(encoding="utf-8").strip()
     except OSError:
         return uuid.uuid4().hex
+
 
 REPO = Path(__file__).resolve().parent.parent
 if str(REPO / "scripts") not in sys.path:

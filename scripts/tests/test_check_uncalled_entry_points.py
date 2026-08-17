@@ -814,6 +814,42 @@ _ARC034_CARRIED = (
     "scripts/risk_config.py::knob",
 )
 
+#: ARC 035 / sub-agent D — the SAME treatment, applied to this arc's own growth,
+#: because the alternative is the move D3.203 refused by name.
+#:
+#: `scripts/nixrisk/drift_audit.py` is §11 item 7's periodic full-scan reconcile. Its
+#: `run`, `due`, `full_scan` and `classify` ARE called in shipped code (by each
+#: other); the six below are not called by anything but the gate and the suite,
+#: and there is no Limiter run loop in this tree to call them from — §11 item 7 says
+#: *periodic* and nothing in `scripts/` schedules anything.
+#:
+#: **NOT added to `checks/uncalled_entry_points_baseline.json`, deliberately.**
+#: The gate's verdict offers three outs — wire it, delete it, or admit it by name
+#: — and putting an arc's own growth into the detector's ratchet is how a debut
+#: becomes a demonstration of routing around the instrument. The gate therefore
+#: stays RED on these six, which is the honest state; this tuple only stops the
+#: SUITE from reporting them as an unexplained regression, and it may not grow
+#: silently (a new uncalled entry point is a fresh failure) or shrink silently
+#: (wiring one means deleting a line here, which is a visible diff).
+#:
+#: Per-row honesty, since "admit it by name" means naming what each one IS:
+#:   * `run_if_due` / `interval_s` / `last_run` — §11 item 7's *periodic* half. They
+#:     exist because the word is in the spec; nothing schedules them.
+#:   * `AuditOutcome.clean` / `.material` — observables the gate asserts against.
+#:     Production reads `AuditOutcome` through no caller at all yet.
+#:   * `projection_from_rows` — the declared seam to sub-agent B's Plane-1
+#:     positions projection. This is `join.py::production_origins`' exact shape,
+#:     the one D3.203 says most likely wants WIRING rather than admitting, and it
+#:     is admitted here only because the reader it pairs with is on another branch.
+_ARC035_D_CARRIED = (
+    "scripts/nixrisk/drift_audit.py::AuditOutcome.clean",
+    "scripts/nixrisk/drift_audit.py::AuditOutcome.material",
+    "scripts/nixrisk/drift_audit.py::DriftAudit.interval_s",
+    "scripts/nixrisk/drift_audit.py::DriftAudit.last_run",
+    "scripts/nixrisk/drift_audit.py::DriftAudit.run_if_due",
+    "scripts/nixrisk/drift_audit.py::projection_from_rows",
+)
+
 
 def test_the_LIVE_BASELINE_accepts_EXACTLY_what_the_LIVE_TREE_measures() -> None:
     """The ratchet, read against the real tree, MINUS ARC 034's carried red.
@@ -825,7 +861,7 @@ def test_the_LIVE_BASELINE_accepts_EXACTLY_what_the_LIVE_TREE_measures() -> None
     state = _measure(REPO)
     baseline = gate.load_baseline(REPO)
     assert baseline.error == "", baseline.error
-    carried = set(_ARC034_CARRIED)
+    carried = set(_ARC034_CARRIED) | set(_ARC035_D_CARRIED)
     unaccepted = sorted(set(state.findings) - baseline.accepted - carried)
     stale = sorted(baseline.accepted - set(state.findings))
     vanished = sorted(carried - set(state.findings))

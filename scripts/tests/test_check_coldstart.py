@@ -39,6 +39,16 @@ NIXRISK = (
     "scripts/nixrisk/coldstart.py",
     "scripts/nixrisk/seam.py",
     "scripts/nixrisk/__init__.py",
+    # ARC 035 / sub-agent B. `coldstart.py` now imports `nixrisk.halt` —
+    # §12.5:637 names cold-start reconciliation as the thing that books a
+    # Limiter-down HALT retroactively, and `replay_markers` lives beside the
+    # marker it reads. The gate inserts `home/scripts` AHEAD of the real tree,
+    # so `nixrisk` resolves to THIS copy and a missing sibling is a hard
+    # ModuleNotFoundError — which the gate correctly reported as CANNOT_MEASURE
+    # (§17) rather than as a defect in the subject. `nixsentinel` needs no entry
+    # for the opposite reason: it is a DIFFERENT package, so it still resolves
+    # from the real `scripts/` that `checks/_preamble.py` leaves on sys.path.
+    "scripts/nixrisk/halt.py",
 )
 
 

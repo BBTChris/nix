@@ -536,10 +536,6 @@
           "bucket": "uncalled",
           "admitted": "ARC 034"
         },
-        "ColdStart.reconcile": {
-          "bucket": "gate_only",
-          "admitted": "ARC 034"
-        },
         "ColdStart.register": {
           "bucket": "gate_only",
           "admitted": "ARC 034"
@@ -614,10 +610,6 @@
       "owner": "unassigned",
       "reason": "The two-phase gate pass. Its reporting surface is read by its own gate; the pass itself IS called from the seam.",
       "symbols": {
-        "GatePass.evaluate": {
-          "bucket": "gate_only",
-          "admitted": "ARC 034"
-        },
         "GatePass.manifest": {
           "bucket": "uncalled",
           "admitted": "ARC 034"
@@ -653,10 +645,6 @@
           "admitted": "ARC 034"
         },
         "HaltFlag.sweep_wired": {
-          "bucket": "uncalled",
-          "admitted": "ARC 034"
-        },
-        "replay_markers": {
           "bucket": "uncalled",
           "admitted": "ARC 034"
         }
@@ -836,15 +824,7 @@
       "owner": "unassigned",
       "reason": "StopBook.arm is \u00a74's distance-to-price conversion, ARC 029, and its only non-test caller is checks/check_origin_write.py. Production never arms a stop, which is the other half of CHECK-DEBT D3.150.",
       "symbols": {
-        "StopBook.breached": {
-          "bucket": "uncalled",
-          "admitted": "ARC 034"
-        },
         "StopBook.forget": {
-          "bucket": "uncalled",
-          "admitted": "ARC 034"
-        },
-        "StopBook.maintain": {
           "bucket": "uncalled",
           "admitted": "ARC 034"
         },

@@ -109,7 +109,19 @@ DEPENDS_ON: tuple[str, ...] = ()
 #: REAL `.venv` and the real `state/` are never touched — declaring `venv`
 #: here would be a false claim in the safe direction, which §4.4 still calls
 #: a false claim.
-RESOURCES: tuple[str, ...] = ("file-write:/tmp", "subprocess:python")
+# ARC 035 Stage 2: BOTH interpreter spellings, and the second one is not
+# belt-and-braces. `nixverify.observe.covers` matches a `subprocess:` token by
+# BASENAME, and this gate spawns `sys.executable` — which is
+# `/home/bbt/nix/.venv/bin/python` under the venv interpreter and
+# `/usr/bin/python3` under the system one. One spelling is a declaration that is
+# TRUE under one documented launch mode and FALSE under the other: D3.140
+# exactly. `check_observed_resource_claims` measured it on the merged tree
+# rather than taking the branch's word for it.
+RESOURCES: tuple[str, ...] = (
+    "file-write:/tmp",
+    "subprocess:python",
+    "subprocess:python3",
+)
 CORRECTABLE = False
 NON_CORRECTABLE_REASON = (
     "the subject is the mutual-exclusion lock every venv-mutating repair path "
