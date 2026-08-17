@@ -850,6 +850,30 @@ _ARC035_D_CARRIED = (
     "scripts/nixrisk/drift_audit.py::projection_from_rows",
 )
 
+#: ARC 036 Phase 0.4 — the §6.6 Scoring seam, CARRIED BY NAME, not absorbed.
+#:
+#: The seam is frozen before the fan-out that builds its consumers, which is the
+#: whole point of a Phase 0: five sub-agents cannot build against an interface
+#: that does not exist yet. So for the length of this arc the read side has no
+#: production caller, and `check_uncalled_entry_points` is RIGHT to say so.
+#:
+#: It is enumerated here rather than added to the baseline for D3.203's reason,
+#: verbatim: a ratchet whose accepted set grows to meet its findings is not a
+#: ratchet. And the `vanished` assertion below is what makes this an obligation
+#: rather than a note — the moment sub-agent E wires the Allocator to
+#: `arbitrate`, that name STOPS being a finding and this tuple must shrink with
+#: it, or the test goes red for the opposite reason. A carried red that cannot
+#: be quietly kept is the only kind worth carrying. CHECK-DEBT D3.214.
+_ARC036_PHASE0_CARRIED = (
+    "scripts/nixscore/seam.py::RankingMirror.arbitrate",
+    "scripts/nixscore/seam.py::RankingMirror.fresh",
+    "scripts/nixscore/seam.py::RankingMirror.lookup",
+    "scripts/nixscore/seam.py::RankingMirror.span_days",
+    "scripts/nixscore/seam.py::RankingPublisher.service",
+    "scripts/nixscore/seam.py::RankingSnapshot.lookup",
+    "scripts/nixscore/seam.py::Verdict.fell_back",
+)
+
 
 def test_the_LIVE_BASELINE_accepts_EXACTLY_what_the_LIVE_TREE_measures() -> None:
     """The ratchet, read against the real tree, MINUS ARC 034's carried red.
@@ -861,7 +885,9 @@ def test_the_LIVE_BASELINE_accepts_EXACTLY_what_the_LIVE_TREE_measures() -> None
     state = _measure(REPO)
     baseline = gate.load_baseline(REPO)
     assert baseline.error == "", baseline.error
-    carried = set(_ARC034_CARRIED) | set(_ARC035_D_CARRIED)
+    carried = (
+        set(_ARC034_CARRIED) | set(_ARC035_D_CARRIED) | set(_ARC036_PHASE0_CARRIED)
+    )
     unaccepted = sorted(set(state.findings) - baseline.accepted - carried)
     stale = sorted(baseline.accepted - set(state.findings))
     vanished = sorted(carried - set(state.findings))

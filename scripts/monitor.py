@@ -36,6 +36,22 @@ from bisect import bisect_left
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from nixverify.gitenv import scrubbed_env  # noqa: E402
+except ImportError:  # pragma: no cover - the TUI is copied standalone by tests
+    # Same shape and same reason as `scripts/harness.py`: this module is copied
+    # into throwaway trees that carry no `nixverify` package, and a scrub that
+    # vanishes when the module is copied is not a scrub. The rule is the
+    # `GIT_` PREFIX, never a list — see `nixverify/gitenv.py`.
+    def scrubbed_env(env=None, extra=None):
+        """Local fallback with the same contract: no GIT_* survives."""
+        src = os.environ if env is None else env
+        out = {k: v for k, v in src.items() if not k.startswith("GIT_")}
+        if extra:
+            out.update(extra)
+        return out
+
 VERSION = "1.0.0"
 
 # ---------------------------------------------------------------------------
@@ -835,8 +851,14 @@ def git_probe(repo: Path) -> dict:
         base = ["git", "-c", "safe.directory=" + str(repo),
                 "-c", "safe.directory=*", "-C", str(repo)]
         try:
+            # D3.205/D3.22: git honours GIT_DIR / GIT_INDEX_FILE / GIT_WORK_TREE
+            # AHEAD of the `-C` above, and pre-commit exports them into every
+            # hook. `check_monitor_tui` executes this module inside every commit
+            # — which is exactly the path that bared this repository in ARC 035 —
+            # so an unscrubbed probe here reports a confident verdict about
+            # whatever started the hook. Gated by `check_git_env_scrub`.
             r = subprocess.run(base + args, capture_output=True, text=True,
-                               timeout=timeout)
+                               timeout=timeout, env=scrubbed_env())
             if r.returncode == 0:
                 return r.stdout
             run.last_err = (r.stderr or "").strip().splitlines()

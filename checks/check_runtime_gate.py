@@ -70,6 +70,7 @@ from typing import Any, NamedTuple
 
 import _preamble  # noqa: F401  pylint: disable=unused-import,wrong-import-order
 from nixverify.contract import CheckResult, Context, Mode, Status
+from nixverify.gitenv import scrubbed_env
 
 # pylint: disable=duplicate-code,too-few-public-methods,too-many-locals
 # missing-function-docstring,missing-class-docstring: the test doubles'
@@ -182,6 +183,10 @@ def _arm_blob_shas(module: ModuleType, tmp: Path) -> list[Finding]:
             text=True,
             check=True,
             timeout=EXPECTED_S,
+            # D3.205/D3.22 — an inherited GIT_OBJECT_DIRECTORY changes where this
+            # oracle looks, and this gate compares its answer against the module's
+            # own. Gated by `check_git_env_scrub`.
+            env=scrubbed_env(),
         )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         return [

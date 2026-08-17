@@ -1,0 +1,166 @@
+<svg viewBox="0 0 1200 1180" xmlns="http://www.w3.org/2000/svg" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial">
+  <defs>
+    <marker id="aC" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#7fdbe8"/></marker>
+    <marker id="aW" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#c9d1d9"/></marker>
+    <marker id="aO" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#f0883e"/></marker>
+    <marker id="aB" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#6ba4f0"/></marker>
+    <marker id="aM" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#d267c9"/></marker>
+    <marker id="aG" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#6e7681"/></marker>
+    <marker id="aP" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#c07fe0"/></marker>
+    <marker id="aGr" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#2ea043"/></marker>
+  </defs>
+  <rect x="0" y="0" width="1200" height="1180" fill="#0d1117"/>
+
+  <text x="40" y="46" fill="#e6edf3" font-size="26" font-weight="700">Nix — status board</text>
+  <text x="40" y="70" fill="#8b949e" font-size="13">Module map + completeness leaderboard · post ARC 033 · completeness = code + debug + sim (live not required for 100%).</text>
+
+  <!-- ==================== MODULE MAP (full connectors) ==================== -->
+  <rect x="40" y="90" width="1120" height="452" rx="14" fill="#0f141b" stroke="#21262d"/>
+  <text x="58" y="116" fill="#6e7681" font-size="12" font-weight="700" letter-spacing="1">MODULE MAP</text>
+
+  <!-- box anchors:
+       CHECKS  120,150 140x52   center 190,176
+       DATAFEED 600,150 140x52  center 670,176   bottom 670,202
+       STRATEGY 160,270 140x52  right 300,296
+       ALLOCATOR 380,270 140x52 left 380,296  right 520,296  bottom 450,322
+       LIMITER 600,322 180x52   top 690,322  left 600,348  right 780,348  bottom 690,374
+       BROKER  840,322 140x52   left 840,348  right 980,348
+       POSTGRES 120,452 130x46  top 185,452
+       SCORING 270,452 130x46   top 335,452
+       SENTINEL 420,452 130x46  top 485,452
+       POLLERS 570,452 130x46   top 635,452
+       DASH 860,452 150x46      subscribe
+       VENUE 1000,150 70x224    left 1000,y -->
+
+  <!-- SPSC price ring: datafeed -> strategy  AND  datafeed -> limiter -->
+  <path d="M600,190 C460,214 360,238 302,270" fill="none" stroke="#d267c9" stroke-width="9" opacity="0.28" stroke-linecap="round" stroke-dasharray="2 10"/>
+  <path d="M600,190 C460,214 360,238 302,270" fill="none" stroke="#d267c9" stroke-width="1.8" stroke-dasharray="3 6" marker-end="url(#aM)"/>
+  <path d="M660,202 C660,260 670,300 690,320" fill="none" stroke="#d267c9" stroke-width="8" opacity="0.22" stroke-linecap="round" stroke-dasharray="2 9"/>
+  <path d="M660,202 C660,260 670,300 690,320" fill="none" stroke="#d267c9" stroke-width="1.6" stroke-dasharray="3 6" marker-end="url(#aM)"/>
+
+  <!-- strategy plug-in -> allocator (GO) -->
+  <path d="M300,296 L376,296" fill="none" stroke="#c07fe0" stroke-width="2.2" stroke-dasharray="6 4" marker-end="url(#aP)"/>
+
+  <!-- allocator -> limiter PROPOSAL (ZMQ) -->
+  <path d="M470,322 C520,344 560,342 598,344" fill="none" stroke="#3fb9c9" stroke-width="12" opacity="0.42" stroke-linecap="round"/>
+  <path d="M470,322 C520,344 560,342 596,344" fill="none" stroke="#7fdbe8" stroke-width="2" marker-end="url(#aC)"/>
+
+  <!-- limiter -> allocator FINANCIAL PICTURE mirror (widest ZMQ) -->
+  <path d="M600,338 C540,320 500,314 454,306" fill="none" stroke="#3fb9c9" stroke-width="18" opacity="0.5" stroke-linecap="round"/>
+  <path d="M600,338 C540,320 500,314 456,308" fill="none" stroke="#7fdbe8" stroke-width="2.5" marker-end="url(#aC)"/>
+
+  <!-- limiter -> broker in-proc zero-wire -->
+  <path d="M780,348 L836,348" fill="none" stroke="#f0883e" stroke-width="3" marker-end="url(#aO)"/>
+
+  <!-- venue arrows: market data in (-> datafeed) and orders out (broker ->) -->
+  <path d="M1000,180 C900,180 820,190 742,186" fill="none" stroke="#c9d1d9" stroke-width="2" marker-end="url(#aW)"/>
+  <path d="M980,348 L1000,348 L1000,300" fill="none" stroke="#c9d1d9" stroke-width="2" marker-end="url(#aW)"/>
+
+  <!-- Plane-1 WAL: limiter -> postgres -->
+  <path d="M640,374 C440,420 300,428 190,450" fill="none" stroke="#4c8bf0" stroke-width="2.6" marker-end="url(#aB)"/>
+
+  <!-- pollers -> limiter caches -->
+  <path d="M635,452 C680,420 700,398 705,376" fill="none" stroke="#2ea043" stroke-width="2.4" marker-end="url(#aGr)"/>
+
+  <!-- picture -> scoring (dashed, R5 not built) -->
+  <path d="M620,374 C520,410 420,428 350,450" fill="none" stroke="#6e7681" stroke-width="1.8" stroke-dasharray="5 5" marker-end="url(#aG)"/>
+  <!-- scoring ranking -> allocator (dashed R5) -->
+  <path d="M320,452 C320,400 340,340 376,308" fill="none" stroke="#6e7681" stroke-width="1.8" stroke-dasharray="5 5" marker-end="url(#aG)"/>
+  <!-- sentinel deadman watch -> limiter (dashed R4-B) -->
+  <path d="M500,452 C540,420 620,392 660,376" fill="none" stroke="#6e7681" stroke-width="1.8" stroke-dasharray="5 5" marker-end="url(#aG)"/>
+  <!-- postgres -> scoring read (dashed) -->
+  <path d="M250,470 L266,470" fill="none" stroke="#6e7681" stroke-width="1.8" stroke-dasharray="5 5" marker-end="url(#aG)"/>
+
+  <!-- dashboard read-only subscribers: picture bus + plane-2 -->
+  <path d="M935,452 C1000,410 1010,380 960,352" fill="none" stroke="#3fb9c9" stroke-width="1.6" stroke-dasharray="4 4" marker-end="url(#aC)"/>
+  <path d="M900,452 C870,410 760,372 700,360" fill="none" stroke="#3fb9c9" stroke-width="1.6" stroke-dasharray="4 4" marker-end="url(#aC)"/>
+
+  <!-- ===== boxes ===== -->
+  <g font-size="12.5" font-weight="700">
+    <rect x="600" y="150" width="140" height="52" rx="10" fill="#2ea043"/><text x="670" y="172" fill="#fff" text-anchor="middle">broker-datafeed</text><text x="670" y="190" fill="#e9ffe9" font-size="10" text-anchor="middle" font-weight="400">Core 1 · 100%</text>
+    <rect x="120" y="150" width="140" height="52" rx="10" fill="#2ea043"/><text x="190" y="172" fill="#fff" text-anchor="middle">verify.py · checks</text><text x="190" y="190" fill="#e9ffe9" font-size="10" text-anchor="middle" font-weight="400">dev/CI · 100%</text>
+
+    <rect x="160" y="270" width="140" height="52" rx="10" fill="#1c1526" stroke="#8957c9" stroke-width="1.5" stroke-dasharray="6 4"/><text x="230" y="292" fill="#d2a8ff" text-anchor="middle">Strategy ⟨plug-in⟩</text><text x="230" y="310" fill="#b18ade" font-size="10" text-anchor="middle" font-weight="400">off-scale</text>
+    <rect x="380" y="270" width="140" height="52" rx="10" fill="#8bc34a"/><text x="450" y="292" fill="#12210a" text-anchor="middle">Allocator</text><text x="450" y="310" fill="#1e330f" font-size="10" text-anchor="middle" font-weight="400">Core 3 · 78%</text>
+
+    <rect x="600" y="322" width="180" height="52" rx="10" fill="#8bc34a"/><text x="690" y="344" fill="#12210a" text-anchor="middle">Risk Engine / Limiter</text><text x="690" y="362" fill="#1e330f" font-size="10" text-anchor="middle" font-weight="400">Core 2 · 88% (origin-write uncalled)</text>
+    <rect x="840" y="322" width="140" height="52" rx="10" fill="#2ea043"/><text x="910" y="344" fill="#fff" text-anchor="middle">broker-order</text><text x="910" y="362" fill="#e9ffe9" font-size="10" text-anchor="middle" font-weight="400">Core 2 · 100%</text>
+
+    <rect x="120" y="452" width="130" height="46" rx="10" fill="#e3b341"/><text x="185" y="472" fill="#241a02" text-anchor="middle">Postgres·P1</text><text x="185" y="489" fill="#3a2c05" font-size="10" text-anchor="middle" font-weight="400">40%</text>
+    <rect x="270" y="452" width="130" height="46" rx="10" fill="#545d68"/><text x="335" y="472" fill="#fff" text-anchor="middle">Scoring</text><text x="335" y="489" fill="#c9d1d9" font-size="10" text-anchor="middle" font-weight="400">0% · R5</text>
+    <rect x="420" y="452" width="130" height="46" rx="10" fill="#545d68"/><text x="485" y="472" fill="#fff" text-anchor="middle">Sentinel</text><text x="485" y="489" fill="#c9d1d9" font-size="10" text-anchor="middle" font-weight="400">0% · R4-B</text>
+    <rect x="570" y="452" width="130" height="46" rx="10" fill="#2ea043"/><text x="635" y="472" fill="#fff" text-anchor="middle">Pollers+Cal</text><text x="635" y="489" fill="#e9ffe9" font-size="10" text-anchor="middle" font-weight="400">95%</text>
+    <rect x="860" y="452" width="150" height="46" rx="10" fill="#db6d28" stroke="#f0883e" stroke-dasharray="5 3"/><text x="935" y="472" fill="#1a1206" text-anchor="middle">Dashboard</text><text x="935" y="489" fill="#2a1c08" font-size="10" text-anchor="middle" font-weight="400">15% · read-only</text>
+
+    <rect x="1000" y="150" width="70" height="224" rx="10" fill="#30363d" stroke="#484f58"/><text x="1035" y="266" fill="#e6edf3" font-size="13" text-anchor="middle" transform="rotate(90 1035 266)">VENUE</text>
+  </g>
+
+  <!-- connector legend (inside map panel) -->
+  <g font-size="9.5">
+    <line x1="60" y1="516" x2="86" y2="516" stroke="#3fb9c9" stroke-width="9" opacity="0.5" stroke-linecap="round"/><text x="92" y="519" fill="#8b949e">ZMQ bus (widest = picture mirror)</text>
+    <line x1="270" y1="516" x2="296" y2="516" stroke="#d267c9" stroke-width="7" opacity="0.35" stroke-dasharray="2 8" stroke-linecap="round"/><text x="302" y="519" fill="#8b949e">SPSC price ring (shared-mem)</text>
+    <line x1="470" y1="516" x2="496" y2="516" stroke="#f0883e" stroke-width="3"/><text x="502" y="519" fill="#8b949e">in-proc zero-wire exit</text>
+    <line x1="620" y1="516" x2="646" y2="516" stroke="#4c8bf0" stroke-width="2.6"/><text x="652" y="519" fill="#8b949e">Plane-1 WAL</text>
+    <line x1="740" y1="516" x2="766" y2="516" stroke="#2ea043" stroke-width="2.4"/><text x="772" y="519" fill="#8b949e">poller caches</text>
+    <line x1="860" y1="516" x2="886" y2="516" stroke="#c07fe0" stroke-width="2.2" stroke-dasharray="6 4"/><text x="892" y="519" fill="#8b949e">plug-in GO</text>
+    <line x1="980" y1="516" x2="1006" y2="516" stroke="#6e7681" stroke-width="1.8" stroke-dasharray="5 5"/><text x="1012" y="519" fill="#8b949e">not built</text>
+    <line x1="60" y1="532" x2="86" y2="532" stroke="#3fb9c9" stroke-width="1.6" stroke-dasharray="4 4"/><text x="92" y="535" fill="#8b949e">dashboard read-only subscribe</text>
+    <line x1="270" y1="532" x2="296" y2="532" stroke="#c9d1d9" stroke-width="2"/><text x="302" y="535" fill="#8b949e">venue in / orders out</text>
+  </g>
+
+  <!-- ==================== LEADERBOARD ==================== -->
+  <text x="40" y="586" fill="#e6edf3" font-size="18" font-weight="700">Completeness leaderboard</text>
+  <text x="40" y="606" fill="#8b949e" font-size="12">Infrastructure modules ranked by code+sim completeness. Strategy (plug-in) and Dashboard (observability) shown separately — not counted in infra %.</text>
+
+  <g font-size="14">
+    <text x="52" y="648" fill="#7ee787" font-weight="700">1</text><text x="80" y="648" fill="#e6edf3">broker-datafeed</text>
+    <rect x="360" y="636" width="640" height="16" rx="8" fill="#21262d"/><rect x="360" y="636" width="640" height="16" rx="8" fill="#2ea043"/><text x="1012" y="649" fill="#7ee787" font-weight="700">100%</text>
+
+    <text x="52" y="680" fill="#7ee787" font-weight="700">2</text><text x="80" y="680" fill="#e6edf3">broker-order</text>
+    <rect x="360" y="668" width="640" height="16" rx="8" fill="#21262d"/><rect x="360" y="668" width="640" height="16" rx="8" fill="#2ea043"/><text x="1012" y="681" fill="#7ee787" font-weight="700">100%</text>
+
+    <text x="52" y="712" fill="#7ee787" font-weight="700">3</text><text x="80" y="712" fill="#e6edf3">verify.py · checks <tspan fill="#6e7681" font-size="11">(dev/CI)</tspan></text>
+    <rect x="360" y="700" width="640" height="16" rx="8" fill="#21262d"/><rect x="360" y="700" width="640" height="16" rx="8" fill="#2ea043"/><text x="1012" y="713" fill="#7ee787" font-weight="700">100%</text>
+
+    <text x="52" y="744" fill="#7ee787" font-weight="700">4</text><text x="80" y="744" fill="#e6edf3">Pollers + Calendar</text>
+    <rect x="360" y="732" width="640" height="16" rx="8" fill="#21262d"/><rect x="360" y="732" width="608" height="16" rx="8" fill="#2ea043"/><text x="1012" y="745" fill="#7ee787" font-weight="700">95%</text>
+
+    <text x="52" y="776" fill="#d7f0b0" font-weight="700">5</text><text x="80" y="776" fill="#e6edf3">Risk Engine / Limiter</text>
+    <rect x="360" y="764" width="640" height="16" rx="8" fill="#21262d"/><rect x="360" y="764" width="563" height="16" rx="8" fill="#8bc34a"/><text x="1012" y="777" fill="#d7f0b0" font-weight="700">88%</text>
+
+    <text x="52" y="808" fill="#d7f0b0" font-weight="700">6</text><text x="80" y="808" fill="#e6edf3">Allocator</text>
+    <rect x="360" y="796" width="640" height="16" rx="8" fill="#21262d"/><rect x="360" y="796" width="499" height="16" rx="8" fill="#8bc34a"/><text x="1012" y="809" fill="#d7f0b0" font-weight="700">78%</text>
+
+    <text x="52" y="840" fill="#f5d98a" font-weight="700">7</text><text x="80" y="840" fill="#e6edf3">Postgres · Plane-1</text>
+    <rect x="360" y="828" width="640" height="16" rx="8" fill="#21262d"/><rect x="360" y="828" width="256" height="16" rx="8" fill="#e3b341"/><text x="1012" y="841" fill="#f5d98a" font-weight="700">40%</text>
+
+    <text x="52" y="872" fill="#adbac7" font-weight="700">8</text><text x="80" y="872" fill="#e6edf3">Scoring <tspan fill="#6e7681" font-size="11">(R5)</tspan></text>
+    <rect x="360" y="860" width="640" height="16" rx="8" fill="#21262d"/><rect x="360" y="860" width="6" height="16" rx="8" fill="#545d68"/><text x="1012" y="873" fill="#adbac7" font-weight="700">0%</text>
+
+    <text x="52" y="904" fill="#adbac7" font-weight="700">9</text><text x="80" y="904" fill="#e6edf3">Sentinel <tspan fill="#6e7681" font-size="11">(R4-B)</tspan></text>
+    <rect x="360" y="892" width="640" height="16" rx="8" fill="#21262d"/><rect x="360" y="892" width="6" height="16" rx="8" fill="#545d68"/><text x="1012" y="905" fill="#adbac7" font-weight="700">0%</text>
+  </g>
+
+  <line x1="40" y1="926" x2="1160" y2="926" stroke="#30363d"/>
+  <text x="80" y="952" fill="#e6edf3" font-size="14" font-weight="700">INFRASTRUCTURE (weighted)</text>
+  <rect x="360" y="940" width="640" height="16" rx="8" fill="#21262d"/><rect x="360" y="940" width="474" height="16" rx="8" fill="#8bc34a"/><text x="1012" y="953" fill="#d7f0b0" font-size="14" font-weight="700">~74%</text>
+
+  <text x="40" y="1000" fill="#8b949e" font-size="13" font-weight="700">Auxiliary — not counted in infrastructure %</text>
+  <g font-size="14">
+    <text x="80" y="1032" fill="#d2a8ff">Strategy ⟨plug-in⟩ <tspan fill="#6e7681" font-size="11">interface = infra · signal swappable</tspan></text>
+    <rect x="360" y="1020" width="640" height="16" rx="8" fill="#1c1526" stroke="#8957c9" stroke-dasharray="5 3"/><text x="1012" y="1033" fill="#d2a8ff" font-weight="700">off-scale</text>
+
+    <text x="80" y="1064" fill="#ffd7a8">Dashboard <tspan fill="#6e7681" font-size="11">read-only observability, off critical path</tspan></text>
+    <rect x="360" y="1052" width="640" height="16" rx="8" fill="#21262d"/><rect x="360" y="1052" width="96" height="16" rx="8" fill="#db6d28"/><text x="1012" y="1065" fill="#ffd7a8" font-weight="700">15%</text>
+  </g>
+
+  <line x1="40" y1="1090" x2="1160" y2="1090" stroke="#30363d"/>
+  <g font-size="11" fill="#8b949e">
+    <rect x="40" y="1108" width="14" height="12" rx="3" fill="#2ea043"/><text x="60" y="1118">90–100</text>
+    <rect x="128" y="1108" width="14" height="12" rx="3" fill="#8bc34a"/><text x="148" y="1118">70–89</text>
+    <rect x="210" y="1108" width="14" height="12" rx="3" fill="#e3b341"/><text x="230" y="1118">40–69</text>
+    <rect x="292" y="1108" width="14" height="12" rx="3" fill="#db6d28"/><text x="312" y="1118">10–39</text>
+    <rect x="374" y="1108" width="14" height="12" rx="3" fill="#545d68"/><text x="394" y="1118">0–9</text>
+    <text x="470" y="1118" fill="#6e7681">100% = code-complete + debugged + sim-validated · live/venue testing not required · path to full green: R4-B → Postgres → R5 → Allocator finish.</text>
+  </g>
+</svg>

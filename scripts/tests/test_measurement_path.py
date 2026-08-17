@@ -40,7 +40,6 @@ from __future__ import annotations
 # its own file; one shared helper would let a single edit un-bind several.
 # pylint: disable=duplicate-code
 import ast
-import os
 import subprocess  # nosec B404 - fixed argv, shell=False, repo history only
 import sys
 import textwrap
@@ -54,6 +53,7 @@ if str(REPO / "scripts") not in sys.path:
     sys.path.insert(0, str(REPO / "scripts"))
 
 # pylint: disable=wrong-import-position
+from nixverify.gitenv import scrubbed_env  # pylint: disable=import-error
 from nixverify.measurement_path import (  # pylint: disable=import-error
     DECLARATION_ONLY,
     DECLARATION_SYMBOLS,
@@ -457,8 +457,15 @@ ARC025 = "0f9c5b9"
 def _git_env() -> dict[str, str]:
     """D3.22: git honours GIT_DIR / GIT_INDEX_FILE AHEAD of -C, and pre-commit
     exports GIT_INDEX_FILE. Without this strip, this suite reads a different
-    repository than the one it names and reports a confident verdict about it."""
-    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    repository than the one it names and reports a confident verdict about it.
+
+    ARC 036: this was a PRIVATE re-spelling of `nixverify.gitenv.scrubbed_env`
+    — the fifth on the tree — and `gitenv.py`'s own docstring says why that is
+    the `avg_price` shape: three spellings of one rule had already diverged by
+    three variables and nothing said which was right. `check_git_env_scrub`
+    found it by deriving the call sites instead of remembering them.
+    """
+    return scrubbed_env()
 
 
 def _show(rev: str, rel: str) -> str:

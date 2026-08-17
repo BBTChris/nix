@@ -62,6 +62,11 @@ from pathlib import Path
 import pytest  # pylint: disable=import-error
 
 REPO = Path(__file__).resolve().parents[2]
+if str(REPO / "scripts") not in sys.path:
+    sys.path.insert(0, str(REPO / "scripts"))
+# pylint: disable=wrong-import-position
+from nixverify.gitenv import scrubbed_env
+
 HARNESS = REPO / "scripts" / "harness.py"
 MONITOR = REPO / "scripts" / "monitor.py"
 
@@ -83,7 +88,10 @@ def _git(cwd: Path, *args: str) -> None:
         capture_output=True,
         text=True,
         check=False,
-        env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
+        # D3.205: was a PRIVATE re-spelling of the scrub (the sixth on the
+        # tree). `check_git_env_scrub` derives call sites rather than
+        # remembering them, and found it.
+        env=scrubbed_env(),
     )
     assert proc.returncode == 0, f"git {args}: {proc.stderr}"
 
@@ -119,7 +127,10 @@ def _status(victim: Path) -> str:
         capture_output=True,
         text=True,
         check=False,
-        env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
+        # D3.205: was a PRIVATE re-spelling of the scrub (the sixth on the
+        # tree). `check_git_env_scrub` derives call sites rather than
+        # remembering them, and found it.
+        env=scrubbed_env(),
     ).stdout
 
 

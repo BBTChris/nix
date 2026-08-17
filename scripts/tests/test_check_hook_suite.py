@@ -208,6 +208,11 @@ def test_the_layout_resolves_to_the_hooks_dir_git_will_use() -> None:
             capture_output=True,
             text=True,
             check=True,
+            # D3.205: `--git-dir` is the ONE question an inherited `GIT_DIR`
+            # answers directly, and this branch only runs in a worktree — the
+            # layout this suite exists to distinguish. Gated by
+            # `check_git_env_scrub`.
+            env=gate._clean_git_env(),  # pylint: disable=protected-access
         ).stdout.strip()
         assert not (Path(private) / "hooks" / gate.HOOK_TYPE).is_file()
 

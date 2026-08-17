@@ -142,9 +142,18 @@ def _hostile(
 
 
 def _raw_ls_files(cwd: Path) -> str:
-    """`git ls-files` with the AMBIENT environment — the unrepaired caller."""
+    """`git ls-files` with the AMBIENT environment — the unrepaired caller.
+
+    THIS CALL IS UNSCRUBBED ON PURPOSE and is the only reason this module can
+    prove anything: it is the control half that shows the hostile environment is
+    genuinely hostile. `check_git_env_scrub` derives every git call site in the
+    tree and reddens on an unscrubbed one, so this exception is DECLARED at the
+    call site with the marker below rather than being an accepted absence —
+    and the gate honours the marker only under `scripts/tests/`, and reports
+    every one it honoured, so the exception cannot grow quietly.
+    """
     proc = subprocess.run(  # nosec B603 B607 - fixed argv, shell=False, tmp_path only
-        ["git", "-C", str(cwd), "ls-files"],
+        ["git", "-C", str(cwd), "ls-files"],  # gitenv-allow-unscrubbed
         capture_output=True,
         text=True,
         check=False,
