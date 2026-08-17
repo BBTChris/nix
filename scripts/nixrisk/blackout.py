@@ -153,11 +153,16 @@ anywhere.
 DECIDE NOTHING?
 ------------------------------------------------------------------------------
 1. **The window set is never published**, so `active` is always empty and every
-   entry sails through. *Closed:* an absent set, or a cache in
-   `CacheState.EMPTY`, is a DENIAL naming the absence — §6.4's fail-closed
+   entry sails through. *Closed:* an absent set, or a cache in ANY state other
+   than `CacheState.FRESH`, is a DENIAL naming the absence — §6.4's fail-closed
    direction. `windows(symbol) -> None` and an empty `WindowSet` are different
    and both are handled, because `calendar_seam` makes them different on
-   purpose.
+   purpose. **ARC 034 (D3.193) corrected this sentence and the code under it:**
+   both used to name `CacheState.EMPTY` alone, and `CacheState` has THREE
+   members. A `STALE` cache — rows present, known out of date — was read as
+   CLEAR, which is §6.5's `data stale` disjunct silently dropped. The test is
+   now `is not FRESH`, so a member added later is denied until somebody rules
+   it safe.
 2. **The clock is wrong or naive**, so `now` never lands inside anything.
    *Closed:* a naive `now` is a denial naming the offending value. §12.3 makes
    UTC the invariant, and comparing a naive instant to an aware one raises —
@@ -775,15 +780,27 @@ class BlackoutEvaluator:  # pylint: disable=too-many-instance-attributes
         """`now ∈ any window`, kind-agnostic and `entry_only`-agnostic (§6.5)."""
         state = self._windows.state()
         published = self._windows.windows(symbol)
-        if published is None or state is CacheState.EMPTY:
+        # ARC 034 (D3.193): the test is `is not FRESH`, NOT `is EMPTY`.
+        # `CacheState` has THREE members and this arm read only one of them, so
+        # `STALE` — a cache that HAS rows and is known to be out of date —
+        # returned a CLEAR verdict off rows nobody vouches for. §6.5's unified
+        # denial lists `data stale` as its own disjunct beside `now ∈ any
+        # window`, so a stale window cache is a denial on the STALENESS clause
+        # before it is anything on the window clause. Enumerating the permitted
+        # state rather than the refused ones is also the shape that survives a
+        # fourth `CacheState` member: a new state is denied until somebody
+        # decides it is safe, which is the direction §6.4 fails in.
+        if published is None or state is not CacheState.FRESH:
             return _Verdict(
                 True,
                 (
-                    "§6.4 fail-closed: no window set is published for "
-                    f"{symbol!r} (cache state {state.value!r}). §6.1-6.3 cannot "
-                    "be evaluated against a set that does not exist, and an "
-                    "unpublished symbol must not be indistinguishable from a "
-                    "clear one (nix_check_contract.md §17)"
+                    "§6.4/§6.5 fail-closed: no FRESH window set is published "
+                    f"for {symbol!r} (cache state {state.value!r}, rows "
+                    f"{'absent' if published is None else 'present'}). §6.1-6.3 "
+                    "cannot be evaluated against a set that does not exist, and "
+                    "§6.5 denies on `data stale` in its own right — a cache "
+                    "known to be out of date must not be indistinguishable from "
+                    "a clear one (nix_check_contract.md §17)"
                 ),
             )
         active = [w for w in published.windows if w.start <= now < w.end]

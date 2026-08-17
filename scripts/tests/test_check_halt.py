@@ -180,7 +180,9 @@ def test_an_ONSET_THAT_CANCELS_NOTHING_fails_and_NAMES_the_pending_entries(
 def test_a_MARKER_WRITTEN_TOO_LATE_fails_the_LIMITER_DOWN_arm(home: Path) -> None:
     _halt(
         home,
-        "            self._marker.record_set(cause, detail, stamp, seq)",
+        # ARC 034 (D3.195): the anchor gained `self._boot_id` when `(boot, seq)`
+        # replaced `seq` as the marker record identity.
+        "            self._marker.record_set(cause, detail, stamp, seq, self._boot_id)",
         "            pass  # PLANTED: nothing recorded before the row is booked",
     )
 

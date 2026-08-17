@@ -186,7 +186,7 @@ def test_a_poller_that_never_RE_PROMOTES_reddens(home: Path) -> None:
     """A dead websocket sends no failover event; the fallback must not wait."""
     pristine = _plant(
         home,
-        "            if idle_ms <= self._push_idle_ms:\n"
+        "            if 0.0 <= idle_ms <= self._push_idle_ms:\n"
         "                wanted = PollerMode.FALLBACK_AUDIT",
         "            if True:\n                wanted = PollerMode.FALLBACK_AUDIT",
     )

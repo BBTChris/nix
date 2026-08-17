@@ -228,6 +228,12 @@ class PushDemotion:  # pylint: disable=too-many-instance-attributes
         self.pushes = 0
         self.demotions = 0
         self.promotions = 0
+        #: ARC 034 (D3.194). Pushes SEEN and REFUSED, kept apart from `pushes`
+        #: so the demotion state can be read against what actually moved it.
+        #: A refusal that only shrank a number would be indistinguishable from
+        #: a push that never arrived.
+        self.rejected_future = 0
+        self.rejected_regressive = 0
         self._mode = PollerMode.PRIMARY
 
     @property
@@ -236,9 +242,61 @@ class PushDemotion:  # pylint: disable=too-many-instance-attributes
         return self._last_push
 
     def note_push(self, at: datetime) -> None:
-        """Record that the venue's push feed delivered. May demote."""
-        self._last_push = at
+        """Record that the venue's push feed delivered. May demote.
+
+        **MONOTONIC AND CLOCK-BOUNDED. ARC 034 (D3.194), and this used to be a
+        single unconditional assignment.**
+
+        `_last_push` is the ONLY thing standing between a dead websocket and a
+        poller that keeps auditing at the wide cadence, so a stamp this method
+        accepts is a safety decision, not bookkeeping. Two ways a venue stamp
+        breaks the clause, both measured against the shipped code:
+
+        * **A FUTURE stamp pins the demotion.** `_settle` demotes while the
+          push is younger than `push_idle_ms`; one push stamped a day ahead
+          therefore holds `FALLBACK_AUDIT` through a day of total websocket
+          silence. Measured on the shipped module: 0 h, 1 h, 6 h and 24 h of
+          silence after a single `now + 240 h` push all still read
+          `FALLBACK_AUDIT`. A stamp the local clock says has not happened yet
+          is REFUSED — the poller stays `PRIMARY`, which is the direction §6.4
+          fails in, because polling IS the fallback.
+        * **A REGRESSIVE stamp re-promotes a live demotion.** Assigning
+          unconditionally let a late-arriving push carrying an OLD instant move
+          `_last_push` backwards, which widens `idle_ms` and promotes a poller
+          whose push feed is in fact healthy. §6.4b already states the rule for
+          venue-sourced values — *"the Limiter accepts a new value for a given
+          key ONLY if it is newer than the one it holds"* — and this is that
+          rule applied to the push CLOCK rather than to the push PAYLOAD. The
+          reading itself is not dropped by this method; `on_push` still hands
+          the rows to the §6.4b guard, which decides the payload's fate on its
+          own terms.
+
+        Both refusals are COUNTED rather than silent, and `pushes` still counts
+        the arrival, because *"a push arrived and was refused"* and *"no push
+        arrived"* are different states of the world and a poller that could not
+        tell them apart could only be believed.
+
+        A naive `at` is refused loudly rather than compared: the subtraction in
+        `_settle` would raise `TypeError` several frames away from the caller
+        that supplied it, and §12.3 makes UTC the invariant.
+        """
+        now = self._clock()
+        if at.tzinfo is None or at.utcoffset() is None:
+            raise PollerUsageError(
+                f"push stamp {at!r} is naive — §12.3 puts every instant on the "
+                "UTC timeline, and a naive stamp compared against an aware "
+                "clock raises three frames from the venue that sent it"
+            )
         self.pushes += 1
+        if at > now:
+            # Fail CLOSED: refusing to record leaves the poller PRIMARY, which
+            # polls MORE often. Accepting would demote on the strength of an
+            # instant the local clock says has not happened.
+            self.rejected_future += 1
+        elif self._last_push is not None and at < self._last_push:
+            self.rejected_regressive += 1
+        else:
+            self._last_push = at
         self._settle()
 
     def mode(self) -> PollerMode:
@@ -262,7 +320,13 @@ class PushDemotion:  # pylint: disable=too-many-instance-attributes
         wanted = PollerMode.PRIMARY
         if self._last_push is not None:
             idle_ms = (self._clock() - self._last_push).total_seconds() * 1000.0
-            if idle_ms <= self._push_idle_ms:
+            # ARC 034 (D3.194): the LOWER bound is not decoration. `idle_ms` is
+            # signed, and a negative value means the last push is in the FUTURE
+            # of the clock reading it — which `note_push` now refuses at the
+            # door, but which a backwards clock step can still produce after
+            # the fact. A bare `idle_ms <= push_idle_ms` reads every negative
+            # value as *"a push just arrived"* and demotes on a clock jump.
+            if 0.0 <= idle_ms <= self._push_idle_ms:
                 wanted = PollerMode.FALLBACK_AUDIT
         if wanted is self._mode:
             return

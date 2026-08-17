@@ -33,12 +33,28 @@ rather than only a valid one.
 ------------------------------------------------------------------------------
 WHY DRIVE RATHER THAN SHELL OUT TO PYTEST
 ------------------------------------------------------------------------------
-The runtime `.venv` `verify.py` runs under has no pytest (dev-only, per the ARC
-CRUCIBLE-DEPSPLIT venv split); a check that shelled to pytest would be
-CANNOT_MEASURE on every real run. So this gate imports `nixrisk.session` and its
-collaborators straight out of `ctx.nix_home` — the `check_flatten` pattern:
-path-keyed import with `sys.modules`/`sys.path` restored — and drives them with
-hand-built doubles. No pytest, no test-file import.
+The premise this section used to state was FALSE and is corrected here rather
+than carried (ARC 034, CHECK-DEBT D3.201). It read *"the runtime `.venv`
+`verify.py` runs under has no pytest (dev-only, per the ARC CRUCIBLE-DEPSPLIT
+venv split)"*, and **pytest 9.1.1 IS installed in `/home/bbt/nix/.venv`** —
+measured, `importlib.util.find_spec("pytest")` resolves under that interpreter.
+So the sentence was a claim about the shipped tree that the shipped tree
+contradicts, and it was being used to explain why properties this gate could
+assert are asserted somewhere else instead.
+
+**WHAT REMAINS TRUE, and it is the reason the structure below is unchanged:** a
+check that shelled out to pytest would make one instrument's verdict depend on
+another runner's exit code, and `verify.py` is required to be independently
+runnable per `docs/nix_check_contract.md` §4.2. So this gate imports `nixrisk.session` and its collaborators straight
+out of `ctx.nix_home` — the `check_flatten` pattern: path-keyed import with
+`sys.modules`/`sys.path` restored — and drives them with hand-built doubles directly.
+
+**WHAT IS NOT SETTLED, and is an architect ruling rather than a docstring
+edit:** whether a gate may rely on the pytest suite at all. If it may, several
+checks in this tree are duplicate instruments under doctrine C.9; if it may not,
+the properties currently living only in `scripts/tests/` owe a retrofit here.
+CHECK-DEBT D3.201 holds the question. ARC 034 corrected the false sentence and
+deliberately did NOT restructure this gate.
 
 ------------------------------------------------------------------------------
 `debug.md` §7.12 — WHAT WOULD MAKE THIS GATE PASS WHILE MEASURING NOTHING?
