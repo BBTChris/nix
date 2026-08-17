@@ -3927,3 +3927,17 @@ arcs before this one each predicted a transition and got one; this arc predicts 
 which is the same mechanism read forwards and is falsifiable in exactly the same way.
 
 Banked forward-only (§0h) BEFORE the marker (§16.4 / `CHECK-A10`), whichever way it comes out.
+
+### ARC 034 — the post-write-back re-measure, banked forward-only BEFORE the marker
+
+**The prediction held, and holding is the result.** `verify.py` after the write-back commit:
+**64 passed | 3 failed | 2 cannot measure | 0 skipped**, exit 1 — byte-identical to the figure taken
+immediately before it, with the same five non-passes: `check_ibgateway_service`,
+`check_artifact_gate_coverage`, `check_uncalled_entry_points` FAIL, `check_ibgateway_config` and
+`check_observed_resource_claims` cannot-measure.
+
+Three arcs running, the D3.40/D3.144 guard-owner transition fired on the write-back and each was
+predicted. **This arc predicted its ABSENCE and got it** — every guard and exclusion owner names
+`ARC 035`, so `completed_arcs` gaining ARC 034 could not change `guard_owner_defect`'s answer for any
+row. A mechanism you can only predict in one direction is a mechanism you have not understood; this is
+the same one read forwards, and it was falsifiable in exactly the same way.

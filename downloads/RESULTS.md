@@ -205,3 +205,10 @@ arcs before this one each predicted a transition and got one; this arc predicts 
 which is the same mechanism read forwards and is falsifiable in exactly the same way.
 
 Banked forward-only (§0h) BEFORE the marker (§16.4 / `CHECK-A10`), whichever way it comes out.
+
+### THE POST-WRITE-BACK RE-MEASURE — MEASURED, and the prediction held
+
+`verify.py` after the write-back commit: **64 passed | 3 failed | 2 cannot measure | 0 skipped**,
+exit 1 — byte-identical to the figure immediately before it, same five non-passes. The predicted
+ABSENCE of a D3.40/D3.144 transition is what was measured. Banked forward-only (§0h) before the
+marker (§16.4 / `CHECK-A10`).
