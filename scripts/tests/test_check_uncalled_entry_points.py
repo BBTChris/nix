@@ -1,0 +1,747 @@
+"""ARC 034 (D) — the can-fail suite for `check_uncalled_entry_points`.
+
+**EVERY CONTROL ASSERTS THE REASON.** Check-contract rule 11: an exit code is a
+shared namespace — the detector firing, the resolver breaking and the
+interpreter refusing to start all reach the same integer — so every assertion
+below names the message, the site, or the measured field. The one place a bare
+status is asserted is beside a message assertion, never instead of one.
+
+**No plant touches a production artifact** (doctrine C.8). Every ratchet plant
+lands in a throwaway git repository under `tmp_path`; the two tests that touch
+the real tree only READ it.
+
+**THE ORACLE IS SYNTHETIC AND ITS ANSWER IS KNOWN.** A resolver can only be
+measured against code whose call graph is decided in advance, so the fixture
+tree below is written to have exactly one correct answer per property: a called
+function, an uncalled twin with the SAME method name, a Protocol dispatch, a
+receiver nothing types, a gate-only caller, and the three shapes that must not
+be judged at all. The live-tree test then asserts the same instrument reports
+the eight symbols ARC 034's D3.191 audit measured by hand.
+"""
+# pylint: disable=invalid-name,protected-access,redefined-outer-name
+# pylint: disable=import-outside-toplevel,duplicate-code,too-many-lines
+# Test names SHOUT the property under test.
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest  # pylint: disable=import-error
+
+REPO = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(REPO / "scripts"))
+sys.path.append(str(REPO / "checks"))
+
+import check_uncalled_entry_points as gate  # pylint: disable=wrong-import-position
+from nixverify.contract import (  # pylint: disable=wrong-import-position
+    Context,
+    Mode,
+    Status,
+)
+from nixverify.gitenv import scrubbed_env  # pylint: disable=wrong-import-position
+
+GIT = "/usr/bin/git"
+
+#: Enough filler to clear both credibility floors with room, and NOT set to the
+#: floor itself: a fixture sized exactly at the threshold cannot tell a working
+#: floor from one that is off by one.
+_FILLER_MODULES = 46
+_FILLER_VERBS = 6
+#: How many filler verbs `wired.py` actually calls. The rest are the fixture's
+#: own honest backlog, which is what makes the ratchet plants below realistic.
+_WIRED = 200
+
+_FIXTURE_CLOSED = tuple(range(1, 21))
+#: The arc the fixture's ledger has a series row for and the session log does
+#: NOT close — `in_flight_arc`'s own derivation, so §0g has something to refuse.
+_FIXTURE_IN_FLIGHT = "ARC 021"
+#: A FUTURE arc: neither closed nor in flight, so it is the one value that
+#: clears both the read rule and the assignment rule.
+_FIXTURE_LIVE_ARC = "ARC 022"
+
+
+def _git(home: Path, *args: str) -> None:
+    """Run git against `home` and NOTHING else.
+
+    `env=scrubbed_env()` is not decoration (D3.22): pre-commit exports
+    `GIT_INDEX_FILE`, git honours it AHEAD of `-C`, and a `git add -A` in a
+    throwaway repo has been measured staging that repo's tree over this
+    worktree's real index. The harness runs git exactly the way the gate does.
+    """
+    subprocess.run(
+        [GIT, "-C", str(home), *args],
+        check=True,
+        capture_output=True,
+        env=scrubbed_env(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# THE FIXTURE TREE — every property below has ONE known-correct answer.
+# ---------------------------------------------------------------------------
+
+#: `Alpha.ping` and `Beta.ping` share a method NAME and only ONE of them is
+#: called, through a receiver whose type is written down. A name-only matcher
+#: reports both as called; the resolver must report exactly `Beta.ping`. This is
+#: `SourceMonotonicGuard.keys` from the real tree, reduced to its skeleton.
+_SUBJECT = '''\
+"""Fixture subject module. Every answer here is decided in advance."""
+
+from typing import Protocol
+
+
+class Alpha:
+    def ping(self) -> str:
+        return "alpha"
+
+
+class Beta:
+    def ping(self) -> str:
+        return "beta"
+
+
+class PingPort(Protocol):
+    def pong(self) -> None: ...
+
+
+class PongImpl:
+    def pong(self) -> None:
+        return None
+
+
+class GateOnly:
+    def only_verb(self) -> int:
+        return 1
+
+
+class Danger:
+    def dangle(self) -> int:
+        return 2
+
+
+class _Hidden:
+    def hidden_verb(self) -> int:
+        return 3
+
+
+class Public:
+    def __eq__(self, other: object) -> bool:
+        return True
+
+    def called_verb(self) -> int:
+        return 4
+
+
+class Caller:
+    def __init__(self, alpha: Alpha) -> None:
+        self._alpha = alpha
+
+    def go(self) -> str:
+        return self._alpha.ping()
+
+
+def drive(port: PingPort) -> None:
+    port.pong()
+
+
+def loose(obj) -> int:
+    return obj.dangle()
+
+
+def outer() -> int:
+    def inner_nested() -> int:
+        return 5
+
+    return inner_nested()
+'''
+
+#: The shipped consumer. It calls `Caller.go`, `drive`, `loose`, `outer` and
+#: `Public.called_verb`, so each of those is CALLED and none may be reported.
+_WIRING = '''\
+"""Fixture production wiring."""
+
+from subject import Alpha, Caller, Danger, Public, PongImpl, drive, loose, outer
+
+
+def boot() -> None:
+    Caller(Alpha()).go()
+    drive(PongImpl())
+    loose(Danger())
+    outer()
+    Public().called_verb()
+'''
+
+_GATE_MODULE = '''\
+"""Fixture gate. The ONLY caller of GateOnly.only_verb."""
+
+DEPENDS_ON = ()
+RESOURCES = ()
+SUBJECTS = ()
+
+
+def run(mode, ctx):
+    from subject import GateOnly
+
+    probe = GateOnly()
+    return probe.only_verb()
+'''
+
+
+def _write_completion_record(home: Path) -> None:
+    """A session log and a ledger series table for the throwaway tree.
+
+    Without them `completed_arcs` errors and every owner arm reads
+    CANNOT_MEASURE forever, which would make the owner plants unmeasurable —
+    the fixture would agree with a broken gate for the wrong reason.
+    """
+    (home / "sessions").mkdir(parents=True, exist_ok=True)
+    (home / "docs").mkdir(parents=True, exist_ok=True)
+    (home / "sessions" / "SESSION.md").write_text(
+        "".join(f"## 2026-01-01 — ARC {n:03d}: closed\n\n" for n in _FIXTURE_CLOSED),
+        encoding="utf-8",
+    )
+    (home / "docs" / "CHECK-DEBT.md").write_text(
+        "| date | arc | open | note |\n|---|---|---|---|\n"
+        f"| 2026-01-01 | ARC {max(_FIXTURE_CLOSED):03d} | 5 | fixture |\n"
+        f"| 2026-01-02 | {_FIXTURE_IN_FLIGHT} | 5 | the arc IN FLIGHT |\n",
+        encoding="utf-8",
+    )
+
+
+def _filler_sources() -> dict[str, str]:
+    """`_FILLER_MODULES` modules of uniquely-named module-level functions."""
+    out = {}
+    for index in range(_FILLER_MODULES):
+        body = "".join(
+            f"def f_{index}_{verb}() -> int:\n    return {verb}\n\n\n"
+            for verb in range(_FILLER_VERBS)
+        )
+        out[f"scripts/filler_{index:02d}.py"] = body
+    return out
+
+
+def _wired_source(names: list[str]) -> str:
+    """A shipped module that REFERENCES `names`, making each one CALLED."""
+    body = "".join(f"    {name}()\n" for name in names)
+    return "def use_everything() -> None:\n" + body
+
+
+def _measure(home: Path) -> gate.Measured:
+    """The analysis, with the refusal turned into a loud failure."""
+    state, error = gate.analyse(home)
+    assert state is not None, f"the fixture tree could not be analysed: {error}"
+    return state
+
+
+def _write_baseline(home: Path, state: gate.Measured, owner: str) -> None:
+    """A baseline that accepts EXACTLY what this tree measures."""
+    modules: dict[str, dict] = {}
+    for sid, bucket in sorted(state.findings.items()):
+        path, _, symbol = sid.partition("::")
+        module = modules.setdefault(
+            path, {"owner": owner, "reason": "fixture row", "symbols": {}}
+        )
+        module["symbols"][symbol] = {"bucket": bucket, "admitted": "ARC 020"}
+    _save(home, {"schema": 1, "modules": modules})
+
+
+def _save(home: Path, payload: dict) -> None:
+    (home / gate.BASELINE).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _load(home: Path) -> dict:
+    return json.loads((home / gate.BASELINE).read_text(encoding="utf-8"))
+
+
+def _build(
+    home: Path, *, owner: str = _FIXTURE_LIVE_ARC, commit_baseline: bool = True
+) -> Path:
+    """A throwaway git repo whose call graph is decided in advance."""
+    (home / "checks").mkdir(parents=True)
+    (home / "scripts").mkdir(parents=True)
+    sources = _filler_sources()
+    sources["scripts/subject.py"] = _SUBJECT
+    sources["scripts/wiring.py"] = _WIRING
+    every = [f"f_{i}_{v}" for i in range(_FILLER_MODULES) for v in range(_FILLER_VERBS)]
+    sources["scripts/used.py"] = _wired_source(every[:_WIRED])
+    sources["checks/check_one.py"] = _GATE_MODULE
+    for path, text in sources.items():
+        (home / path).write_text(text, encoding="utf-8")
+    _write_completion_record(home)
+    _git(home, "init", "-q")
+    _git(home, "config", "user.email", "t@example.com")
+    _git(home, "config", "user.name", "t")
+    _git(home, "add", "-A")
+    _git(home, "commit", "-qm", "population")
+    _write_baseline(home, _measure(home), owner)
+    if commit_baseline:
+        _git(home, "add", "-A")
+        _git(home, "commit", "-qm", "baseline")
+    return home
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> Path:
+    """The default population: baseline committed, so the ratchet has a mark."""
+    return _build(tmp_path / "repo")
+
+
+def _run(home: Path):
+    """The gate, exactly as `verify.py` runs it."""
+    return gate.run(Mode.VERIFY, Context(nix_home=home, mode=Mode.VERIFY))
+
+
+def _sid(symbol: str, module: str = "scripts/subject.py") -> str:
+    return f"{module}::{symbol}"
+
+
+# ===========================================================================
+# NON-VACUITY FIRST — the fixture must be capable of exhibiting the property.
+# ===========================================================================
+
+
+def test_the_fixture_tree_is_a_CREDIBLE_population_before_anything_is_planted(
+    repo: Path,
+) -> None:
+    """A plant against a tree the gate refuses to report on measures nothing."""
+    state = _measure(repo)
+    assert state.shipped_modules >= gate.MIN_CREDIBLE_MODULES, state.shipped_modules
+    assert len(state.points) >= gate.MIN_CREDIBLE_ENTRY_POINTS, len(state.points)
+    assert gate.vacuity_refusal(state) == "", gate.vacuity_refusal(state)
+    assert state.count(gate.CALLED) >= _WIRED, (
+        "the fixture must contain real, resolvable call sites or every plant "
+        f"below is measuring an empty walk (got {state.count(gate.CALLED)})"
+    )
+
+
+def test_the_UNPLANTED_fixture_is_CLEAN_so_every_red_below_is_the_plant(
+    repo: Path,
+) -> None:
+    """The control. The gate must not be reporting on this tree already."""
+    result = _run(repo)
+    assert result.status is not Status.FAIL_NEEDS_OPERATOR, result.detail
+    assert "ratchet high-water mark" in result.evidence, result.evidence
+
+
+# ===========================================================================
+# THE SCOPE RULE — asserted directly, because it is the whole premise.
+# ===========================================================================
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("scripts/nixrisk/halt.py", "shipped"),
+        ("scripts/verify.py", "shipped"),
+        ("checks/check_halt.py", "gate"),
+        ("scripts/tests/test_halt.py", ""),
+        ("scripts/tests/independent_claims.py", ""),
+        ("databases/schema/extract_sources.py", ""),
+        ("docs/CHECK-DEBT.md", ""),
+        ("checks/registry.json", ""),
+    ],
+)
+def test_the_SCOPE_RULE_puts_each_path_where_the_docstring_says(
+    path: str, expected: str
+) -> None:
+    """`checks/` is a GATE and `scripts/tests/` is NEITHER — the two decisions
+    the whole instrument rests on, asserted as values rather than inferred from
+    a verdict."""
+    assert gate.scope_of(path) == expected, (
+        f"{path} classified as {gate.scope_of(path)!r}, expected {expected!r} — "
+        "the scope rule IS the property; a gate counted as shipped code would "
+        "make the instrument agree with the defect it exists to name"
+    )
+
+
+# ===========================================================================
+# THE ORACLE — a synthetic call graph with one correct answer per property.
+# ===========================================================================
+
+
+def test_a_CALLED_entry_point_is_NOT_reported(repo: Path) -> None:
+    """The false-positive direction, and it is the one that gets a gate ignored."""
+    state = _measure(repo)
+    for symbol in ("Caller.go", "Public.called_verb", "drive", "loose", "outer"):
+        assert state.verdicts[_sid(symbol)] == gate.CALLED, (
+            f"{symbol} is called by scripts/wiring.py and must be CALLED, not "
+            f"{state.verdicts[_sid(symbol)]!r}"
+        )
+        assert _sid(symbol) not in state.findings, symbol
+
+
+def test_an_UNCALLED_TWIN_of_a_CALLED_method_is_the_only_one_reported(
+    repo: Path,
+) -> None:
+    """THE RESOLVER'S HEADLINE PROPERTY, and the real tree's `keys` case.
+
+    `Alpha.ping` and `Beta.ping` share a name; `Caller.go` calls the one whose
+    receiver is typed `Alpha`. A name-only matcher cannot tell them apart and
+    reports NEITHER; the resolver must report EXACTLY `Beta.ping`.
+    """
+    state = _measure(repo)
+    assert state.verdicts[_sid("Alpha.ping")] == gate.CALLED, state.verdicts[
+        _sid("Alpha.ping")
+    ]
+    assert state.findings.get(_sid("Beta.ping")) == gate.UNCALLED, (
+        "Beta.ping has no caller anywhere and must be reported UNCALLED; got "
+        f"{state.verdicts[_sid('Beta.ping')]!r}"
+    )
+    assert _sid("Beta.ping") not in state.name_only_findings, (
+        "with resolution OFF this finding must DISAPPEAR — if it survives, the "
+        "differential in `vacuity_refusal` is measuring something else"
+    )
+
+
+def test_a_PROTOCOL_TYPED_PARAMETER_is_a_REAL_call_site(repo: Path) -> None:
+    """`port.pong()` where `port: PingPort` calls every structural implementer."""
+    state = _measure(repo)
+    assert state.verdicts[_sid("PongImpl.pong")] == gate.CALLED, (
+        "PongImpl satisfies PingPort structurally and `drive` calls the verb "
+        "through the port — reporting it would be the over-reporting that gets "
+        f"a gate routed around (got {state.verdicts[_sid('PongImpl.pong')]!r})"
+    )
+    assert state.verdicts[_sid("PingPort.pong")] == gate.CALLED, state.verdicts[
+        _sid("PingPort.pong")
+    ]
+
+
+def test_an_UNRESOLVED_RECEIVER_yields_CANNOT_RESOLVE_and_NEVER_a_finding(
+    repo: Path,
+) -> None:
+    """The resolver's ignorance must cost findings, never invent them."""
+    state = _measure(repo)
+    assert state.verdicts[_sid("Danger.dangle")] == gate.CANNOT_RESOLVE, (
+        "`loose(obj)` has no annotation, so `obj.dangle()` cannot be attributed; "
+        "that must SUPPRESS the finding, not create one (got "
+        f"{state.verdicts[_sid('Danger.dangle')]!r})"
+    )
+    assert _sid("Danger.dangle") not in state.findings
+
+
+def test_a_GATE_is_NOT_shipped_code_so_its_only_caller_reports_GATE_ONLY(
+    repo: Path,
+) -> None:
+    """The ARC 033 shape: the only thing that constructs it is the check."""
+    state = _measure(repo)
+    assert state.findings.get(_sid("GateOnly.only_verb")) == gate.GATE_ONLY, (
+        "checks/check_one.py is the ONLY caller, and a gate is not production "
+        f"wiring (got {state.verdicts[_sid('GateOnly.only_verb')]!r})"
+    )
+
+
+@pytest.mark.parametrize(
+    ("symbol", "why"),
+    [
+        ("_Hidden.hidden_verb", "a module-private class is not a contract seam"),
+        ("Public.__eq__", "a dunder is dispatched by the language, not by a caller"),
+        ("inner_nested", "a nested def is a closure, not an entry point"),
+    ],
+)
+def test_the_JUDGED_POPULATION_excludes_what_is_not_an_entry_point(
+    repo: Path, symbol: str, why: str
+) -> None:
+    """Over-reporting is how a gate gets routed around (`debug.md` §7.12)."""
+    state = _measure(repo)
+    assert _sid(symbol) not in state.points, f"{symbol} must not be judged — {why}"
+
+
+# ===========================================================================
+# THE RATCHET. Every plant lands in the throwaway repo, never in the tree.
+# ===========================================================================
+
+
+def test_a_NEW_FINDING_the_baseline_does_not_accept_is_a_LOUD_FAIL(
+    repo: Path,
+) -> None:
+    """The arm this gate exists for: a producer lands and nothing calls it."""
+    (repo / "scripts" / "orphan.py").write_text(
+        "class Orphan:\n    def never_called(self) -> int:\n        return 1\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "-A")
+    result = _run(repo)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
+    assert "scripts/orphan.py::Orphan.never_called" in result.site, result.site
+    assert "NO call site in shipped code" in result.detail, result.detail
+    assert "not in the accepted baseline" in result.detail, result.detail
+
+
+def test_an_ACCEPTED_entry_that_ACQUIRES_a_caller_is_a_STALE_BASELINE_FAIL(
+    repo: Path,
+) -> None:
+    """A ratchet may only shrink. Good news the baseline must record."""
+    (repo / "scripts" / "late_caller.py").write_text(
+        "from subject import Beta\n\n\ndef wire() -> str:\n    return Beta().ping()\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "-A")
+    result = _run(repo)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
+    assert "scripts/subject.py::Beta.ping" in result.detail, result.detail
+    assert "shipped code now CALLS it" in result.detail, result.detail
+
+
+def test_an_ACCEPTED_entry_whose_SYMBOL_IS_GONE_is_a_ROT_FAIL(repo: Path) -> None:
+    """A row describing nothing is a suppression entry, and says so."""
+    payload = _load(repo)
+    payload["modules"]["scripts/subject.py"]["symbols"]["Beta.vanished"] = {
+        "bucket": "uncalled",
+        "admitted": "ARC 020",
+    }
+    _save(repo, payload)
+    _git(repo, "add", "-A")
+    result = _run(repo)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
+    assert "Beta.vanished" in result.detail, result.detail
+    assert "no longer exists" in result.detail, result.detail
+
+
+def test_an_UNADMITTED_ADDITION_relative_to_the_COMMITTED_MARK_is_a_FAIL(
+    repo: Path,
+) -> None:
+    """The laundering move: land a finding and accept it in the same motion.
+
+    The high-water mark is derived from the baseline's own git history, which
+    the edit under judgement cannot reach — so accepting a new finding without
+    naming the arc that admitted it is loud even though the file is internally
+    consistent.
+    """
+    (repo / "scripts" / "orphan.py").write_text(
+        "class Orphan:\n    def never_called(self) -> int:\n        return 1\n",
+        encoding="utf-8",
+    )
+    payload = _load(repo)
+    payload["modules"]["scripts/orphan.py"] = {
+        "owner": _FIXTURE_LIVE_ARC,
+        "reason": "smuggled in",
+        "symbols": {"Orphan.never_called": {"bucket": "uncalled", "admitted": ""}},
+    }
+    _save(repo, payload)
+    _git(repo, "add", "-A")
+    result = _run(repo)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
+    assert "a ratchet may only shrink" in result.detail, result.detail
+    assert "requires a named arc in `admitted`" in result.detail, result.detail
+
+
+def test_a_MISDESCRIBED_BUCKET_is_a_FAIL_naming_BOTH_values(repo: Path) -> None:
+    """`gate_only` and `uncalled` are the diagnostic; an unchecked label rots."""
+    payload = _load(repo)
+    payload["modules"]["scripts/subject.py"]["symbols"]["GateOnly.only_verb"][
+        "bucket"
+    ] = "uncalled"
+    _save(repo, payload)
+    _git(repo, "add", "-A")
+    result = _run(repo)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
+    assert "recorded 'uncalled', MEASURED 'gate_only'" in result.detail, result.detail
+
+
+def test_a_MODULE_ROW_WITH_NO_REASON_is_a_FAIL(repo: Path) -> None:
+    """A row that cannot say why it is unwired is a suppression entry."""
+    payload = _load(repo)
+    payload["modules"]["scripts/subject.py"]["reason"] = "   "
+    _save(repo, payload)
+    _git(repo, "add", "-A")
+    result = _run(repo)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
+    assert "scripts/subject.py:reason" in result.site, result.site
+    assert "no `reason`" in result.detail, result.detail
+
+
+def test_an_UNREADABLE_BASELINE_is_CANNOT_MEASURE_and_names_the_file(
+    repo: Path,
+) -> None:
+    """Never a PASS: a ratchet that cannot read its own accepted set is blind."""
+    (repo / gate.BASELINE).write_text("{ not json", encoding="utf-8")
+    _git(repo, "add", "-A")
+    result = _run(repo)
+    assert result.status is Status.CANNOT_MEASURE, result.detail
+    assert gate.BASELINE in result.detail and "unreadable" in result.detail
+
+
+def test_a_BASELINE_WITH_NO_COMMIT_HISTORY_is_CANNOT_MEASURE_never_a_PASS(
+    tmp_path: Path,
+) -> None:
+    """Without a prior mark the accepted set cannot be shown not to have grown."""
+    home = _build(tmp_path / "fresh", commit_baseline=False)
+    result = _run(home)
+    assert result.status is Status.CANNOT_MEASURE, result.detail
+    assert "has no commit history" in result.detail, result.detail
+
+
+# ===========================================================================
+# THE OWNER RULES — doctrine B.3, and §0g at assignment.
+# ===========================================================================
+
+
+def test_an_UNASSIGNED_owner_DEFERS_HONESTLY_rather_than_certifying(
+    tmp_path: Path,
+) -> None:
+    """`unassigned` is honest and is NOT owned; the gate must not guard it."""
+    home = _build(tmp_path / "unowned", owner=gate.UNASSIGNED)
+    result = _run(home)
+    assert result.status is Status.CANNOT_MEASURE, result.detail
+    assert "`unassigned`" in result.detail, result.detail
+    assert "No arc has committed" in result.detail, result.detail
+
+
+def test_a_LIVE_ARC_owner_reaches_GUARDED_and_carries_the_owner(
+    repo: Path,
+) -> None:
+    """The positive control for the owner arms — without it `unassigned` above
+    would be indistinguishable from an owner rule that always defers."""
+    result = _run(repo)
+    assert result.status is Status.GUARDED, result.detail
+    assert result.guard_owner == _FIXTURE_LIVE_ARC, result.guard_owner
+    assert "entry point(s) with no shipped caller" in result.detail, result.detail
+
+
+def test_a_COMPLETED_ARC_owner_DEFERS_and_names_the_completion(
+    repo: Path,
+) -> None:
+    """Doctrine B.3: an owner that cannot pay is no owner wearing a name."""
+    payload = _load(repo)
+    payload["modules"]["scripts/subject.py"]["owner"] = "ARC 005"
+    _save(repo, payload)
+    _git(repo, "add", "-A")
+    result = _run(repo)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
+    assert "ALREADY COMPLETED" in result.detail, result.detail
+
+
+def test_the_ARC_IN_FLIGHT_is_REFUSED_AT_ASSIGNMENT_under_section_0g(
+    repo: Path,
+) -> None:
+    """§0g of `docs/nix_check_contract.md`: a promise made by the arc that
+    closes by making it is dead the moment it is written (D3.40)."""
+    payload = _load(repo)
+    payload["modules"]["scripts/subject.py"]["owner"] = _FIXTURE_IN_FLIGHT
+    _save(repo, payload)
+    _git(repo, "add", "-A")
+    result = _run(repo)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
+    assert "is the arc IN FLIGHT" in result.detail, result.detail
+
+
+# ===========================================================================
+# THE VACUITY FLOORS — §7.12 points 1 to 4 of the gate's own docstring.
+# ===========================================================================
+
+
+def test_a_TINY_ENUMERATION_is_CANNOT_MEASURE_and_names_the_floor(
+    tmp_path: Path,
+) -> None:
+    """Zero entry points, zero findings, PASS is the purest vacuous green."""
+    home = tmp_path / "tiny"
+    (home / "scripts").mkdir(parents=True)
+    (home / "scripts" / "only.py").write_text("def solo() -> int:\n    return 1\n")
+    _git(home, "init", "-q")
+    _git(home, "config", "user.email", "t@example.com")
+    _git(home, "config", "user.name", "t")
+    _git(home, "add", "-A")
+    _git(home, "commit", "-qm", "tiny")
+    result = _run(home)
+    assert result.status is Status.CANNOT_MEASURE, result.detail
+    assert "credibility floor" in result.detail, result.detail
+    assert str(gate.MIN_CREDIBLE_MODULES) in result.detail, result.detail
+
+
+def test_a_RESOLVER_THAT_CHANGES_NOTHING_is_REFUSED_by_the_DIFFERENTIAL(
+    repo: Path, monkeypatch
+) -> None:
+    """§7.12 point 4, driven rather than asserted.
+
+    The differential is the only every-run control over the resolver itself, so
+    it has to be shown FIRING. `receiver_type` is neutered — which is exactly
+    what a broken resolver looks like — and the run must refuse rather than
+    report a smaller, quieter finding set.
+    """
+    monkeypatch.setattr(gate._Walk, "receiver_type", lambda self, node: "")
+    state = _measure(repo)
+    refusal = gate.vacuity_refusal(state)
+    assert "RECEIVER RESOLUTION CHANGED NOTHING" in refusal, refusal
+    result = _run(repo)
+    assert result.status is Status.CANNOT_MEASURE, result.detail
+    assert "RECEIVER RESOLUTION CHANGED NOTHING" in result.detail, result.detail
+
+
+def test_the_DIFFERENTIAL_is_NOT_an_identity_on_the_fixture(repo: Path) -> None:
+    """The control for the control: with the resolver intact, the two walks
+    must genuinely disagree, or the test above proves only that a constant is
+    a constant."""
+    state = _measure(repo)
+    delta = len(state.findings) - len(state.name_only_findings)
+    assert delta > 0, (
+        "receiver resolution must produce findings a name-only walk cannot see "
+        f"({len(state.findings)} vs {len(state.name_only_findings)})"
+    )
+    assert state.ruled_out > 0, (
+        "the resolver must be RULING references OUT, not merely agreeing"
+    )
+
+
+# ===========================================================================
+# THE LIVE TREE — read-only, and the calibration ARC 034's audit measured.
+# ===========================================================================
+
+
+#: The eight symbols the D3.191 audit found by hand. If this instrument misses
+#: one, it is not measuring the thing that let the ARC 033 cap ship unfed.
+#:
+#: `StopBook.arm` and `PositionOriginWriter.on_fill` are listed with the buckets
+#: they hold ON THIS BRANCH. Sub-agent A is landing production callers for both
+#: in a parallel worktree, so after that merge they become CALLED and this list
+#: must SHRINK — a shrink is the ratchet working, and the integrator re-measures.
+_CALIBRATION = (
+    "scripts/nixrisk/stops.py::StopBook.arm",
+    "scripts/nixrisk/positions.py::PositionOriginWriter.on_fill",
+    "scripts/nixrisk/session.py::SessionFlattener.is_due",
+    "scripts/nixrisk/pollers.py::PushDemotion.last_push",
+    "scripts/nixrisk/freshness.py::SourceMonotonicGuard.keys",
+    "scripts/nixrisk/freshness.py::ClockSkewMonitor.latest",
+    "scripts/nixrisk/session.py::SessionFlattener.fired_outcome",
+    "scripts/nixrisk/roll.py::RollIdentityBook.next_roll_instant",
+)
+
+
+def test_the_LIVE_TREE_reports_every_symbol_the_D3_191_AUDIT_found_BY_HAND() -> None:
+    """The calibration. Read-only; nothing is planted in the real tree.
+
+    Each of these was found by a human reading six modules and six gates. An
+    instrument that cannot re-find them is not measuring the class.
+    """
+    state = _measure(REPO)
+    missing = [
+        sid for sid in _CALIBRATION if sid not in state.findings and sid in state.points
+    ]
+    assert not missing, (
+        "these entry points have no shipped caller and the gate did not report "
+        f"them: {missing} (verdicts: "
+        f"{ {sid: state.verdicts.get(sid) for sid in missing} })"
+    )
+
+
+def test_the_LIVE_TREE_clears_every_vacuity_floor_this_gate_declares() -> None:
+    """A refusal on the real tree would make every green above local to a fixture."""
+    state = _measure(REPO)
+    assert gate.vacuity_refusal(state) == "", gate.vacuity_refusal(state)
+    assert state.count(gate.CALLED) >= state.count(gate.CANNOT_RESOLVE), (
+        f"{state.count(gate.CALLED)} called vs "
+        f"{state.count(gate.CANNOT_RESOLVE)} unresolvable"
+    )
+
+
+def test_the_LIVE_BASELINE_accepts_EXACTLY_what_the_LIVE_TREE_measures() -> None:
+    """The ratchet, read against the real tree. Neither direction may drift."""
+    state = _measure(REPO)
+    baseline = gate.load_baseline(REPO)
+    assert baseline.error == "", baseline.error
+    unaccepted = sorted(set(state.findings) - baseline.accepted)
+    stale = sorted(baseline.accepted - set(state.findings))
+    assert not unaccepted, f"findings the baseline does not accept: {unaccepted[:8]}"
+    assert not stale, f"baseline rows that are no longer findings: {stale[:8]}"

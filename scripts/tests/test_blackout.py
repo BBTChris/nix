@@ -550,7 +550,7 @@ def test_unpublished_window_set_denies_rather_than_clearing():
     rig.windows.sets.clear()
     blocked, reason = rig.evaluator.read(SYMBOL)
     assert blocked, reason
-    assert "no window set is published" in reason
+    assert "no FRESH window set is published" in reason and "rows absent" in reason
 
 
 def test_empty_cache_state_denies_even_with_a_set_present():
@@ -559,6 +559,45 @@ def test_empty_cache_state_denies_even_with_a_set_present():
     rig.windows.cache_state = CacheState.EMPTY
     blocked, reason = rig.evaluator.read(SYMBOL)
     assert blocked and "cache state 'empty'" in reason, reason
+    assert "rows present" in reason, reason
+
+
+def test_stale_cache_state_denies_even_with_a_set_present():
+    """ARC 034 (D3.193): §6.5's `data stale` disjunct, on the WINDOW arm.
+
+    `CacheState` has three members and `_window_arm` used to fail closed on
+    `EMPTY` alone, so a cache carrying rows that are KNOWN to be out of date
+    returned CLEAR — an entry admitted off a window set nobody vouches for.
+    The premise assertion is the half that makes this a measurement: the same
+    rig clears when the cache is FRESH, so the denial is attributable to the
+    state and to nothing else.
+    """
+    rig = _rig(THU_CLOSE - timedelta(hours=6))
+    assert rig.evaluator.read(SYMBOL) == (False, ""), "premise: clear when FRESH"
+    rig.windows.cache_state = CacheState.STALE
+    blocked, reason = rig.evaluator.read(SYMBOL)
+    assert blocked, "a STALE window cache must DENY — §6.5 lists `data stale`"
+    assert "cache state 'stale'" in reason, reason
+    assert "rows present" in reason, reason
+    assert "§6.4/§6.5 fail-closed" in reason, reason
+
+
+def test_every_cache_state_other_than_fresh_denies():
+    """The guard is `is not FRESH`, enumerated over the whole enum.
+
+    Written as a sweep rather than as two cases so that a FOURTH `CacheState`
+    member added later is judged by this test on the day it is added, instead
+    of quietly joining the permitted side the way `STALE` did.
+    """
+    for state in CacheState:
+        rig = _rig(THU_CLOSE - timedelta(hours=6))
+        rig.windows.cache_state = state
+        blocked, reason = rig.evaluator.read(SYMBOL)
+        if state is CacheState.FRESH:
+            assert not blocked, f"{state} must be the ONE permitted state: {reason}"
+            continue
+        assert blocked, f"{state.value} must deny — §6.4's fail-closed direction"
+        assert f"cache state {state.value!r}" in reason, reason
 
 
 def test_a_naive_clock_denies_and_names_the_value():

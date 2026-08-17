@@ -154,6 +154,7 @@ import enum
 import json
 import os
 import time
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -406,13 +407,37 @@ class OnsetSweepPort(Protocol):
 
 @dataclasses.dataclass(frozen=True)
 class MarkerEntry:
-    """One line of the marker file. `rec` is `set` or `booked`."""
+    """One line of the marker file. `rec` is `set` or `booked`.
+
+    **`boot` and `seq` TOGETHER identify a record. ARC 034 (D3.195).**
+
+    `seq` alone does not, and the file is append-only ACROSS PROCESSES: the case
+    §12.5:634 describes is the Limiter dying, so the second writer of this file
+    is by construction a different process from the first. `HaltFlag._seq` starts
+    at 0 in every one of them, so boot 1's first HALT and boot 2's first HALT
+    both write `seq=1`. `replay_markers` matched `set` against `booked` on `seq`
+    alone, which made boot 1's `booked` suppress boot 2's UNBOOKED `set` — a
+    HALT that was declared, never reached Plane 1, and was then discarded by the
+    very function §12.5:637 names as the thing that recovers it. `marker.archive`
+    then renamed the evidence away. Measured: two boots, one collision, ZERO rows
+    replayed where one was owed.
+    """
 
     rec: str
     cause: HaltCause
     reason: str
     ts: float
     seq: int
+    #: The identity of the PROCESS that wrote this record. Opaque and unordered
+    #: — nothing compares two boot ids, they are only ever tested for equality,
+    #: so a random token is the whole requirement and a counter would need a
+    #: durable home that the crash this file exists for could take with it.
+    boot: str
+
+    @property
+    def key(self) -> tuple[str, int]:
+        """The identity a `booked` record must share with the `set` it books."""
+        return (self.boot, self.seq)
 
 
 class HaltMarker:
@@ -444,22 +469,29 @@ class HaltMarker:
                 f"cannot create marker directory for {self.path}: {exc!r}"
             ) from exc
 
-    def record_set(self, cause: HaltCause, reason: str, ts: float, seq: int) -> None:
+    def record_set(
+        self, cause: HaltCause, reason: str, ts: float, seq: int, boot: str
+    ) -> None:
         """The BEFORE half: the HALT was declared. Durable before this returns."""
-        self._append("set", cause, reason, ts, seq)
+        self._append("set", cause, reason, ts, seq, boot)
 
-    def record_booked(self, cause: HaltCause, ts: float, seq: int) -> None:
+    def record_booked(self, cause: HaltCause, ts: float, seq: int, boot: str) -> None:
         """The AFTER half: the row reached Plane 1 alive, so replay must not re-book.
 
         Without it, a set that DID reach the log would be booked a second time at
         the next boot, and §9's append-only record would carry two HALTs where one
         happened. The pair `(set, booked)` is what makes the replay idempotent, and
         it is exactly §12.1's *"before and after acting"*.
-        """
-        self._append("booked", cause, "", ts, seq)
 
-    def _append(
-        self, rec: str, cause: HaltCause, reason: str, ts: float, seq: int
+        **`boot` is passed for the same reason `seq` is (ARC 034, D3.195): the
+        pair is the identity.** A `booked` carrying only `seq` books whichever
+        `set` happens to share that integer, and across two boots that is not the
+        one it belongs to.
+        """
+        self._append("booked", cause, "", ts, seq, boot)
+
+    def _append(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+        self, rec: str, cause: HaltCause, reason: str, ts: float, seq: int, boot: str
     ) -> None:
         line = (
             json.dumps(
@@ -469,6 +501,7 @@ class HaltMarker:
                     "reason": reason,
                     "ts": ts,
                     "seq": seq,
+                    "boot": boot,
                 },
                 sort_keys=True,
                 separators=(",", ":"),
@@ -510,6 +543,16 @@ class HaltMarker:
                         reason=str(raw["reason"]),
                         ts=float(raw["ts"]),
                         seq=int(raw["seq"]),
+                        # REQUIRED, never defaulted. ARC 034 (D3.195): a record
+                        # with no boot id cannot be told apart from a record of
+                        # a different boot that shares its `seq`, which is the
+                        # whole defect. Defaulting it to `""` would put every
+                        # legacy record into one shared identity space and
+                        # rebuild the collision quietly; a missing key is a
+                        # `KeyError` -> `MarkerError`, which is loud and is the
+                        # direction this file already fails in for a damaged
+                        # line.
+                        boot=str(raw["boot"]),
                     )
                 )
             except (KeyError, TypeError, ValueError) as exc:
@@ -566,10 +609,11 @@ def replay_markers(
     entries = marker.entries()
     if not entries:
         return ()
-    booked_seqs = {entry.seq for entry in entries if entry.rec == "booked"}
+    # ARC 034 (D3.195): keyed on `(boot, seq)`, not on `seq`. See `MarkerEntry`.
+    booked = {entry.key for entry in entries if entry.rec == "booked"}
     rows: list[EventRow] = []
     for entry in entries:
-        if entry.rec != "set" or entry.seq in booked_seqs:
+        if entry.rec != "set" or entry.key in booked:
             continue
         row = EventRow(
             kind=EventKind.HALT_SET,
@@ -583,6 +627,12 @@ def replay_markers(
                 "booked_at": repr(now),
                 "marker": str(marker.path),
                 "seq": str(entry.seq),
+                # ARC 034 (D3.195). The replayed row carries the boot it was
+                # DECLARED in, so §9's reader can attribute a retroactive HALT
+                # to the process that saw it rather than to the one that
+                # recovered it. Without this the log holds two rows whose only
+                # distinguishing field is a per-process counter that restarts.
+                "boot": entry.boot,
             },
         )
         plane1.enqueue(row)
@@ -625,6 +675,7 @@ class HaltFlag:  # pylint: disable=too-many-instance-attributes
         onset: OnsetSweepPort | None = None,
         pending: PendingEntriesPort | None = None,
         clock: Callable[[], float] = time.time,
+        boot_id: str | None = None,
     ) -> None:
         """Both planes are REQUIRED; the marker and the onset sweep are declared.
 
@@ -646,6 +697,14 @@ class HaltFlag:  # pylint: disable=too-many-instance-attributes
         #: Cached so branch 0 is one read (§11:590). Recomputed on transition only.
         self._flag: tuple[bool, str] = (False, "")
         self._seq = 0
+        #: ARC 034 (D3.195). This process's identity in the marker file. `_seq`
+        #: alone is a PER-INSTANCE counter starting at 0, and the marker is
+        #: append-only across the crash §12.5:634 describes, so `seq` is not an
+        #: identity there — `(boot_id, seq)` is. Injectable ONLY so a test can
+        #: replay two named boots against one file; production takes the random
+        #: default, because a boot id that a second process could guess or
+        #: reproduce would rebuild the collision it exists to prevent.
+        self._boot_id = boot_id if boot_id is not None else uuid.uuid4().hex
         if (onset is None) != (pending is None):
             raise KnobError(
                 "the §3:173 onset sweep needs BOTH the executor and the pending-"
@@ -708,7 +767,7 @@ class HaltFlag:  # pylint: disable=too-many-instance-attributes
         self._seq += 1
         seq = self._seq
         if self._marker is not None:
-            self._marker.record_set(cause, detail, stamp, seq)
+            self._marker.record_set(cause, detail, stamp, seq, self._boot_id)
         self._active[cause] = HaltRecord(cause=cause, reason=detail, set_ts=stamp)
         self._refresh()
         swept = False
@@ -716,7 +775,7 @@ class HaltFlag:  # pylint: disable=too-many-instance-attributes
             swept = self._sweep_pending_entries()
         self._book(EventKind.HALT_SET, cause, detail, stamp, swept=swept)
         if self._marker is not None:
-            self._marker.record_booked(cause, stamp, seq)
+            self._marker.record_booked(cause, stamp, seq, self._boot_id)
         return HaltTransition(
             cause=cause,
             action="set",

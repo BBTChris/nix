@@ -49,6 +49,12 @@ from nixrisk.halt import (  # pylint: disable=wrong-import-position
 )
 from nixrisk.seam import EventKind  # pylint: disable=wrong-import-position
 
+#: ARC 034 (D3.195). Two NAMED boots, so the marker's `(boot, seq)` identity can
+#: be driven deterministically. Production takes `uuid.uuid4().hex`; these exist
+#: only so a test can be two processes.
+BOOT_1 = "boot-0000000000000001"
+BOOT_2 = "boot-0000000000000002"
+
 FLOORS = {
     "stale_data": 60.0,
     "clock_skew": 300.0,
@@ -387,9 +393,9 @@ def test_the_MARKER_records_the_SET_before_the_row_reaches_plane_1(
             super().enqueue(row)
 
     class _WatchingMarker(HaltMarker):
-        def record_set(self, cause, reason, ts, seq):
+        def record_set(self, cause, reason, ts, seq, boot):
             order.append("marker")
-            super().record_set(cause, reason, ts, seq)
+            super().record_set(cause, reason, ts, seq, boot)
 
     del plane1
     flag = HaltFlag(
@@ -410,7 +416,7 @@ def test_an_UNBOOKED_MARKER_replays_TAGGED_and_KEEPS_the_original_stamp(
     tmp_path: Path,
 ) -> None:
     marker = HaltMarker(tmp_path / "halt.marker")
-    marker.record_set(HaltCause.CRASH_LOOP, "3 restarts in 60s", 1234.5, 1)
+    marker.record_set(HaltCause.CRASH_LOOP, "3 restarts in 60s", 1234.5, 1, BOOT_1)
     plane1 = _Plane1()
 
     rows = replay_markers(marker, plane1, 999999.0)
@@ -429,8 +435,8 @@ def test_a_BOOKED_MARKER_replays_NOTHING_so_the_log_never_doubles(
     tmp_path: Path,
 ) -> None:
     marker = HaltMarker(tmp_path / "halt.marker")
-    marker.record_set(HaltCause.OPERATOR, "kill switch", 10.0, 1)
-    marker.record_booked(HaltCause.OPERATOR, 10.0, 1)
+    marker.record_set(HaltCause.OPERATOR, "kill switch", 10.0, 1, BOOT_1)
+    marker.record_booked(HaltCause.OPERATOR, 10.0, 1, BOOT_1)
     plane1 = _Plane1()
 
     assert replay_markers(marker, plane1, 20.0) == ()
@@ -442,7 +448,7 @@ def test_the_MARKER_is_ARCHIVED_so_a_SECOND_boot_replays_nothing(
 ) -> None:
     path = tmp_path / "halt.marker"
     marker = HaltMarker(path)
-    marker.record_set(HaltCause.STALE_DATA, "silent", 1.0, 1)
+    marker.record_set(HaltCause.STALE_DATA, "silent", 1.0, 1, BOOT_1)
     plane1 = _Plane1()
 
     replay_markers(marker, plane1, 2.0)
@@ -452,10 +458,109 @@ def test_the_MARKER_is_ARCHIVED_so_a_SECOND_boot_replays_nothing(
     assert replay_markers(HaltMarker(path), plane1, 3.0) == ()
 
 
+def test_TWO_BOOTS_sharing_a_SEQ_do_not_suppress_each_other(tmp_path: Path) -> None:
+    """ARC 034 (D3.195). §12.5:637's Plane-1 completeness across a restart.
+
+    THE DEFECT THIS DRIVES, and it is a money path. The marker file is
+    append-only ACROSS PROCESSES — the case §12.5:634 describes is the Limiter
+    being the dead process — while `HaltFlag._seq` is a per-instance counter
+    starting at 0. So boot 1's first HALT and boot 2's first HALT both wrote
+    `seq=1`, `replay_markers` matched `set` against `booked` on `seq` alone,
+    and boot 1's `booked` therefore booked boot 2's UNBOOKED `set` out of
+    existence. `marker.archive` then renamed the file away, so the row was not
+    merely unbooked, it was unrecoverable.
+
+    The scenario below is the minimum that exhibits it: boot 1 declares a HALT
+    that DOES reach Plane 1 (set + booked), boot 2 declares a DIFFERENT HALT
+    that does NOT (set only), and both carry `seq=1`.
+    """
+    path = tmp_path / "halt.marker"
+    marker = HaltMarker(path)
+    marker.record_set(HaltCause.OPERATOR, "kill switch", 10.0, 1, BOOT_1)
+    marker.record_booked(HaltCause.OPERATOR, 10.0, 1, BOOT_1)
+    marker.record_set(HaltCause.CLOCK_SKEW, "ntp stepped 4s", 20.0, 1, BOOT_2)
+
+    plane1 = _Plane1()
+    rows = replay_markers(HaltMarker(path), plane1, 30.0)
+
+    assert len(rows) == 1, (
+        "boot 2's unbooked HALT must replay; on `seq` alone boot 1's `booked` "
+        f"suppressed it and this returned 0 rows (got {len(rows)})"
+    )
+    row = rows[0]
+    assert row.fields["cause"] == HaltCause.CLOCK_SKEW.value, (
+        "the replayed row must be boot 2's HALT, not boot 1's — matching on "
+        f"`seq` alone cannot tell them apart (got {row.fields['cause']!r})"
+    )
+    assert row.ts == 20.0, "the retroactive row carries WHEN the HALT happened"
+    assert row.fields["boot"] == BOOT_2, (
+        "the replayed row must name the boot that DECLARED it, so §9's reader "
+        "can attribute it to the process that saw the condition"
+    )
+    assert row.fields["seq"] == "1", "the per-boot counter is unchanged"
+
+
+def test_a_marker_record_with_NO_BOOT_ID_is_REFUSED_and_never_defaulted(
+    tmp_path: Path,
+) -> None:
+    """ARC 034 (D3.195). A missing identity is loud, not an empty shared one.
+
+    Defaulting the absent field to `""` would put every such record into ONE
+    identity space and quietly rebuild the collision the field exists to
+    prevent — the failure would look exactly like a working replay.
+    """
+    path = tmp_path / "halt.marker"
+    path.write_text(
+        '{"cause":"operator","reason":"r","rec":"set","seq":1,"ts":1.0}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(MarkerError) as exc:
+        HaltMarker(path).entries()
+    assert "refusing to skip" in str(exc.value), str(exc.value)
+    assert "boot" in str(exc.value), (
+        "the refusal must name the MISSING FIELD, not merely the line number — "
+        f"an exit code is a shared namespace (got {exc.value!r})"
+    )
+
+
+def test_a_LIVE_HALT_marker_pair_carries_ONE_boot_id_per_process(
+    tmp_path: Path, planes
+) -> None:
+    """The machine's own writes carry its boot id, and two machines differ."""
+    plane1, plane2 = planes
+    del plane1
+    first = HaltFlag(
+        plane1=_Plane1(),
+        plane2=plane2,
+        floors=FLOORS,
+        marker=HaltMarker(tmp_path / "halt.marker"),
+    )
+    first.set(HaltCause.OPERATOR, "kill switch", now=5.0)
+    second = HaltFlag(
+        plane1=_Plane1(),
+        plane2=plane2,
+        floors=FLOORS,
+        marker=HaltMarker(tmp_path / "halt.marker"),
+    )
+    second.set(HaltCause.CLOCK_SKEW, "ntp stepped", now=6.0)
+
+    entries = HaltMarker(tmp_path / "halt.marker").entries()
+    seqs = {entry.seq for entry in entries}
+    boots = {entry.boot for entry in entries}
+    assert seqs == {1}, f"premise: both processes wrote seq=1 ({seqs})"
+    assert len(boots) == 2, (
+        "two HaltFlag instances must not share a boot id, or `(boot, seq)` is "
+        f"no more of an identity than `seq` was ({boots})"
+    )
+    assert all(len(boot) >= 16 for boot in boots), (
+        f"a guessable boot id rebuilds the collision it prevents ({boots})"
+    )
+
+
 def test_a_DAMAGED_MARKER_RECORD_is_reported_and_never_skipped(tmp_path: Path) -> None:
     path = tmp_path / "halt.marker"
     marker = HaltMarker(path)
-    marker.record_set(HaltCause.STALE_DATA, "silent", 1.0, 1)
+    marker.record_set(HaltCause.STALE_DATA, "silent", 1.0, 1, BOOT_1)
     with path.open("a", encoding="utf-8") as handle:
         handle.write("{not json}\n")
 

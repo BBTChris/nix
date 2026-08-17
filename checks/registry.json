@@ -62,6 +62,7 @@
         "check_survival_watch",
         "check_synthetic_stop_only",
         "check_trade_join",
+        "check_uncalled_entry_points",
         "check_untracked_attribution",
         "check_verify_logging"
       ],

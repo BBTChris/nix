@@ -250,6 +250,87 @@ def test_a_push_demotes_and_silence_re_promotes(tracker, demotion, clock) -> Non
     assert demotion.promotions == 1
 
 
+#: The silences the ARC 034 audit drove against the SHIPPED module. Every one
+#: of them still read FALLBACK_AUDIT after a single push stamped 240 h ahead,
+#: which is a dead websocket audited at the WIDE cadence for a day.
+_OUTAGE_HOURS = (0, 1, 6, 24)
+
+
+def test_a_FUTURE_stamped_push_cannot_pin_the_demotion_through_an_outage(
+    tracker, demotion, clock
+) -> None:
+    """ARC 034 (D3.194). §6.4: polling IS the fallback, so it must come back.
+
+    The premise assertions are what make this a measurement rather than an
+    assertion about a number: an HONEST push at the same instant DOES demote,
+    so the refusal below is attributable to the stamp being in the future and
+    to nothing else.
+    """
+    poller = _margin(tracker, demotion, clock)
+    honest = clock.set_ms(1.0)
+    poller.on_push(_rows(honest, 5), honest)
+    assert poller.mode is PollerMode.FALLBACK_AUDIT, "premise: a real push demotes"
+    clock.set_ms(10_000.0)
+    assert poller.mode is PollerMode.PRIMARY, "premise: silence re-promotes"
+
+    future = clock.now + timedelta(hours=240)
+    poller.on_push(_rows(future, 6), future)
+    assert demotion.rejected_future == 1, "the future stamp must be REFUSED"
+    assert demotion.pushes == 2, "the ARRIVAL is still counted — refused != absent"
+    assert demotion.last_push == honest, "`_last_push` must not have moved forward"
+    for hours in _OUTAGE_HOURS:
+        clock.set_ms(10_000.0 + hours * 3_600_000.0)
+        assert poller.mode is PollerMode.PRIMARY, (
+            f"after {hours} h of total websocket silence the poller must be "
+            "PRIMARY; a future-stamped push pinned FALLBACK_AUDIT here"
+        )
+
+
+def test_a_STALE_stamped_push_cannot_re_promote_a_LIVE_demotion(
+    tracker, demotion, clock
+) -> None:
+    """ARC 034 (D3.194). §6.4b's ordering rule, applied to the push CLOCK."""
+    poller = _margin(tracker, demotion, clock)
+    at = clock.set_ms(1.0)
+    poller.on_push(_rows(at, 5), at)
+    assert poller.mode is PollerMode.FALLBACK_AUDIT, "premise: the demotion is live"
+
+    clock.set_ms(50.0)
+    stale = at - timedelta(hours=1)
+    poller.on_push(_rows(stale, 6), stale)
+    assert demotion.rejected_regressive == 1, "a regressive stamp must be REFUSED"
+    assert demotion.last_push == at, "`_last_push` must never go backwards"
+    assert poller.mode is PollerMode.FALLBACK_AUDIT, (
+        "the push feed is healthy and the demotion must survive a late push "
+        "carrying an older instant"
+    )
+    assert demotion.promotions == 0, "no promotion may be recorded"
+
+
+def test_a_BACKWARDS_clock_step_does_not_read_as_a_push_that_just_arrived(
+    tracker, demotion, clock
+) -> None:
+    """ARC 034 (D3.194): `idle_ms` is SIGNED, and negative is not `recent`."""
+    poller = _margin(tracker, demotion, clock)
+    at = clock.set_ms(1_000.0)
+    poller.on_push(_rows(at, 5), at)
+    assert poller.mode is PollerMode.FALLBACK_AUDIT, "premise: the push demoted"
+    clock.set_ms(500.0)  # the clock steps BACKWARDS behind the recorded push
+    assert poller.mode is PollerMode.PRIMARY, (
+        "a negative idle means the recorded push is in the FUTURE of the clock "
+        "reading it, which is not evidence that the websocket is alive"
+    )
+
+
+def test_a_NAIVE_push_stamp_is_refused_at_the_door_and_names_the_value(
+    demotion,
+) -> None:
+    """§12.3: an instant that is not on the UTC timeline is not an instant."""
+    with pytest.raises(PollerUsageError, match=r"is naive"):
+        demotion.note_push(EPOCH.replace(tzinfo=None))
+    assert demotion.pushes == 0, "a refused-at-the-door stamp is not an arrival"
+
+
 def test_a_poll_taken_while_demoted_counts_as_an_AUDIT(
     tracker, demotion, clock
 ) -> None:
