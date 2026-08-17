@@ -1371,7 +1371,13 @@ def _arm_producers(loaded: Loaded, home: Path) -> list[Finding]:
     text = (home / HALT_FILE).read_text(encoding="utf-8")
     for phrase, why in (
         ("Sentinel deadman (§12.1) is NOT built", "the Sentinel deferral"),
-        ("crash-loop breaker (§12.2) are NOT built", "the supervision deferral"),
+        # ARC 034: the old phrase ("crash-loop breaker (§12.2) are NOT built")
+        # became FALSE when supervision landed, which is the transition ARM 6
+        # was built to force. The replacement states what is still absent —
+        # the breaker exists and NO unit is wired to it — and is chosen to sit
+        # on ONE line of the subject, because this scan is a raw substring
+        # search and a phrase that wraps can never be found.
+        ("is OWED work, not done work", "the supervision-not-yet-adopted statement"),
         ("unprotected position until the Sentinel", "the residual-risk sentence"),
     ):
         if phrase not in text:

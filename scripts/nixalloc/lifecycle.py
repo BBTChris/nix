@@ -161,17 +161,23 @@ IN_FLIGHT_CLOSING: Final[frozenset[PositionState]] = frozenset({PositionState.CL
 #: by the gate rather than restated in it (directive 3). See the module
 #: docstring for the measurement behind each clause.
 RECOVERY_PRODUCER: Final[str] = (
-    "the state screened here is PUBLISHED, never produced here. Its live "
-    "producer is scripts/nixrisk/flatten.py:_confirmed_rows (ARC 029 / R2), "
-    "which republishes a position as CLOSING when a protective flatten fired "
-    "and broker truth still shows the symbol held (§12.6 halted market). The "
-    "OTHER producer the spec names — strategy-death recovery: heartbeat miss, "
-    "flatten-on-death, force-deregister, kill+relaunch, crash-loop cap, "
-    "quarantine (§4:260-274) — is ARC R5 (§12B:878-880) and DOES NOT EXIST in "
-    "this tree; supervision and the crash-loop breaker are ARC R4 "
-    "(§12B:872-876, §12.2:616-618) and do not exist either. A green over this "
-    "module is the Allocator REFLECTING a published state, and is never "
-    "coverage of the machinery that would be the other reason to see it"
+    "the state screened here is PUBLISHED, never produced here. It now has TWO "
+    "live producers and they reach it by different code. (1) "
+    "scripts/nixrisk/flatten.py:_confirmed_rows (ARC 029 / R2) republishes a "
+    "position as CLOSING when a protective flatten fired and broker truth still "
+    "shows the symbol held (§12.6 halted market). (2) "
+    "scripts/nixrisk/recovery.py:RecoverySequencer (ARC 034 / sub-agent C) is "
+    "the OTHER producer §4:260-274 names — heartbeat miss, flatten-on-death, "
+    "force-deregister, kill+relaunch, crash-loop cap, quarantine — and it "
+    "republishes the dying strategy's rows as CLOSING immediately after the "
+    "flatten fires, which is §4:284's transitional in-flight-closing state. "
+    "That HEARTBEAT-ORIGINATED row is what CHECK-DEBT D3.155 asked for and it "
+    "is driven by checks/check_orphan_recovery.py through a real death. WHAT IS "
+    "STILL ABSENT: score handling across death (§4:275-280) is ARC R5 — see "
+    "SCORE_BOUNDARY — and no systemd unit on this box is yet wired to the "
+    "crash-loop breaker, so §12.2's counter exists and nothing feeds it in "
+    "production. A green over this module remains the Allocator REFLECTING a "
+    "published state and is never coverage of either absent half"
 )
 
 #: THE OTHER BOUNDARY, stated once. §4:275-280 and §6.6:457-461.

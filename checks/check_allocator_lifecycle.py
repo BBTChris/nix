@@ -109,12 +109,15 @@ half is unbuilt and a green here must not read as coverage of it:
 
   * **It cannot prove anything about strategy-death recovery.** Heartbeat
     detection, the one-cycle wait, flatten-on-death, force-deregister,
-    kill+relaunch, the crash-loop cap and quarantine (§4:260-274) are ARC R5
-    (§12B:878-880) and DO NOT EXIST in this tree; supervision and the crash-loop
-    breaker are ARC R4 (§12B:872-876, §12.2:616-618) and do not exist either.
-    This gate proves the Allocator REFLECTS a published state correctly. The
-    module states the same thing in `lifecycle.RECOVERY_PRODUCER`, which this
-    gate READS and prints rather than restating.
+    kill+relaunch, the crash-loop cap and quarantine (§4:260-274) were ARC R5
+    (§12B:878-880) and absent when this gate was written; ARC 034 built them at
+    `scripts/nixrisk/recovery.py` and `scripts/nixrisk/supervision.py` (§12.2:616
+    -618's R4 breaker). **They are still not this gate's subject**:
+    `checks/check_orphan_recovery.py` and `checks/check_supervision.py` own them,
+    and doctrine C.9 forbids a second instrument here. This gate proves the
+    Allocator REFLECTS a published state correctly. The module states who
+    produces that state in `lifecycle.RECOVERY_PRODUCER`, which this gate READS
+    and prints rather than restating.
   * **It cannot prove score persistence across death** (§4:275-280). That is the
     Scoring process's, §6.6:457-461 makes it the sole writer of the ranking
     table, and it is R5. Nothing here persists, archives or computes a score;

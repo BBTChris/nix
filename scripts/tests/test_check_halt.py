@@ -274,8 +274,11 @@ def test_a_SPEC_ROW_THAT_DROPS_PLANE_1_fails_and_NAMES_the_routing(
 def test_an_AWAITED_ARTIFACT_APPEARING_fails_so_the_claim_is_RE_MEASURED(
     home: Path,
 ) -> None:
-    (home / "scripts" / "nixrisk" / "supervision.py").write_text(
-        '"""PLANTED: §12.2 supervision lands."""\n', encoding="utf-8"
+    # ARC 034 moved `CRASH_LOOP` out of AWAITED (supervision LANDED), so the
+    # plant moved to a cause that is still awaited. §12.11's authenticated
+    # operator transport is the one nothing in flight is building.
+    (home / "scripts" / "nixrisk" / "operator.py").write_text(
+        '"""PLANTED: §12.11 operator transport lands."""\n', encoding="utf-8"
     )
 
     result = _run(home)

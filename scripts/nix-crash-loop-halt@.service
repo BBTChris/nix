@@ -1,0 +1,35 @@
+[Unit]
+# Nix — risk spec docs/nics_risk_subsystem_spec_v1.3.md §12.2:616-618, the crash-loop
+# breaker's ACTUATOR. A supervised unit routes its failures here with a single line:
+#
+#     OnFailure=nix-crash-loop-halt@%n.service
+#
+# so the instance name (%i) is the failing unit's name. That line is the ONLY change a
+# supervised unit needs, and NO unit on this box carries it yet: ARC 034 was not
+# authorised to install, enable, start or `daemon-reload` anything on a machine running
+# a live IB Gateway. Adopting the breaker on nix-ibgateway.service, nix-verify.service
+# and nix-xvfb.service is OWED work, recorded as such, not done work.
+#
+# WHY NOT systemd's OWN StartLimitBurst. It stops the unit and leaves it `failed`.
+# §12.2:617's consequence is "HALT + operator alert" — never blind
+# restart-into-trading — and systemd can declare neither a HALT nor an operator alert.
+# The supervised unit therefore keeps StartLimitAction=none and hands the decision to
+# scripts/nixrisk/supervision.py, which counts the restarts against the two knobs in
+# risks/supervision.config.json.
+Description=Nix crash-loop breaker for %i (risk spec 12.2)
+# After, NOT Requires: the failing unit is the whole subject. Requiring it would make
+# this unit refuse to run in exactly the case it exists to record.
+After=%i
+
+[Service]
+Type=oneshot
+# The HALT this may declare is booked as a MARKER, not as a Plane-1 row: risk spec
+# 12.5:634-638 covers precisely this case — a HALT condition arising while the Limiter
+# is unavailable, because the Limiter may BE the crash-looping process. The marker is
+# replayed into Plane 1 at the next boot by cold-start reconciliation, so 9's
+# sole-writer invariant holds without a second writer.
+ExecStart=/home/bbt/nix/.venv/bin/python /home/bbt/nix/scripts/nix_crash_loop_halt.py --unit %i
+User=bbt
+Group=bbt
+# No TimeoutStartSec override: the actuator is offline, bounded, and touches one
+# append-only file plus one marker.

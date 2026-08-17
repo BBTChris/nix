@@ -460,9 +460,22 @@ class EventKind(enum.Enum):
     whenever it was written, and a separate kind would let a reader filter the
     replayed HALTs out of the money record by kind alone.
 
+    **ARC 034 (sub-agent C) landed the strategy-lifecycle DEATH half.**
+    `scripts/nixrisk/recovery.py` is §4:262-274's orphan / strategy-death
+    sequencer, so the machinery that emits `force-deregister`, `kill`, `relaunch`
+    and `quarantine` now exists and those four members land WITH it — the rule
+    this docstring states. §12.10:757 routes *"strategy lifecycle (register /
+    force-deregister / kill / relaunch / quarantine / restore)"* to **Plane 1
+    ✅ (added)** and **Plane 2 ✅**, which is why they are here and not on the
+    ops plane only. `register` and `restore` are the two members of that same
+    inventory row still ABSENT, and for the unchanged reason: nothing in this
+    tree emits a registration row, and §12.11:779's `quarantine-restore` is an
+    operator verb whose authenticated transport does not exist.
+
     STILL OMITTED, and still for the same reason (no emitting code): `filled`
-    (entry-fill confirmation), `GO-timeout`, operator-control actions and
-    strategy-lifecycle rows. They land in the arcs that build them.
+    (entry-fill confirmation), `GO-timeout`, operator-control actions and the
+    `register` / `restore` halves of the strategy-lifecycle row. They land in
+    the arcs that build them.
     """
 
     SIGNAL = "signal"
@@ -481,6 +494,12 @@ class EventKind(enum.Enum):
     #: now built (`nixrisk.halt`). Plane 1 AND Plane 2, per the inventory table.
     HALT_SET = "halt_set"
     HALT_CLEARED = "halt_cleared"
+    #: ARC 034 (sub-agent C) — §12.10:757's strategy-lifecycle rows, the DEATH
+    #: half, mechanism now built (`nixrisk.recovery`). Plane 1 AND Plane 2.
+    FORCE_DEREGISTER = "force_deregister"
+    KILL = "kill"
+    RELAUNCH = "relaunch"
+    QUARANTINE = "quarantine"
 
 
 @dataclass(frozen=True)

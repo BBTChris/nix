@@ -318,17 +318,29 @@ def test_the_control_passes_and_its_evidence_names_what_it_read(
     # retry shape. Re-banked at the figure the gate ITSELF reports on the merged
     # tree, never at arithmetic done here.
     #
-    # ARC 034 / sub-agent A: 25 -> 27, TWO bumps, `scripts/nixrisk/fills.py` (the
-    # fill handler D3.178 said was missing) and `scripts/nixrisk/join.py` (D3.177's
-    # production trade<->order mint). NEITHER is a pure declaration surface — this
-    # is the first bump in the series that admits real BEHAVIOUR to the order path,
-    # so the re-scan matters more than usual and it was read rather than assumed:
-    # `check_order_path_bans` reports 0 banned calls, 0 banned modules and no retry
-    # shape over the widened scope, and `fills.py` reaches the venue through ONE
-    # narrow injected port carrying `cancel_order` alone (§4's IOC cancel) with no
-    # `place_order` and no `flatten` anywhere on it. Re-banked at the figure the
-    # gate ITSELF reported on this tree, never at arithmetic done here.
-    assert "arm(ii) imported 27 order-path module(s)" in evidence, evidence
+    # ARC 034 INTEGRATION: 25 -> FOUR bumps, and D3.192's cost paid for the third
+    # arc running. Sub-agent A added `scripts/nixrisk/fills.py` (the fill handler
+    # D3.178 said was missing) and `scripts/nixrisk/join.py` (D3.177's production
+    # trade<->order mint); sub-agent C added `scripts/nixrisk/supervision.py`
+    # (§12.2's crash-loop breaker) and `scripts/nixrisk/recovery.py` (§4's
+    # orphan/strategy-death sequencer). BOTH branches independently wrote
+    # "25 -> 27" and BOTH were locally right and globally wrong — the literal is
+    # the only reason that disagreement was ever visible, which is D3.192's whole
+    # argument restated by a live instance.
+    #
+    # These are the first bumps in the series that admit real BEHAVIOUR rather
+    # than declaration surface, so the re-scan mattered more than usual and was
+    # READ rather than assumed: over the widened scope the gate still reports 0
+    # banned calls, 0 banned modules and no retry shape. `fills.py` reaches the
+    # venue through ONE narrow injected port carrying `cancel_order` alone (§4's
+    # IOC cancel) with no `place_order` and no `flatten` on it; `recovery.py`
+    # reaches the broker only by handing a `FlattenTrigger` to `nixrisk.flatten`,
+    # the one place a flatten is issued (§14).
+    #
+    # Re-banked at the figure `check_order_path_bans` ITSELF reports on the MERGED
+    # tree, never at either branch's arithmetic. Kept a LITERAL: deriving it from
+    # the gate would make this test agree with its subject by construction.
+    assert "arm(ii) imported 29 order-path module(s)" in evidence, evidence
 
 
 def test_the_reviewed_suppressions_are_the_two_known_fanouts_and_no_plant_is_pre_silenced(
