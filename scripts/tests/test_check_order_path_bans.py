@@ -174,7 +174,13 @@ def _scratch(tmp_path_factory: pytest.TempPathFactory) -> Path:
         REPO,
         home,
         ignore=shutil.ignore_patterns(
-            ".git", "__pycache__", ".venv", "*.pyc", "state", "graphify-out"
+            ".git",
+            "__pycache__",
+            ".venv",
+            ".venv-dev",
+            "*.pyc",
+            "state",
+            "graphify-out",
         ),
     )
     (home / ".venv").symlink_to(REPO / ".venv")

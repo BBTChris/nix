@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """Adversarial harness for monitor.py — builds synthetic fixtures, spawns real
 child processes, and drives collect()/render() across every phase branch."""
-import importlib.util, json, os, random, shutil, subprocess, sys, time, types
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-
+import importlib.util
+import json
+import os
+import random
+import shutil
+import subprocess
+import sys
 import tempfile
+import time
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 MON = HERE / "monitor.py"
@@ -30,7 +36,7 @@ def chk(name, cond, detail=""):
 
 
 def iso(ts):
-    return datetime.fromtimestamp(ts, timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.fromtimestamp(ts, UTC).isoformat().replace("+00:00", "Z")
 
 
 def build(scn="normal", n_msgs=40, sidechains=2, ctx=118_000,
@@ -262,6 +268,7 @@ chk("3c fresh sidechain NOT ended",
     all(not a["ended"] for a in s["agents"]), [a["idle"] for a in s["agents"]])
 # now age them past the cutoff and re-collect
 import json as _j
+
 _pd = ch / "projects" / "-home-chris-nix"
 for _f in _pd.glob("sub-*.jsonl"):
     _old = time.time() - M.AGENT_IDLE_CUTOFF - 600
@@ -496,11 +503,15 @@ print()
 print("=" * 72)
 print("SCENARIO 4P: argparse help strings are format-safe (no stray %)")
 print("=" * 72)
-import argparse as _ap
 try:
     # invoke the same parser main() builds; --help must not raise
-    import subprocess as _sp, sys as _sys
-    r = _sp.run([_sys.executable, "/home/claude/work/monitor.py", "--help"],
+    import subprocess as _sp
+    import sys as _sys
+    # ARC 035 / 0.2: was the literal "/home/claude/work/monitor.py" — an absolute
+    # path from a DIFFERENT machine, so this arm measured "file not found" on this
+    # node and would have done so on any node but its author's. MON is resolved
+    # beside this file at import time and is already asserted to exist above.
+    r = _sp.run([_sys.executable, str(MON), "--help"],
                 capture_output=True, text=True, timeout=15)
     chk("4P --help exits cleanly", r.returncode == 0, r.stderr[-200:])
     chk("4P --help lists usage-snapshot", "usage-snapshot" in r.stdout, r.stdout[:300])
@@ -534,10 +545,13 @@ chk("4Q bars still bracketed+filled", "[" in frame and "\u2588" in frame)
 print("=" * 72)
 print("SCENARIO 4O: claude-hud usage snapshot -> real 5h/weekly bars")
 print("=" * 72)
-import json as _j, tempfile as _tf, os as _os
-from datetime import datetime as _dt, timezone as _tz
+import json as _j
+import os as _os
+import tempfile as _tf
+from datetime import datetime as _dt
+
 snap = _tf.mktemp(suffix=".json")
-_now = _dt.now(_tz.utc)
+_now = _dt.now(UTC)
 _j.dump({"updated_at": _now.isoformat(),
     "five_hour": {"used_percentage": 60, "resets_at": _now.isoformat()},
     "seven_day": {"used_percentage": 86, "resets_at": _now.isoformat()}}, open(snap, "w"))
@@ -547,7 +561,7 @@ chk("4O reader parses 5h", d and d["five_pct"] == 60.0, d)
 chk("4O reader parses 7d", d and d["seven_pct"] == 86.0, d)
 # stale snapshot is rejected
 stale = _tf.mktemp(suffix=".json")
-_old = _dt.fromtimestamp(_now.timestamp() - 7200, _tz.utc)  # >1hr -> rejected
+_old = _dt.fromtimestamp(_now.timestamp() - 7200, UTC)  # >1hr -> rejected
 _j.dump({"updated_at": _old.isoformat(),
     "five_hour": {"used_percentage": 60, "resets_at": _old.isoformat()},
     "seven_day": {"used_percentage": 86, "resets_at": _old.isoformat()}}, open(stale, "w"))
@@ -556,7 +570,7 @@ chk("4O stale snapshot rejected", M.read_usage_snapshot(stale) is None, "should 
 chk("4O missing snapshot -> None", M.read_usage_snapshot("/nonexistent.json") is None)
 # 12-min-old snapshot is retained (shown with a stale tag), not rejected
 _mid = _tf.mktemp(suffix=".json")
-_midt = _dt.fromtimestamp(_now.timestamp() - 720, _tz.utc)
+_midt = _dt.fromtimestamp(_now.timestamp() - 720, UTC)
 _j.dump({"updated_at": _midt.isoformat(),
     "five_hour": {"used_percentage": 60, "resets_at": None},
     "seven_day": {"used_percentage": 86, "resets_at": None}}, open(_mid, "w"))
@@ -581,7 +595,7 @@ finally:
     _os.unlink(snap); _os.unlink(stale)
 # stale snapshot (13min): shows dimmed bars + ONE "reading .. old" line, no per-row tag
 _staleS = _tf.mktemp(suffix=".json")
-_st = _dt.fromtimestamp(_now.timestamp() - 800, _tz.utc)
+_st = _dt.fromtimestamp(_now.timestamp() - 800, UTC)
 _j.dump({"updated_at": _st.isoformat(),
     "five_hour": {"used_percentage": 60, "resets_at": None},
     "seven_day": {"used_percentage": 86, "resets_at": None}}, open(_staleS, "w"))
@@ -620,7 +634,9 @@ print("=" * 72)
 root, repo, ch, dl = build(n_msgs=20)
 proj = ch / "projects" / "-repo"
 proj.mkdir(parents=True, exist_ok=True)
-import json as _j, time as _t
+import json as _j
+import time as _t
+
 now = _t.time()
 big = proj / "live-big-0000.jsonl"
 lines = []
@@ -749,7 +765,6 @@ try:
     (ch / "todos" / "fresh-0000-9.json").write_text(_j.dumps(
         [{"content":"a","status":"completed"},{"content":"b","status":"in_progress"},
          {"content":"c","status":"pending"}]))
-    import json as _jj
     s2 = mon.collect(force_slow=True)
     fresh = [x for x in s2["agents"] if x["id"].startswith("fresh")]
     chk("4I fresh agent no fabricated eta",
@@ -789,6 +804,7 @@ root, repo, ch, dl = build(n_msgs=20, sidechains=0)
 proj = ch / "projects" / "-home-bbt-nix"; proj.mkdir(parents=True, exist_ok=True)
 nowt = time.time()
 import json as _j
+
 # 8 ancient sidechains, last activity 45h..104h ago
 for k, hrs in enumerate([104, 81, 68, 66, 64, 57, 55, 45]):
     last = nowt - hrs * 3600

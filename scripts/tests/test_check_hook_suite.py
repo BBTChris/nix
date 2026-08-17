@@ -264,12 +264,24 @@ def test_a_hook_that_selects_zero_files_fails(scratch: Path) -> None:
     stays configured and installed, pre-commit prints `Skipped`, and exits 0.
     """
     config = scratch / gate.CONFIG_FILE
+    source = config.read_text(encoding="utf-8")
+    # ARC 035: the anchor was `exclude: ^databases/schema/`, which this arc's
+    # MON-1 exclusion moved. `str.replace` with no match is a silent no-op, so
+    # the plant planted NOTHING and this test failed for "no plant applied"
+    # while reading as "the gate did not detect the plant" — debug.md §8 failure
+    # mode #4 landing on the test that exists to demonstrate detection. The
+    # anchor is now DERIVED from the live config and its presence asserted, so a
+    # future config edit reports a stale anchor instead of a confusing red.
+    marker = "      - id: complexipy\n"
+    assert marker in source, "the complexipy hook entry is gone; anchor is stale"
+    head, _, tail = source.partition(marker)
+    exclude_line, _, rest = tail.partition("\n")
+    assert exclude_line.strip().startswith("exclude:"), (
+        f"expected an `exclude:` line directly after the complexipy entry, "
+        f"found {exclude_line!r} — the plant would have planted nothing"
+    )
     config.write_text(
-        config.read_text(encoding="utf-8").replace(
-            "      - id: complexipy\n        exclude: ^databases/schema/\n",
-            "      - id: complexipy\n        exclude: ^.*$\n",
-        ),
-        encoding="utf-8",
+        head + marker + "        exclude: ^.*$\n" + rest, encoding="utf-8"
     )
     result = _run(scratch)
     assert result.status is Status.FAIL_NEEDS_OPERATOR
@@ -291,17 +303,17 @@ def test_deleting_a_hook_entry_is_not_detected_and_that_is_stated(
     """
     config = scratch / gate.CONFIG_FILE
     before = len(gate.probe(scratch).payload["hooks"])
-    config.write_text(
-        config.read_text(encoding="utf-8").replace(
-            "  - repo: https://github.com/pre-commit/mirrors-mypy\n"
-            "    rev: v1.18.2\n"
-            "    hooks:\n"
-            "      - id: mypy\n"
-            "        exclude: ^databases/schema/\n",
-            "",
-        ),
-        encoding="utf-8",
-    )
+    source = config.read_text(encoding="utf-8")
+    # ARC 035: same stale-anchor repair as the sibling above. The mypy entry's
+    # `exclude:` value moved with this arc's MON-1 exclusion, so the literal
+    # block below no longer matched and the deletion deleted nothing. The block
+    # is now located by its repo URL and cut to the next `- repo:`, and its
+    # presence is asserted before the cut.
+    start_marker = "  - repo: https://github.com/pre-commit/mirrors-mypy\n"
+    assert start_marker in source, "the mypy repo entry is gone; anchor is stale"
+    head, _, tail = source.partition(start_marker)
+    next_repo = tail.index("\n  - repo: ") + 1
+    config.write_text(head + tail[next_repo:], encoding="utf-8")
     after = len(gate.probe(scratch).payload["hooks"])
     assert after == before - 1, "the mypy entry was not actually removed"
     assert _run(scratch).status is Status.PASS

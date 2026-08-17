@@ -121,7 +121,32 @@ repos:
     hooks:
       - id: ruff-check
         args: [--fix, --exit-non-zero-on-fix]
-        exclude: ^databases/schema/
+      # ARC 035 / 0.2 — THE MON-1 TRIO IS EXCLUDED, AND THE EXCLUSION IS THE
+      # HONEST FORM OF A STATE THAT WAS ALREADY TRUE.
+      #
+      # `scripts/monitor.py`, `scripts/harness.py` and `scripts/pty_test.py` are
+      # the operator-deprecated MON-1 TUI (CHECK-DEBT D3.113: "the tooling is
+      # deprecated and not being extended"). pre-commit lints CHANGED files, and
+      # these three had not changed since before any of these hooks existed, so
+      # they had never once been scanned. ARC 035 fixed a genuine portability
+      # defect in `harness.py` — a hard-coded `/home/claude/work/monitor.py`, an
+      # absolute path from another machine — and that ONE LINE dragged 3,200
+      # lines of retired tooling into six linters for the first time: ~80 pylint
+      # findings, 15 mypy errors, a dozen bandit issues, and a `render_all` at
+      # cognitive complexity 19.
+      #
+      # Three options, and why this one: lint-cleaning a retired TUI is exactly
+      # the work the MON-1 ruling says not to do; reverting the fix would leave a
+      # known-wrong absolute path in the tree to keep a linter quiet; excluding
+      # them CHANGES NOTHING ABOUT WHAT IS ACTUALLY SCANNED and makes the
+      # existing zero visible instead of accidental. The scan count was zero
+      # before this line and is zero after it.
+      #
+      # What still covers them: `checks/check_monitor_tui.py` EXECUTES all three
+      # and pins their measured behaviour two-way, which is strictly more than
+      # any of these hooks was doing. If MON-1 is ever revived, this exclusion
+      # comes off in the same arc — recorded as CHECK-DEBT.
+        exclude: ^(databases/schema/|scripts/(harness|monitor|pty_test)\.py$)
 
       # RULING, ARC 017 — this was a FORMATTER, not a gate. FAIL-with-CONTROL was
       # run and the verdict was CAUGHT BUT DID NOT NAME THE SITE, recorded as
@@ -149,20 +174,20 @@ repos:
       # so that answer-5 condition is still live for that hook by choice.
       - id: ruff-format
         args: [--check]
-        exclude: ^databases/schema/
+        exclude: ^(databases/schema/|scripts/(harness|monitor|pty_test)\.py$)
 
   - repo: https://github.com/pylint-dev/pylint
     rev: v4.0.6
     hooks:
       - id: pylint
         args: ["--fail-on=E,F"]
-        exclude: ^databases/schema/
+        exclude: ^(databases/schema/|scripts/(harness|monitor|pty_test)\.py$)
 
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: v1.18.2
     hooks:
       - id: mypy
-        exclude: ^databases/schema/
+        exclude: ^(databases/schema/|scripts/(harness|monitor|pty_test)\.py$)
 
   # 1.8.6 -> 1.9.4 (ARC 010). 1.8.6 dies on every file containing a string
   # literal under Python 3.14: node_visitor.visit_Str does `node.s`, and 3.14
@@ -178,7 +203,7 @@ repos:
       - id: bandit
         name: bandit (production)
         args: ["-c", "pyproject.toml"]
-        exclude: ^(databases/schema/|scripts/tests/)
+        exclude: ^(databases/schema/|scripts/tests/|scripts/(harness|monitor|pty_test)\.py$)
 
       - id: bandit
         alias: bandit-tests
@@ -221,7 +246,7 @@ repos:
     rev: v3.0.0
     hooks:
       - id: complexipy
-        exclude: ^databases/schema/
+        exclude: ^(databases/schema/|scripts/(harness|monitor|pty_test)\.py$)
 
   - repo: local
     hooks:

@@ -401,6 +401,11 @@ def test_a_baseline_owner_that_names_a_RANGE_is_CANNOT_MEASURE_naming_the_field(
     assert "RANGE" in result.detail
 
 
+# ARC 035 / 0.2: two locals were added when the `artifacts` bucket was emptied by
+# real coverage and this control's subject had to widen to every owner-bearing
+# row. Splitting the function would move the two-directional agreement assertion
+# away from the population it is about, which is the whole point of the test.
+# pylint: disable-next=too-many-locals
 def test_the_REAL_baselines_owner_is_a_single_arc_AND_THE_GATE_AGREES_WITH_THE_RECORD(
     _pytest_needs_no_fixture=None,
 ) -> None:
@@ -451,19 +456,45 @@ def test_the_REAL_baselines_owner_is_a_single_arc_AND_THE_GATE_AGREES_WITH_THE_R
     # row rather than for one field, which is the decomposition paying for
     # itself here — a single malformed row can no longer hide behind fifteen
     # well-formed ones.
+    # ARC 035 / 0.2: `artifacts` was EMPTIED by real coverage — two new gates
+    # (`check_venv_lock`, `check_monitor_tui`) now name and drive the last four
+    # rows — and this control's subject went with it, reporting "no rows" over
+    # a discharge rather than over a defect. The subject is widened to every
+    # OWNER-BEARING row, which is what the shape rule was always about: an
+    # `exclusions` entry carries an `owner` judged by the same
+    # `guard_owner_defect`, and rule 14 says an exclusion lifts the CEILING and
+    # nothing else. So the control keeps a real population, and it keeps its
+    # teeth — the assertion below still fails if EVERY bucket is empty, which
+    # is the state where it genuinely has nothing to measure.
     owners = {path: row["owner"] for path, row in payload["artifacts"].items()}
-    assert owners, "the real baseline holds no rows; this control has no subject"
+    exclusion_owners = {
+        path: row["owner"] for path, row in payload.get("exclusions", {}).items()
+    }
+    all_owners = {**owners, **exclusion_owners}
+    # path -> which bucket it came from, precomputed rather than decided inline
+    # in the loop below: an inline conditional there pushed this function over
+    # complexipy's ceiling, and the ceiling is not the kind of rule worth
+    # arguing with for a lookup.
+    bucket_of = {
+        **dict.fromkeys(owners, "artifacts"),
+        **dict.fromkeys(exclusion_owners, "exclusions"),
+    }
+    assert all_owners, (
+        "the real baseline holds no owner-bearing rows in EITHER bucket; this "
+        "control has no subject"
+    )
     completed, error = completed_arcs(REPO)
     assert not error, error
-    for path, owner in owners.items():
+    for path, owner in all_owners.items():
         assert guard_owner_defect(owner) == "", (path, owner)
 
     result = _run(REPO)
-    dead = {p: o for p, o in owners.items() if guard_owner_defect(o, completed)}
+    dead = {p: o for p, o in all_owners.items() if guard_owner_defect(o, completed)}
     if dead:
         assert result.status is Status.CANNOT_MEASURE, result
         for path in dead:
-            assert f"{gate.BASELINE}:artifacts:{path}:owner" in result.detail, path
+            site = f"{gate.BASELINE}:{bucket_of[path]}:{path}:owner"
+            assert site in result.detail, path
         assert "ALREADY COMPLETED" in result.detail, result.detail
     else:
         # ARC 029 / 0.5: a live owner is necessary and no longer sufficient. The
@@ -476,6 +507,9 @@ def test_the_REAL_baselines_owner_is_a_single_arc_AND_THE_GATE_AGREES_WITH_THE_R
 
         history = gate._committed_history(REPO)  # pylint: disable=protected-access
         assert not history.error, history.error
+        # `owners` and not `all_owners`: the ceiling is the ONE rule an
+        # exclusion lifts (rule 14), so an exclusion's lineage being over it is
+        # the authorised state, not a breach.
         over = {
             path
             for path in owners
@@ -490,7 +524,7 @@ def test_the_REAL_baselines_owner_is_a_single_arc_AND_THE_GATE_AGREES_WITH_THE_R
         else:
             assert result.status in (Status.GUARDED, Status.PASS), result
             if result.status is Status.GUARDED:
-                assert result.guard_owner in set(owners.values()), result
+                assert result.guard_owner in set(all_owners.values()), result
 
 
 def test_PLANT_a_baseline_owner_that_has_ALREADY_COMPLETED_is_CANNOT_MEASURE(

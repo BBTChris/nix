@@ -45,7 +45,9 @@ def home(tmp_path: Path) -> Path:
     shutil.copytree(
         REPO / "scripts" / "nixrisk",
         tmp_path / "scripts" / "nixrisk",
-        ignore=shutil.ignore_patterns("__pycache__"),
+        ignore=shutil.ignore_patterns(
+            "__pycache__", ".git", ".venv", ".venv-dev", "*.pyc", "graphify-out"
+        ),
     )
     (tmp_path / "docs").mkdir()
     (tmp_path / "risks").mkdir()
