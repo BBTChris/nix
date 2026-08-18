@@ -620,8 +620,15 @@ def test_the_ranking_object_exposes_NO_winner() -> None:
         )
 
 
-def test_the_weights_are_NEUTRAL_under_both_policies_and_say_so() -> None:
-    """The score -> sizing-weight transform is R5's, and the object admits it."""
+def test_the_weights_are_REAL_under_PERFORMANCE_and_NEUTRAL_under_FCFS() -> None:
+    """ARC 037 / D3.260: the transform landed, and FCFS stayed neutral.
+
+    This assertion is the INVERSE of the one it replaces, which read "the
+    weights are NEUTRAL under both policies and say so" and was true until the
+    score -> sizing-weight transform existed. It is rewritten rather than
+    deleted because the property it guards did not go away: **FCFS must still
+    be exactly neutral**, and now something else must not be.
+    """
     race = _race()
     scores = {"GC": 1.0, "ZN": 3.0, "CL": 2.0}
     rows = {
@@ -629,9 +636,10 @@ def test_the_weights_are_NEUTRAL_under_both_policies_and_say_so() -> None:
     }
     weighted = rank(race, Table(rows))
     fallback = rank(race, None)
-    assert set(weighted.weights.values()) == {NEUTRAL_WEIGHT}
-    assert set(fallback.weights.values()) == {NEUTRAL_WEIGHT}
-    assert "deferred to" in weighted.reason
+    assert len(set(weighted.weights.values())) == 3, weighted.weights
+    assert set(weighted.weights.values()) == {0.75, 1.0, 1.25}, weighted.weights
+    assert set(fallback.weights.values()) == {NEUTRAL_WEIGHT}, fallback.weights
+    assert "ORDINAL IN THE DENSE RANK" in weighted.reason
     assert "ADVISORY" in weighted.reason
 
 

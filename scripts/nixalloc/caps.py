@@ -185,7 +185,7 @@ class Exposure:
 # audit term or nest it, and a nested term is one the Limiter's event log has to
 # read SEPARATELY — the cross-read §3's atomicity rule exists to forbid,
 # reproduced in the audit trail. Same reasoning `nixalloc/seam.py` records for
-# `SizingRationale`'s eleven.
+# `SizingRationale`'s own field count.
 # pylint: disable=too-many-instance-attributes
 @dataclass(frozen=True)
 class CapDecision:
