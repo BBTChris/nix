@@ -617,13 +617,93 @@ def _arms_can_fail() -> tuple[str, str]:
 
 
 def _writable_surface(mirror_class) -> list[str]:
-    """Public verbs on the mirror beyond the read contract. §12.7."""
-    allowed = {"apply", "lookup", "arbitrate", "fresh", "age_s"}
+    """Public verbs on the mirror beyond the read contract. §12.7.
+
+    `note_liveness` (ARC 037 / `SEAM_REV 1.1.0`, CHECK-DEBT D3.244) is on the
+    list and it is the only entry that was ever ADDED to it. §12.7's sentence is
+    *"a consumer keeps a private read-only mirror it NEVER writes"* — a
+    statement about the TABLE, the thing whose single writer is the Scoring
+    process. `note_liveness` writes no row: it records whether that writer's
+    PROCESS is still alive, which is a fact about the publisher and not a fact
+    in the published table.
+
+    That distinction is exactly the kind of claim a whitelist entry can launder,
+    so it is not left as prose. `liveness_writes_no_row` DRIVES it: the same
+    mirror, the same rows, read before and after both edges of the observation,
+    and the arm reddens if a single field moved. The allowance is measured every
+    run rather than granted once.
+    """
+    allowed = {
+        "apply",
+        "lookup",
+        "arbitrate",
+        "fresh",
+        "age_s",
+        "note_liveness",
+    }
     return sorted(
         name
         for name, member in inspect.getmembers(mirror_class)
         if not name.startswith("_") and callable(member) and name not in allowed
     )
+
+
+def liveness_writes_no_row(seam) -> list[Finding]:
+    """`note_liveness` moves the VERDICT and never the TABLE. Driven, not asserted.
+
+    The read contract's exemption for the one added mutator, measured. If a
+    liveness observation could alter a row, the consumer would be writing the
+    mirror §12.7 says it never writes — and it would be doing it through the
+    verb this gate just allowed.
+    """
+    site = f"{SEAM_MODULE}:RankingMirror.note_liveness"
+    pairs = {("s1", "ES"): 900.0, ("s2", "ES"): 1.0}
+    mirror = seam.RankingMirror(stale_after_s=5.0)
+    _feed(seam, mirror, _snapshot(seam, pairs), 100.0)
+    before = [mirror.lookup(*key) for key in pairs]
+    span_before, age_before = mirror.span_days, mirror.age_s(now=100.5)
+    findings: list[Finding] = []
+    mirror.note_liveness(False, "driven: the writer's peer is gone", "peer")
+    if not mirror.arbitrate(("s1", "ES"), ("s2", "ES"), now=100.5).fell_back:
+        findings.append(
+            Finding(
+                site,
+                "a mirror told its writer is NOT LIVE still returned RANKED from a "
+                "complete, fresh, unambiguous table — §6.6:465's fallback condition "
+                "is 'the Scoring process is DOWN or its table is STALE', and only "
+                "the second half is implemented",
+            )
+        )
+    mirror.note_liveness(True, "driven: the writer's peer is attached", "peer")
+    after = [mirror.lookup(*key) for key in pairs]
+    if after != before:
+        findings.append(
+            Finding(
+                site,
+                f"a liveness observation CHANGED the mirrored table: {before!r} -> "
+                f"{after!r}. §12.7: a consumer keeps a private read-only mirror it "
+                "NEVER writes, and the exemption this verb holds is that it writes "
+                "no row",
+            )
+        )
+    if (mirror.span_days, mirror.age_s(now=100.5)) != (span_before, age_before):
+        findings.append(
+            Finding(
+                site,
+                "a liveness observation moved the table's span or its freshness "
+                "stamp — the observation is about the WRITER's process, and it may "
+                "not restamp what the writer published",
+            )
+        )
+    if mirror.arbitrate(("s1", "ES"), ("s2", "ES"), now=100.5).fell_back:
+        findings.append(
+            Finding(
+                site,
+                "the mirror could not be told the writer was live again. A one-way "
+                "latch leaves every consumer on FCFS permanently after any restart",
+            )
+        )
+    return findings
 
 
 def _static_defects(source: str) -> tuple[list[Finding], int, int]:
@@ -681,6 +761,7 @@ def run(  # pylint: disable=unused-argument,too-many-locals
 
         findings, read_scanned, shape_scanned = _static_defects(source)
         findings += drive_fallback(seam)
+        findings += liveness_writes_no_row(seam)
 
         writable = _writable_surface(seam.RankingMirror)
         if writable:
@@ -712,9 +793,11 @@ def run(  # pylint: disable=unused-argument,too-many-locals
             f"{SEAM_MODULE} seam_rev {seam.SEAM_REV}: scanned {read_scanned} "
             f"read-path function(s) and {shape_scanned} arbitration path for "
             f"computation, iteration, unbounded constructs and I/O; drove all "
-            f"five documented FCFS triggers (never-fed, stale-by-clock, absent "
-            f"pair-row, equal EMA, foreign writer) plus the RANKED half and the "
-            f"flip; worst of {TIMING_DRIVES} arbitrations {worst * 1000:.4f}ms "
+            f"six documented FCFS triggers (never-fed, stale-by-clock, absent "
+            f"pair-row, equal EMA, foreign writer, writer-not-live) plus the "
+            f"RANKED half and the flip, and a driven proof that a liveness "
+            f"observation moves the VERDICT and never a ROW; worst of "
+            f"{TIMING_DRIVES} arbitrations {worst * 1000:.4f}ms "
             f"against a {ARBITRATION_BUDGET_S * 1000:.1f}ms budget; all three "
             f"arms proved they can fail on planted subjects this run"
         )

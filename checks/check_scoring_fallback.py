@@ -221,9 +221,41 @@ MIN_CONTROL_DECISIONS = 200
 MAX_DECISION_GAP_S = 0.5
 
 #: How far past the freshness threshold the FCFS transition may land. Slack for
-#: a loaded scheduler, not for a broken predicate: the LOWER bound is what
-#: catches a threshold that is not real elapsed time.
+#: a loaded scheduler, not for a broken predicate: on the AGE route the LOWER
+#: bound is what catches a threshold that is not real elapsed time.
 WINDOW_SLACK_S = 0.5
+
+#: ARC 037 / sub-agent D, CHECK-DEBT D3.244. The reader now carries a SECOND
+#: fallback trigger — `nixscore.liveness.PublisherLiveness`, which observes the
+#: WRITER through libzmq's own peer-disconnect event instead of inferring its
+#: death from the table's age. When that trigger is the one that fires, the
+#: old lower bound below is not merely wrong, it FORBIDS THE REPAIR: it read
+#: *"something told the reader the process had died, and §6.6's condition is
+#: the TABLE's age, not the writer's liveness"*, which is §6.6:465 stated
+#: backwards — the section's condition is *"the Scoring process is DOWN **or**
+#: its table is STALE"*, two conditions, and the age was standing in for the
+#: first. So the arm now judges against WHICH ROUTE fired, and each route keeps
+#: the bound that can catch its own vacuity.
+#:
+#: Ceiling on the liveness route: MEASURED on this node at 3.46 ms end-to-end
+#: (SIGKILL to first FCFS verdict), against ARC 036's 0.483 s on the age route.
+#: Two orders of magnitude of headroom, and still two orders of magnitude below
+#: `stale_after_s` — which is the property, because a liveness route that drifts
+#: up to the threshold has quietly become the age route again.
+MAX_LIVENESS_WINDOW_S = 0.100
+
+#: Ceiling on decisions RANKED from a corpse's table. Zero is what this node
+#: measures and zero is not the floor demanded: one arbitration can be in
+#: flight in the microseconds before the monitor is drained, and a gate that
+#: reddens on a scheduling accident is a gate that gets widened. ARC 036's
+#: figure on the age route was 144,699.
+MAX_RANKED_FROM_CORPSE = 25
+
+#: The substring that identifies each route in the first post-kill FCFS reason.
+#: Read from the REASON the shipped seam produced, not from a flag the drill
+#: set: check contract §18 makes the reason the assertable artifact.
+_LIVENESS_MARK = "writer not live"
+_AGE_MARK = "stale"
 
 #: Ceiling on the un-restarted reader re-acquiring the table after Scoring comes
 #: back. Observed: ~30 ms via libzmq reconnect plus §12.7 snapshot-on-subscribe.
@@ -422,8 +454,39 @@ def live_before_defects(kill: dict) -> list[tuple[str, str]]:
 # ---------------------------------------------------------------------------
 
 
+def window_route(kill: dict) -> str:
+    """Which fallback trigger ended the RANKED-from-a-corpse window this run.
+
+    `"liveness"`, `"age"`, or `""` when the reason names neither — and the
+    third case is a defect, not a default, because §18 makes the reason the
+    thing an operator reads and a reason naming no trigger is unusable.
+    """
+    reason = str(kill.get("first_fcfs_reason") or "").lower()
+    if _LIVENESS_MARK in reason:
+        return "liveness"
+    if _AGE_MARK in reason:
+        return "age"
+    return ""
+
+
 def window_defects(kill: dict) -> list[tuple[str, str]]:
-    """The FCFS transition happened, and it happened on the CLOCK."""
+    """The FCFS transition happened, and it happened for a REASON that holds.
+
+    Two routes, because ARC 037 gave the reader a second one. §6.6:465's
+    condition is *"the Scoring process is DOWN or its table is STALE"* — two
+    conditions — and each route is bounded by what can make IT vacuous:
+
+    * **age** — bounded BELOW, because a transition faster than half the
+      threshold means the threshold is not being measured against elapsed time.
+    * **liveness** — bounded ABOVE, because a transition that takes as long as
+      the threshold means the writer was never observed and the clock ended the
+      window after all; and bounded by `MAX_RANKED_FROM_CORPSE`, which is the
+      figure D3.244 exists over.
+
+    Both are bounded above by the threshold plus slack, and both must hold a
+    POPULATED table at the moment they fall back — that is what makes this the
+    stale-but-PRESENT case rather than the absent-table trigger.
+    """
     site = f"{PROCESS_MODULE}:RankingReader.mirror[freshness]"
     out: list[tuple[str, str]] = []
     post = kill.get("post", {})
@@ -442,6 +505,7 @@ def window_defects(kill: dict) -> list[tuple[str, str]]:
     if window is None:
         out.append((site, "the reader NEVER fell back to FCFS after Scoring died"))
         return out
+    route = window_route(kill)
     if float(window) > stale_after + WINDOW_SLACK_S:
         out.append(
             (
@@ -452,19 +516,7 @@ def window_defects(kill: dict) -> list[tuple[str, str]]:
                 ),
             )
         )
-    if float(window) < stale_after / 2:
-        out.append(
-            (
-                site,
-                (
-                    f"the fallback fired {float(window):.3f}s after the kill, less than "
-                    f"half the {stale_after}s threshold. The threshold is not being "
-                    "measured against real elapsed time — something told the reader "
-                    "the process had died, and §6.6's condition is the TABLE's age, "
-                    "not the writer's liveness"
-                ),
-            )
-        )
+    out += _route_defects(site, route, float(window), stale_after, kill)
     if int(kill.get("rows_held_at_first_fcfs", 0)) < 2:
         out.append(
             (
@@ -476,14 +528,75 @@ def window_defects(kill: dict) -> list[tuple[str, str]]:
                 ),
             )
         )
+    return out
+
+
+def _route_defects(
+    site: str, route: str, window: float, stale_after: float, kill: dict
+) -> list[tuple[str, str]]:
+    """The bound that can catch THIS route's vacuity. See `window_defects`."""
     reason = str(kill.get("first_fcfs_reason") or "")
-    if "stale" not in reason.lower():
+    if route == "":
+        return [
+            (
+                site,
+                (
+                    f"the first post-kill FCFS named {reason!r} — it names neither "
+                    "the writer's liveness nor the table's age, so an operator "
+                    "cannot tell which of the six triggers fired (check contract "
+                    "§18)"
+                ),
+            )
+        ]
+    if route == "age":
+        if window < stale_after / 2:
+            return [
+                (
+                    site,
+                    (
+                        f"the fallback fired {window:.3f}s after the kill, less than "
+                        f"half the {stale_after}s threshold, while naming the TABLE'S "
+                        "AGE as the trigger. The threshold is not being measured "
+                        "against real elapsed time"
+                    ),
+                )
+            ]
+        return []
+    out: list[tuple[str, str]] = []
+    if window > MAX_LIVENESS_WINDOW_S:
         out.append(
             (
                 site,
                 (
-                    f"the first post-kill FCFS named {reason!r} — an operator cannot "
-                    "tell which of the five triggers fired (check contract §18)"
+                    f"the LIVENESS route took {window:.3f}s to fall back, over the "
+                    f"{MAX_LIVENESS_WINDOW_S}s ceiling. A peer-disconnect observation "
+                    f"costs milliseconds on this node; a liveness window that has "
+                    f"drifted toward the {stale_after}s threshold is the age route "
+                    f"wearing the liveness route's reason (CHECK-DEBT D3.244)"
+                ),
+            )
+        )
+    ranked = int(kill.get("post", {}).get("ranked", 0))
+    if ranked > MAX_RANKED_FROM_CORPSE:
+        out.append(
+            (
+                site,
+                (
+                    f"{ranked} arbitration(s) decided RANKED from the dead process's "
+                    f"frozen table, over the {MAX_RANKED_FROM_CORPSE} ceiling. That "
+                    "is D3.244 exactly: a complete, populated, confident mirror "
+                    "answering from a corpse"
+                ),
+            )
+        )
+    if "peer" not in reason.lower() and "heartbeat" not in reason.lower():
+        out.append(
+            (
+                site,
+                (
+                    f"the liveness FCFS reason {reason!r} does not say WHICH signal "
+                    "fired. A dead process and a wedged one are different incidents "
+                    "with different runbooks (check contract §18)"
                 ),
             )
         )
@@ -847,6 +960,19 @@ _GOOD_KILL = {
     "alerts": [("scoring-down-fcfs", "age 0.5s threshold 0.5s 9 snapshot(s)")],
     "alert_codes": ["scoring-down-fcfs"],
 }
+#: The SAME run on ARC 037's liveness route: the writer is observed to die, so
+#: the window collapses to disconnect latency and nothing is ranked from the
+#: corpse. Both fixtures are healthy and they exercise OPPOSITE bounds, which
+#: is what stops `_route_defects` from being satisfiable by one shape.
+_GOOD_KILL_LIVE = {
+    **_GOOD_KILL,
+    "post": {"decisions": 9999, "ranked": 0, "fcfs": 9999},
+    "frozen_table_window_s": 0.0035,
+    "first_fcfs_reason": (
+        "ranking WRITER not live [peer]: the Scoring publisher's peer is GONE — "
+        "libzmq DISCONNECTED on the subscriber socket after 1 disconnect(s)"
+    ),
+}
 _GOOD_CLEAN = {"reap_status": 7, "expected_reap_status": 7}
 _GOOD_NO_KILL = {
     "counts": {"decisions": 9999, "ranked": 9999, "fcfs": 0},
@@ -942,6 +1068,32 @@ def _plants() -> tuple[tuple[str, list[tuple[str, str]]], ...]:
             window_defects(_with(_GOOD_KILL, rows_held_at_first_fcfs=0)),
         ),
         (
+            "window/reason-names-no-trigger",
+            window_defects(_with(_GOOD_KILL, first_fcfs_reason="the fallback ran")),
+        ),
+        (
+            "liveness/window-drifted-to-the-clock",
+            window_defects(_with(_GOOD_KILL_LIVE, frozen_table_window_s=0.45)),
+        ),
+        (
+            "liveness/ranked-from-a-corpse",
+            window_defects(
+                _with(
+                    _GOOD_KILL_LIVE,
+                    post={"decisions": 144699, "ranked": 144699, "fcfs": 9999},
+                )
+            ),
+        ),
+        (
+            "liveness/reason-names-no-signal",
+            window_defects(
+                _with(
+                    _GOOD_KILL_LIVE,
+                    first_fcfs_reason="ranking WRITER not live: it is not live",
+                )
+            ),
+        ),
+        (
             "control/fcfs-while-healthy",
             control_defects(
                 _with(
@@ -1022,6 +1174,7 @@ def _arms_can_fail() -> tuple[str, str]:
         ("flow", flow_defects(_GOOD_KILL)),
         ("live", live_before_defects(_GOOD_KILL)),
         ("window", window_defects(_GOOD_KILL)),
+        ("window-liveness", window_defects(_GOOD_KILL_LIVE)),
         ("control", control_defects(_GOOD_NO_KILL)),
         ("stale", stale_defects(_GOOD_STALE)),
         ("boundary", _as_findings(boundary_unmeasurable(_GOOD_STALE))),
@@ -1075,7 +1228,9 @@ def _evidence(outcome: dict, scanned: int) -> str:
         f"{len(kill['order_path_exceptions'])} order-path exception(s); "
         f"{kill['post']['ranked']} decisions RANKED from the dead process's frozen "
         f"table over a {_num(kill['frozen_table_window_s'])} window before FCFS "
-        f"took over at {kill['stale_after_s']}s; the live-publisher control took "
+        f"took over via the {window_route(kill) or 'UNNAMED'} route (ARC 036, age "
+        f"route only: 144,699 over 0.483s at the same 0.5s threshold — CHECK-DEBT "
+        f"D3.244); the live-publisher control took "
         f"{outcome['no_kill']['counts']['decisions']} decisions with "
         f"{outcome['no_kill']['counts']['fcfs']} FCFS; a LIVE publisher's frozen "
         f"table read fresh at {_num(stale['inside'].get('observed_age_s'))} and "

@@ -56,7 +56,7 @@ FCFS winner is the **earlier arrival**, which is first-come-first-served spelled
 out — deterministic, structurally neutral (it favours no symbol), and needing
 no computation at the instant a process just died.
 
-The five FCFS triggers, each with its own reason string so a caller can say
+The six FCFS triggers, each with its own reason string so a caller can say
 WHICH one fired rather than only that the fallback ran (check contract §18):
 
   1. no snapshot has arrived (mirror incomplete — §12.7's fast-drop condition)
@@ -64,6 +64,35 @@ WHICH one fired rather than only that the fallback ran (check contract §18):
   3. either contender's pair-row is absent (cold start, no history — §6.6)
   4. the two rows carry equal EMAs (§6.6: *"Equal or absent scores ⇒ FCFS"*)
   5. the snapshot was published by an identity that is not the Scoring process
+  6. **the WRITER is not live** — ARC 037, `SEAM_REV 1.1.0`, CHECK-DEBT D3.244
+
+## TRIGGER 6 IS NOT TRIGGER 2 WITH A SHORTER CLOCK
+
+§6.6:465's condition is two conditions: *"if the Scoring process is DOWN **or**
+its table is STALE"*. Trigger 2 is the second one. Until ARC 037 nothing in this
+tree implemented the first, and the age was standing in for it — which is a
+PROXY, and the direction of proxy that costs the most, because the answer it
+gives in the gap is confident and wrong.
+
+MEASURED, ARC 036: **144,699 arbitrations decided RANKED from a dead process's
+frozen table over a 0.483 s window** at `stale_after_s = 0.5`. The subscriber
+socket outlives the publisher, so the mirror stays complete, populated and
+confident; only the clock ever ends it, and the window is therefore a linear
+function of a tunable rather than of the death.
+
+`scripts/nixscore/liveness.py` makes the observation the clock cannot: libzmq's
+own `EVENT_DISCONNECTED` on the subscriber's monitor socket (median 1.54 ms
+after a `SIGKILL` on this node, 3.44 ms end to end through a real consumer),
+plus a §12.7 sequence deadline for the publisher that is alive but wedged and
+therefore never disconnects.
+
+**The mirror is FED, it does not ASK.** `note_liveness` is called from the
+consumer's pump loop and stores a plain boolean; `arbitrate` reads that
+attribute. There is deliberately no observer call, no socket and no `try` on the
+order path — an order decision must answer at the instant a process died
+(§11:595), and a hot path that called out to an observer would be one more thing
+that can be slow at exactly the wrong moment. A consumer that never calls
+`note_liveness` is at `SEAM_REV 1.0.0`'s behaviour, unchanged.
 
 ## Sync/async per verb
 
@@ -94,7 +123,15 @@ from nixbus.statebus import StateMessage
 #: Bumped whenever the ROW SHAPE or the arbitration contract changes, so a
 #: consumer built against an older seam is a version mismatch rather than a
 #: silent misread. Frozen at 1.0.0 by ARC 036 Phase 0.4.
-SEAM_REV = "1.0.0"
+#:
+#: **1.1.0 — ARC 037 / sub-agent D (CHECK-DEBT D3.244).** The ROW SHAPE did not
+#: move: `RankRow`, `RankingSnapshot` and every wire key are byte-for-byte what
+#: 1.0.0 published, so a 1.0.0 consumer decodes a 1.1.0 snapshot unchanged. The
+#: ARBITRATION CONTRACT did move — a SIXTH FCFS trigger exists (the writer is
+#: not live), and the module's own rule above is that the literal moves for
+#: either. A consumer that never calls `note_liveness` gets 1.0.0's behaviour
+#: exactly, which is why this is a minor and not a major.
+SEAM_REV = "1.1.0"
 
 #: The §12.7 topic this table publishes under.
 RANKING_TOPIC = "ranking"
@@ -367,8 +404,59 @@ class RankingMirror:  # pylint: disable=too-many-instance-attributes
         self.applied = 0
         self.foreign_rejected = 0
         self.malformed_rejected = 0
+        #: TRIGGER 6's state, and it starts TRUE on purpose. A mirror nobody
+        #: feeds liveness to must behave exactly as `SEAM_REV 1.0.0` did — an
+        #: unobserved writer is unobserved, not observed dead (§17), and
+        #: defaulting it False would make FCFS the only mode for every consumer
+        #: that has not been wired yet. The wiring, not the default, is what
+        #: repairs D3.244.
+        self._writer_live = True
+        self._writer_live_reason = ""
+        self._writer_live_signal = ""
+        #: COUNTERS. `liveness_fed` proves a consumer is actually feeding this
+        #: mirror — zero is a finding, exactly as `StateSubscriber.
+        #: bytes_received == 0` is — and `liveness_lost` counts the FALSE edges,
+        #: so a gate can say the writer was observed to die rather than that a
+        #: boolean was once set.
+        self.liveness_fed = 0
+        self.liveness_lost = 0
 
     # -- ingress ---------------------------------------------------------
+
+    def note_liveness(self, live: bool, reason: str = "", signal: str = "") -> None:
+        """Feed TRIGGER 6. **Called from the consumer's pump loop, never a hot path.**
+
+        `live` is the only thing that steers a verdict; `reason` and `signal`
+        are carried so the FCFS verdict can name WHICH observation fired (check
+        contract §18) instead of asserting the outcome. A caller that passes no
+        reason gets a generic one rather than an empty string — a verdict with
+        no reason is the shape §18 exists to forbid.
+
+        This is deliberately a SETTER and not an observer port. The mirror must
+        not hold anything that does I/O: `arbitrate` reads `_writer_live` as a
+        plain attribute, so the order path cannot be made slow, cannot raise and
+        cannot block by anything this trigger added.
+        """
+        was_live = self._writer_live
+        self._writer_live = bool(live)
+        self._writer_live_signal = str(signal)
+        self._writer_live_reason = str(reason) or (
+            "the ranking table's writer was reported not live by its consumer's "
+            "liveness observer"
+        )
+        self.liveness_fed += 1
+        if was_live and not self._writer_live:
+            self.liveness_lost += 1
+
+    @property
+    def writer_live(self) -> bool:
+        """Whether the last liveness observation said the WRITER is alive."""
+        return self._writer_live
+
+    @property
+    def writer_live_signal(self) -> str:
+        """Which signal last spoke: `peer`, `heartbeat`, `observer`, or `""`."""
+        return self._writer_live_signal
 
     def apply(self, message: StateMessage, now: float | None = None) -> bool:
         """Fold one update in. Returns whether it was accepted.
@@ -408,9 +496,17 @@ class RankingMirror:  # pylint: disable=too-many-instance-attributes
         return max(0.0, (time.time() if now is None else now) - self._applied_at)
 
     def fresh(self, now: float | None = None) -> bool:
-        """§0i: stale until proven fresh. Never fed ⇒ False."""
+        """§0i: stale until proven fresh. Never fed ⇒ False. Dead writer ⇒ False.
+
+        Freshness is §6.6:465's whole fallback condition — *"the Scoring process
+        is DOWN **or** its table is STALE"* — and not only its second half. A
+        consumer asking one question gets both answers, which is what makes
+        `nixalloc.wiring`'s `RankingTablePort.available()` and
+        `nixscore.process.FallbackAlarm` fall back on a death without either of
+        them learning a new verb.
+        """
         age = self.age_s(now)
-        return age is not None and age <= self.stale_after_s
+        return self._writer_live and age is not None and age <= self.stale_after_s
 
     def lookup(self, strategy_id: str, symbol: str) -> RankRow | None:
         """THE HOT-PATH READ. One dict get. No arithmetic, no I/O, no scan."""
@@ -431,7 +527,22 @@ class RankingMirror:  # pylint: disable=too-many-instance-attributes
         This function has no `raise`, no loop over the table, no I/O, and its
         only arithmetic is one subtraction for the age and one float comparison
         — which is what "O(1) lookup, never math" means in §6.6 and §11:595.
+
+        TRIGGER 6 (the writer is not live) is checked FIRST, and the order is
+        the point: it is the only trigger that can be true while every other
+        one is false, which is precisely the RANKED-from-a-corpse state D3.244
+        measured — complete table, populated rows, unequal EMAs, correct writer
+        identity, age still inside the threshold, and the process that wrote it
+        dead for 0.483 s. Checking it last would have left that state ranking.
+        The read is one boolean attribute, fed from off the hot path.
         """
+        if not self._writer_live:
+            return Verdict(
+                Arbitration.FCFS,
+                first,
+                f"ranking WRITER not live [{self._writer_live_signal}]: "
+                f"{self._writer_live_reason}",
+            )
         if self._applied_at is None:
             return Verdict(
                 Arbitration.FCFS,
