@@ -196,3 +196,24 @@ both policies (D3.260). The store is built and not wired to supervision's quaran
 transition (D3.252). Two classes named `RankingReader` survive in one package, and the
 tree's own instrument credits one's call sites to the other (D3.271). Live venue untested
 by design; the EMA span is a default awaiting real realized data.
+
+### Post-write-back re-measure (ARC 036), banked before the marker
+
+`sessions/SESSION.md` now names ARC 036 complete, so the D3.40/D3.144 guard-owner
+transition is **live, not hypothetical**: `nixverify.contract.completed_arcs` returns an
+empty error and reports `36 in arcs = True`, highest 36. That is the mechanism running
+against this arc's own summary — the condition D3.274 was written to be falsified by.
+
+**D3.274's prediction, stated before the write-back, HELD in both halves:**
+
+| | predicted | measured after |
+|---|---|---|
+| `check_artifact_gate_coverage` | GUARDED, unchanged | **guarded** |
+| `verify.py` | 81 / 2 / 2 / 0 / 1, exit 1 | **81 passed / 2 failed / 2 cannot measure / 0 skipped / 1 guarded, exit 1** |
+
+The guard survived because D3.273 re-pointed its eight exclusions ARC 036 → ARC 037
+*before* the write-back. Had they been left naming ARC 036, this re-measure would have
+read GUARDED → CANNOT_MEASURE and the guarded count would have gone 1 → 0 — which is the
+transition ARC 034 measured the absence of, and the reason the prediction is worth
+writing down first. **A re-measure taken after the fact and then described is not a test
+of anything.**
