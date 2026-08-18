@@ -287,8 +287,31 @@ def load(home: Path) -> tuple[dict[str, ModuleType] | None, str]:
         return None, f"cannot import the Allocator out of {home}: {exc!r}"
     finally:
         sys.path[:] = saved_path
-        sys.modules.clear()
-        sys.modules.update(saved_modules)
+        # RESTORE ONLY WHAT THIS FUNCTION PURGED. The first spelling was
+        # `sys.modules.clear()` followed by `update(saved_modules)`, which is
+        # not a restore — it is an EVICTION of every module imported since the
+        # snapshot, by anything, including C extension modules.
+        #
+        # MEASURED, ARC 036 Stage 2, and it took four other gates down with it.
+        # Under `verify.py` this gate runs before `check_state_bus`,
+        # `check_ranking_table`, `check_picture_atomicity` and
+        # `check_allocator_mirror`. If `zmq` had not yet been imported when the
+        # snapshot was taken, the clear() dropped it; the next `import zmq`
+        # RE-INITIALISED the Cython backend while libzmq's already-loaded state
+        # persisted, producing a SECOND `zmq.error.Again` class object. So
+        # `StatePublisher.service`'s entirely correct `except zmq.Again:` could
+        # not catch the `Again` the backend raised — measured as
+        # `raised cls id 365732624` vs `caught cls id 366035056`, `SAME: False`
+        # — and four gates that pass alone reported
+        # `Again: Resource temporarily unavailable`.
+        #
+        # The gate was GREEN throughout: it damaged only its successors, which
+        # is why no sub-agent branch could see it and Stage 2 is where it died.
+        for name in [k for k in sys.modules if k.split(".")[0] in _PREFIXES]:
+            del sys.modules[name]
+        sys.modules.update(
+            {k: v for k, v in saved_modules.items() if k.split(".")[0] in _PREFIXES}
+        )
 
 
 # ---------------------------------------------------------------------------

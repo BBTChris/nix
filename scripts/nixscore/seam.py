@@ -447,8 +447,22 @@ class RankingMirror:  # pylint: disable=too-many-instance-attributes
                 f"ranking table stale: age {age:.3f}s exceeds the "
                 f"{self.stale_after_s:.3f}s freshness threshold (§12.7)",
             )
-        left = self._rows.get(first)
-        right = self._rows.get(second)
+        # ONE CAPTURE, TWO LOOKUPS — not two captures. `apply` REBINDS
+        # `self._rows` to a whole new dict, so reading the attribute twice can
+        # straddle a publish and compare a row from one table against a row
+        # from the next. MEASURED by ARC 036 sub-agent B over a real socket:
+        # 2,113,317 reads overlapping 136,590 writes across 243 distinct table
+        # generations TORE 49 times on the two-capture spelling and 0 times on
+        # this one. Binding the table once makes the pair atomic for free —
+        # the local name holds the old dict even if the attribute moves.
+        #
+        # It is unreachable under the single-threaded consumer contract (pump,
+        # then read) and it is repaired anyway, because "no current caller can
+        # hit it" is a property of today's callers, not of this function.
+        # CHECK-DEBT D3.231.
+        rows = self._rows
+        left = rows.get(first)
+        right = rows.get(second)
         if left is None or right is None:
             absent = first if left is None else second
             return Verdict(

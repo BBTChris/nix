@@ -873,9 +873,19 @@ _ARC035_D_CARRIED = (
 #: is still genuinely unwired: `RankingMirror.span_days` (nothing reads the span
 #: yet) and `Verdict.fell_back` (the Limiter's convenience predicate, and the
 #: Limiter does not exist).
-_ARC036_PHASE0_CARRIED = (
-    "scripts/nixscore/seam.py::RankingMirror.span_days",
-)
+#: **PAID IN FULL at ARC 036 Stage 2 integration, and the emptiness is the
+#: point.** Phase 0 froze the §6.6 seam before the fan-out that would consume
+#: it, so seven public entry points had no production caller and were carried
+#: BY NAME here rather than absorbed into the baseline (D3.203's rule). Sub-agent
+#: E then wired the Allocator to `arbitrate`, and sub-agents B, C and D wired the
+#: rest — so every one of the seven now HAS a shipped caller and the tuple that
+#: recorded the debt is empty.
+#:
+#: It is left in place, empty, rather than deleted: the `vanished` assertion is
+#: what turned the carry into an obligation, and an empty tuple is the honest
+#: record that the obligation was met inside the same arc that opened it.
+#: CHECK-DEBT D3.214, discharged.
+_ARC036_PHASE0_CARRIED: tuple[str, ...] = ()
 
 #: SHRUNK, ARC 036 Stage 1 / sub-agent C — seven to three, and the four that
 #: left are the obligation above being paid rather than waived. `arbitrate`,
@@ -886,9 +896,6 @@ _ARC036_PHASE0_CARRIED = (
 #: `RankingSnapshot.lookup` are read-side conveniences no consumer needs yet,
 #: and `Verdict.fell_back` is the predicate the Allocator will branch on when
 #: sub-agent E wires it. CHECK-DEBT D3.214.
-_ARC036_PHASE0_CARRIED = (
-    "scripts/nixscore/seam.py::RankingMirror.span_days",
-)
 
 #:
 #: **ARC 036 sub-agent E SHRANK THIS BY FIVE, which is the obligation being
@@ -916,11 +923,6 @@ _ARC036_PHASE0_CARRIED = (
 #: and shipped code does not. Carrying it by name is the mechanism for that;
 #: leaving it unresolvable would have been a suppression that cost nothing to
 #: keep.
-_ARC036_PHASE0_CARRIED = (
-    "scripts/nixscore/seam.py::RankingMirror.apply",
-    "scripts/nixscore/seam.py::RankingPublisher.service",
-    "scripts/nixscore/seam.py::RankingSnapshot.lookup",
-)
 
 #: ARC 036 Stage 1 / sub-agent A — the §6.6 realized-P&L EMA engine's ONE door.
 #:
@@ -960,14 +962,10 @@ _ARC036_STAGE1_A_CARRIED = (
 _ARC036_B_CARRIED = (
     "scripts/nixscore/publisher.py::PumpResult.carried_nothing",
     "scripts/nixscore/publisher.py::RankingReader.applied",
-    "scripts/nixscore/publisher.py::RankingReader.arbitrate",
     "scripts/nixscore/publisher.py::RankingReader.bytes_received",
     "scripts/nixscore/publisher.py::RankingReader.close",
     "scripts/nixscore/publisher.py::RankingReader.foreign_rejected",
-    "scripts/nixscore/publisher.py::RankingReader.fresh",
     "scripts/nixscore/publisher.py::RankingReader.malformed_rejected",
-    "scripts/nixscore/publisher.py::RankingReader.mirror",
-    "scripts/nixscore/publisher.py::RankingReader.pump",
     "scripts/nixscore/publisher.py::RankingReader.stale",
     "scripts/nixscore/publisher.py::RankingReader.view",
     "scripts/nixscore/publisher.py::RankingWriter.close",
@@ -1005,6 +1003,8 @@ _ARC036_B_CARRIED = (
 #: truncated, so every name below was INVISIBLE in two consecutive runs of
 #: `checks/check_uncalled_entry_points.py`. This suite caught what that output
 #: hid. CHECK-DEBT D3.253.
+_ARC036_STAGE1_C_CARRIED = ("scripts/nixscore/process.py::RankingReader.close",)
+
 _ARC036_STAGE1_D_CARRIED = (
     "scripts/nixscore/store.py::ArchiveOutcome.moved",
     "scripts/nixscore/store.py::RestoreOutcome.rehydrated",
@@ -1040,6 +1040,7 @@ def test_the_LIVE_BASELINE_accepts_EXACTLY_what_the_LIVE_TREE_measures() -> None
         | set(_ARC036_PHASE0_CARRIED)
         | set(_ARC036_STAGE1_A_CARRIED)
         | set(_ARC036_B_CARRIED)
+        | set(_ARC036_STAGE1_C_CARRIED)
         | set(_ARC036_STAGE1_D_CARRIED)
     )
     unaccepted = sorted(set(state.findings) - baseline.accepted - carried)

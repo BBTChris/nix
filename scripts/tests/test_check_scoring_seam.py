@@ -196,9 +196,9 @@ def test_the_gate_REDDENS_on_a_fallback_that_raises_instead_of_answering(
     """An exception out of the arbitration path is a stall wearing a traceback."""
     _break(
         home,
-        "        left = self._rows.get(first)\n        right = self._rows.get(second)",
-        "        left = self._rows.get(first)\n"
-        "        right = self._rows.get(second)\n"
+        "        left = rows.get(first)\n        right = rows.get(second)",
+        "        left = rows.get(first)\n"
+        "        right = rows.get(second)\n"
         "        if left is None:\n"
         "            raise SeamError('no row')",
     )

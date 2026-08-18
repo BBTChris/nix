@@ -1012,11 +1012,45 @@ def growth_defects(
     return defects
 
 
+#: How many findings each arm RENDERS. A cap is necessary — an operator cannot
+#: read four hundred rows — and a SILENT cap is a lie: it makes the list an
+#: operator reads look like the whole truth. MEASURED by ARC 036 sub-agent D:
+#: 47 un-baselined findings existed and 25 rendered, so 22 were invisible,
+#: including five of D3.214's own "carried BY NAME" seam entries and every one
+#: of a whole new module's fifteen. The counters moved; the rows did not. It bit
+#: the ARC 036 integrator again on the merged tree, where exactly 25 rows
+#: rendered while five sub-agents' surface was in flight.
+#:
+#: `_capped` is the repair and it is deliberately not a bigger number: the cap
+#: stays, and what changes is that the list SAYS when it truncated. Doctrine:
+#: no silent caps — if a run bounds its own coverage, it prints what it dropped.
+#: CHECK-DEBT D3.253.
+RENDER_CAP = 25
+
+
+def _capped(defects: list[tuple[str, str]], arm: str) -> list[tuple[str, str]]:
+    """At most `RENDER_CAP` rows, and a LOUD row when there were more."""
+    if len(defects) <= RENDER_CAP:
+        return defects
+    hidden = len(defects) - RENDER_CAP
+    return defects[:RENDER_CAP] + [
+        (
+            f"{BASELINE}:{arm}:truncated",
+            (
+                f"{hidden} further finding(s) NOT SHOWN — {len(defects)} were "
+                f"measured and {RENDER_CAP} render. The rows above are not the "
+                "whole set, and reading them as one is how a whole module's "
+                "surface went invisible for two consecutive runs (D3.253)"
+            ),
+        )
+    ]
+
+
 def regression_defects(
     baseline: Baseline, findings: dict[str, str]
 ) -> list[tuple[str, str]]:
     """A finding the baseline does not accept. THE arm this gate exists for."""
-    return [
+    rows = [
         (
             sid,
             (
@@ -1027,7 +1061,8 @@ def regression_defects(
         )
         for sid, bucket in sorted(findings.items())
         if sid not in baseline.accepted
-    ][:25]
+    ]
+    return _capped(rows, "regression")
 
 
 def rot_defects(
@@ -1059,7 +1094,7 @@ def rot_defects(
                 ),
             )
         )
-    return defects[:25]
+    return _capped(defects, "rot")
 
 
 def bucket_defects(
@@ -1098,7 +1133,7 @@ def bucket_defects(
                     ),
                 )
             )
-    return defects[:25]
+    return _capped(defects, "bucket")
 
 
 def shape_defects(baseline: Baseline) -> list[tuple[str, str]]:

@@ -597,7 +597,9 @@ The new rule inherited that scope and was structurally incapable of seeing the f
 about. It would have passed forever.
 
 ```python
-assert TARGET in instrument.scope(), "instrument cannot see its subject — verdict is vacuous"
+assert TARGET in instrument.scope(), (
+    "instrument cannot see its subject — verdict is vacuous"
+)
 ```
 
 ### 7.4 Never anchor an assertion to something that moves

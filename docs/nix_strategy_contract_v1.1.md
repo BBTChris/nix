@@ -351,10 +351,14 @@ No RNG, no dict-ordering dependence, no float accumulation that varies with chun
 ```python
 from zoneinfo import ZoneInfo
 from datetime import datetime, timezone
+
 CT = ZoneInfo("America/Chicago")
+
+
 def tod(ts_ns):  # -> (hour, minute) in exchange time, from BAR data
     return (lambda d: (d.hour, d.minute))(
-        datetime.fromtimestamp(ts_ns / 1e9, tz=timezone.utc).astimezone(CT))
+        datetime.fromtimestamp(ts_ns / 1e9, tz=timezone.utc).astimezone(CT)
+    )
 ```
 Input is always a **delivered** `ts_close`/`ts_open` — never `datetime.now()`. This gives Pine's
 `time()`-filter semantics, DST-correct, deterministic. Session *boundaries* still come only from
@@ -374,33 +378,43 @@ import json, math, os, signal as _signal, sys, time
 from enum import Enum, auto
 import zmq
 
-STRATEGY_VERSION = "1.0.0"                     # the file owns its version
+STRATEGY_VERSION = "1.0.0"  # the file owns its version
 SID = os.environ.get("NIX_STRATEGY_ID")
 SYM = os.environ.get("NIX_SYMBOL")
 RUN = os.environ.get("NIX_RUN_DIR")
 REV = "1.1.0"
 
+
 class S(Enum):
-    FLAT = auto(); PENDING = auto(); IN_POSITION = auto(); CLOSING = auto()
+    FLAT = auto()
+    PENDING = auto()
+    IN_POSITION = auto()
+    CLOSING = auto()
+
 
 class Strategy:
     def __init__(self, cfg):
-        self.state = S.FLAT; self.halted = False; self.msg_id = 0
-        self.pos_qty = 0                        # signed: +long / -short
-        self.pending_since = None               # wall clock, invariant 10
-        self.last_signal_event = None           # denied / one-per-bar cooldown
+        self.state = S.FLAT
+        self.halted = False
+        self.msg_id = 0
+        self.pos_qty = 0  # signed: +long / -short
+        self.pending_since = None  # wall clock, invariant 10
+        self.last_signal_event = None  # denied / one-per-bar cooldown
         self.go_timeout_s = cfg["go_timeout_s"]
         # indicator state here (persists across trades)
         self._reset_trade_state()
 
-    def _reset_trade_state(self):               # invariant 2 - sole reset path
-        self.tp_level = None; self.entry_ref = None; self.pending_since = None
+    def _reset_trade_state(self):  # invariant 2 - sole reset path
+        self.tp_level = None
+        self.entry_ref = None
+        self.pending_since = None
 
     # ---- pure signal logic, translated from Pine, closed events only ----
     def on_bar(self, bar): ...
     def on_brick(self, brick): ...
-    def want_entry(self): ...                   # -> None | ("long"|"short", stop_dict)
-    def want_exit(self): ...                    # -> None | reason
+    def want_entry(self): ...  # -> None | ("long"|"short", stop_dict)
+    def want_exit(self): ...  # -> None | reason
+
 
 # (wiring the generated file must complete: REQ register, socket recreated per
 #  5s retry; SUB the 4 topics with byte-exact topic filtering; DEALER out;
