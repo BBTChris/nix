@@ -121,10 +121,13 @@
         "check_plane1_event_coverage",
         "check_plane1_hot_path",
         "check_plane1_projection",
-        "check_plane1_sole_writer"
+        "check_plane1_sole_writer",
+        "check_realized_pnl"
       ],
       "claims": [
         "file-write:/tmp",
+        "interpreter:sys.modules",
+        "interpreter:sys.path",
         "subprocess:createdb",
         "subprocess:dropdb",
         "subprocess:psql"
