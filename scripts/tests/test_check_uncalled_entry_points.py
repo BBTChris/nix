@@ -1057,6 +1057,20 @@ _ARC036_STAGE1_D_CARRIED = (
     "scripts/nixscore/store.py::ScoreStorePort.restore_strategy",
 )
 
+#: ARC 037 (Stage 2 integration). ONE name, carried rather than absorbed into
+#: `uncalled_entry_points_baseline.json`, for the reason every carried set here
+#: exists: the baseline is a silent accept and a NAMED carry is an obligation
+#: the `vanished` assertion enforces in BOTH directions — the moment this gains
+#: a shipped caller, this tuple must shrink or the suite goes red.
+#:
+#: `RecordedTradeFacts` is the in-memory `TradeFactsBook` sub-agent A shipped so
+#: the realized-P&L wire could be DRIVEN. Nothing in production fills a facts
+#: book — there is no fill feed in this tree at all (CHECK-DEBT D3.280, D3.281,
+#: D3.288) — so `record` is genuinely called only by the gate and the drills,
+#: and saying so by name is more honest than a baseline row nobody reads. Its
+#: discharge is the same event that discharges D3.281: a real fill feed.
+_ARC037_CARRIED = ("scripts/nixrisk/realized.py::RecordedTradeFacts.record",)
+
 
 def test_the_LIVE_BASELINE_accepts_EXACTLY_what_the_LIVE_TREE_measures() -> None:
     """The ratchet, read against the real tree, MINUS ARC 034's carried red.
@@ -1076,6 +1090,7 @@ def test_the_LIVE_BASELINE_accepts_EXACTLY_what_the_LIVE_TREE_measures() -> None
         | set(_ARC036_B_CARRIED)
         | set(_ARC036_STAGE1_C_CARRIED)
         | set(_ARC036_STAGE1_D_CARRIED)
+        | set(_ARC037_CARRIED)
     )
     unaccepted = sorted(set(state.findings) - baseline.accepted - carried)
     stale = sorted(baseline.accepted - set(state.findings))

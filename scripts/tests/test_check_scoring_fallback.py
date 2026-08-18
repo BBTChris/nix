@@ -167,13 +167,19 @@ def test_a_corpse_ranked_forever_reddens_the_window_arm(tmp_path: Path) -> None:
     a control goes blind while every suite stays green.
     """
     home = _stage(tmp_path)
-    process = home / "scripts" / "nixscore" / "process.py"
+    # ARC 037 STAGE 2 — RE-POINTED, and the re-point is the finding. This plant
+    # named `nixscore/process.py`, because sub-agent D wrote it against the
+    # `RankingReader` that lived there. Sub-agent F deleted that class in a
+    # worktree D could not see (D3.271's duplicate) and the survivor is here.
+    # `_edit` REFUSES a missing anchor rather than planting nothing, which is
+    # the only reason this was a red test instead of a silently vacuous one.
+    reader = home / "scripts" / "nixscore" / "publisher.py"
     _edit(
-        process,
-        "self.mirror = RankingMirror(stale_after_s=stale_after_s, identity=identity)",
-        "self.mirror = RankingMirror(stale_after_s=1e9, identity=identity)",
+        reader,
+        "self._mirror = RankingMirror(stale_after_s=stale_after_s, identity=identity)",
+        "self._mirror = RankingMirror(stale_after_s=1e9, identity=identity)",
     )
-    _edit(process, "observe_liveness: bool = True", "observe_liveness: bool = False")
+    _edit(reader, "observe_liveness: bool = True", "observe_liveness: bool = False")
     result = _run_staged(home)
     assert result.returncode == 1, f"stdout={result.stdout!r}"
     assert "NEVER fell back to FCFS after Scoring died" in result.stdout
