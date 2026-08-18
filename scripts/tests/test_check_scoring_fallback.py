@@ -201,7 +201,7 @@ def test_declarations_are_present_and_honest() -> None:
 def test_every_plant_fires_and_names_a_reason() -> None:
     """The gate's own can-fail battery: each plant produces a REASON, not a flag."""
     plants = gate._plants()
-    assert len(plants) >= 16
+    assert len(plants) >= 17
     for label, findings in plants:
         assert findings, f"{label} produced no finding"
         for site, why in findings:
@@ -257,6 +257,28 @@ def test_a_halt_reachable_from_the_scoring_module_is_caught() -> None:
     findings, scanned = gate.shape_defects(gate._HALTING)
     assert scanned == 1
     assert any("stated backwards" in why for _, why in findings)
+
+
+def test_a_boundary_that_did_not_straddle_is_CANNOT_MEASURE_not_a_FAIL() -> None:
+    """A red the scheduler earned is as dishonest as a green (CHECK-DEBT D3.204).
+
+    Both samples on the same side of the threshold means the arm compared two
+    readings instead of a fresh one with a stale one — no subject, so §17 says
+    CANNOT_MEASURE. The verdict itself must still follow the MEASURED age, which
+    is what keeps the overshoot from also producing a spurious defect.
+    """
+    overshot = gate._with(
+        gate._GOOD_STALE,
+        outside=gate._with(
+            gate._GOOD_SAMPLE_OUT, observed_age_s=0.45, fresh=True, outcome="ranked"
+        ),
+    )
+    assert "did NOT" in gate.boundary_unmeasurable(overshot)
+    assert "D3.204" in gate.boundary_unmeasurable(overshot)
+    # ... and the sample itself is CLEAN, because at 0.45s under a 0.5s
+    # threshold `fresh=True` / `ranked` is the CORRECT answer.
+    assert gate.stale_defects(overshot) == []
+    assert gate.boundary_unmeasurable(gate._GOOD_STALE) == ""
 
 
 def test_a_pure_delegation_is_not_flagged() -> None:

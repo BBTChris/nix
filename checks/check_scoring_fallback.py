@@ -121,6 +121,16 @@ THIS GATE TO PASS WHILE MEASURING NOTHING
 6. *`pyzmq` is missing so the gate skipped and the runner read the skip as
    fine.* Closed by `docs/nix_check_contract.md` §17: an unimportable drill is
    `CANNOT_MEASURE`, never PASS, and the reason names the interpreter.
+7. *The boundary arm reddened because the box was busy, and someone widened it.*
+   The inverse failure, and the likelier one: three sub-agents ran `pytest`
+   concurrently on this node while this gate was built, and the two freshness
+   samples sit 100 ms either side of the threshold. Closed WITHOUT widening
+   anything — `_sample_defects` judges the verdict against the age it MEASURED
+   rather than the offset the drill aimed at, and `boundary_unmeasurable` makes
+   a run whose samples failed to straddle the threshold `CANNOT_MEASURE`.
+   Widening the offsets was the cheap fix and is refused for `docs/CHECK-DEBT.md`
+   D3.204's reason: a tolerated failure is invisible where a CANNOT_MEASURE is
+   loud, and a red attributed to the scheduler is as dishonest as a green.
 """
 
 from __future__ import annotations
@@ -557,8 +567,12 @@ def stale_defects(stale: dict) -> list[tuple[str, str]]:
             )
         )
     threshold = float(stale.get("stale_after_s", 0.0))
-    out += _sample_defects(site, stale.get("inside", {}), threshold, want_fresh=True)
-    out += _sample_defects(site, stale.get("outside", {}), threshold, want_fresh=False)
+    out += _sample_defects(
+        site, stale.get("inside", {}), threshold, label="just inside"
+    )
+    out += _sample_defects(
+        site, stale.get("outside", {}), threshold, label="just outside"
+    )
     never = stale.get("never_fed", {})
     if never.get("fresh") or never.get("outcome") != "fcfs":
         out.append(
@@ -578,18 +592,29 @@ def stale_defects(stale: dict) -> list[tuple[str, str]]:
 
 
 def _sample_defects(
-    site: str, sample: dict, threshold: float, *, want_fresh: bool
+    site: str, sample: dict, threshold: float, *, label: str
 ) -> list[tuple[str, str]]:
-    """One side of the freshness boundary, driven against real elapsed time."""
-    label = "just inside" if want_fresh else "just outside"
+    """One side of the freshness boundary, judged against the OBSERVED age.
+
+    **The intended offset is not the subject; the measured age is.** The drill
+    aims a sample 100 ms inside the threshold and another 100 ms outside it, and
+    on a loaded box a sample can overshoot — three sub-agents ran `pytest`
+    concurrently on this node while this gate was being built. Judging a
+    verdict against the offset the drill AIMED at would then produce a red
+    attributed to the scheduler, and `docs/CHECK-DEBT.md` D3.204 is the standing
+    ruling that a red attributed to the scheduler is as dishonest as a green.
+
+    So the property asserted here is the one that is true at any age: **the
+    verdict follows the measured age.** Whether the two samples actually landed
+    on opposite sides of the threshold is a separate question, and a separate
+    answer — `boundary_unmeasurable` makes a run that failed to straddle it
+    CANNOT_MEASURE rather than FAIL.
+    """
     if not sample.get("measured"):
         return [(site, f"the {label} sample was not taken: {sample.get('why')!r}")]
     out: list[tuple[str, str]] = []
     age = float(sample.get("observed_age_s") or 0.0)
-    if want_fresh and age >= threshold:
-        out.append((site, f"the {label} sample aged {age:.3f}s, past {threshold}s"))
-    if not want_fresh and age <= threshold:
-        out.append((site, f"the {label} sample aged {age:.3f}s, short of {threshold}s"))
+    want_fresh = age <= threshold
     if bool(sample.get("fresh")) is not want_fresh:
         out.append(
             (
@@ -619,6 +644,36 @@ def _sample_defects(
             (site, f"the {label} sample held {sample.get('rows_held')!r} rows, not 2")
         )
     return out
+
+
+def boundary_unmeasurable(stale: dict) -> str:
+    """Why the freshness boundary was not DRIVEN this run, or `""`.
+
+    Separate from the defect list on purpose. If both samples land on the same
+    side of the threshold, the arm did not compare a fresh reading with a stale
+    one — it compared two readings — and §17 makes a property whose subject was
+    not observable CANNOT_MEASURE, never PASS and never FAIL. The alternative
+    was to widen the offsets until a stall could not reach them, and a tolerated
+    failure is invisible where a CANNOT_MEASURE is loud (D3.204's reasoning,
+    applied one arm over).
+    """
+    threshold = float(stale.get("stale_after_s", 0.0))
+    inside = stale.get("inside", {})
+    outside = stale.get("outside", {})
+    if not (inside.get("measured") and outside.get("measured")):
+        return ""
+    low = float(inside.get("observed_age_s") or 0.0)
+    high = float(outside.get("observed_age_s") or 0.0)
+    if low <= threshold < high:
+        return ""
+    return (
+        f"the two boundary samples aged {low:.3f}s and {high:.3f}s and did NOT "
+        f"straddle the {threshold}s threshold, so this run compared two readings "
+        "on the same side of it rather than a fresh one with a stale one. The "
+        "usual cause is scheduler latency on a loaded box, not a defect — and a "
+        "red attributed to the scheduler is as dishonest as a green (CHECK-DEBT "
+        "D3.204), so this is CANNOT_MEASURE"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -928,7 +983,23 @@ def _plants() -> tuple[tuple[str, list[tuple[str, str]]], ...]:
         ),
         ("shape/looping-order-path", shape_defects(_LOOPING)[0]),
         ("shape/halt-on-outage", shape_defects(_HALTING)[0]),
+        (
+            "boundary/not-straddled",
+            _as_findings(
+                boundary_unmeasurable(
+                    _with(
+                        _GOOD_STALE,
+                        outside=_with(_GOOD_SAMPLE_OUT, observed_age_s=0.45),
+                    )
+                )
+            ),
+        ),
     )
+
+
+def _as_findings(reason: str) -> list[tuple[str, str]]:
+    """A CANNOT_MEASURE reason, in the shape the can-fail battery reads."""
+    return [(f"{NAME}:boundary", reason)] if reason else []
 
 
 def _arms_can_fail() -> tuple[str, str]:
@@ -953,6 +1024,7 @@ def _arms_can_fail() -> tuple[str, str]:
         ("window", window_defects(_GOOD_KILL)),
         ("control", control_defects(_GOOD_NO_KILL)),
         ("stale", stale_defects(_GOOD_STALE)),
+        ("boundary", _as_findings(boundary_unmeasurable(_GOOD_STALE))),
         ("alert", alert_defects(_GOOD_KILL, "scoring-down-fcfs")),
         (
             "restart",
@@ -1067,6 +1139,19 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
             return CheckResult(name=NAME, status=Status.CANNOT_MEASURE, detail=error)
         with tempfile.TemporaryDirectory(prefix="nixscoregate") as tmp:
             defects, outcome, scanned = _measure(drill, Path(tmp))
+        # §17 BEFORE the verdict: if the freshness boundary was not straddled,
+        # the stale-but-present property had no observable subject this run, and
+        # an unobservable subject is CANNOT_MEASURE — never PASS, and never a
+        # FAIL the scheduler earned.
+        unmeasurable = boundary_unmeasurable(outcome["stale"])
+        if unmeasurable:
+            return CheckResult(
+                name=NAME,
+                status=Status.CANNOT_MEASURE,
+                site=f"{NAME}:boundary",
+                evidence=_evidence(outcome, scanned),
+                detail=unmeasurable,
+            )
         return result_from_defects(NAME, defects, _evidence(outcome, scanned))
     except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
         return CheckResult(
