@@ -804,7 +804,14 @@ _ARC034_CARRIED = (
     "scripts/nixrisk/recovery.py::HeartbeatMonitor.miss",
     "scripts/nixrisk/recovery.py::StrategyRegistry.register",
     "scripts/nixrisk/recovery.py::heartbeat_from_config",
-    "scripts/nixrisk/supervision.py::CrashLoopBreaker.is_quarantined",
+    # `CrashLoopBreaker.is_quarantined` STOOD HERE AND IS NOW WIRED.
+    # ARC 037 / sub-agent E: `scripts/nixalloc/lifecycle.py` declares
+    # `QuarantineViewPort` — one read-only verb, `is_quarantined` — and calls it
+    # from the §4:272-286 capital screen, which `AllocatorPathway` runs in front
+    # of §7's arithmetic. `CrashLoopBreaker` satisfies that Protocol
+    # structurally, so the gate now reports the method CALLED in shipped code.
+    # This tuple's own rule is that wiring one means removing it here, as a
+    # VISIBLE diff, so the carried red cannot become a place to hide.
     "scripts/nixrisk/supervision.py::CrashLoopBreaker.knobs",
     "scripts/nixrisk/supervision.py::CrashLoopBreaker.quarantine_verdict",
     "scripts/nixrisk/supervision.py::CrashLoopBreaker.restore",
@@ -981,9 +988,13 @@ _ARC036_B_CARRIED = (
 #:
 #: `scripts/nixscore/store.py` is the archive/restore half of §4:279 and §12.11's
 #: verb 3. Its counterpart is `nixrisk.supervision.CrashLoopBreaker`, whose
-#: `restore`, `is_quarantined` and `quarantine_verdict` are themselves UNCALLED on
-#: this tree — the two ends of one seam exist and no code joins them, which is
-#: CHECK-DEBT D3.252 and is Stage 2 integration work, not this sub-agent's.
+#: `restore` and `quarantine_verdict` are themselves UNCALLED on this tree — the
+#: two ends of one seam exist and no code joins them, which is CHECK-DEBT D3.252
+#: and is Stage 2 integration work, not this sub-agent's. (`is_quarantined` was
+#: in that list until ARC 037 / sub-agent E gave it a shipped caller — the
+#: Allocator's §4:272-286 capital screen, through `QuarantineViewPort`. That is
+#: one verb of three, and it joins the breaker to the ALLOCATOR, not to the
+#: score store, so D3.252 is untouched by it.)
 #:
 #: Enumerated here for D3.203's reason and never absorbed into
 #: `uncalled_entry_points_baseline.json`: a ratchet whose accepted set grows to

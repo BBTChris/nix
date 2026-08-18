@@ -156,9 +156,9 @@ the winner to reverse with them.
 2. **The score -> sizing-weight transform.** §6.6:459 gives the Allocator the
    read "to weight sizing" and the spec fixes no transform.
    `contention.NEUTRAL_WEIGHT` is still 1.0 for every contender. What is wired
-   is the ORDER, not a weight.
+   is the ORDER, not a weight. **SUPERSEDED BY ARC 037 — see below.**
 3. **Recovery reflection** and the rest of the Allocator's Scoring-dependent
-   finish. A later arc.
+   finish. A later arc. **PARTLY SUPERSEDED BY ARC 037 — see below.**
 4. **An AWARD.** §6.6:459-460 gives the Allocator the read and the LIMITER the
    arbitration. `propose_contended` emits N `PathwayReport`s and reaches no
    broker; the Limiter's Phase B re-checks every one of them.
@@ -174,11 +174,58 @@ two contenders read the same untouched `committed`, both size in full, and
 The published `version` is untouched, `PathwayReport.race_committed` reports the
 adjustment for every contender that received one, and the Limiter's Phase B is
 the authority that actually reserves.
+
+---------------------------------------------------------------------------
+ARC 037 (sub-agent E) — THE ORDER NOW MOVES THE **SIZE**, AND WHAT IT IS NOT
+---------------------------------------------------------------------------
+Item 2 above is discharged and item 3 is half discharged, so both are marked in
+place rather than deleted — the paragraph that was true when written stays
+legible beside the one that supersedes it (directive 6).
+
+**E1 — the weight is THREADED, and this module is only the thread.** The
+transform itself is `nixalloc/contention.py`'s (`weight_for`, ordinal in the
+RANK and never in the score) and its APPLICATION POINT is `nixalloc/sizing.py`'s
+§7:478 risk budget. What lives here is one lookup and one keyword:
+`propose_contended` reads each contender's weight out of
+`ContentionRanking.weights` and `_propose_one` hands it to
+`SizingAllocator.propose`. **No arithmetic over a weight or a score happens in
+this file**, which is the same boundary `_MirrorRankingTable` records for the
+read: §6.6:461-463 keeps computation out of the consumer, and multiplying a risk
+budget here would be §7 arithmetic in a composition layer besides.
+
+**THE NEUTRAL DIRECTION IS THE HALF THAT PROTECTS ORDER FLOW**, and it is
+structural rather than tested-into-existence: every FCFS route reaches
+`contention._fallback`, which is the ONE constructor for all of them and which
+stamps `NEUTRAL_WEIGHT` on every contender. So *Scoring down ⇒ weight 1.0 ⇒
+FCFS-neutral sizing* is a property of the fallback's shape, not of a branch here
+that could be forgotten — there is no route through `propose_contended` that
+reads a weight from anywhere but `ranking.weights`, and `_weight_of` defaults a
+missing pair to the same constant.
+
+**E2 — the §4 screen now reflects QUARANTINE as well as in-flight-closing.**
+`AllocatorPathway` takes a `quarantine` view and folds it into the default
+`MirrorLifecycle` (see `nixalloc/lifecycle.py`, which owns the rule). The gap it
+closes is a REAL one and it is stated as a defect rather than as a feature: a
+quarantined strategy's rows go CLOSED once the recovery flatten completes, and
+until this arc the screen — which reads position rows and nothing else — then
+answered ELIGIBLE for a strategy §4:274 says is *"NOT auto-resurrected"*.
+
+**WHAT STILL DID NOT LAND.**
+
+* **The Scoring PROCESS is still R5.** Nothing in this tree writes a ranking
+  table, so `available()` answers False, every weight is `NEUTRAL_WEIGHT`, and
+  the weighting this module now threads is DORMANT in production exactly as the
+  ordering is (CHECK-DEBT D3.263).
+* **`SizingRationale.score_weight` is `nixalloc/sizing.py`'s field**, not this
+  module's. `PathwayReport.score_weight` is what was REQUESTED; the rationale
+  records what was APPLIED. See `WEIGHT_UNSUPPORTED` for the one state in which
+  they can differ, and why it is reported rather than denied.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import inspect
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -515,6 +562,22 @@ class PathwayReport:
     #: reading `SizingRationale.headroom` against the published `committed` at
     #: `snapshot_version` has to be able to see why the two disagree.
     race_committed: float = 0.0
+    #: ARC 037 (E1). §6.6:459's SIZING WEIGHT, as the pathway PASSED it into
+    #: §7's pass for this contender — `ContentionRanking.weights[pair]`, which
+    #: is `NEUTRAL_WEIGHT` on every FCFS route by construction.
+    #:
+    #: This is the REQUESTED figure and `SizingRationale.score_weight` is the
+    #: APPLIED one; they are two facts, not one restated (directive 3). They
+    #: agree whenever the sizing seam accepts a weight, and the gate asserts
+    #: that they do. They can only disagree while `weight_gap` is non-empty,
+    #: which is the one state in which a weight was computed and dropped.
+    score_weight: float = contention.NEUTRAL_WEIGHT
+    #: EMPTY when the weight above actually reached §7's risk budget. Non-empty
+    #: names WHY it did not — see `AllocatorPathway._weight_kwarg`. It is a
+    #: reported string and never a refusal: §6.6:467-468 forbids a scoring
+    #: condition halting order flow, and a weight that could not be applied is
+    #: a scoring condition.
+    weight_gap: str = ""
 
     @property
     def reaches_broker(self) -> bool:
@@ -542,6 +605,52 @@ class PathwayReport:
 #: written as a bare `2`, because the number is the SPEC'S and not a tuning
 #: choice — `RankingMirror.arbitrate` takes two pairs and no more.
 PAIRWISE_CONTENDERS = 2
+
+#: The keyword `SizingAllocator.propose` takes §6.6:459's sizing weight on.
+#: Named once, because it is read by `inspect` below and written at the one call
+#: site, and two spellings of one keyword is a defect that only shows at run time.
+WEIGHT_KWARG = "weight"
+
+#: What a `weight_gap` says when the injected sizing pass cannot take a weight.
+#: ARC 037 SPLIT THIS WORK ACROSS TWO BLIND BRANCHES: sub-agent B owns
+#: `nixalloc/sizing.py` and adds `propose(..., *, weight=NEUTRAL_WEIGHT)` there;
+#: this module owns the CALLER. On a tree where only one half has landed the
+#: caller must neither crash nor silently drop the figure, so the pathway probes
+#: the injected allocator ONCE at construction and REPORTS the shortfall on
+#: every report and every outcome. **This is a transition state and it is
+#: measurable, not assumed**: `checks/check_allocator_weighting.py` reads the
+#: probe and returns GUARDED — never PASS — while it is False, naming the arc
+#: that discharges it. When both halves are on one tree the probe answers True
+#: and the guard lifts itself with no edit here (CHECK-DEBT D3.320).
+WEIGHT_UNSUPPORTED = (
+    "scripts/nixalloc/wiring.py:AllocatorPathway: the injected sizing pass takes "
+    "no {kwarg!r} keyword, so §6.6:459's weight was COMPUTED and NOT APPLIED — "
+    "§7:478's risk budget was sized unweighted. Reported and never denied: "
+    "§6.6:467-468 forbids a scoring condition halting order flow"
+)
+
+
+def _takes_weight(propose: object) -> bool:
+    """Does this sizing pass accept §6.6:459's weight? Asked ONCE, of the object.
+
+    `inspect.signature` over the bound method, not `hasattr` over the class and
+    not a `try/except TypeError` around a live proposal: a `TypeError` raised
+    from INSIDE a sizing pass that does take the keyword would be swallowed as
+    "unsupported" and the pathway would silently downgrade to unweighted sizing
+    on a tree where weighting exists. The question asked here is about the
+    SIGNATURE, so it is asked of the signature.
+
+    A `**kwargs` sink counts as accepting it — that is what a decorator or a
+    test double wrapping the real pass looks like, and refusing those would make
+    the probe report a shortfall that is not there.
+    """
+    try:
+        params = inspect.signature(propose).parameters  # type: ignore[arg-type]
+    except TypeError, ValueError:
+        return False
+    if WEIGHT_KWARG in params:
+        return True
+    return any(param.kind is inspect.Parameter.VAR_KEYWORD for param in params.values())
 
 
 class _MirrorRankingTable:
@@ -731,6 +840,12 @@ class ContentionOutcome:  # pylint: disable=too-many-instance-attributes
     #: of one table reaching different winners is a DEFECT, not a preference,
     #: and it is reported rather than silently resolved in favour of either.
     disagreement: str = ""
+    #: ARC 037 (E1). What the §6.6:459 SIZE weighting did on this race, in one
+    #: sentence: the policy, how many DISTINCT weights the ranking produced, and
+    #: whether the sizing seam accepted them. The weights themselves are not
+    #: restated — they are `ranking.weights`, and each contender's is on its own
+    #: `PathwayReport.score_weight` (directive 3).
+    weighting: str = ""
 
 
 class AllocatorPathway:  # pylint: disable=too-many-instance-attributes
@@ -759,6 +874,7 @@ class AllocatorPathway:  # pylint: disable=too-many-instance-attributes
         bucket_cap: BucketCapAdapter | None,
         lifecycle: lifecycle_mod.LifecycleViewPort | None = None,
         ranking: RankingMirror | None = None,
+        quarantine: lifecycle_mod.QuarantineViewPort | None = None,
     ) -> None:
         self._cap = bucket_cap
         #: ARC 032. §4:284-286's capital screen. Defaulted to a view over THIS
@@ -767,8 +883,19 @@ class AllocatorPathway:  # pylint: disable=too-many-instance-attributes
         #: forgets it, and D3.136 is this arc's evidence that a defaulted-off
         #: safety input is not a smaller version of a safety input.
         self._lifecycle = (
-            lifecycle_mod.MirrorLifecycle(mirror) if lifecycle is None else lifecycle
+            lifecycle_mod.MirrorLifecycle(mirror, quarantine)
+            if lifecycle is None
+            else lifecycle
         )
+        #: ARC 037 (E2). §4:273's book, folded into the DEFAULT view above. It
+        #: is deliberately NOT applied on top of an INJECTED `lifecycle`: a
+        #: caller that supplies its own view owns what that view screens on, and
+        #: a pathway that silently re-wrapped it would give one property two
+        #: authorities. Kept as a field so the state is READABLE — a caller that
+        #: passed both a book and its own view has had the book accepted and
+        #: ignored, and `check_allocator_weighting` asserts against these two
+        #: attributes rather than against a sentence (D3.147's repair shape).
+        self._quarantine = quarantine
         #: ARC 036. The PUBLISHED mirror, kept because `_race` deliberately
         #: hands out an adjusted picture and the unadjusted one is still needed
         #: to price a contender's commitment.
@@ -787,6 +914,12 @@ class AllocatorPathway:  # pylint: disable=too-many-instance-attributes
             knobs=knobs,
             bucket_cap=bucket_cap,
         )
+        #: ARC 037 (E1). Whether §6.6:459's weight can reach §7's risk budget on
+        #: THIS tree. Probed ONCE, at construction, off the object that will be
+        #: called — never per GO, because §16 gives the Allocator per-GO-only
+        #: work and an `inspect.signature` on the hot path is exactly the cost
+        #: `check_scoring_consumption`'s ARM 5 budget exists to refuse.
+        self._weight_kwarg = _takes_weight(self._allocator.propose)
 
     def propose(
         self,
@@ -859,7 +992,12 @@ class AllocatorPathway:  # pylint: disable=too-many-instance-attributes
         self._race.spent = 0.0
         reports: list[PathwayReport] = []
         for contender in ranking.ordering:
-            reports.append(self._run_one(by_pair[contender.pair]))
+            reports.append(
+                self._run_one(
+                    by_pair[contender.pair],
+                    _weight_of(ranking, contender.pair),
+                )
+            )
         return ContentionOutcome(
             ranking=ranking,
             reports=tuple(reports),
@@ -874,6 +1012,7 @@ class AllocatorPathway:  # pylint: disable=too-many-instance-attributes
             ),
             pairwise_error="; ".join(part for part in (failed, audit_failed) if part),
             disagreement=disagreement,
+            weighting=_weighting_note(ranking, self._weight_kwarg),
         )
 
     def _audit_terms(self, now: float | None) -> tuple[int | None, bool, str]:
@@ -961,10 +1100,12 @@ class AllocatorPathway:  # pylint: disable=too-many-instance-attributes
             "",
         )
 
-    def _run_one(self, go: Go) -> PathwayReport:
+    def _run_one(self, go: Go, weight: float) -> PathwayReport:
         """One contender, sized against what the race has already committed."""
         withheld = self._race.spent
-        report = dataclasses.replace(self._propose_one(go), race_committed=withheld)
+        report = dataclasses.replace(
+            self._propose_one(go, weight), race_committed=withheld
+        )
         self._race.spent = withheld + self._committed_by(report, go.symbol)
         return report
 
@@ -993,11 +1134,27 @@ class AllocatorPathway:  # pylint: disable=too-many-instance-attributes
             picture.margin_per_contract.get(symbol, 0.0)
         )
 
-    def _propose_one(self, go: Go) -> PathwayReport:
-        """The single-GO pass, unchanged since ARC 032. §16 U1's single pass."""
+    def _propose_one(self, go: Go, weight: float) -> PathwayReport:
+        """The single-GO pass, plus §6.6:459's weight. §16 U1's single pass.
+
+        **THE WEIGHT IS PASSED HERE AND NOWHERE ELSE.** §6.6:459 gives the
+        Allocator the read *"to weight sizing"*, and the transform's APPLICATION
+        POINT is §7:478's per-trade risk budget, inside `nixalloc/sizing.py`.
+        This method hands the figure over; it does not multiply anything, and it
+        must not — a weight applied here and again inside the sizing pass would
+        be two authorities over one number, and a weight applied ONLY here would
+        put §7 arithmetic in the composition layer that doctrine C.9 keeps it
+        out of. `check_allocator_weighting` proves the shipped call site by
+        AST — the keyword appears at exactly one call in this file.
+        """
         refusal = self._screen_capital(go.strategy_id, go.symbol)
         if refusal is not None:
-            return refusal
+            # The §4 screen refused BEFORE §7 ran, so no weight was applied —
+            # but the figure the pathway WOULD have passed still rides the
+            # report. A refusal reporting a neutral weight it never computed
+            # would tell an auditor the race was unweighted when it was not.
+            return dataclasses.replace(refusal, score_weight=weight)
+        extra = {WEIGHT_KWARG: weight} if self._weight_kwarg else {}
         proposal = self._allocator.propose(
             strategy_id=go.strategy_id,
             symbol=go.symbol,
@@ -1005,6 +1162,7 @@ class AllocatorPathway:  # pylint: disable=too-many-instance-attributes
             stop_ticks=go.stop_ticks,
             stop_mode=go.stop_mode,
             signal_ts=go.signal_ts,
+            **extra,
         )
         blind = tuple(self._cap.unpriced) if self._cap is not None else ()
         stray = tuple(self._cap.unbucketed) if self._cap is not None else ()
@@ -1013,6 +1171,12 @@ class AllocatorPathway:  # pylint: disable=too-many-instance-attributes
             cap_blind=blind,
             cap_incomplete=bool(blind),
             cap_unbucketed=stray,
+            score_weight=weight,
+            weight_gap=(
+                ""
+                if self._weight_kwarg
+                else WEIGHT_UNSUPPORTED.format(kwarg=WEIGHT_KWARG)
+            ),
         )
 
     def _screen_capital(self, strategy_id: str, symbol: str) -> PathwayReport | None:
@@ -1082,6 +1246,38 @@ class AllocatorPathway:  # pylint: disable=too-many-instance-attributes
         if abstain or verdict is None or verdict.eligible:
             return None
         return PathwayReport(proposal=_capital_refusal(verdict, symbol))
+
+
+def _weight_of(ranking: contention.ContentionRanking, pair: tuple[str, str]) -> float:
+    """This contender's §6.6:459 sizing weight. ONE dict lookup, no arithmetic.
+
+    `NEUTRAL_WEIGHT` for a pair the ranking did not weight, which is the same
+    number every FCFS route already carries — §6.6:465-466's fallback is
+    *"structurally neutral (favors no symbol)"*, and a missing weight defaulting
+    to anything else would make an absent score re-size a position.
+    """
+    return float(ranking.weights.get(pair, contention.NEUTRAL_WEIGHT))
+
+
+def _weighting_note(ranking: contention.ContentionRanking, applied: bool) -> str:
+    """One sentence about what the SIZE weighting did on this race.
+
+    Reports the number of DISTINCT weights rather than the weights themselves:
+    the values are `ranking.weights` and each contender's is on its own report,
+    and the fact an operator cannot read off either of those is whether the race
+    was weighted UNIFORMLY — which is the state a decorative transform produces
+    and the state §6.6:465's fallback is REQUIRED to produce.
+    """
+    distinct = len(set(ranking.weights.values()))
+    return (
+        f"policy={ranking.policy.value}; {distinct} distinct sizing weight(s) "
+        f"over {len(ranking.weights)} contender(s); "
+        + (
+            "applied to §7:478's risk budget"
+            if applied
+            else WEIGHT_UNSUPPORTED.format(kwarg=WEIGHT_KWARG)
+        )
+    )
 
 
 def _screen_verdict(
@@ -1188,6 +1384,8 @@ def port_check(pathway: AllocatorPathway) -> BucketCapPort | None:
 __all__ = [
     "COUNTED_STATES",
     "PAIRWISE_CONTENDERS",
+    "WEIGHT_KWARG",
+    "WEIGHT_UNSUPPORTED",
     "AllocatorPathway",
     "BucketCapAdapter",
     "ContentionOutcome",

@@ -69,6 +69,13 @@ Scoring is R5 and does not exist. **This module therefore implements no
 persistence, no archive, no EMA and no write of any kind**; it does not touch
 the ranking table at all, and `nixalloc/contention.py` next door READS it and
 only reads it. `SCORE_BOUNDARY` below states that in the one place it lives.
+ARC 037 did not move that boundary: the quarantine reflection added below READS
+a supervisor book and still writes nothing, archives nothing and computes no
+EMA. What ARC 037 can now show is that the ranking table's pair-row SURVIVES a
+crash-restart unchanged (§4:275-277 — a crash is not a trade and books no
+phantom zero), because ARC 036 gave this tree a table to observe; that is an
+observation about `nixscore.seam.RankingMirror`, driven in
+`checks/check_allocator_weighting.py`, and not a capability of this module.
 
 WHY A NEW MODULE AND NOT AN EXTENSION (doctrine C.9)
 -----------------------------------------------------
@@ -110,6 +117,29 @@ be true for this to answer while measuring nothing?*
      `contention.rank_eligible`, whose lifecycle argument is REQUIRED and has no
      default: an omitted safety screen must never be spelled the same way as a
      deliberately absent one.
+  5. **(ARC 037) The QUARANTINE book is never consulted**, so the new refusal is
+     dead code and every answer is the pre-ARC-037 one. GUARDED rather than
+     hidden: `CapitalEligibility.quarantine_observed` reports whether a book was
+     read at all, and `checks/check_allocator_weighting.py` requires it TRUE on
+     the driven cycle — an arm that asserted only "the quarantined strategy was
+     refused" would pass against a view that was never asked, because a dying
+     strategy is refused for the OTHER reason on the same snapshot.
+
+ARC 037 (E2) — QUARANTINE IS REFLECTED TOO, AND WHY IT IS A SEPARATE STATE
+---------------------------------------------------------------------------
+§4:284-286's in-flight-closing is TRANSITIONAL. §4:272-274's quarantine is not:
+it is *"left dead and flat"* and *"NOT auto-resurrected"*, and §4:281-283 lists
+it as one of the three recovery actions the Allocator must see — *"quarantine
+(withdrawn from contention)"*. Screening only the transitional state left the
+terminal one unscreened from the moment the recovery flatten completed, which
+is inside the same recovery. `WITHDRAWN_FROM_CONTENTION` below is the whole
+argument and the gate prints that constant rather than restating it.
+
+**THIS MODULE STILL WRITES NOTHING.** §4:277-279's *"removed from the live
+ranking table"* is the Scoring process's write and stays there; what happens
+here is the Allocator's own refusal to count a quarantined strategy eligible,
+which is §4:283's "withdrawn from contention" read as the Allocator's half of
+it. `QuarantineViewPort` has one verb and it is a question.
 """
 
 from __future__ import annotations
@@ -137,14 +167,17 @@ __all__ = [
     "IN_FLIGHT_CLOSING",
     "RECOVERY_PRODUCER",
     "SCORE_BOUNDARY",
+    "WITHDRAWN_FROM_CONTENTION",
     "CapitalEligibility",
     "LifecycleViewPort",
     "MirrorLifecycle",
     "PictureLifecycle",
+    "QuarantineViewPort",
     "eligibility",
     "eligibility_by_strategy",
     "eligibility_from_mirror",
     "strategy_rows",
+    "withdrawn_refusal",
 ]
 
 #: §4:284's *in-flight-closing*, as published lifecycle state. ONE member, and
@@ -191,11 +224,56 @@ SCORE_BOUNDARY: Final[str] = (
     "reads it"
 )
 
+#: ARC 037 (E2). WHY A QUARANTINED STRATEGY IS REFUSED CAPITAL EVEN WHEN IT
+#: HOLDS NO CLOSING ROW. One string, one home, printed by the gate.
+#:
+#: **NAMED FOR §4:283'S OWN PHRASE — "withdrawn from contention" — AND THE NAME
+#: IS THE DECLARATION.** `check_allocator_lifecycle` ARM 5 reaches for twelve
+#: recovery-verb stems on this module by ATTEMPT and `quarantine` is one of
+#: them; the first spelling of this constant was `QUARANTINE_WITHDRAWAL` and the
+#: gate reddened on it immediately, along with two functions beside it. That is
+#: the gate working: §4:260-274 gives the VERB to the supervisor and this module
+#: gets the READING of its result, and a name shaped like the verb is how a
+#: reader starts being read as a driver. The port that asks the question keeps
+#: the word (`QuarantineViewPort` — it names the BOOK, and the real object's
+#: verb is `is_quarantined`, a question); nothing that ACTS carries it.
+#:
+#: **THE GAP THIS CLOSES WAS REAL AND IT WAS MEASURED, not anticipated.** Until
+#: this arc the screen read POSITION ROWS and nothing else. §4:262-274's
+#: recovery flattens first, so a quarantined strategy's rows are CLOSED (or gone
+#: from the table entirely) within the same recovery that quarantined it — and
+#: from that snapshot onward `eligibility()` answered *"flat — it owns no
+#: published row"*, ELIGIBLE, for a strategy §4:274 says is left dead and flat
+#: and *"NOT auto-resurrected"*. The in-flight-closing state is TRANSITIONAL by
+#: construction and quarantine outlives it; screening only on the transitional
+#: one leaves the terminal one unscreened for as long as it lasts, which is
+#: until an operator acts.
+WITHDRAWN_FROM_CONTENTION: Final[str] = (
+    "§4:272-274 quarantines a crash-looping strategy — 'left dead and flat, "
+    "alert raised' — and 'Quarantine is NOT auto-resurrected; return is "
+    "operator-driven'. §4:277-279 says the quarantined strategy is removed from "
+    "the live ranking table 'so it can no longer win a contention tiebreak for "
+    "capital it can't use', and §4:281-283 makes quarantine one of the three "
+    "recovery actions the Allocator sees ('quarantine (withdrawn from "
+    "contention)'). REMOVING A ROW IS THE SCORING PROCESS'S WRITE and this "
+    "module writes nothing; WITHDRAWING THE STRATEGY FROM CONTENTION is the "
+    "Allocator's own refusal, and it is this. The exit is §12.11:779's "
+    "operator-driven quarantine-restore, observed here the way every other "
+    "state is: by READING it, never by lifting it"
+)
+
 _SITE: Final[str] = "scripts/nixalloc/lifecycle.py"
 
 
 @dataclass(frozen=True)
-class CapitalEligibility:
+class CapitalEligibility:  # pylint: disable=too-many-instance-attributes
+    # R0902: nine fields, and every one is a separate FACT about one screening —
+    # who, the verdict, the reason, the version it was derived from, the closing
+    # trades, the states observed, the row count, whether a quarantine was seen,
+    # and whether a quarantine book was CONSULTED AT ALL. The last two are the
+    # pair §7.12/1 forbids collapsing: a boolean meaning both "not quarantined"
+    # and "not asked" is how an unconsulted screen reads as a clean one. A frozen
+    # value with no behaviour; the threshold is about classes accreting state.
     """May this strategy be handed NEW capital, off THIS published snapshot?
 
     `reason` is required on both answers and not only on the refusal (§18: the
@@ -219,6 +297,99 @@ class CapitalEligibility:
     #: How many published rows this strategy owned. Zero means FLAT, and the
     #: reason says so — it never silently reads as "screened".
     rows: int
+    #: ARC 037 (E2). True when a §4:272-274 QUARANTINE was observed for this
+    #: strategy. `False` also means "no quarantine view was supplied", and the
+    #: two are told apart by `quarantine_observed` below rather than by this
+    #: flag — a boolean that means both "not quarantined" and "not asked" is the
+    #: §7.12/1 ambiguity, and it is exactly the shape that lets an unconsulted
+    #: screen read as a clean one.
+    quarantined: bool = False
+    #: Whether a quarantine view was CONSULTED at all while producing this
+    #: answer. `False` on every pre-ARC-037 call site by construction.
+    quarantine_observed: bool = False
+
+
+@runtime_checkable
+class QuarantineViewPort(Protocol):
+    """§4:273's quarantine book, READ-ONLY, as this module needs to see it.
+
+    ONE verb, and the shape is the authority: there is no `quarantine`, no
+    `restore`, no `record_restart` and no counter here, because every one of
+    those is the supervisor's (`nixrisk.supervision.CrashLoopBreaker`) and a
+    verb this port exposed would be authority the Allocator has. §2:40 makes the
+    Allocator permissive; §4:274 makes the return operator-driven. An Allocator
+    that could lift a quarantine would be both of those rules broken at once.
+
+    Structural on purpose — this module does NOT import `nixrisk.supervision`.
+    A run-time first-party import across the Allocator/Limiter boundary would
+    put the risk engine's module graph inside the Allocator's, and
+    `CrashLoopBreaker.is_quarantined` already has exactly this signature, so the
+    Protocol is satisfied by the real object with no adapter in between.
+    """
+
+    def is_quarantined(self, subject: str) -> bool:
+        """§4:273 — is this strategy left dead and flat, awaiting the operator?"""
+
+
+def withdrawn_refusal(
+    strategy_id: str,
+    detail: str,
+    snapshot_version: int | None,
+    states: tuple[str, ...] = (),
+    rows: int = 0,
+) -> CapitalEligibility:
+    """§4:272-279's refusal. ONE constructor, so no route can differ from another.
+
+    Two routes reach it — an observed quarantine, and a quarantine view that
+    could not answer — and they must produce the same VERDICT and differ only in
+    the reason they name. That is the argument `contention._fallback` makes for
+    the FCFS paths, one rule over.
+    """
+    return CapitalEligibility(
+        strategy_id=strategy_id,
+        eligible=False,
+        reason=f"{_SITE}: {detail} {WITHDRAWN_FROM_CONTENTION}",
+        snapshot_version=snapshot_version,
+        closing_trades=(),
+        observed_states=states,
+        rows=rows,
+        quarantined=True,
+        quarantine_observed=True,
+    )
+
+
+def _withdrawal_verdict(
+    view: QuarantineViewPort | None, strategy_id: str
+) -> tuple[bool, str]:
+    """`(refuse, detail)`. FAILS CLOSED on a view that raises.
+
+    Same direction as `contention._screen`'s lifecycle refusal and for the same
+    reason, which is worth stating because §6.6:467's *"a scoring outage must
+    NEVER halt order flow"* points the other way and is about a DIFFERENT
+    subject. Scoring is an optimisation. §4's quarantine is a safety state whose
+    whole content is *this strategy must not be handed capital*, and a book that
+    cannot be read is not evidence that it is empty.
+
+    Refusing costs entries for one strategy. Admitting hands capital to a
+    strategy the supervisor has already stopped relaunching.
+    """
+    if view is None:
+        return False, ""
+    try:
+        quarantined = bool(view.is_quarantined(strategy_id))
+    except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
+        return True, (
+            f"the §4:273 quarantine view raised {type(exc).__name__}: {exc} for "
+            f"{strategy_id!r}, so the book could not be read. An unreadable "
+            "quarantine book REFUSES capital rather than admitting it — a book "
+            "that cannot be read is not an empty book."
+        )
+    if not quarantined:
+        return False, ""
+    return True, (
+        f"strategy {strategy_id!r} is QUARANTINED in the supervisor's §4:273 "
+        f"book, so it is withdrawn from contention for new capital."
+    )
 
 
 def strategy_rows(
@@ -228,18 +399,43 @@ def strategy_rows(
     return tuple(row for row in picture.positions if row.strategy_id == strategy_id)
 
 
-def eligibility(picture: FinancialPicture, strategy_id: str) -> CapitalEligibility:
-    """§4:284-286, applied to ONE published snapshot. Total; never raises.
+def eligibility(
+    picture: FinancialPicture,
+    strategy_id: str,
+    quarantine: QuarantineViewPort | None = None,
+) -> CapitalEligibility:
+    """§4:284-286 and §4:272-279, applied to ONE published snapshot. Never raises.
 
     A strategy with ANY row in an in-flight-closing state is refused, whatever
     else it holds: §4:285 says it *"is never counted eligible for new capital
     while dying"*, and a strategy that is half dying is dying. The refusal names
     the state, the trades and the version, because three different snapshots can
     produce the same boolean and only the reason tells them apart.
+
+    **THE QUARANTINE CHECK RUNS FIRST, and the ORDER is the rule.** A strategy
+    can be both mid-recovery and quarantined — that is what the third and final
+    recovery of a crash loop looks like — and the two refusals are not
+    interchangeable to the operator reading them. In-flight-closing CLEARS ON
+    ITS OWN when the flatten completes; quarantine does not clear at all until
+    §12.11:779's operator verb runs. Reporting the transitional state for a
+    strategy that is in the terminal one would tell an operator to wait for
+    something that will never happen.
+
+    `quarantine` is OPTIONAL and defaults to `None`, which is the pre-ARC-037
+    behaviour byte for byte — and that default is a debt, not a design: an
+    unconsulted quarantine book reads exactly like an empty one from the
+    verdict alone. It is the reason `CapitalEligibility.quarantine_observed`
+    exists and the reason `MirrorLifecycle` carries the view rather than every
+    caller remembering to pass one (CHECK-DEBT D3.323).
     """
+    refuse, detail = _withdrawal_verdict(quarantine, strategy_id)
     rows = strategy_rows(picture, strategy_id)
     states = tuple(sorted({row.state.value for row in rows}))
     closing = tuple(row.trade_id for row in rows if row.state in IN_FLIGHT_CLOSING)
+    if refuse:
+        return withdrawn_refusal(
+            strategy_id, detail, picture.version, states, len(rows)
+        )
     if closing:
         return CapitalEligibility(
             strategy_id=strategy_id,
@@ -258,6 +454,7 @@ def eligibility(picture: FinancialPicture, strategy_id: str) -> CapitalEligibili
             closing_trades=closing,
             observed_states=states,
             rows=len(rows),
+            quarantine_observed=quarantine is not None,
         )
     held = "flat — it owns no published row" if not rows else f"states {list(states)}"
     return CapitalEligibility(
@@ -275,11 +472,14 @@ def eligibility(picture: FinancialPicture, strategy_id: str) -> CapitalEligibili
         closing_trades=(),
         observed_states=states,
         rows=len(rows),
+        quarantine_observed=quarantine is not None,
     )
 
 
 def eligibility_from_mirror(
-    snapshot: MirrorSnapshot, strategy_id: str
+    snapshot: MirrorSnapshot,
+    strategy_id: str,
+    quarantine: QuarantineViewPort | None = None,
 ) -> CapitalEligibility:
     """The same rule, read off the Allocator's private mirror. FAILS CLOSED.
 
@@ -306,7 +506,7 @@ def eligibility_from_mirror(
             observed_states=(),
             rows=0,
         )
-    return eligibility(snapshot.picture, strategy_id)
+    return eligibility(snapshot.picture, strategy_id, quarantine)
 
 
 @runtime_checkable
@@ -336,10 +536,15 @@ class PictureLifecycle:
     """
 
     picture: FinancialPicture
+    #: ARC 037 (E2). §4:273's book, or `None`. Carried on the view rather than
+    #: passed per call for the reason the picture is: two contenders screened in
+    #: one pass must be screened against the same inputs, and a screen a caller
+    #: can forget on one contender is not a screen.
+    quarantine: QuarantineViewPort | None = None
 
     def eligibility(self, strategy_id: str) -> CapitalEligibility:
-        """§4:284-286 against the pinned snapshot."""
-        return eligibility(self.picture, strategy_id)
+        """§4:284-286 and §4:272-279 against the pinned snapshot."""
+        return eligibility(self.picture, strategy_id, self.quarantine)
 
 
 @dataclass(frozen=True)
@@ -352,6 +557,9 @@ class MirrorLifecycle:
     """
 
     mirror: MirrorPort
+    #: ARC 037 (E2). Propagated into every `PictureLifecycle` this view pins, so
+    #: the quarantine book cannot be lost at the one hop the sizing pass takes.
+    quarantine: QuarantineViewPort | None = None
 
     def pin(self) -> PictureLifecycle | None:
         """One read. `None` when the mirror has nothing FRESH to pin."""
@@ -361,12 +569,12 @@ class MirrorLifecycle:
         snapshot = self.mirror.snapshot()  # pylint: disable=assignment-from-no-return
         if not snapshot.sizeable or snapshot.picture is None:
             return None
-        return PictureLifecycle(snapshot.picture)
+        return PictureLifecycle(snapshot.picture, self.quarantine)
 
     def eligibility(self, strategy_id: str) -> CapitalEligibility:
         """One read of the mirror, screened. FAILS CLOSED on a non-FRESH one."""
         snapshot = self.mirror.snapshot()  # pylint: disable=assignment-from-no-return
-        return eligibility_from_mirror(snapshot, strategy_id)
+        return eligibility_from_mirror(snapshot, strategy_id, self.quarantine)
 
 
 def eligibility_by_strategy(
