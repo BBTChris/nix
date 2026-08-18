@@ -39,6 +39,7 @@ same integer.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess  # nosec B404 - runs sys.executable on a staged copy, no shell
 import sys
@@ -99,13 +100,42 @@ def _stage(tmp_path: Path) -> Path:
 
 
 def _run_staged(home: Path) -> subprocess.CompletedProcess[str]:
-    """Run the staged gate as its own executable (check contract §4.2)."""
+    """Run the staged gate as its own executable (check contract §4.2).
+
+    **THE ENVIRONMENT IS SCRUBBED, AND IT IS THE WHOLE POINT OF THE FUNCTION.**
+    MEASURED, ARC 037 Stage 3.4: this call used to inherit the parent's
+    environment. `scripts/tests/binding_census.py` runs the suite with
+    `PYTHONPATH = <sitedir>:REPO/scripts:REPO/scripts/tests` so its tracer
+    reaches every child interpreter — and the staged gate, launched from
+    `/tmp/.../tree/checks/`, then imported `nixscore` **from the REAL tree**
+    instead of from the staged one. Every plant in this file was silently
+    defeated: the gate measured production code while reporting on a staged
+    tree, and PASSED.
+
+    Proven by driving ONE staged, planted tree twice, changing nothing but the
+    environment: `PYTHONPATH` unset -> **RED, plant detected**; `PYTHONPATH`
+    set to the real `scripts/` -> **GREEN, plant defeated**. The consequence was
+    visible in the binding table before the cause was: `check_mirror_liveness`
+    read EXERCISED-NEVER-RED over sixteen observations, all of them PASS,
+    because under the census not one of its plants could fire.
+
+    This is D3.205's class one layer over — an inherited environment variable
+    silently re-pointing a subprocess at the wrong tree — and the repair is the
+    same shape: name the environment the child gets instead of inheriting it.
+    """
+    env = dict(os.environ)
+    # The staged tree FIRST, and the real tree nowhere. A staged gate that can
+    # reach `REPO/scripts` is not measuring the tree it was staged from.
+    env["PYTHONPATH"] = os.pathsep.join(
+        (str(home / "scripts"), str(home / "checks"))
+    )
     return subprocess.run(  # nosec B603 - argv built here, no shell
         [sys.executable, str(home / "checks" / "check_scoring_fallback.py")],
         capture_output=True,
         text=True,
         timeout=STAGED_TIMEOUT_S,
         check=False,
+        env=env,
     )
 
 
