@@ -50,8 +50,10 @@ module exists to survive actually happens.
 WHAT A READER GETS, AND THE WINDOW IT IS WRONG IN
 ------------------------------------------------------------------------------
 
-`RankingReader` holds a `StateSubscriber` and the frozen `RankingMirror`. When
-the publisher dies, **the subscriber socket does not**: libzmq keeps the SUB
+`nixscore.publisher.RankingReader` holds a `StateSubscriber` and the frozen
+`RankingMirror` — it lived in THIS module until ARC 037 collapsed the two
+same-named classes ARC 036 invented in parallel (D3.271); see the signpost where
+it stood. When the publisher dies, **the subscriber socket does not**: libzmq keeps the SUB
 endpoint open and simply stops receiving. The mirror therefore holds a complete,
 well-formed, confidently-answered table that stopped being true at the instant
 of death, and it keeps RANKING on it until `stale_after_s` elapses. That window
@@ -86,7 +88,7 @@ if str(_SCRIPTS) not in sys.path:  # pragma: no cover - import bootstrap
     sys.path.insert(0, str(_SCRIPTS))
 
 # pylint: disable=wrong-import-position
-from nixbus.statebus import StatePublisher, StateSubscriber
+from nixbus.statebus import StatePublisher
 
 from nixscore.seam import (
     RANKING_TOPIC,
@@ -96,7 +98,6 @@ from nixscore.seam import (
     RankingPublisher,
     RankingSnapshot,
     RankRow,
-    Verdict,
     rank_rows,
 )
 
@@ -353,72 +354,22 @@ class ScoringProcess:  # pylint: disable=too-many-instance-attributes
         self._stopped = True
 
 
-class RankingReader:
-    """The consumer side: wire -> frozen `RankingMirror`. Allocator and Limiter each hold one.
-
-    Two verbs and they are deliberately on opposite sides of a line:
-
-    * `pump` touches the SOCKET. It loops, it does I/O, and it is called from the
-      consumer's own loop — **never from the order path**.
-    * `arbitrate` touches NOTHING but the mirror. It is a straight delegation to
-      the frozen seam, so the order path's latency is the seam's O(1) lookup and
-      nothing this module added.
-
-    Keeping them apart is the §11:595 discipline made structural: if `arbitrate`
-    pumped, an order decision would sit behind a socket at exactly the moment the
-    publisher stopped answering.
-    """
-
-    def __init__(
-        self,
-        subscriber: StateSubscriber,
-        *,
-        stale_after_s: float,
-        identity: str = SCORING_WRITER_IDENTITY,
-    ) -> None:
-        self._subscriber = subscriber
-        self.mirror = RankingMirror(stale_after_s=stale_after_s, identity=identity)
-        #: Ranking messages that reached the mirror. Zero is a finding, exactly
-        #: as `StateSubscriber.bytes_received == 0` is.
-        self.pumped = 0
-
-    def pump(self, timeout_ms: int = 0) -> int:
-        """Drain the socket into the mirror. Returns snapshots APPLIED.
-
-        Off the order path by contract — see the class docstring.
-
-        **It does not call `StateSubscriber.drain`, and that is deliberate.**
-        MEASURED, ARC 036 sub-agent C: `drain` computes its remaining budget as
-        `int((deadline - now) * 1000)`, so a budget of 1 ms truncates to `0`
-        before the first poll and the method returns having **never looked at
-        the socket**. A caller asking for one millisecond silently gets "never".
-        The first observed symptom was a reader that received nothing across a
-        whole drill while every socket was healthy — a mirror reporting the
-        never-fed FCFS trigger for a reason that had nothing to do with the
-        publisher. Recorded as CHECK-DEBT; not repaired here, because `drain` is
-        shared transport and this arc does not own it.
-
-        `timeout_ms=0` here is therefore a genuinely non-blocking sweep: take
-        everything the socket already holds and return.
-        """
-        applied = 0
-        budget = timeout_ms
-        while True:
-            message = self._subscriber.poll(budget)
-            budget = 0
-            if message is None:
-                self.pumped += applied
-                return applied
-            if self.mirror.apply(message):
-                applied += 1
-
-    def arbitrate(self, first: PairKey, second: PairKey) -> Verdict:
-        """THE ORDER PATH. One delegation to the frozen seam; no I/O, no math."""
-        return self.mirror.arbitrate(first, second)
-
-    def close(self) -> None:
-        """Release the subscriber's socket."""
-        self._subscriber.close()
+#: `RankingReader` LIVED HERE UNTIL ARC 037 AND NOW LIVES IN
+#: `scripts/nixscore/publisher.py`. CHECK-DEBT D3.271: ARC 036 ran five
+#: sub-agents in parallel worktrees and two of them invented a class of this
+#: name — sub-agent C's here, sub-agent B's in `publisher.py` — two
+#: independent classes wrapping a `StateSubscriber` and the frozen
+#: `RankingMirror`, which is the duplicate instrument doctrine C.9 forbids.
+#: The measured consequence was worse than the duplication:
+#: `check_uncalled_entry_points` resolves a call site by ATTRIBUTE NAME
+#: (D3.234) and the two shared `arbitrate`, `close` and `pump`, so
+#: `scripts/scoring_kill_drill.py`'s legitimate call to THIS class's `pump`
+#: was credited to the other one and a real finding stopped being one.
+#: ARC 037 COLLAPSED them rather than renaming either, because a rename
+#: repairs the measurement and leaves the duplication. The survivor kept this
+#: class's direct-poll `pump` — see `publisher.RankingReader.pump` and D3.240.
+#: This note is a signpost, not a re-export: there is no second name for the
+#: class and importing it from here does not work, on purpose.
 
 
 class FallbackAlarm:  # pylint: disable=too-few-public-methods

@@ -260,23 +260,65 @@ class RankingReader:  # pylint: disable=too-many-instance-attributes
     module docstring. Every read verb below is O(1) and does no arithmetic
     beyond one age subtraction and one float comparison, both inside the frozen
     seam.
+
+    ------------------------------------------------------------------------
+    THIS IS THE COLLAPSE OF TWO CLASSES, ARC 037 (CHECK-DEBT D3.271)
+    ------------------------------------------------------------------------
+
+    ARC 036 ran five sub-agents in parallel worktrees that could not see each
+    other, and two of them invented this class: `nixscore.publisher.RankingReader`
+    (sub-agent B, this one) and `nixscore.process.RankingReader` (sub-agent C).
+    Two independent classes doing one job — wrap a `StateSubscriber` and the
+    frozen `RankingMirror` — which is the duplicate instrument doctrine C.9
+    forbids on its own.
+
+    **The measured consequence was worse than the duplication.**
+    `check_uncalled_entry_points` resolves a call site by ATTRIBUTE NAME
+    (D3.234), and the two classes shared the verbs `arbitrate`, `close` and
+    `pump`. `scripts/scoring_kill_drill.py`'s entirely legitimate call to
+    `process.RankingReader.pump` was credited to **this** class's `pump`, whose
+    only callers were a gate and a test — so a real finding silently stopped
+    being one. Renaming either class would have repaired the MEASUREMENT and
+    left the duplication, which is why they were collapsed instead.
+
+    **What was kept from the other one, and it is the important half:** `pump`
+    polls the socket DIRECTLY rather than calling `StateSubscriber.drain`. See
+    `pump`'s own docstring for the measurement (D3.240) — `drain` never polls at
+    all for a sub-2 ms budget, and this class used to call it.
+
+    ------------------------------------------------------------------------
+    TWO WAYS IN, ONE CLASS
+    ------------------------------------------------------------------------
+
+    `source` is either the endpoint string — in which case this reader BUILDS
+    and owns its subscriber, which is what a consumer that only wants a ranking
+    table needs — or an already-constructed `StateSubscriber`, which is what a
+    consumer that owns its own socket (the kill drill, and any consumer holding
+    a `zmq.Poller` across several sockets) hands in. `close()` releases the
+    socket in both cases: whoever handed it in is handing over its lifetime,
+    and a reader that half-owned its transport would be a leak wearing a
+    contract.
     """
 
     def __init__(
         self,
-        endpoint: str,
+        source: str | StateSubscriber,
         *,
         stale_after_s: float,
         identity: str = SCORING_WRITER_IDENTITY,
         context: Any | None = None,
     ) -> None:
-        self.endpoint = endpoint
-        self._subscriber = StateSubscriber(
-            endpoint,
-            [RANKING_TOPIC],
-            required=[RANKING_TOPIC],
-            context=context,
-        )
+        if isinstance(source, StateSubscriber):
+            self._subscriber = source
+            self.endpoint = source.endpoint
+        else:
+            self.endpoint = source
+            self._subscriber = StateSubscriber(
+                source,
+                [RANKING_TOPIC],
+                required=[RANKING_TOPIC],
+                context=context,
+            )
         self._mirror = RankingMirror(stale_after_s=stale_after_s, identity=identity)
         #: The atomically-swapped view. `None` until a snapshot is accepted —
         #: §12.7's *"mirror incomplete => treated as stale"*, spelled as an
@@ -296,18 +338,51 @@ class RankingReader:  # pylint: disable=too-many-instance-attributes
 
     # -- ingress (MUTATES — owner thread only) ---------------------------
 
-    def pump(self, timeout_ms: int) -> PumpResult:
+    def pump(self, timeout_ms: int = 0) -> PumpResult:
         """Drain the socket into the mirror. Returns what was carried.
 
         Never blocks past `timeout_ms`. This is the only method that mutates.
+
+        **IT POLLS THE SOCKET DIRECTLY AND DOES NOT CALL `StateSubscriber.drain`,
+        AND THAT IS DELIBERATE.** MEASURED, ARC 036 sub-agent C, and carried
+        into this class by ARC 037's collapse (CHECK-DEBT D3.240, D3.271):
+        `drain` computes its remaining budget as
+        `int((deadline - time.monotonic()) * 1000)`, so **any budget under 2 ms
+        truncates to `0` on the first pass and the method returns having never
+        called `poll`.** A caller asking for one millisecond silently gets
+        "never". The first observed symptom was `snapshots_applied = 0` across
+        every arm of `scripts/scoring_kill_drill.py` with every socket healthy
+        and a real publisher publishing every 50 ms — the mirror reported
+        §12.7's never-fed FCFS trigger for a reason that had nothing to do with
+        the publisher, which is a transport failure disguised as the safety
+        property working.
+
+        `drain` is `scripts/nixbus/statebus.py`, shared transport this module
+        does not own, and D3.240 is open against it. Until it is repaired, the
+        direct poll below is the behaviour that makes a tight consumer loop —
+        the Allocator's and the Limiter's — able to ask for a millisecond and
+        get one. `timeout_ms=0` is therefore a genuinely non-blocking sweep:
+        take everything the socket already holds and return.
+
+        THE SHAPE THAT MUST NOT COME BACK: replacing this loop with
+        `self._subscriber.drain(timeout_ms)` restores the truncation for every
+        consumer at once and the symptom is a stale mirror, not an error.
+        `scripts/tests/test_ranking_reader_collapse.py` plants exactly that and
+        requires it to be caught.
         """
         before = self._counters()
-        messages = self._subscriber.drain(timeout_ms)
-        for message in messages:
+        received = 0
+        budget = timeout_ms
+        while True:
+            message = self._subscriber.poll(budget)
+            budget = 0
+            if message is None:
+                break
+            received += 1
             self.ingest(message)
         after = self._counters()
         return PumpResult(
-            received=len(messages),
+            received=received,
             accepted=after[0] - before[0],
             foreign=after[1] - before[1],
             malformed=after[2] - before[2],
