@@ -152,7 +152,11 @@
         "check_python_transitive_deps",
         "check_ranking_table",
         "check_reserved_cores",
+<<<<<<< HEAD
         "check_scoring_fallback",
+=======
+        "check_scoring_lifecycle",
+>>>>>>> arc-036-d
         "check_state_bus",
         "check_venv_isolation"
       ],

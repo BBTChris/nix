@@ -383,6 +383,7 @@ OMITS entirely (`capture`) is not rejected at all.
 | broker-datafeed | 7 |
 | broker-seam | 3 |
 | verify | 126 |
+| verify | 125 |
 | hooks | 4 |
 | node | 8 |
 | ibgateway | 4 |
