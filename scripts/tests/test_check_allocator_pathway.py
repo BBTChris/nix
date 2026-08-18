@@ -467,10 +467,18 @@ def test_ARM6_a_pathway_with_the_screen_REMOVED_reddens(home: Path) -> None:
     every other arm stays green. If ARM 6 does not redden here it is measuring
     the presence of a method rather than the effect of one.
     """
+    #: ANCHOR MOVED IN ARC 036 (sub-agent E), and the move is the reason this
+    #: comment exists. `propose` now delegates to `propose_contended`, which
+    #: sizes each contender through the private `_propose_one` — so the screen
+    #: call reads `go.strategy_id, go.symbol` rather than the bare parameters.
+    #: `_plant` caught it immediately ("anchor appears 0 times, not once"),
+    #: which is the assertion doing its job: a plant whose anchor has moved is
+    #: a plant that measures something other than what it names, and a suite
+    #: that let it slide would have gone green over an unwired screen.
     _plant(
         home,
         WIRING,
-        "        refusal = self._screen_capital(strategy_id, symbol)\n",
+        "        refusal = self._screen_capital(go.strategy_id, go.symbol)\n",
         "        refusal = None\n",
     )
     _red(

@@ -58,7 +58,11 @@
         "check_reservation_lifecycle",
         "check_risks_data_only",
         "check_runtime_gate",
+<<<<<<< HEAD
         "check_scoring_ema",
+=======
+        "check_scoring_consumption",
+>>>>>>> arc-036-e
         "check_scoring_seam",
         "check_sentinel_deadman",
         "check_sentinel_seam",
