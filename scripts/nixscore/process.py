@@ -86,8 +86,9 @@ if str(_SCRIPTS) not in sys.path:  # pragma: no cover - import bootstrap
     sys.path.insert(0, str(_SCRIPTS))
 
 # pylint: disable=wrong-import-position
-from nixbus.statebus import StatePublisher, StateSubscriber
+from nixbus.statebus import StateMessage, StatePublisher, StateSubscriber
 
+from nixscore.liveness import LivenessError, LivenessObserver, PublisherLiveness
 from nixscore.seam import (
     RANKING_TOPIC,
     SCORING_WRITER_IDENTITY,
@@ -369,18 +370,43 @@ class RankingReader:
     publisher stopped answering.
     """
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments
+        # R0913 refused rather than satisfied. The five keyword-only arguments
+        # are five INDEPENDENT facts a consumer must be able to state — the
+        # freshness threshold, the sole-writer identity, whether to observe the
+        # writer at all, the wedge deadline, and an injected observer — and the
+        # usual remedy (a config object) would put a constructible surface
+        # between a caller and the reader for the sole purpose of reaching an
+        # argument count. Every one of them has a default that is the correct
+        # production value.
         self,
         subscriber: StateSubscriber,
         *,
         stale_after_s: float,
         identity: str = SCORING_WRITER_IDENTITY,
+        observe_liveness: bool = True,
+        heartbeat_deadline_s: float | None = None,
+        liveness: LivenessObserver | None = None,
     ) -> None:
         self._subscriber = subscriber
         self.mirror = RankingMirror(stale_after_s=stale_after_s, identity=identity)
         #: Ranking messages that reached the mirror. Zero is a finding, exactly
         #: as `StateSubscriber.bytes_received == 0` is.
         self.pumped = 0
+        #: ARC 037 / D3.244. **ON by default**, and that is the repair rather
+        #: than a convenience: without it this reader RANKS from a dead
+        #: publisher's frozen table for `stale_after_s`, which ARC 036 measured
+        #: at 144,699 decisions over 0.483 s. `observe_liveness=False` is kept
+        #: for the one legitimate case — a caller measuring the AGE path in
+        #: isolation, where an early liveness FCFS would pre-empt the very
+        #: transition being measured.
+        self.liveness: LivenessObserver | None = liveness
+        if self.liveness is None and observe_liveness:
+            self.liveness = PublisherLiveness(
+                subscriber, heartbeat_deadline_s=heartbeat_deadline_s
+            )
+        #: Exceptions out of the observer. NOT re-raised: see `_observe`.
+        self.liveness_errors: list[str] = []
 
     def pump(self, timeout_ms: int = 0) -> int:
         """Drain the socket into the mirror. Returns snapshots APPLIED.
@@ -407,17 +433,69 @@ class RankingReader:
             message = self._subscriber.poll(budget)
             budget = 0
             if message is None:
+                self._observe()
                 self.pumped += applied
                 return applied
+            self._note_message(message)
             if self.mirror.apply(message):
                 applied += 1
+
+    def _note_message(self, message: StateMessage) -> None:
+        """Tell the liveness observer a real update arrived, with its §12.7 seq.
+
+        Fed BEFORE the monitor is drained (`_observe` runs when the socket is
+        empty), which is the ordering that makes the latch correct: bytes that
+        were already buffered when the publisher died must never undo the
+        `EVENT_DISCONNECTED` that follows them.
+        """
+        if self.liveness is not None:
+            self.liveness.note_message(message.seq)
+
+    def _observe(self) -> None:
+        """Drain the liveness monitor and feed the mirror. **Never raises.**
+
+        §6.6:467 — *"a scoring outage must NEVER halt order flow"* — and an
+        observer built to make the outage visible SOONER must not become a new
+        way for it to halt. So anything out of `observe()` is caught here, on
+        the pump loop, and turned into a `live=False` verdict: the consumer
+        keeps deciding, on FCFS, and the reason names the exception. Fail closed
+        and loud (directive 4), where closed means DEGRADED and never DENIED.
+
+        This is also why the mirror is FED rather than asked: the `try` lives
+        here, off the order path, and `RankingMirror.arbitrate` stays a
+        stalling-node-free read of one boolean.
+        """
+        observer = self.liveness
+        if observer is None:
+            return
+        try:
+            observer.observe()
+        except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
+            observer.note_observe_error(exc)
+            self.liveness_errors.append(f"{type(exc).__name__}: {exc}")
+        verdict = observer.verdict()
+        self.mirror.note_liveness(verdict.live, verdict.reason, verdict.signal)
 
     def arbitrate(self, first: PairKey, second: PairKey) -> Verdict:
         """THE ORDER PATH. One delegation to the frozen seam; no I/O, no math."""
         return self.mirror.arbitrate(first, second)
 
     def close(self) -> None:
-        """Release the subscriber's socket."""
+        """Release the liveness monitor, THEN the subscriber's socket.
+
+        The order is not cosmetic. MEASURED on this node: a monitor socket left
+        open makes the subscriber's `Context.term()` block forever, so closing
+        the subscriber first hangs the consumer at shutdown. A `LivenessError`
+        during detach is swallowed rather than allowed to skip the subscriber's
+        own close — a leaked socket is worse than an unreported teardown.
+        """
+        observer = self.liveness
+        if observer is not None:
+            self.liveness = None
+            try:
+                observer.close()
+            except LivenessError as exc:  # pragma: no cover - teardown diagnostics
+                self.liveness_errors.append(f"close: {exc}")
         self._subscriber.close()
 
 
@@ -461,12 +539,23 @@ class FallbackAlarm:  # pylint: disable=too-few-public-methods
         """Raise one alert with the cause and the snapshot values (§12.9)."""
         age = self._mirror.age_s(now)
         age_text = "never fed" if age is None else f"{age:.3f}s"
+        # WHICH HALF OF §6.6:465 FIRED — *"the Scoring process is DOWN or its
+        # table is STALE"* is two conditions, and ARC 037 made the first one
+        # observable. §12.9 requires the alert to carry the cause; an operator
+        # paged with "FCFS" and an age cannot tell a dead process from a slow
+        # one, and those are different incidents with different runbooks.
+        signal_text = (
+            "the table's AGE"
+            if self._mirror.writer_live
+            else f"the WRITER's liveness [{self._mirror.writer_live_signal}]"
+        )
         message = (
             f"§6.6 contention arbitration is now "
             f"{'RANKED again' if code == SCORING_RESTORED_CODE else 'FCFS'}: "
             f"ranking table age {age_text} against a "
             f"{self._mirror.stale_after_s:.3f}s freshness threshold, "
-            f"{self._mirror.applied} snapshot(s) applied. Order flow is "
+            f"{self._mirror.applied} snapshot(s) applied; the deciding "
+            f"condition is {signal_text}. Order flow is "
             f"UNAFFECTED — §6.6:465 makes ranking an optimization, never a "
             f"safety gate"
         )

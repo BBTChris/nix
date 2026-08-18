@@ -362,6 +362,33 @@ class StateSubscriber:  # pylint: disable=too-many-instance-attributes
         #: `Plane2.emitted == 0` is.
         self.bytes_received = 0
 
+    @property
+    def socket(self) -> zmq.Socket:
+        """The raw `zmq.SUB` socket. **READ-ONLY ACCESS, for OBSERVERS.**
+
+        Added ARC 037 / sub-agent D, and deliberately the smallest thing that
+        could be added. `zmq.Socket.get_monitor_socket()` is the only way to
+        learn that the PUBLISHER'S PROCESS died — libzmq raises
+        `EVENT_DISCONNECTED` on the peer going away, which is an observation of
+        the WRITER rather than a timeout over the table it wrote — and it can
+        only be asked of the socket itself. Nothing in this module changes: no
+        monitor is attached here, no event is drained here, and a subscriber
+        with no observer behaves exactly as it did before this property existed.
+
+        It is a property and not a method so it reads as what it is: a handle,
+        not an operation. `zmq.SUB` cannot send, so handing it out grants no
+        write to the mirror this class exists to keep read-only (§12.7).
+
+        The observer that takes it OWNS the monitor socket's lifetime and must
+        close it before `close()` runs. MEASURED on this node (pyzmq 27.1.0 /
+        libzmq 4.3.5): a monitor socket left open makes `Context.term()` block
+        forever, and `Socket.disable_monitor()` does NOT close it — it drops
+        pyzmq's reference and calls `monitor(None, 0)`, so the socket leaks and
+        the hang is the same. `nixscore.liveness.PublisherLiveness.close` does
+        both, in the order that was measured to terminate.
+        """
+        return self._socket
+
     def poll(self, timeout_ms: int) -> StateMessage | None:
         """Receive one update into the mirror, or `None` on timeout."""
         if not self._socket.poll(timeout_ms, zmq.POLLIN):

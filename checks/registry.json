@@ -144,6 +144,7 @@
         "check_feed_kill_drill",
         "check_halt",
         "check_hook_suite",
+        "check_mirror_liveness",
         "check_order_path_bans",
         "check_picture_atomicity",
         "check_plane1_degraded",

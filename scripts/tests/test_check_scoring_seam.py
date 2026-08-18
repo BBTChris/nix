@@ -109,7 +109,14 @@ def _break(home: Path, old: str, new: str) -> None:
 def test_the_gate_PASSES_the_seam_as_frozen(home: Path) -> None:
     result = _run(home)
     assert result.status is Status.PASS, result.detail
-    assert "five documented FCFS triggers" in (result.evidence or "")
+    assert "six documented FCFS triggers" in (result.evidence or ""), (
+        "ARC 037 added TRIGGER 6 (the WRITER is not live) and bumped SEAM_REV "
+        "to 1.1.0; the evidence line is where the gate says how many it drove"
+    )
+    assert "never a ROW" in (result.evidence or ""), (
+        "the read contract's one added mutator, `note_liveness`, is allowed by "
+        "a DRIVEN proof that it writes no row — not by a whitelist entry"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -307,7 +314,8 @@ def test_the_gate_REDDENS_when_a_STALE_table_is_read_as_FRESH(home: Path) -> Non
     _break(
         home,
         "        age = self.age_s(now)\n"
-        "        return age is not None and age <= self.stale_after_s",
+        "        return self._writer_live and age is not None "
+        "and age <= self.stale_after_s",
         "        return self._applied_at is not None",
     )
     result = _run(home)

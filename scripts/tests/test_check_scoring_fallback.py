@@ -127,11 +127,20 @@ def test_staged_tree_is_green_before_it_is_broken(tmp_path: Path) -> None:
 
 
 def test_a_mirror_that_can_never_go_stale_reddens_the_gate(tmp_path: Path) -> None:
-    """BREAK THE SUBJECT: widen the freshness threshold so the fallback never fires.
+    """BREAK THE SUBJECT: widen the freshness threshold so the CLOCK never fires.
 
     This is the failure §6.6:465 is written against, arriving the quiet way: the
     reader keeps answering, keeps answering CONFIDENTLY, and answers from a table
-    whose writer is a corpse — forever.
+    whose writer is a corpse.
+
+    **What this plant produces CHANGED in ARC 037, and the change is the repair.**
+    Before liveness, widening the threshold made the reader rank from a corpse
+    forever and ARM WINDOW said *"NEVER fell back to FCFS after Scoring died"*.
+    Now the kill arm falls back anyway — on the writer's disconnect, in
+    milliseconds, exactly as CHECK-DEBT D3.244 asked — so the break survives the
+    death and is caught instead by ARM STALE, where the publisher stays ALIVE
+    and only the clock can end the window. The next test drives the corpse case
+    with liveness switched OFF, which is where the old reason still lives.
     """
     home = _stage(tmp_path)
     _edit(
@@ -139,6 +148,29 @@ def test_a_mirror_that_can_never_go_stale_reddens_the_gate(tmp_path: Path) -> No
         "self.mirror = RankingMirror(stale_after_s=stale_after_s, identity=identity)",
         "self.mirror = RankingMirror(stale_after_s=1e9, identity=identity)",
     )
+    result = _run_staged(home)
+    assert result.returncode == 1, f"stdout={result.stdout!r}"
+    assert "the verdict does not follow the age" in result.stdout
+    assert "stale-but-present" in result.stdout
+
+
+def test_a_corpse_ranked_forever_reddens_the_window_arm(tmp_path: Path) -> None:
+    """BREAK THE SUBJECT TWICE: no liveness observer AND a threshold that never trips.
+
+    Together those restore the pre-ARC-037 world exactly — a reader with no way
+    to learn the writer died and no clock that will ever say so — and ARM WINDOW
+    must still be able to say *"NEVER fell back"*. Without this the arm's
+    strongest finding would have no test left that can produce it, which is how
+    a control goes blind while every suite stays green.
+    """
+    home = _stage(tmp_path)
+    process = home / "scripts" / "nixscore" / "process.py"
+    _edit(
+        process,
+        "self.mirror = RankingMirror(stale_after_s=stale_after_s, identity=identity)",
+        "self.mirror = RankingMirror(stale_after_s=1e9, identity=identity)",
+    )
+    _edit(process, "observe_liveness: bool = True", "observe_liveness: bool = False")
     result = _run_staged(home)
     assert result.returncode == 1, f"stdout={result.stdout!r}"
     assert "NEVER fell back to FCFS after Scoring died" in result.stdout
