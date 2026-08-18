@@ -1,219 +1,213 @@
-# ARC 036 — RESULTS
+# ARC 037 — Close the Scoring Loop — RESULTS
 
-**Arc:** R5 the Scoring process (§6.6) + the D3.205 git-env standing gate
-**Canonical path:** `/home/bbt/nix` (absolute)
-**Interpreter for every figure:** `/home/bbt/nix/.venv/bin/python` (Python 3.14.4)
-**Predecessor:** ARC 035 (`0d8ffd4`) · **This arc:** Phase 0 `a9bce2d` → Stage 2 `ec31401` → write-back
+**Canonical path: `/home/bbt/nix` (absolute).**
+**Interpreter: `/home/bbt/nix/.venv/bin/python` (CPython 3.14.4).**
+**Predecessor: ARC 036 (81/2/2/0/1). This arc: 87/2/2/0/1, exit 1.**
 
-## 2026-08-18 — ARC 036: R5 the Scoring process (§6.6), and the D3.205 git-env standing gate
+===RUN SUMMARY: Close the Scoring Loop, Estimated run time: ~9h, completes ~85% of the Scoring-loop wiring stage (six built-but-unconnected seams closed and driven end to end; live venue, the production fill feed, and EMA-span calibration remain out of scope)===
 
-**Canonical path: `/home/bbt/nix` (absolute).** Interpreter for every figure below:
-`/home/bbt/nix/.venv/bin/python`, Python 3.14.4.
+## ARC 037 — Close the Scoring Loop (2026-08-18)
 
-### Phase 0 — the blocking gate, and a brief corrected against the frozen spec
+**Canonical path: `/home/bbt/nix` (absolute).** A WIRING arc, not a build arc: ARC 036
+built every piece of the scoring loop and wired none of it to production. Six seams,
+six blind worktrees, and the merged tree found a defect none of them could see.
 
-`check_git_env_scrub` derives every `git` subprocess call in the tracked tree by AST on
-every run and asserts each routes through `nixverify.gitenv.scrubbed_env`. There is no
-accepted-call-site list in the file: a new unscrubbed call reddens it with nobody
-remembering anything. That is the whole difference from D3.22, a correct rule applied
-per site from memory that recurred three times in one arc.
+### Phase 0 — the baseline held on all four measures, and D3.272 was reproduced
 
-**Its first run over a tree everyone believed clean reported fourteen sites, six real.**
-`scripts/monitor.py:838` had no `env=` at all and is executed by `check_monitor_tui`
-inside every commit — the ARC 035 outage's shape, one file over. `check_runtime_gate.py`
-ran its `git hash-object` ORACLE on an inherited environment. Two test modules carried a
-fifth and sixth private re-spelling of the scrub as a dict comprehension.
+Under `/home/bbt/nix/.venv/bin/python` (CPython 3.14.4): `verify.py`
+**81 passed | 2 failed | 2 cannot measure | 0 skipped | 1 guarded, exit 1**; census
+**86 / 86 / 86**; CHECK-DEBT **250 open over 299 rows**; pytest **3049 passed, 2
+skipped, 2 xfailed** in 34:50. ARC 036's close byte for byte. **No delta, so no
+finding.**
 
-**Then it reddened on itself.** Its own `_git` helper took `env` as a parameter, so the
-call site read `env=env` and no reader could tell the scrubbed half from the unscrubbed
-one. The helper now scrubs internally; `MARKER_SCOPE` is an ENUMERATED pair of paths
-rather than a directory rule, because widening it to `checks/` would have bought the
-green by making every gate eligible for a one-line silencer.
+**D3.272 was REPRODUCED rather than described.** Three rows deleted (D3.260/261/262)
+and the series row resynced exactly as a bad merge does: `derived:ledger_rows=247`,
+`stated:series_table_latest_row=247`, **AGREE=True**. The arithmetic gate is
+measurably blind to a lost row.
 
-Both halves are driven and the D3.205 plant with them: an unscrubbed `git add -A` under
-GIT_DIR/GIT_INDEX_FILE/GIT_WORK_TREE MUST corrupt a throwaway victim's index and the same
-argv through the scrub must leave it byte-identical — and **if the corruption half stops
-corrupting the gate FAILS naming the control BLIND**. The whole routine re-runs with the
-three variables planted into what the fixtures inherit, which is where the defect hid.
+**0.4 froze three seams before six worktrees could invent three shapes**, and one
+hazard was measured before it was frozen rather than after. The brief's standing
+warning is that a hazard usually lands backwards; the liveness signal did not, because
+it was driven first: `zmq` `EVENT_DISCONNECTED` fires **1.2 ms** after an `ipc://`
+publisher is SIGKILLed (libzmq 4.3.5 / pyzmq 27.1.0, this node). That is an
+observation of the WRITER, not a timeout.
 
-`check_observed_resource_claims` then corrected the gate's own `RESOURCES`: it shipped
-claiming `("subprocess:git",)` on the reasoning that its TemporaryDirectory needed no
-claim, and the observer reported thirty real `file-write:/tmp/gitenv-gate-*` uses.
+The realized-P&L freeze refused to mint a §12.10 event type: the inventory has no
+realized-P&L row, so the figure rides the rows that already book a realization
+(`closed` / `protective_exit` / `sentinel_flatten`) in `payload.realized_pnl`, written
+by the Limiter as sole writer (§9). The weight function is ordinal in the RANK, never
+in the score — §6.6:461 keeps score computation out of the consumer — neutral 1.0 at
+the median rank and on every FCFS route, clamped `[0.60, 1.40]`.
 
-**The seam was frozen against §12.7, not against the brief.** The brief asked for a
-"shared-memory sole-writer publish". §6.6:459 does say "in shared memory" — but §12.7 is
-LOCKED, later, NAMES the ranking table §6.6 among the tables it governs, and says *"Mirror
-model, NOT raw shared memory … raw shared state tables would let multiple processes touch
-the same bytes — reintroducing locks, races, and torn reads, and reducing the
-single-writer principle to fiction."* Its sole exception is the price firehose, "prices
-only, never financial state". Building the brief's version would have reintroduced that
-surface **while still passing a sole-writer test**. `scripts/nixscore/seam.py` therefore
-carries no bytes of its own and rides `nixbus.statebus`.
+### Stage 1 — six parallel sub-agents, the widest fan-out this project has run
 
-**A plant caught the seam gate blind and the gate was repaired, not the plant.** Breaking
-`fresh()` to `return self._applied_at is not None` — a mirror that calls a dead table
-fresh forever — left every arm green because `arbitrate` computes age inline. `fresh()` is
-now driven from both sides of the boundary plus never-fed.
+**A — the keystone.** `nixrisk/realized.py` computes realized P&L per closed trade net
+of §6.5/§7's modelled costs; `flatten.py` books it on the CLOSED / PROTECTIVE_EXIT rows
+through the existing sole writer. Green-while-open then closes-red: peak **+146.12**,
+close **−103.88**, and the gate requires the CLOSE. Four plants reddened by name.
+A found five things stated backwards, and two matter: **`sentinel_flatten` has no
+`EventKind` member**, so a third of the frozen seam is unreachable (D3.283); and
+`ema.daily_advances` SUMS a pair's realizing rows while `realized_closes` REFUSES a
+realizing row with no figure — so writing both rows double-counts and writing one makes
+the log unfoldable. Resolved by booking once with a named `realized_status` on the
+other, and recorded rather than papered over.
 
-Provenance, measured: three untracked artifacts trace to commit `f139c57`; the root
-`status_board_leaderboard_spec.md` was byte-identical to the `docs/` copy (sha256
-`b4452bc3`) and was deleted, recoverable. `DASHBOARD_PY_TECHNICAL_REFERENCE.md` (a prior
-system's dashboard — Titan Control 2.0, node01, macOS) and `Nix_Logo_Package.zip` are in
-NO commit on any branch and were **tracked rather than deleted**, because tracking is
-reversible and deleting an unbacked file is not.
+**B — the weight differs from 1.0.** Two GOs identical but for rank: weights
+**1.25 / 0.75**, contracts **16 / 10**, default caller unchanged at 13. The clamp
+BINDS at n=8 — `raw(1,8)=1.875 -> 1.4`, `raw(8,8)=0.125 -> 0.6`. Seven neutral routes
+each driven and each exactly 1.0. B's own best finding is **D3.295**: with dense ranks,
+a seven-way tie at n=8 clamps EVERY contender to the ceiling and inflates the field's
+total weighted risk 8.0 -> 11.2.
 
-### Stage 1 — five sub-agents, five worktrees, five things measured
+**C — quarantine survives the process that declared it.** `QuarantineLedger`, fsynced
+append-only, folded in at breaker construction. The cap was driven to a trip in pid
+2412668 and the verdict read back in **pid 2412669** — a genuinely new interpreter.
+The §18 refusal now names the book's own `seq` / `restarts_in_window` / `cap` as the
+GATE parsed them out of the JSON, so the reason cannot contradict the record. Restore:
+pre 3 -> post 2 same process -> **post 2 fresh process**. **D3.250 and D3.251
+discharged.** C also fixed a `bandit (production)` red that had stood since ARC 034.
 
-**A — the EMA engine.** Span derived from `risks/scoring.config.json`, proven by writing
-two configs (3 and 20) and showing the same advance smooths differently; two plants, one
-AST and one keyword-arg invisible to the AST arm, each redden it. Ranking proven on two
-axes that DISAGREE: 1000/day on 20 closes beats 400/day on 400 closes while close counts
-run 20:1 the other way; then a sharper pair with identical totals AND identical counts,
-separated only by when. §12.11 restart-only proven by killing a process holding a live
-engine while its config changed underneath it.
+**D — the mirror learns the writer is DEAD, not merely old.** Two readers on ONE socket
+watched ONE death: the observing reader took **0 RANKED decisions from the corpse over
+3.444 ms**; the blind control took **56,166 over 0.458 s**; ARC 036 measured 144,699
+over 0.483 s. Order flow answered 134,187 times after the kill with zero order-path
+exceptions. A wedged-but-alive publisher fired the second signal. **D found
+`check_scoring_fallback`'s ARM WINDOW FORBADE this repair** — it failed any window under
+half `stale_after_s`, reasoning that §6.6's condition is the table's age; §6.6:465 says
+*"the Scoring process is DOWN **or** its table is STALE"*, two conditions, and the age
+was the proxy.
 
-**A's headline is a finding: nothing in this tree writes a realized P&L figure.** The
-brief said the engine "reads closed-trade realized P&L from Plane-1 (the durable record
-ARC 035 landed)". Plane-1 carries none — measured against the frozen schema and by grep,
-consistent with ARC 035's own D3.213. The engine is built and correct and its input does
-not exist (D3.220).
+**E — the Allocator's Scoring-dependent finish.** The weight threads from
+`ContentionRanking.weights` through `propose_contended` to one sizing call site, and the
+§4 lifecycle screen now reflects quarantine. Eight outage routes, every weight exactly
+1.0 and every route sized identically to a pathway with no mirror at all. **D3.264
+discharged** by a plant the row said was impossible: one table whose `lookup` and
+`arbitrate` name different winners, no seam edit required.
 
-**B — the ranking table over §12.7's real transport.** `ipc://` bind is **NOT exclusive**:
-a second publisher on a live endpoint succeeds. So the transport contributes NOTHING to
-sole-writer; the identity stamp at the consumer is the entire mechanism (D3.232). Proven
-by killing the real publisher (rc −9) and letting an impostor rebind: the surviving SUB
-auto-reconnected and delivered 16 impostor messages / 5,737 bytes, all refused,
-`foreign_rejected` 0→16, `applied` frozen at 7, and the impostor's deliberately REVERSED
-table did not flip the winner. Concurrency: 2,113,317 reads overlapping 136,590 writes
-across 243 table generations — the two-lookup path **tore 49 times**, the single-capture
-view **0**. Backpressure: 4,000 publishes in 0.039 s, worst `publish()` 0.128 ms.
+**F — a dropped ledger row now reddens.** `check_ledger_row_preservation` compares
+D-id SETS over every commit reachable from HEAD (no baseline file exists, so the edit
+under judgement cannot reach the comparison set). **On its first run it found a real
+loss: D1.8 and D1.9, deleted outright by ARC 011 instead of being marked discharged,
+missing for 26 arcs.** Recovered from `git show da28f4c`. F also collapsed the two
+`RankingReader` classes and MEASURED the mis-attribution first: renaming
+`process.RankingReader.pump` on the pre-collapse tree made `publisher`'s `pump` appear
+as a NEW finding, 229 -> 230. **D3.271 and D3.272 discharged.**
 
-**C — the FCFS fallback, killed for real.** pid SIGKILLed mid-contention, reaped **−9**,
-`/proc` gone, against a SIGTERM control reaping **7** — so "died" cannot be satisfied by
-"exited". 135,436 RANKED decisions before the kill and 340,712 after; worst
-inter-decision gap **3.287 ms**, and the gap straddling the kill instant is the same
-3.287 ms; zero order-path exceptions. **Order flow did not halt.**
+### Stage 2 — the merged tree held a defect no branch could see, for the third arc running
 
-**C found the number that is not in the spec: 144,699 decisions were RANKED from a dead
-process's frozen table over a 0.483 s window.** The subscriber socket outlives the
-publisher, so the mirror stays complete, populated and confident, and the exposure scales
-linearly with `stale_after_s`. The brief framed the danger as the fallback failing to
-answer; it always answers. The real exposure is that it answers RANKED, from a corpse
-(D3.244).
+**D bolted the liveness repair to a class F deleted.** D added `observe_liveness` /
+`_note_message` / `_observe` to `nixscore.process.RankingReader`; F, in a worktree D
+could not see, deleted that class as D3.271's duplicate. Both branches green. On the
+naive merge `check_mirror_liveness` raises `AttributeError` before measuring anything —
+**D3.244 un-repaired behind an instrument that cannot say so.** Resolved by porting D's
+observer onto F's survivor, not by resurrecting the duplicate. Recorded as D3.340.
 
-**D — the score outlives its process.** Writer pid wrote four pairs at nonce-derived EMAs
-and SIGKILLed itself (`returncode == −9`); a different pid read back byte-identical
-values while a cold-start control in the same reader held 0 pairs. Quarantine archived
-exactly `alpha`'s two pairs and left exactly `beta`'s and `gamma`'s — set equality both
-ways, over a fixture the gate REFUSES to judge unless it is genuinely entangled. Archived
-is distinguishable from absent. Atomicity: 10 outside SIGKILLs into churning victims
-across **10,447 durable writes**, every post-kill store parsed, every seeded pair on
-exactly one side.
+**The ledger lost nothing.** Every conflict was resolved by UNION and checked id by id:
+the union of the six parents is **361 D-ids** and the merged file holds **361**. Three
+branch-local series rows (B 260, D 259, F 257) were each right on their own worktree
+and struck through here — D3.192's shape landing on a figure for the second arc running.
 
-**D found supervision auto-resurrecting quarantine.** `CrashLoopBreaker._quarantined` is
-an in-process dict: three restarts ⇒ quarantined; a NEW breaker over the same fsynced
-ledger ⇒ **not** quarantined, while `restarts_in_window` still returns 3 at a cap of 3.
-§4:274 says quarantine is not auto-resurrected. Worse, `may_relaunch` returns a §18 reason
-that contradicts the ledger it just read (D3.250). The §12.11 restore counter-reset is
-in-memory too (D3.251).
+**2.1 the keystone first.** Four real protective closes for TWO strategies on one
+symbol, written by the Limiter through `Plane1Wal -> GroupCommitWriter ->
+Plane1PostgresSink` into real Postgres and read back by `SELECT`:
+`realized_pnl = [-103.88, +796.12]` and `[-203.88, -53.88]`. Folded from THOSE ROWS:
+winner EMA **59.756364**, loser **−176.607273**, and the EMA advanced.
 
-**E — the Allocator READS the table, and the flip flips.** Two strategies GO on ES with
-headroom 17,500 and margin 12,000/contract: EMA 900 vs 100 ⇒ A sized 1 contract, B
-`zero_after_clamp`; **ranking reversed ⇒ B sized, A clamped.** Non-vacuity measured first:
-each contender alone sizes 1 contract, so capital genuinely could not satisfy both. Seven
-outage routes driven — no mirror, never-fed, stale, foreign writer, absent row, tied EMAs,
-and a mirror raising on every verb — every one produced a proposal per contender in
-arrival order with the head still sized. **No route can produce a deny.**
+**2.2 the loop closes.** `rank_rows` -> published over a REAL `ipc://` socket -> a real
+`RankingReader` mirror -> `AllocatorPathway.propose_contended`. Policy
+**performance_weighted**, weights **1.125 / 0.875**, sizes **150 and 116 contracts**.
+The better realized history sized larger. **No fixture stands anywhere in that chain:
+every number traces to a row Postgres returned.**
 
-E found a raising mirror KILLING the race (§6.6:467-468 violated by the module citing it)
-and the port and the seam reading one table against two clocks. Both repaired.
+**2.3 the loop survives death.** Publisher SIGKILLed, reaped −9: the Allocator fell back
+to FCFS **0.378 ms** after the kill against a `stale_after_s` of **500 ms** — liveness,
+not age, and a bound roughly 1,300x tighter. **29,642 proposals answered** in the second
+that followed, every weight exactly 1.0, sizes flat at 133/133, every contender still
+SIZED and not one deny. Relaunched: weighting re-engaged and the same **150/116**
+returned off persisted realized history.
 
-### Stage 2 — the merged tree found a gate that was green while it broke four others
+**A cross-branch join neither agent could measure alone:** E's gate reports that a FRESH
+breaker over the same ledger **DID** see the quarantine. On E's own branch it read False.
 
-`check_scoring_consumption` ended its loader in
-`finally: sys.modules.clear(); sys.modules.update(saved_modules)`. That is not a restore,
-it is an **eviction of every module imported since the snapshot, including C extensions**.
-Under `verify.py` it runs before four bus-driving gates; `zmq` had not yet been imported
-when the snapshot was taken, so the clear dropped it, the next `import zmq`
-**re-initialised the Cython backend while libzmq's loaded state persisted**, and a SECOND
-`zmq.error.Again` class appeared. `StatePublisher.service`'s entirely correct
-`except zmq.Again:` could not catch what the backend raised.
+### Stage 3 — convergence
 
-> **raised cls id 365732624 vs caught cls id 366035056, SAME: False**
-
-Four gates that pass alone reported `Again: Resource temporarily unavailable`. **The
-offending gate was GREEN throughout — it damaged only its successors**, which is why no
-branch could see it. File descriptors, threads, fork/RLIMIT_NPROC, the tmpfs, zmq module
-identity and stale bytecode were each ruled out by measurement first. Fixed at the cause;
-`verify.py` 75/3/**7**/0/1 → 80/3/**2**/0/1 (D3.270).
-
-**The integrator's own error is recorded as D3.272.** My conflict resolution silently
-dropped fifteen ledger rows — C's, D's and E's — because on three merges the series row
-and that branch's rows sat in one hunk. **`check_derived_claims` was GREEN across the
-loss**: deleting rows and re-deriving the count agree perfectly, so the gate can catch a
-stale figure but never a lost row. Found by accident when an unrelated edit could not
-locate D3.253. Recovered from the branches. The class stays open.
-
-**D3.214 was paid in full inside the arc that opened it.** All seven caller-less seam
-entry points now have shipped callers; `_ARC036_PHASE0_CARRIED` is the empty tuple, kept
-rather than deleted because the `vanished` assertion is what made the carry binding. Four
-branches each shrank it to a DIFFERENT set — C to 3, E to a different 3, B to 2, D not at
-all — every one right on its worktree and none right on the merge.
-
-**D3.231 discharged** (the frozen seam's torn read, repaired although unreachable under
-today's single-threaded consumer contract) and **D3.253 discharged** (a bare `[:25]` hid
-32 of 57 findings from the integrator who was reading it at the time).
-
-### D3.205 closed under the exact condition that triggered it
-
-Five worktrees, each running git. `core.bare = false` on the canonical tree **and on all
-five**. 49 git invocations across 347 tracked modules: 47 scrubbed, 2 declared controls.
-Canonical index intact at 472 tracked files.
-
-### Close-out
-
-`verify.py` on trunk under `/home/bbt/nix/.venv/bin/python`:
-**81 passed | 2 failed | 2 cannot measure | 0 skipped | 1 guarded, exit 1**
-(ARC 035 closed at 73/3/2/0/1). The two FAILs are `check_ibgateway_service` — the standing
-tap-session failure, the only code-independent one — and `check_uncalled_entry_points`,
-its standing state, whose carried set lives in a suite that is 62/62 green. **No further
-FAILURE, and no further non-pass whose cause is not named.**
-
-GUARDED: `check_artifact_gate_coverage`, owner **ARC 037** — re-pointed from ARC 036 at
-close-out because §0g would otherwise ship a marker owned by an arc that can no longer
-discharge (D3.273). Full pytest **3049 passed, 2 skipped, 2 xfailed, zero failures**.
-Binding census: **BOUND=74**, and all seven of this arc's new checks are BOUND — each
-observed producing a real FAIL under a plant. Census three ways: 86 checks on disk / 86 in
-the registry / 86 executed. CHECK-DEBT **222 → 250**.
+`--optimize` derived a plan **identical to the live registry**. Census **92 / 92 / 92**.
+The observer swept this arc's six new checks in **three orders x two sweeps x both
+documented interpreters on a cold bytecode cache — 72 observations — and found no
+undeclared claim**. It also found that `check_score_weighting` produced **zero** claims,
+so its declaration is unfalsified rather than confirmed (D3.341); the other five
+produced 2103, 74, 62, 48 and 1.
 
 ### What did NOT land, said plainly
 
-Nothing writes realized P&L, so the EMA has no production input (D3.220). Nothing feeds
-the mirror in production — no subscriber holds the `ranking` topic and no writer publishes
-it — so **FCFS remains the live policy** and the RANKED path is exercised only by gates
-(D3.263). Ordering landed; **weighting did not** — `NEUTRAL_WEIGHT` is still 1.0 under
-both policies (D3.260). The store is built and not wired to supervision's quarantine
-transition (D3.252). Two classes named `RankingReader` survive in one package, and the
-tree's own instrument credits one's call sites to the other (D3.271). Live venue untested
-by design; the EMA span is a default awaiting real realized data.
+**Nothing fills a `TradeFactsBook` in production**, so on the live box a realizing row
+carries a `realized_status` and not a figure (D3.280) — there is no fill feed at all
+(D3.281). **No production writer publishes the ranking topic and no production consumer
+holds a reader**, so FCFS is still the live policy on the real box and every production
+weight is neutral (D3.263 stands). The §12.11 operator transport does not exist —
+`restore` is called directly. D3.252's join between supervision and the score store is
+still missing. Live venue untested by design; the EMA span is a default awaiting real
+realized data to calibrate (§6.6:443); and **the strategy driving these trades is a test
+harness, not the production plug-in.**
 
-### Post-write-back re-measure (ARC 036), banked before the marker
+### Stage 3.4 — the binding census found a defect in the instrument that measures binding
 
-`sessions/SESSION.md` now names ARC 036 complete, so the D3.40/D3.144 guard-owner
-transition is **live, not hypothetical**: `nixverify.contract.completed_arcs` returns an
-empty error and reports `36 in arcs = True`, highest 36. That is the mechanism running
-against this arc's own summary — the condition D3.274 was written to be falsified by.
+`check_mirror_liveness` read **EXERCISED-NEVER-RED over sixteen observations, every
+one PASS**, for a gate whose suite reddens on 29 arms. The cause was not the gate.
+`_run_staged` in two suites inherited the parent's environment, and
+`binding_census.py` sets `PYTHONPATH` to the REAL tree so its tracer reaches every
+child — so the staged gate imported `nixscore` from `/home/bbt/nix/scripts` instead
+of from the staged copy and **every plant in both files was defeated: the gate
+measured production code while reporting on a staged tree, and passed.**
 
-**D3.274's prediction, stated before the write-back, HELD in both halves:**
+Proven by driving ONE staged, planted tree twice and changing nothing but the
+environment: **`PYTHONPATH` unset -> RED, plant detected; `PYTHONPATH` set to the
+real `scripts/` -> GREEN, plant defeated.** D3.205's class one layer over.
 
-| | predicted | measured after |
+**The first repair was too broad, and the census caught that too.** Replacing
+`PYTHONPATH` outright also dropped the census's `sitecustomize` directory — the only
+way its tracer reaches a child — so the staged runs stopped being OBSERVED and
+`check_scoring_fallback` went BOUND -> EXERCISED-NEVER-RED. Correct plants,
+invisible to the instrument. Narrowed to filter the real-tree entries and keep every
+other inherited one, then driven with a decoy sitedir on the parent's path: plant
+RED, sitedir preserved in the child, real tree absent.
+
+**Three completed census runs, and the number moved with the repair:**
+
+| run | condition | BOUND |
 |---|---|---|
-| `check_artifact_gate_coverage` | GUARDED, unchanged | **guarded** |
-| `verify.py` | 81 / 2 / 2 / 0 / 1, exit 1 | **81 passed / 2 failed / 2 cannot measure / 0 skipped / 1 guarded, exit 1** |
+| 1 | plants defeated, staged runs traced | 78 |
+| 3 | plants correct, staged runs UNTRACED | 77 |
+| **4** | **plants correct, staged runs traced** | **79** |
 
-The guard survived because D3.273 re-pointed its eight exclusions ARC 036 → ARC 037
-*before* the write-back. Had they been left naming ARC 036, this re-measure would have
-read GUARDED → CANNOT_MEASURE and the guarded count would have gone 1 → 0 — which is the
-transition ARC 034 measured the absence of, and the reason the prediction is worth
-writing down first. **A re-measure taken after the fact and then described is not a test
-of anything.**
+`check_mirror_liveness` and `check_scoring_fallback` are BOUND in run 4 (3 and 4
+observed reds). BOUND floor was ARC 036's 74. Of this arc's six new checks, five are
+**BOUND**; `check_realized_pnl` reads EXERCISED-NEVER-RED because its plants call the
+arm functions directly and never produce a `CheckResult` for the tracer — recorded as
+D3.345 rather than left as a number.
+
+**A leaked `/dev/shm` segment cost a whole census run** (D3.347): fourteen
+`nix_drill_*` segments survived runs killed while waiting, a later `test_price_ring`
+opened one and blocked in `futex_do_wait` forever, and the census died at 83% having
+produced nothing. Space was never the constraint — 2.9 MB of 31 GB. Cleaned and
+re-driven under the same tracer: 16 passed in 0.05 s.
+
+### Close-out
+
+`verify.py` on trunk under `/home/bbt/nix/.venv/bin/python` (CPython 3.14.4):
+**87 passed | 2 failed | 2 cannot measure | 0 skipped | 1 guarded, exit 1**
+(ARC 036 closed at 81/2/2/0/1; +6 new checks, all passing). The two FAILs are the
+standing ones — `check_ibgateway_service`, the tap-session failure and the only
+code-independent one, and `check_uncalled_entry_points`, its standing state.
+**No further FAILURE and no further non-pass whose cause is not named.**
+
+GUARDED: `check_artifact_gate_coverage`, owner **ARC 038** — re-pointed at close-out
+because §0g would otherwise ship a marker owned by an arc that can no longer
+discharge (D3.342, and the owner chain is now eight arcs long). Full pytest
+**3258 passed, 3 skipped, 2 xfailed, zero failures**. Census three ways:
+**92 checks on disk / 92 in the registry / 92 executed**; `--optimize` derived a plan
+**identical to the live registry**. CHECK-DEBT **250 -> 309**.
+
+### Post-write-back re-measure (ARC 037), banked before the marker
+
+D3.343's prediction, stated before `sessions/SESSION.md` named this arc complete.
