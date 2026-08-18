@@ -150,6 +150,7 @@
         "check_python_deps",
         "check_python_transitive_deps",
         "check_reserved_cores",
+        "check_scoring_lifecycle",
         "check_state_bus",
         "check_venv_isolation"
       ],

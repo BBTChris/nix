@@ -874,6 +874,50 @@ _ARC036_PHASE0_CARRIED = (
     "scripts/nixscore/seam.py::Verdict.fell_back",
 )
 
+#: ARC 036 Stage 1 / sub-agent D — the §6.6 durable score store, CARRIED BY NAME.
+#:
+#: `scripts/nixscore/store.py` is the archive/restore half of §4:279 and §12.11's
+#: verb 3. Its counterpart is `nixrisk.supervision.CrashLoopBreaker`, whose
+#: `restore`, `is_quarantined` and `quarantine_verdict` are themselves UNCALLED on
+#: this tree — the two ends of one seam exist and no code joins them, which is
+#: CHECK-DEBT D3.252 and is Stage 2 integration work, not this sub-agent's.
+#:
+#: Enumerated here for D3.203's reason and never absorbed into
+#: `uncalled_entry_points_baseline.json`: a ratchet whose accepted set grows to
+#: meet its findings is not a ratchet. The `vanished` assertion below makes it an
+#: obligation — the moment the Scoring process (`nixscore/process.py`) holds one
+#: of these behind `ScoreStorePort`, that name stops being a finding and this
+#: tuple must shrink with it.
+#:
+#: **`ScoreStorePort`'s own verbs are in here, and that is the honest reading.**
+#: A Protocol method has no body and is never called; it is the SHAPE a caller
+#: must satisfy. This gate cannot see the difference between a declared seam
+#: awaiting its consumer and a method nobody wanted, and admitting the Protocol
+#: rows silently would hide the first case behind the second. They are listed.
+#:
+#: NOTE, and it is why this tuple had to be written at all: the SHIPPED gate's
+#: own detail names only its first 25 un-baselined findings and does not say it
+#: truncated, so every name below was INVISIBLE in two consecutive runs of
+#: `checks/check_uncalled_entry_points.py`. This suite caught what that output
+#: hid. CHECK-DEBT D3.253.
+_ARC036_STAGE1_D_CARRIED = (
+    "scripts/nixscore/store.py::ArchiveOutcome.moved",
+    "scripts/nixscore/store.py::RestoreOutcome.rehydrated",
+    "scripts/nixscore/store.py::ScoreStore.archive_reason",
+    "scripts/nixscore/store.py::ScoreStore.archive_strategy",
+    "scripts/nixscore/store.py::ScoreStore.archived_pairs",
+    "scripts/nixscore/store.py::ScoreStore.archived_record",
+    "scripts/nixscore/store.py::ScoreStore.live_pairs",
+    "scripts/nixscore/store.py::ScoreStore.presence",
+    "scripts/nixscore/store.py::ScoreStore.restore_strategy",
+    "scripts/nixscore/store.py::ScoreStore.revision",
+    "scripts/nixscore/store.py::ScoreStorePort.archive_strategy",
+    "scripts/nixscore/store.py::ScoreStorePort.archived_pairs",
+    "scripts/nixscore/store.py::ScoreStorePort.live_pairs",
+    "scripts/nixscore/store.py::ScoreStorePort.presence",
+    "scripts/nixscore/store.py::ScoreStorePort.restore_strategy",
+)
+
 
 def test_the_LIVE_BASELINE_accepts_EXACTLY_what_the_LIVE_TREE_measures() -> None:
     """The ratchet, read against the real tree, MINUS ARC 034's carried red.
@@ -886,7 +930,10 @@ def test_the_LIVE_BASELINE_accepts_EXACTLY_what_the_LIVE_TREE_measures() -> None
     baseline = gate.load_baseline(REPO)
     assert baseline.error == "", baseline.error
     carried = (
-        set(_ARC034_CARRIED) | set(_ARC035_D_CARRIED) | set(_ARC036_PHASE0_CARRIED)
+        set(_ARC034_CARRIED)
+        | set(_ARC035_D_CARRIED)
+        | set(_ARC036_PHASE0_CARRIED)
+        | set(_ARC036_STAGE1_D_CARRIED)
     )
     unaccepted = sorted(set(state.findings) - baseline.accepted - carried)
     stale = sorted(baseline.accepted - set(state.findings))
