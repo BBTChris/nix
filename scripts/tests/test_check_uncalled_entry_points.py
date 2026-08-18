@@ -874,6 +874,28 @@ _ARC036_PHASE0_CARRIED = (
     "scripts/nixscore/seam.py::Verdict.fell_back",
 )
 
+#: ARC 036 Stage 1 / sub-agent A — the §6.6 realized-P&L EMA engine's ONE door.
+#:
+#: `scripts/nixscore/ema.py` computes the score. Nothing calls it, because the
+#: Scoring PROCESS that would is sub-agent C's mandate and the publisher is B's,
+#: so a Stage-1 branch cannot contain its own caller. Same shape as the seam's
+#: carry above and as D3.213 one module over. CHECK-DEBT D3.222.
+#:
+#: **It is ONE name and that is the point.** The gate first reddened on
+#: `realized_closes` — the log EXTRACTOR — which was not a carry-worthy finding
+#: at all but a missing verb: the engine had no call that ran the whole path,
+#: so its own extractor sat on a gate-only branch. `snapshot_from_log` is that
+#: verb, and it collapsed the finding from an internal function to the module's
+#: single public door. What is left is the honest statement — the engine has
+#: exactly one entry point and nothing walks through it — and it is admitted
+#: here rather than absorbed into the baseline for D3.203's reason: a ratchet
+#: whose accepted set grows to meet its findings is not a ratchet. The
+#: `vanished` assertion makes it an obligation: the moment the Scoring process
+#: calls it, this tuple must shrink or the test reddens the other way.
+_ARC036_STAGE1_A_CARRIED = (
+    "scripts/nixscore/ema.py::RealizedEmaEngine.snapshot_from_log",
+)
+
 
 def test_the_LIVE_BASELINE_accepts_EXACTLY_what_the_LIVE_TREE_measures() -> None:
     """The ratchet, read against the real tree, MINUS ARC 034's carried red.
@@ -886,7 +908,10 @@ def test_the_LIVE_BASELINE_accepts_EXACTLY_what_the_LIVE_TREE_measures() -> None
     baseline = gate.load_baseline(REPO)
     assert baseline.error == "", baseline.error
     carried = (
-        set(_ARC034_CARRIED) | set(_ARC035_D_CARRIED) | set(_ARC036_PHASE0_CARRIED)
+        set(_ARC034_CARRIED)
+        | set(_ARC035_D_CARRIED)
+        | set(_ARC036_PHASE0_CARRIED)
+        | set(_ARC036_STAGE1_A_CARRIED)
     )
     unaccepted = sorted(set(state.findings) - baseline.accepted - carried)
     stale = sorted(baseline.accepted - set(state.findings))

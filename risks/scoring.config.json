@@ -8,7 +8,7 @@
     "lifecycle": "§12.11 — boot-loaded, restart-only. No reload verb exists on the load path.",
     "validated_by": "scripts/risk_config.py",
     "landed_by": "ARC 028 sub-agent D (D1).",
-    "not_implemented_here": "No Scoring process exists, no ranking table exists, and the FCFS fallback (§6.6:465-468) has nothing to fall back from.",
+    "not_implemented_here": "ARC 036 sub-agent A: the knob below now has a READER. `scripts/nixscore/ema.py` derives `SCORE_EMA_SPAN_DAYS` from this file through `scripts/risk_config.py` and smooths §6.6's per-day realized advances with it; `scripts/nixscore/seam.py` is the frozen ranking-table interface and carries the FCFS fallback. What is STILL absent, and no green anywhere may be read as saying otherwise: no Scoring PROCESS exists (nothing constructs a `RealizedEmaEngine`, nothing publishes a snapshot), and — measured this arc — NOTHING IN THE TREE WRITES A REALIZED P&L FIGURE. `plane1_event_log` has no money column and no writer puts `realized_pnl` in a payload; the one realized hand-off that exists (`nixrisk.flatten.ScoringSink.book_realized`) carries an account-level balance delta that is not attributed to a (strategy_id, symbol) pair. So the engine's input is empty on the real box, and the EMA it would compute is over no history at all.",
     "one_knob_file": "Stated rather than left to be noticed: §12A gives this module exactly one knob, so this file has one value and no cross-knob rule is possible over it. That is the honest shape; padding it with a neighbouring module's knobs to make the validation look richer would put a knob in the wrong physical home."
   },
 
