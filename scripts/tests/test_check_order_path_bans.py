@@ -371,7 +371,15 @@ def test_the_control_passes_and_its_evidence_names_what_it_read(
     # arithmetic. Re-read rather than assumed: over the widened scope the gate
     # still reports 0 banned modules and 0 banned calls under arm(ii) — the
     # literal went stale, the property did not.
-    assert "arm(ii) imported 34 order-path module(s)" in evidence, evidence
+    # ARC 037 / sub-agent A: 34 -> 35. `scripts/nixrisk/realized.py` (D3.220's
+    # realized-P&L arithmetic) is the thirty-fifth module arm(ii) imports. This
+    # is D3.192's shape for the FIFTH arc running and the bump is made from a
+    # worktree that cannot see its five siblings, so it is EXPECTED to be wrong
+    # again on the merged tree — the integrator re-banks it from the gate's own
+    # merged evidence, exactly as ARC 035 Stage 2 did. Re-read rather than
+    # assumed: over the widened scope the gate still reports 0 banned modules
+    # and 0 banned calls under arm(ii).
+    assert "arm(ii) imported 35 order-path module(s)" in evidence, evidence
 
 
 def test_the_reviewed_suppressions_are_the_two_known_fanouts_and_no_plant_is_pre_silenced(

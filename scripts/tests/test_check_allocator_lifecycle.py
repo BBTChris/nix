@@ -75,6 +75,8 @@ COPIED = (
     "scripts/nixrisk/picture.py",
     "scripts/nixrisk/reservations.py",
     FLATTEN,
+    # ARC 037 (D3.220): flatten.py imports the realized-P&L arithmetic.
+    "scripts/nixrisk/realized.py",
     "scripts/nixbus/__init__.py",
     "scripts/nixbus/statebus.py",
     SPEC,

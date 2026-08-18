@@ -44,6 +44,9 @@ NIXRISK = (
     "recovery.py",
     "supervision.py",
     "flatten.py",
+    # ARC 037 (D3.220): flatten.py imports the realized-P&L arithmetic, so a
+    # venue without it cannot import the subject at all.
+    "realized.py",
     "picture.py",
     "reservations.py",
     "gate.py",

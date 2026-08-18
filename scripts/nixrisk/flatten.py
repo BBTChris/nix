@@ -78,6 +78,13 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from nixrisk.picture import FinancialPictureBook
+from nixrisk.realized import (
+    STATUS_FIELD,
+    SYMBOL_FIELD,
+    RealizedError,
+    TradeFactsBook,
+    realized_fields,
+)
 from nixrisk.reservations import Refusal, ReservationLedger
 from nixrisk.seam import (
     EventKind,
@@ -400,6 +407,7 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
         strategy: StrategyExitSink,
         plane1: Plane1Port,
         scoring: ScoringSink,
+        trade_facts: TradeFactsBook | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._broker = broker
@@ -412,12 +420,33 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
         #: Limiter row rides.
         self._plane1 = plane1
         self._scoring = scoring
+        #: ARC 037 / D3.220. Where the per-trade realized figure's INPUTS come
+        #: from. Defaulted to `None` rather than required, and that is a
+        #: measured choice rather than a convenience: eight construction sites
+        #: exist across this tree's tests and gates, NO production code path
+        #: fills a facts book (this tree has no fill feed — `EventKind` still
+        #: has no `filled` member), and a required argument would have made
+        #: every one of them pass a book with nothing in it. A book that is
+        #: absent produces a `realized_status` on the row naming its absence;
+        #: it NEVER produces a zero, which is the failure mode
+        #: `nixscore/ema.py`'s docstring spends a paragraph on.
+        self._trade_facts = trade_facts
         self._clock = clock
         #: trade_id -> the authoritative close. The arbiter's ground truth (§4).
         self._closed: dict[str, ClosedRecord] = {}
         #: symbol -> the active protective intent, for attributing an untargeted
         #: uncertainty flatten at reconcile time.
         self._intents: dict[str, _Intent] = {}
+        #: trade_id -> the §12.10 event type whose row already carried this
+        #: trade's realized figure. ONE figure per closed trade, and the second
+        #: realizing row for the same trade says so instead of repeating it —
+        #: `nixscore.ema.daily_advances` SUMS every realizing row in a pair's
+        #: day, so a protective exit and its confirming `closed` row both
+        #: carrying the number would double the trade's contribution to §6.6's
+        #: rank. Measured on the shipped path: `request_close` books
+        #: `protective_exit` and `reconcile_and_publish` books `closed` for the
+        #: same trade_id.
+        self._realized_booked: dict[str, str] = {}
 
     # -- B2 / B3: the protective action and the dual-authority arbiter --------
 
@@ -536,17 +565,19 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
             superseded=prior.authority if prior is not None else None,
         )
         self._closed[target.trade_id] = record
+        protective = authority is CloseAuthority.PROTECTIVE
         self._book(
-            kind=(
-                EventKind.PROTECTIVE_EXIT
-                if authority is CloseAuthority.PROTECTIVE
-                else EventKind.EXIT_INTENT
-            ),
+            kind=(EventKind.PROTECTIVE_EXIT if protective else EventKind.EXIT_INTENT),
             trade_id=target.trade_id,
             strategy_id=target.strategy_id,
             symbol=target.symbol,
             reason=reason,
             ts=record.closed_ts,
+            # `protective_exit` BOOKS a realization; `exit_intent` does not.
+            # `nixscore.ema` classifies them exactly that way — an intent is a
+            # decision, and the position it names is still open until a fill
+            # says otherwise, so its P&L would be a mark (§6.6:435).
+            realizing=protective,
         )
         return CloseOutcome(executed=True, record=record)
 
@@ -718,6 +749,12 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
                 symbol=row.symbol,
                 reason=reason,
                 ts=now,
+                # §9's terminal round trip, and the row §6.6 actually ranks on.
+                # It is booked AFTER reconcile against broker truth, which is
+                # why it — and not the protective-exit row that preceded it —
+                # is normally the one carrying the figure: at exit-intent time
+                # no exit fill is confirmed and the facts book has nothing.
+                realizing=True,
             )
 
     # too-many-arguments: §9 requires timestamp + strategy_id + trade_id + reason
@@ -732,6 +769,7 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
         symbol: str,
         reason: str,
         ts: float,
+        realizing: bool = False,
     ) -> None:
         """One §12.10 exit row onto Plane 1 (Limiter sole writer, §9).
 
@@ -741,6 +779,12 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
         §12.10's per-row extras live (the reservation-release rows already do this).
         Bounded and hot-path-safe: `enqueue` appends to the WAL and returns without
         durability, so booking an exit row adds no wire dependency to the exit path.
+
+        ARC 037 (D3.220): a row booked with `realizing=True` also carries the
+        trade's REALIZED P&L, or a `realized_status` naming why it does not.
+        No new event type, no new writer and no new port — the figure rides the
+        `closed` / `protective_exit` rows this method already books, which is
+        §12.10:768's own pattern for a per-trade figure.
         """
         self._plane1.enqueue(
             EventRow(
@@ -749,9 +793,95 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
                 strategy_id=strategy_id,
                 reason=reason,
                 trade_id=trade_id,
-                fields={"symbol": symbol},
+                fields=(
+                    self._realizing_fields(kind, trade_id, symbol)
+                    if realizing
+                    else {SYMBOL_FIELD: symbol}
+                ),
             )
         )
+
+    # -- ARC 037 / D3.220: the realized figure the durable record did not carry -
+
+    def _realizing_fields(
+        self, kind: EventKind, trade_id: str | None, symbol: str
+    ) -> dict[str, str]:
+        """The `fields` of a row that BOOKS A REALIZATION (§6.6:435, SEAM (a)).
+
+        `closed` and `protective_exit` are two of
+        `nixscore.ema.REALIZING_EVENT_TYPES`, and §12.10:768's own pattern —
+        *"the final trail level rides the `closed` row"* — is what this follows:
+        a per-trade figure rides its terminal row, and no §12.10 event type is
+        minted for it.
+
+        Either the row carries `realized_pnl` or it carries a `realized_status`
+        saying WHY it does not. There is no third outcome and there is never a
+        placeholder number: `nixscore.ema` refuses a realizing row with no
+        figure BY NAME (`MissingRealized`), and that refusal is the only thing
+        standing between a blind scorer and a scorer that looks like a healthy
+        cold start. A zero here would disable it permanently.
+        """
+        outcome = self._realized_or_reason(trade_id, symbol)
+        if isinstance(outcome, str):
+            return {SYMBOL_FIELD: symbol, STATUS_FIELD: outcome}
+        self._realized_booked[str(trade_id)] = kind.value
+        return outcome
+
+    # too-many-return-statements: SEVEN returns, six of which are a DISTINCT
+    # named reason a figure can be legitimately absent. Collapsing them into a
+    # single exit with an accumulated variable would not remove a branch; it
+    # would remove the one thing check contract rule 11 asks for — a reason
+    # that names ITS OWN condition — and the row's `realized_status` is that
+    # reason, written into §9's durable record.
+    def _realized_or_reason(  # pylint: disable=too-many-return-statements
+        self, trade_id: str | None, symbol: str
+    ) -> dict[str, str] | str:
+        """This trade's realizing `fields`, or the REASON there are none.
+
+        Every branch here is a way the figure can be legitimately absent, and
+        each one is written into §9's record rather than swallowed. A
+        `RealizedError` is caught and recorded rather than raised, and that is
+        the one deliberate softening on this path: §14 makes the protective
+        exit's booking zero-wire and non-optional, so a malformed cost fact must
+        not be able to stop the Limiter from recording that a position closed.
+        The refusal's own text rides onto the row, so nothing is lost — the
+        reason is durable, and the scorer still refuses the row by name.
+        """
+        if trade_id is None:
+            return (
+                "no trade_id on this realizing row, so there is no round trip to "
+                "price and no pair to attribute it to (§6.6:448)"
+            )
+        booked = self._realized_booked.get(trade_id)
+        if booked is not None:
+            return (
+                f"already booked on this trade's {booked!r} row; a second figure "
+                "would DOUBLE-COUNT one close, because §6.6:438's per-day "
+                "reduction SUMS every realizing row a pair produced that day"
+            )
+        if self._trade_facts is None:
+            return (
+                "no TradeFactsBook is wired into this Limiter, so the exit "
+                "fill's price and costs are not knowable here (CHECK-DEBT "
+                "D3.281: this tree has no fill feed)"
+            )
+        facts = self._trade_facts.facts_for(trade_id)
+        if facts is None:
+            return (
+                "no confirmed exit fill for this trade yet — §4 keeps 'we sent a "
+                "flatten' and 'the position is confirmed flat' apart, and a "
+                "figure computed from an unconfirmed exit is a mark"
+            )
+        if facts.entry.symbol != symbol:
+            return (
+                f"the facts book answered for symbol {facts.entry.symbol!r} on "
+                f"trade {trade_id!r}, but this row closes {symbol!r} — §6.6:448 "
+                "keys on the pair, so a mismatched symbol is a misattribution"
+            )
+        try:
+            return realized_fields(facts)
+        except RealizedError as exc:
+            return f"refused: {exc}"
 
     def _attribution(
         self, record: ClosedRecord | None, symbol: str

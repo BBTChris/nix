@@ -14,6 +14,12 @@ Every control asserts the REASON — the site and the named condition — never 
 exit code or the status alone (check contract v2 §11).
 """
 # pylint: disable=invalid-name,redefined-outer-name,duplicate-code
+# missing-function-docstring: the helpers below are named after what they do
+# to one file (`_run`, `_plant`) and a docstring would restate the name. Added
+# ARC 037/A: measured PRE-EXISTING on the untouched tree (pylint exit 16 over
+# this file alone), surfaced by an unrelated one-line change bringing the file
+# into a commit's hook scope.
+# pylint: disable=missing-function-docstring
 
 from __future__ import annotations
 
@@ -36,6 +42,9 @@ from nixverify.contract import (  # pylint: disable=wrong-import-position
 
 NIXRISK = (
     "scripts/nixrisk/flatten.py",
+    # ARC 037 (D3.220): flatten.py imports the realized-P&L arithmetic, so a
+    # scratch tree without it cannot import the subject at all.
+    "scripts/nixrisk/realized.py",
     "scripts/nixrisk/seam.py",
     "scripts/nixrisk/picture.py",
     "scripts/nixrisk/reservations.py",

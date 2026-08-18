@@ -41,6 +41,9 @@ NIXRISK = (
     "scripts/nixrisk/__init__.py",
     "scripts/nixrisk/session.py",
     "scripts/nixrisk/flatten.py",
+    # ARC 037 (D3.220): flatten.py imports the realized-P&L arithmetic, so a
+    # scratch tree without it cannot import the subject at all.
+    "scripts/nixrisk/realized.py",
     "scripts/nixrisk/seam.py",
     "scripts/nixrisk/picture.py",
     "scripts/nixrisk/reservations.py",
