@@ -57,14 +57,16 @@ THE FIVE ARMS
     sink RAISING and requires the broker close to have landed anyway and the
     recovery to have completed with the failed publish RECORDED.
  6. **A green could imply score handling across death works.** CLOSED: the
-    evidence PRINTS `supervision.SCORE_BOUNDARY` — §4:275-280 is R5 and nothing
-    here implements it.
+    evidence PRINTS `supervision.SCORE_BOUNDARY` — which since ARC 037 names the
+    absent JOIN between supervision and `scripts/nixscore/store.py` rather than
+    claiming the store is absent, because it is not (CHECK-DEBT D3.252).
 """
 
 from __future__ import annotations
 
 import importlib
 import sys
+import tempfile
 from pathlib import Path
 from types import ModuleType
 from typing import Any, NamedTuple
@@ -967,7 +969,11 @@ def _evidence(loaded: Loaded, observed: tuple[str, ...]) -> str:
 
 
 def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argument
-    root = Path("/tmp") / f"nix-{NAME}-{id(ctx):x}"
+    # B108: the scratch tree is created by `tempfile.mkdtemp`, not by
+    # joining a guessable name onto /tmp. The name is still recognisable
+    # (the prefix carries this gate's NAME) so an abandoned directory can
+    # be attributed, and `_remove_tree` still deletes it by absolute path.
+    root = Path(tempfile.mkdtemp(prefix=f"nix-{NAME}-"))
     try:
         loaded, error = load(ctx.nix_home)
         if loaded is None:

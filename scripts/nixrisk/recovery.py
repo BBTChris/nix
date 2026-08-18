@@ -511,7 +511,12 @@ class RecoveryStep(enum.Enum):
     QUARANTINE = ("quarantine", 5)
 
     def __init__(self, label: str, order: int) -> None:
-        self._value_ = label
+        # The ignore below: `_value_` is typed as the member's own tuple, and
+        # re-binding it to the label is the documented custom-`Enum.__init__`
+        # pattern (the tuple is the CONSTRUCTOR's argument list, not the value).
+        # PRE-EXISTING; surfaced by ARC 037 only because mypy type-checks this
+        # module when scripts/nixrisk/supervision.py is in the same run.
+        self._value_ = label  # type: ignore[assignment]
         self.order = order
 
 
