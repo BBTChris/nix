@@ -149,6 +149,7 @@
         "check_plane2_across_kill",
         "check_python_deps",
         "check_python_transitive_deps",
+        "check_ranking_table",
         "check_reserved_cores",
         "check_state_bus",
         "check_venv_isolation"
@@ -173,6 +174,7 @@
         "subprocess:python",
         "subprocess:python3",
         "subprocess:strace",
+        "threads",
         "venv",
         "zmq-ipc"
       ]
