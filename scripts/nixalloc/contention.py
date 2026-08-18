@@ -6,11 +6,25 @@ chosen by recent realized productivity — a realized-P&L EMA per
 `(strategy_id, symbol)` pair, published by a dedicated **Scoring process** that
 is the sole writer of a ranking table.
 
-**THAT PROCESS DOES NOT EXIST.** Scoring is R5 (§12B), no writer for the ranking
-table has been built, and therefore the table is permanently absent. So the
-honest description of this module is: *it wires the READ seam and it implements
-the FALLBACK, and the fallback is the state the whole system runs in today.*
-That is not a limitation discovered late; §6.6:465-468 locks it —
+**THAT PROCESS STILL DOES NOT EXIST — and as of ARC 036 the TABLE IS REAL AND
+THIS MODULE IS WIRED TO IT.** The two halves of that sentence were one fact
+until ARC 036 and are now two, so restating the old one would be false in the
+half that moved (directive 3, measured on this paragraph).
+
+* **What landed.** ARC 036 Phase 0 froze `scripts/nixscore/seam.py`
+  (`seam_rev 1.0.0`): §6.6's ranking table as a §12.7 mirror, with the O(1)
+  lookup, the freshness predicate and the five-trigger FCFS arbitration.
+  `scripts/nixalloc/wiring.py`'s `_MirrorRankingTable` presents that mirror as
+  the `RankingTablePort` `rank` below reads, and
+  `AllocatorPathway.propose_contended` runs `rank`'s ordering as the order
+  contenders are actually sized in — so a change in the table changes which
+  contender gets the capital. `checks/check_scoring_consumption.py` proves that
+  by REVERSING two pair-rows' realized EMAs and requiring the winner to reverse.
+* **What did not.** Scoring is still R5 (§12B) and **nothing in this tree
+  writes a ranking table**. The mirror is fed from a subscriber socket that no
+  production process holds today, so `available()` answers False, `rank` takes
+  §6.6:465's fallback, and *the fallback is still the state the whole system
+  runs in.* That is not a limitation discovered late; §6.6:465-468 locks it —
 
     "if the Scoring process is down or its table is stale, both Allocator and
     Limiter fall back to first-come-first-served — deterministic, structurally

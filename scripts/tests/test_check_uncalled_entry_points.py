@@ -864,14 +864,36 @@ _ARC035_D_CARRIED = (
 #: `arbitrate`, that name STOPS being a finding and this tuple must shrink with
 #: it, or the test goes red for the opposite reason. A carried red that cannot
 #: be quietly kept is the only kind worth carrying. CHECK-DEBT D3.214.
+#:
+#: **ARC 036 sub-agent E SHRANK THIS BY FIVE, which is the obligation being
+#: paid rather than a relaxation of it.** `scripts/nixalloc/wiring.py` now
+#: reads the mirror on the Allocator's production path — `_MirrorRankingTable`
+#: calls `fresh` and `lookup`, `AllocatorPathway.propose_contended` reads
+#: `span_days`, and `_pairwise` calls `arbitrate` and reads `Verdict.fell_back`
+#: — so those five stopped being findings and left this tuple in the same edit.
+#:
+#: What remains is the SCORING side of the seam and the seam's INGRESS, and
+#: none of the three is the Allocator's to wire: `RankingPublisher.service`
+#: serves §12.7's snapshot-on-subscribe, `RankingSnapshot.lookup` reads a table
+#: the WRITER holds, and `RankingMirror.apply` is fed from a subscriber socket
+#: that nothing in production holds because nothing publishes the `ranking`
+#: topic. All three get their production caller when the Scoring process and the
+#: Allocator's own subscriber loop land (R5 / §12B), and until then they are
+#: carried for the same reason the original seven were.
+#:
+#: **`RankingMirror.apply` is an ADDITION, and it is one this arc MADE VISIBLE
+#: rather than one it created.** At ARC 036 Phase 0 the gate reported it
+#: `cannot_resolve` — no receiver anywhere resolved to a `RankingMirror`, and
+#: the gate is explicit that a cannot-resolve is reported and never counted as a
+#: finding. `checks/check_scoring_consumption.py` constructs one by name, so the
+#: receiver now resolves and the honest verdict is `gate_only`: a gate calls it
+#: and shipped code does not. Carrying it by name is the mechanism for that;
+#: leaving it unresolvable would have been a suppression that cost nothing to
+#: keep.
 _ARC036_PHASE0_CARRIED = (
-    "scripts/nixscore/seam.py::RankingMirror.arbitrate",
-    "scripts/nixscore/seam.py::RankingMirror.fresh",
-    "scripts/nixscore/seam.py::RankingMirror.lookup",
-    "scripts/nixscore/seam.py::RankingMirror.span_days",
+    "scripts/nixscore/seam.py::RankingMirror.apply",
     "scripts/nixscore/seam.py::RankingPublisher.service",
     "scripts/nixscore/seam.py::RankingSnapshot.lookup",
-    "scripts/nixscore/seam.py::Verdict.fell_back",
 )
 
 
