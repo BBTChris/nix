@@ -128,7 +128,11 @@ def test_the_REAL_TREE_passes_and_the_EVIDENCE_carries_the_OBSERVED_SEQUENCE() -
     assert flatten_at < dereg_at, (
         "the evidence prints the observed sequence in the wrong order"
     )
-    assert "ARC R5" in result.evidence, "the scoring boundary is not printed"
+    # RE-POINTED ARC 037 (CHECK-DEBT D3.252/D3.306): the boundary used to read
+    # "ARC R5 … Scoring does not exist in this tree", which stopped being true
+    # when scripts/nixscore/ landed. What is absent now is the JOIN.
+    assert "NO JOIN" in result.evidence, "the scoring boundary is not printed"
+    assert "ScoreStore.archive_strategy" in result.evidence, result.evidence
 
 
 def test_the_COPIED_TREE_also_passes_so_every_plant_below_starts_GREEN(

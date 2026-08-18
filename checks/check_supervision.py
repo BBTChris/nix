@@ -59,20 +59,33 @@ restored) and drives them with hand-built doubles.
     nothing is enabled, no unit on this box is wired to the breaker, and this
     gate takes no `systemctl` action of any kind.
  6. **A green could imply score handling across death works.** CLOSED: the
-    evidence PRINTS `supervision.SCORE_BOUNDARY`, which says §4:275-280's
-    persist/archive rule is R5 and is not implemented.
+    evidence PRINTS `supervision.SCORE_BOUNDARY`, which since ARC 037 says
+    §4:275-280's persist/archive rule has a MECHANISM in this tree
+    (`scripts/nixscore/store.py`) and NO JOIN to these transitions — it used to
+    say Scoring did not exist, which stopped being true at ARC 036 and was false
+    in a string that ships to the operator (CHECK-DEBT D3.252).
 """
 
 from __future__ import annotations
 
 import importlib
 import json
-import subprocess
+import subprocess  # nosec B404 - the SUBJECT is a process boundary; see below
 import sys
+import tempfile
 from pathlib import Path
 from types import ModuleType
 from typing import Any, NamedTuple
 
+# B404 (`import subprocess`) is suppressed at the import above and B603
+# (`subprocess.run` without `shell=True`) at the call site, each with the reason
+# on the line rather than by widening the hook's scope (`nix_check_contract.md`
+# §5.2). Both are bandit's INFORMATIONAL pair over the SAFE spelling: every argv
+# here is a literal list whose head is `sys.executable`, there is no shell, and
+# no element comes from outside this file except paths this gate itself built.
+# The tests-side bandit hook already skips exactly B404 and B603 for exactly this
+# reason (`.pre-commit-config.yaml`); the production hook has no skip, so the
+# narrowing is written per site instead of per tree.
 import _preamble  # noqa: F401  pylint: disable=unused-import,wrong-import-order
 from nixverify.contract import CheckResult, Context, Mode, Status
 
@@ -588,7 +601,7 @@ def _arm_actuator(loaded: Loaded, home: Path, root: Path) -> list[Finding]:
 
     reports = []
     for index in range(cap):
-        proc = subprocess.run(
+        proc = subprocess.run(  # nosec B603 - literal argv, sys.executable, no shell
             [
                 sys.executable,
                 str(home / ACTUATOR_FILE),
@@ -729,7 +742,11 @@ def _evidence(loaded: Loaded) -> str:
 
 
 def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argument
-    root = Path("/tmp") / f"nix-{NAME}-{id(ctx):x}"
+    # B108: the scratch tree is created by `tempfile.mkdtemp`, not by
+    # joining a guessable name onto /tmp. The name is still recognisable
+    # (the prefix carries this gate's NAME) so an abandoned directory can
+    # be attributed, and `_remove_tree` still deletes it by absolute path.
+    root = Path(tempfile.mkdtemp(prefix=f"nix-{NAME}-"))
     try:
         loaded, error = load(ctx.nix_home)
         if loaded is None:

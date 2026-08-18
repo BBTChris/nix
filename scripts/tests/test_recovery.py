@@ -273,12 +273,20 @@ class World:  # pylint: disable=too-many-instance-attributes
         self.book = FinancialPictureBook(
             balance=100_000.0, deployable_fraction=0.70, sink=self.sink
         )
+        # The doubles are DELIBERATELY PARTIAL — `Broker` implements the
+        # flatten verbs this suite drives and not `query_balance` /
+        # `query_positions`, and `Plane1` implements `enqueue` and not
+        # `pending()`. mypy sees the protocol gap; the suite never reaches the
+        # missing verbs, and widening the doubles to satisfy a type checker
+        # would put behaviour in them that nothing here measures. PRE-EXISTING;
+        # surfaced by ARC 037 only because mypy type-checks nixrisk.recovery
+        # when scripts/nixrisk/supervision.py is in the same hook invocation.
         self.flatten = ProtectiveFlatten(
-            broker=self.broker,
-            ledger=ReservationLedger(self.plane1),
+            broker=self.broker,  # type: ignore[arg-type]
+            ledger=ReservationLedger(self.plane1),  # type: ignore[arg-type]
             picture=self.book,
             strategy=self.strategy,
-            plane1=self.plane1,
+            plane1=self.plane1,  # type: ignore[arg-type]
             scoring=self.scoring,
         )
         self.registry = StrategyRegistry()
@@ -725,7 +733,7 @@ def test_a_QUARANTINED_strategy_does_NOT_stop_ANOTHER_strategy_being_APPROVED(
     assert world.breaker.is_quarantined(DEAD)
 
     halt = HaltFlag(
-        plane1=Plane1(),
+        plane1=Plane1(),  # type: ignore[arg-type]  # partial double; see World
         plane2=Plane2(),
         floors=limiter_knobs["halt_cooldown_floor_s"],
     )
@@ -756,11 +764,17 @@ def test_a_QUARANTINED_strategy_does_NOT_stop_ANOTHER_strategy_being_APPROVED(
     assert outcome.decision is Decision.APPROVE, (outcome.rule, outcome.reason)
 
 
-def test_the_QUARANTINE_alert_states_the_R5_SCORING_BOUNDARY(
+def test_the_QUARANTINE_alert_states_the_UNWIRED_SCORING_BOUNDARY(
     world: World, supervision_knobs
 ) -> None:
     """A green here must not imply scoring works. §4:275-280's persist-across-
-    crash / archive-on-quarantine rule is R5 and NOTHING here implements it."""
+    crash / archive-on-quarantine rule has a MECHANISM in this tree and no JOIN
+    to this transition, and the alert an operator reads must say so.
+
+    RENAMED AND RE-POINTED ARC 037 (CHECK-DEBT D3.252): the boundary asserted
+    "Scoring does not exist in this tree", which was false on disk from ARC 036
+    onward — and false in a string that ships to the operator.
+    """
     from nixrisk.supervision import (
         SCORE_BOUNDARY,  # pylint: disable=import-outside-toplevel
     )
@@ -771,8 +785,13 @@ def test_the_QUARANTINE_alert_states_the_R5_SCORING_BOUNDARY(
         msg for code, msg in world.alerts.raised if code == "supervision.quarantine"
     )
     assert SCORE_BOUNDARY in breaker_alert
-    assert "no EMA to persist" in SCORE_BOUNDARY
-    assert "ARC R5" in SCORE_BOUNDARY
+    assert "NO JOIN" in SCORE_BOUNDARY
+    assert "ScoreStore.archive_strategy" in SCORE_BOUNDARY
+    assert "ScoreStore.restore_strategy" in SCORE_BOUNDARY
+    assert "Scoring does not exist" not in SCORE_BOUNDARY, (
+        "the boundary claims the score store is absent while "
+        "scripts/nixscore/store.py is on disk — D3.252's first half"
+    )
 
 
 # ==========================================================================

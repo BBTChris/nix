@@ -112,7 +112,12 @@ def test_the_REAL_TREE_passes_and_the_EVIDENCE_names_the_FOUR_arms() -> None:
     assert "declare NO HALT" in result.evidence
     assert "REAL subprocesses" in result.evidence
     assert "installed, enabled, started and reloaded nothing" in result.evidence
-    assert "ARC R5" in result.evidence, "the scoring boundary is not printed"
+    # RE-POINTED ARC 037 (D3.252): the boundary used to read "ARC R5 … Scoring
+    # does not exist in this tree", which stopped being true when
+    # scripts/nixscore/ exists. What is absent now is the JOIN, and that is the
+    # phrase this assertion holds the evidence to.
+    assert "NO JOIN" in result.evidence, "the scoring boundary is not printed"
+    assert "ScoreStore.archive_strategy" in result.evidence, result.evidence
 
 
 def test_the_COPIED_TREE_also_passes_so_every_plant_below_starts_GREEN(

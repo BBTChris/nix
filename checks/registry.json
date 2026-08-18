@@ -55,6 +55,7 @@
         "check_pollers",
         "check_preamble_shim",
         "check_price_ring",
+        "check_quarantine_durability",
         "check_reservation_lifecycle",
         "check_risks_data_only",
         "check_runtime_gate",
