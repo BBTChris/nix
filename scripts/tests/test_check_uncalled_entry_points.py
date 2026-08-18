@@ -864,13 +864,17 @@ _ARC035_D_CARRIED = (
 #: `arbitrate`, that name STOPS being a finding and this tuple must shrink with
 #: it, or the test goes red for the opposite reason. A carried red that cannot
 #: be quietly kept is the only kind worth carrying. CHECK-DEBT D3.214.
+#: SHRUNK by ARC 036 sub-agent B, which is the obligation above being paid
+#: rather than a note being edited. `scripts/nixscore/publisher.py` is the real
+#: publish path and it CALLS `RankingMirror.arbitrate`, `RankingMirror.fresh`,
+#: `RankingMirror.lookup`, `RankingPublisher.service` and
+#: `RankingSnapshot.lookup` from shipped code, so all five stopped being
+#: findings and had to leave this tuple in the same commit. What remains is what
+#: is still genuinely unwired: `RankingMirror.span_days` (nothing reads the span
+#: yet) and `Verdict.fell_back` (the Limiter's convenience predicate, and the
+#: Limiter does not exist).
 _ARC036_PHASE0_CARRIED = (
-    "scripts/nixscore/seam.py::RankingMirror.arbitrate",
-    "scripts/nixscore/seam.py::RankingMirror.fresh",
-    "scripts/nixscore/seam.py::RankingMirror.lookup",
     "scripts/nixscore/seam.py::RankingMirror.span_days",
-    "scripts/nixscore/seam.py::RankingPublisher.service",
-    "scripts/nixscore/seam.py::RankingSnapshot.lookup",
     "scripts/nixscore/seam.py::Verdict.fell_back",
 )
 
@@ -896,6 +900,41 @@ _ARC036_STAGE1_A_CARRIED = (
     "scripts/nixscore/ema.py::RealizedEmaEngine.snapshot_from_log",
 )
 
+#: ARC 036 sub-agent B — `scripts/nixscore/publisher.py`, the same shape one
+#: layer out and stated as such rather than discovered later.
+#:
+#: The publish path's writer is driven by the Scoring process (sub-agent C) and
+#: its reader by the Allocator and Limiter (sub-agent E). Neither exists in this
+#: sub-agent's tree, so every public verb on `RankingWriter` and `RankingReader`
+#: has gates and tests for callers and nothing else — which is exactly what
+#: `check_uncalled_entry_points` was built to name, and it is right.
+#:
+#: Carried BY NAME, never absorbed into the baseline (D3.203). The `vanished`
+#: assertion makes it an obligation: as Stage 2 wires the Scoring process and
+#: the Allocator, these names stop being findings and this tuple must shrink in
+#: the same commit. CHECK-DEBT D3.230.
+_ARC036_B_CARRIED = (
+    "scripts/nixscore/publisher.py::PumpResult.carried_nothing",
+    "scripts/nixscore/publisher.py::RankingReader.applied",
+    "scripts/nixscore/publisher.py::RankingReader.arbitrate",
+    "scripts/nixscore/publisher.py::RankingReader.bytes_received",
+    "scripts/nixscore/publisher.py::RankingReader.close",
+    "scripts/nixscore/publisher.py::RankingReader.foreign_rejected",
+    "scripts/nixscore/publisher.py::RankingReader.fresh",
+    "scripts/nixscore/publisher.py::RankingReader.malformed_rejected",
+    "scripts/nixscore/publisher.py::RankingReader.mirror",
+    "scripts/nixscore/publisher.py::RankingReader.pump",
+    "scripts/nixscore/publisher.py::RankingReader.stale",
+    "scripts/nixscore/publisher.py::RankingReader.view",
+    "scripts/nixscore/publisher.py::RankingWriter.close",
+    "scripts/nixscore/publisher.py::RankingWriter.publish_rows",
+    "scripts/nixscore/publisher.py::RankingWriter.published",
+    "scripts/nixscore/publisher.py::RankingWriter.service",
+    "scripts/nixscore/publisher.py::RankingWriter.snapshots_served",
+    "scripts/nixscore/publisher.py::RankingWriter.subscribes_seen",
+    "scripts/nixscore/publisher.py::ranking_endpoint",
+)
+
 
 def test_the_LIVE_BASELINE_accepts_EXACTLY_what_the_LIVE_TREE_measures() -> None:
     """The ratchet, read against the real tree, MINUS ARC 034's carried red.
@@ -912,6 +951,7 @@ def test_the_LIVE_BASELINE_accepts_EXACTLY_what_the_LIVE_TREE_measures() -> None
         | set(_ARC035_D_CARRIED)
         | set(_ARC036_PHASE0_CARRIED)
         | set(_ARC036_STAGE1_A_CARRIED)
+        | set(_ARC036_B_CARRIED)
     )
     unaccepted = sorted(set(state.findings) - baseline.accepted - carried)
     stale = sorted(baseline.accepted - set(state.findings))
