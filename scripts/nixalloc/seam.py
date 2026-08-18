@@ -117,10 +117,11 @@ from nixrisk.seam import (
 
 # pylint: disable=too-many-instance-attributes
 # `SizingRationale` carries exactly the terms §16 U5 requires to ride the order
-# message ("binding constraint + input snapshot"), which is eleven: the binding
+# message ("binding constraint + input snapshot"), which is twelve: the binding
 # constraint, the snapshot version every term was computed against, the three
 # candidate sizes §7's `min(...)` compares, the headroom §16 U2 defines, the
-# bucket and its used/ceiling pair, the contention policy, and a free note.
+# bucket and its used/ceiling pair, the contention policy, the §6.6:459 score
+# weight that multiplied the risk budget (ARC 037), and a free note.
 # Dropping one to satisfy a threshold of seven would either lose an audit term
 # or nest it, and a nested term is one the Limiter's event log has to read
 # SEPARATELY — the cross-read §3's atomicity rule exists to forbid, reproduced
@@ -523,6 +524,22 @@ class SizingRationale:
     bucket_ceiling: float
     contention: ContentionPolicy
     note: str = ""
+    #: ARC 037 / SEAM (b), discharging CHECK-DEBT **D3.260**. The §6.6:459
+    #: score -> sizing weight that was MULTIPLIED INTO §7:478's
+    #: `per_trade_risk_$` **before** `risk_contracts = floor(...)`, recorded so
+    #: the Limiter's audit record can tell a size that was weighted from one
+    #: that was not. `1.0` is NEUTRAL and is the default, so every proposal
+    #: built before this field existed reads as exactly what it was.
+    #:
+    #: **`SEAM_REV` IS DELIBERATELY NOT BUMPED.** `SizingRationale` is an
+    #: in-process value on the Allocator's own `Proposal`; it is not on the
+    #: §12.7 wire, `MIRRORED_FIELDS` and `POSITION_ROW_FIELDS` do not name it,
+    #: and no consumer decodes it off a socket. This project's rule is that the
+    #: literal moves when the BYTES move (see `SEAM_REV`'s own note above,
+    #: where ARC 031 declined to bump on a DECISION and ARC 032 bumped on the
+    #: encoded field). Bumping here would make a wire-contract change out of an
+    #: added audit term and teach the next reader that the number is decorative.
+    score_weight: float = 1.0
 
 
 class ProposalOutcome(enum.Enum):

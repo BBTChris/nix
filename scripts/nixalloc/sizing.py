@@ -39,6 +39,26 @@ A gate that read this docstring, or the source order below, would prove
 nothing: source order and execution order are different facts, and the second
 is the one §16 U1 is about.
 
+§6.6:459's SCORE WEIGHT REACHES THE RISK BUDGET AND NOTHING ELSE (ARC 037)
+--------------------------------------------------------------------------
+`propose` takes a keyword-only `weight`, defaulting to
+`nixalloc.contention.NEUTRAL_WEIGHT`, and multiplies §7:478's
+`per_trade_risk_$` by it BEFORE `risk_contracts` floors. That is the whole of
+its reach, and the boundary is the point: **`margin_contracts`, the symbol cap
+and the correlation-bucket cap are never weighted.** Those three are
+capital-safety ceilings, and scaling a safety ceiling by a performance score is
+the direction that must not exist — a strategy that has been printing money
+would be handed a larger share of the margin the account can actually survive.
+§7's own key finding is that *"risk binds intraday, not margin"*, which is why
+weighting the risk term is what moves a size at all.
+
+The applied figure rides `SizingRationale.score_weight` so §16 U5's audit
+record can tell a weighted size from an unweighted one, and the weight is
+VALIDATED at the call boundary (`_validated_weight`) rather than clamped: an
+out-of-bounds weight is a wiring defect, and a clamp would make a broken caller
+look correct. `nixalloc.contention` owns the transform and the bounds; this
+module reads them and computes none of them.
+
 A DEAD SIGNAL NEVER TOUCHES THE MIRROR, AND THE PROPOSAL SAYS SO
 ----------------------------------------------------------------
 `SizingRationale.snapshot_version` is `NO_SNAPSHOT` (-1) on a tradability
@@ -128,6 +148,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from nixalloc.contention import (
+    NEUTRAL_WEIGHT,
+    WEIGHT_CEILING,
+    WEIGHT_FLOOR,
+)
 from nixalloc.seam import (
     BUCKET_OF,
     AllocatorPort,
@@ -146,12 +171,20 @@ from nixalloc.seam import (
 )
 
 # pylint: disable=too-few-public-methods
+# C0302 (too-many-lines) disabled at module scope, ARC 037. This file is one
+# pathway and its prose is the argument for every §7 term in it; splitting the
+# sizer to clear a line threshold would put the arithmetic and the reasons that
+# constrain it in two files, which is the shape doctrine C.9 warns about one
+# level up. Nothing here is duplicated -- the growth is the §6.6:459 weight and
+# the boundary statement that the weight reaches the RISK term only.
+# pylint: disable=too-many-lines
 # `BucketCapPort` and `InstrumentSpecPort`-shaped value types carry exactly the
 # verbs and fields their subject has. Inventing a second method to clear a
 # class-shape threshold would make each a worse stand-in for the thing it
 # stands in for (§2: every verb invented is authority granted).
 
 __all__ = [
+    "NEUTRAL_WEIGHT",
     "NO_SNAPSHOT",
     "BucketCapPort",
     "BucketQuery",
@@ -189,7 +222,56 @@ class SizingConfigError(ValueError):
     Never degraded to a default (directive 4, doctrine C.7): every knob below
     bounds a quantity that reaches a broker, and a silently substituted default
     would size real money off a number nobody chose.
+
+    ARC 037 gave it a second subject and NOT a second type: an out-of-bounds
+    §6.6:459 score weight is the same fault as an out-of-bounds knob — a number
+    arriving at the sizer that nobody is entitled to size on — and a distinct
+    exception class would only let a caller catch one and not the other.
     """
+
+
+def _weight_complaint(weight: object) -> str:
+    """Why this module will not multiply a risk budget by `weight`. "" = fine.
+
+    §18: the caller is told the CONDITION, never just that something was
+    refused. The bounds are `nixalloc.contention`'s, read from there rather
+    than restated here (directive 3), so the sizer and the transform cannot
+    drift into disagreeing about what a legal weight is.
+    """
+    if isinstance(weight, bool) or not isinstance(weight, (int, float)):
+        return f"is {type(weight).__name__} {weight!r}, not a real number"
+    value = float(weight)
+    if not math.isfinite(value):
+        return f"is not finite ({weight!r})"
+    if value <= 0.0:
+        return f"is not positive ({weight!r}) — a size is never scaled by <= 0"
+    if not WEIGHT_FLOOR <= value <= WEIGHT_CEILING:
+        return (
+            f"{weight!r} is outside the frozen bounds "
+            f"[{WEIGHT_FLOOR}, {WEIGHT_CEILING}]"
+        )
+    return ""
+
+
+def _validated_weight(weight: float, strategy_id: str, symbol: str) -> float:
+    """The §6.6:459 weight, or a LOUD refusal. Never a silent clamp.
+
+    Fail closed and loud (directive 4). A weight that arrives out of bounds is
+    a WIRING defect — the transform in `nixalloc.contention` cannot produce
+    one — and clamping it into range would make a broken caller look correct
+    while sizing real money off a number nobody computed. That is the same
+    argument `SizingConfigError` already makes for a knob, which is why it is
+    the same exception.
+    """
+    complaint = _weight_complaint(weight)
+    if not complaint:
+        return float(weight)
+    raise SizingConfigError(
+        f"scripts/nixalloc/sizing.py:SizingAllocator.propose: refusing to size "
+        f"{strategy_id}/{symbol} — the §6.6:459 score weight {complaint}. The "
+        "bounds are ARC 037 SEAM (b)'s architect ruling, carried by "
+        "nixalloc.contention.WEIGHT_FLOOR/WEIGHT_CEILING"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -585,8 +667,12 @@ def _empty_rationale(note: str, version: int = NO_SNAPSHOT) -> SizingRationale:
     )
 
 
+# R0902: eight fields, and the eighth is the §6.6:459 weight the `risk` term
+# above was computed under. Carrying it is what lets `_settle` record the
+# APPLIED figure rather than re-reading an argument, and a term recomputed at
+# the audit record is a second source for a number one pass already produced.
 @dataclass(frozen=True)
-class _Sized:
+class _Sized:  # pylint: disable=too-many-instance-attributes
     """One sizing pass's intermediate terms, before the bucket cap."""
 
     instrument: Instrument
@@ -596,6 +682,10 @@ class _Sized:
     cap: int
     headroom: float
     margin_per_contract: float
+    #: The §6.6:459 weight `risk` above was computed under. Carried on the
+    #: terms rather than re-read at the rationale, so the recorded figure is
+    #: the one the arithmetic actually used.
+    score_weight: float = NEUTRAL_WEIGHT
 
 
 @dataclass(frozen=True)
@@ -646,13 +736,26 @@ class SizingAllocator:
         stop_ticks: int,
         stop_mode: StopMode,
         signal_ts: float,
+        *,
+        weight: float = NEUTRAL_WEIGHT,
     ) -> Proposal:
         """§16 U1's single pass, in §16 U1's order. See the module docstring.
 
         The three early returns below happen BEFORE any call into this module's
         arithmetic functions, and the first of them happens before the mirror
         is read at all.
+
+        `weight` is §6.6:459's score → sizing weight, KEYWORD-ONLY and
+        defaulting to `NEUTRAL_WEIGHT`, so every caller written before ARC 037
+        sizes exactly as it did. It multiplies §7:478's `per_trade_risk_$`
+        BEFORE `risk_contracts` floors, and it reaches NOTHING else: the margin
+        term, the symbol cap and the correlation-bucket cap are capital-safety
+        ceilings, and scaling a safety ceiling by a performance score is the
+        direction that must not exist. It is VALIDATED here rather than clamped
+        (§18, directive 4) and validated FIRST, before any port is touched, so
+        a refusal is unambiguously about the argument.
         """
+        applied = _validated_weight(weight, strategy_id, symbol)
         drop = self._fast_drop(strategy_id, symbol)
         if drop is not None:
             return drop
@@ -670,7 +773,14 @@ class SizingAllocator:
         if guard is not None:
             return guard
         return self._size(
-            strategy_id, symbol, side, stop_ticks, stop_mode, signal_ts, picture
+            strategy_id,
+            symbol,
+            side,
+            stop_ticks,
+            stop_mode,
+            signal_ts,
+            picture,
+            applied,
         )
 
     # -- step 1: never size a dead signal (§16 U1) --------------------------
@@ -755,13 +865,31 @@ class SizingAllocator:
     # -- step 4: the arithmetic ---------------------------------------------
 
     def _terms(
-        self, symbol: str, stop_ticks: int, picture: FinancialPicture
+        self,
+        symbol: str,
+        stop_ticks: int,
+        picture: FinancialPicture,
+        weight: float = NEUTRAL_WEIGHT,
     ) -> _Sized | str:
         """§7:476-478's three terms, in the SELECTED instrument's units.
 
         Returns the terms, or a reason string when the selected instrument has
         no published margin — a micro leg whose key is missing from the margin
         cache is the same §7:483 not-tradable state as its full.
+
+        **`weight` reaches the RISK term and nothing else.** §7's own key
+        finding is that *"risk binds intraday, not margin"*, so the risk budget
+        is where a §6.6:459 weight actually moves a size; `margin`, `cap` and
+        (in `_settle`) the correlation-bucket cap are untouched.
+
+        **`ideal_micro_units` is computed on the UNWEIGHTED budget, and that is
+        a decision.** ARC 037's freeze applies the weight to §7:478's risk
+        budget "BEFORE `risk_contracts = floor(...)`" and says nothing about
+        §7:488-493's instrument selection, which is a different clause deciding
+        a different question (fulls or micros, not how many). Weighting the
+        selection too would let a performance score flip the instrument, which
+        no ruling authorises. Recorded as CHECK-DEBT D3.291 rather than decided
+        quietly here.
         """
         knobs = self._knobs
         spec = self._instruments[symbol]
@@ -783,14 +911,16 @@ class SizingAllocator:
         )
         headroom = headroom_usd(picture, knobs.deployable_pct)
         live_margin = picture.margin_per_contract[instrument.symbol]
+        weighted_risk_usd = knobs.per_trade_risk_usd * weight
         return _Sized(
             instrument=instrument,
             per_contract_risk=per_contract_risk,
-            risk=risk_contracts(knobs.per_trade_risk_usd, per_contract_risk),
+            risk=risk_contracts(weighted_risk_usd, per_contract_risk),
             margin=margin_contracts(headroom, live_margin),
             cap=max(0, knobs.symbol_cap[symbol] * instrument.units_per_full),
             headroom=headroom,
             margin_per_contract=live_margin,
+            score_weight=weight,
         )
 
     def _size(  # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -802,9 +932,10 @@ class SizingAllocator:
         stop_mode: StopMode,
         signal_ts: float,
         picture: FinancialPicture,
+        weight: float = NEUTRAL_WEIGHT,
     ) -> Proposal:
         """`min(risk, margin, symbol_cap)` → bucket cap → proposal (§7:478)."""
-        terms = self._terms(symbol, stop_ticks, picture)
+        terms = self._terms(symbol, stop_ticks, picture, weight)
         if isinstance(terms, str):
             return self._refuse(
                 ProposalOutcome.NOT_TRADABLE,
@@ -882,11 +1013,17 @@ class SizingAllocator:
                 bucket_used=used,
                 bucket_ceiling=ceiling,
                 contention=ContentionPolicy.FCFS,
+                score_weight=terms.score_weight,
                 note=(
                     f"{'micros' if terms.instrument.is_micro else 'fulls'}-only "
                     f"{terms.instrument.symbol}; dollar risk per contract "
                     f"{terms.per_contract_risk:.6g} (stop {stop_ticks} + pad "
-                    f"{self._knobs.slippage_pad_ticks[symbol]} ticks); {note}"
+                    f"{self._knobs.slippage_pad_ticks[symbol]} ticks); §6.6:459 "
+                    f"score weight {terms.score_weight:.6g} applied to the "
+                    f"§7:478 risk budget "
+                    f"({self._knobs.per_trade_risk_usd:.6g} -> "
+                    f"{self._knobs.per_trade_risk_usd * terms.score_weight:.6g}), "
+                    f"margin/cap/bucket UNWEIGHTED; {note}"
                 ),
             ),
         )

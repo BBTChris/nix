@@ -703,7 +703,7 @@ class ContentionOutcome:  # pylint: disable=too-many-instance-attributes
     ways the read can have gone wrong. Collapsing `pairwise_error` into
     `disagreement`, or the span into the reason string, would report one number
     for two faults and cost the operator the distinction that names the repair
-    — the same argument `SizingRationale` records for its eleven.
+    — the same argument `SizingRationale` records for its own field count.
     """
 
     #: The ordering `contention.rank` produced, with its own reason and policy.

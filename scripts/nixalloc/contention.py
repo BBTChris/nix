@@ -54,12 +54,30 @@ WHAT IS DEFERRED TO R5, SO NO GATE HERE IMPLIES COVERAGE IT DOES NOT HAVE
    one; the only arithmetic over a score in this file is a COMPARISON, which
    §6.6:453 names as the arbitration primitive and §6.6:463 explicitly permits
    on the hot path ("an O(1) table lookup, never math").
-2. **The score → sizing-weight transform.** §6.6:459 says the Allocator reads
-   the table "to weight sizing" and the spec fixes no transform. Inventing one
-   would be exactly the "defining productive" allocation judgment §6.6:461-463
-   keeps out of the consumer. `ContentionRanking.weights` is therefore 1.0 for
-   every contender under BOTH policies, and `reason` says so out loud, so a
-   caller cannot mistake a live ordering for live weighting.
+2. **The score → sizing-weight transform — LANDED IN ARC 037, and the thing
+   that changed is WHERE the number came from, not who computed the score.**
+   §6.6:459 says the Allocator reads the table "to weight sizing" and the
+   frozen spec fixes no transform, so until ARC 037 `weights` was 1.0 for every
+   contender under both policies (CHECK-DEBT D3.260). The transform is now
+   `weight_for` below and every literal in it is an **architect ruling**,
+   recorded in `downloads/ARC037-SEAM-FREEZE.md` SEAM (b) and cited here — it
+   is not a number this module chose, which is the whole reason it may exist
+   here at all.
+
+   It is **ORDINAL IN THE RANK and never in the score.** Deriving a multiplier
+   from an EMA MAGNITUDE would be the "defining productive" allocation
+   judgment §6.6:461-463 keeps out of the consumer: it would make the size a
+   function of how large somebody's realized P&L is, which is Scoring's number
+   to interpret. A rank is the output of §6.6:453's COMPARISON, which is the
+   one operation this module is permitted, so a weight that is a function of
+   the rank alone stays inside the read seam. Nobody but the Scoring process
+   still computes a score, and nothing below reads `RankingRow.score` for
+   anything but a comparison.
+
+   **Ties share a rank and therefore share a weight**, because §6.6:455 makes
+   equal scores an FCFS case and FCFS is neutral. Every declared neutral case
+   — every fallback route, an absent pair-row, tied EMAs, cold start, and a
+   field of one — is exactly `NEUTRAL_WEIGHT`.
 3. **The ranking table's staleness THRESHOLD.** §12A names
    `MARGIN_STALE_MS`, `CALENDAR_STALE_MS`, `PRICE_STALE_MS` and
    `BALANCE_STALE_MS` and names no threshold for the ranking table, so this
@@ -126,19 +144,103 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at run time
 
 __all__ = [
     "NEUTRAL_WEIGHT",
+    "WEIGHT_CEILING",
+    "WEIGHT_FLOOR",
+    "WEIGHT_STEP",
     "Contender",
     "ContentionRanking",
     "Ineligible",
     "fcfs_order",
     "rank",
     "rank_eligible",
+    "weight_for",
 ]
 
-#: The weight every contender carries under BOTH policies today. Named rather
-#: than written as a bare 1.0 at three call sites, because the number is a
-#: DECLARATION: sizing is not weighted by score in this arc, and §6.6:459's
-#: "weight sizing" is deferred to R5 with the process that publishes the score.
+#: The weight a contender carries when the ordering carries NO information the
+#: spec lets this module act on. Named rather than written as a bare 1.0 at the
+#: call sites, because the number is a DECLARATION and not a placeholder: every
+#: one of §6.6:455's FCFS cases — an absent pair-row, tied EMAs, cold start,
+#: every fallback route, and a field of ONE contender, which has no ordering to
+#: read — sizes at exactly the unweighted budget. §6.6:466's "structurally
+#: neutral (favors no symbol)" is a statement about the SIZE as well as the
+#: order, and this is where it is spelled.
 NEUTRAL_WEIGHT = 1.0
+
+#: One rank of separation, in units of the unweighted per-trade risk budget.
+WEIGHT_STEP = 0.25
+
+#: The multiplier's floor and ceiling. §6.6:443 cautions that *"early realized
+#: samples are thin — a handful of closed trades per symbol per day"*, which is
+#: exactly why an UNBOUNDED upsize off a two-close history is refused: without a
+#: ceiling a wide field hands the leader a multiple of a budget §12A chose.
+#:
+#: **The bounds BIND on a drivable rank rather than decorating the file.** At
+#: n = 8, `raw(1, 8) == 1.875` is above the ceiling and `raw(8, 8) == 0.125` is
+#: below the floor, and `checks/check_score_weighting.py` drives both ends and
+#: requires the reason to name the bound that bound them.
+WEIGHT_FLOOR = 0.60
+WEIGHT_CEILING = 1.40
+
+#: **EVERY LITERAL ABOVE IS AN ARCHITECT RULING, NOT A NUMBER THIS MODULE
+#: CHOSE.** §6.6:459 gives the Allocator the read "to weight sizing" and the
+#: frozen risk spec fixes no transform; `downloads/ARC037-SEAM-FREEZE.md` SEAM
+#: (b) fixes these four and the shape below, and this module implements exactly
+#: them. That provenance is the reason the transform may live in the consumer
+#: at all — inventing one here would be the allocation judgment §6.6:461-463
+#: keeps out of the gate (see deferral 2 in the module docstring).
+
+
+def _raw_weight(rank_position: int, field_size: int) -> float:
+    """The UNCLAMPED transform, kept separate so the clamp is observable.
+
+    Neutral EXACTLY at the median rank: `raw == 1.0` when
+    `rank == (n + 1) / 2`, so a whole field's weighted risk budget is centred
+    on its unweighted one rather than drifting up or down with the field size.
+    """
+    return 1.0 + WEIGHT_STEP * ((field_size + 1) / 2 - rank_position)
+
+
+def weight_for(rank: int, n: int) -> float:  # pylint: disable=redefined-outer-name
+    """§6.6:459's score → sizing weight. `rank` 1 is the best (§6.6:431).
+
+    The frozen shape (`downloads/ARC037-SEAM-FREEZE.md` SEAM (b)):
+
+        raw(rank, n)    = 1.0 + WEIGHT_STEP * ((n + 1) / 2 - rank)
+        weight(rank, n) = min(WEIGHT_CEILING, max(WEIGHT_FLOOR, raw(rank, n)))
+
+    `n` is the SIZE OF THE FIELD — how many contenders were in this race — and
+    `rank` is the contender's DENSE rank within it, so tied scores share a rank
+    and therefore a weight (§6.6:455).
+
+    **A field of one is exactly `NEUTRAL_WEIGHT`, and it falls out of the
+    arithmetic rather than being special-cased**: `raw(1, 1) == 1.0`. A single
+    contender carries no ordering information and must not be re-sized by a
+    race it did not have.
+
+    RAISES `TypeError` on a non-integer rank or field size, and `ValueError`
+    on a rank outside `1..n`. Both are programming defects at a call site,
+    never a market state, and this function is total over every input `rank`
+    can legitimately take: `_weighted` below derives the rank from its OWN
+    ordering, so the guard is unreachable from `rank` and exists for direct
+    callers. Fail closed and loud (directive 4) — a silently clamped
+    out-of-range rank would size real money off a number nobody computed.
+    """
+    if (
+        isinstance(rank, bool)
+        or isinstance(n, bool)
+        or not isinstance(rank, int)
+        or not isinstance(n, int)
+    ):
+        raise TypeError(
+            f"rank/n must be ints and a bool is not one, got {rank!r}/{n!r}"
+        )
+    if n < 1 or rank < 1 or rank > n:
+        raise ValueError(
+            f"rank {rank} is outside 1..{n} — a dense rank is bounded by the "
+            "size of the field it was taken in, and a rank that is not says "
+            "the caller counted a field this one was not ranked in"
+        )
+    return min(WEIGHT_CEILING, max(WEIGHT_FLOOR, _raw_weight(rank, n)))
 
 
 @dataclass(frozen=True)
@@ -190,8 +292,11 @@ class ContentionRanking:
     policy: ContentionPolicy
     #: Best-first. Advisory input to sizing; the Limiter arbitrates (§6.6:459).
     ordering: tuple[Contender, ...]
-    #: `(strategy_id, symbol)` -> sizing weight. Every value is `NEUTRAL_WEIGHT`
-    #: in this arc, under both policies. See deferral 2 above.
+    #: `(strategy_id, symbol)` -> sizing weight, for §7:478's risk budget.
+    #: REAL under `PERFORMANCE_WEIGHTED` (`weight_for` over the contender's
+    #: dense rank in THIS race); exactly `NEUTRAL_WEIGHT` under every FCFS
+    #: route, which is every one of §6.6:455's cases. The shape has not moved
+    #: since ARC 031 — only the values have, which is the whole of D3.260.
     weights: Mapping[tuple[str, str], float]
     #: How many contenders had a live row. Zero under every fallback path.
     scored: int
@@ -341,6 +446,62 @@ def rank(
     return _weighted(contenders, scores)
 
 
+def _dense_ranks(
+    ordered: Sequence[Contender], scores: Mapping[tuple[str, str], float]
+) -> dict[tuple[str, str], int]:
+    """DENSE rank within THIS race: equal scores share a rank, and no gap opens.
+
+    Dense rather than competition ranking, and the choice is §6.6:455's: equal
+    scores are an FCFS case, so two contenders on one score carry no ordering
+    information about each other and must not be sized apart on a difference
+    the spec says is not there. Skipping a rank after a tie would also move
+    every contender BELOW the tie away from the median for no reason a realized
+    P&L supports.
+    """
+    ranks: dict[tuple[str, str], int] = {}
+    position = 0
+    previous: float | None = None
+    for contender in ordered:
+        score = scores[contender.pair]
+        if previous is None or score != previous:
+            position += 1
+            previous = score
+        ranks[contender.pair] = position
+    return ranks
+
+
+def _bound_note(ranks: Mapping[tuple[str, str], int], field_size: int) -> str:
+    """Which BOUND, if either, decided a weight — named, by value (§18).
+
+    A clamp nobody can see is indistinguishable from a clamp that is never
+    reached, and the second is the decoration `debug.md` §7.12 asks about. So
+    the binding term is reported at the point it binds, with the raw value it
+    replaced.
+    """
+    positions = sorted(set(ranks.values()))
+    at_ceiling = [r for r in positions if _raw_weight(r, field_size) > WEIGHT_CEILING]
+    at_floor = [r for r in positions if _raw_weight(r, field_size) < WEIGHT_FLOOR]
+    parts: list[str] = []
+    if at_ceiling:
+        raws = [round(_raw_weight(r, field_size), 6) for r in at_ceiling]
+        parts.append(
+            f"WEIGHT_CEILING {WEIGHT_CEILING} BOUND rank(s) {at_ceiling} (raw {raws})"
+        )
+    if at_floor:
+        raws = [round(_raw_weight(r, field_size), 6) for r in at_floor]
+        parts.append(
+            f"WEIGHT_FLOOR {WEIGHT_FLOOR} BOUND rank(s) {at_floor} (raw {raws})"
+        )
+    if parts:
+        return "; ".join(parts)
+    low = round(_raw_weight(positions[-1], field_size), 6)
+    high = round(_raw_weight(positions[0], field_size), 6)
+    return (
+        f"neither bound was binding (raw {low}..{high}, inside "
+        f"[{WEIGHT_FLOOR}, {WEIGHT_CEILING}])"
+    )
+
+
 def _weighted(
     contenders: Sequence[Contender], scores: Mapping[tuple[str, str], float]
 ) -> ContentionRanking:
@@ -351,23 +512,33 @@ def _weighted(
     scores an FCFS case, and a pair of equal scores inside a larger field is
     the same case in miniature.
 
-    The COMPARISON is all that happens here. No EMA is computed, no score is
-    combined, and no weight is derived from one — see deferrals 1 and 2.
+    The COMPARISON is all that happens to a SCORE here. No EMA is computed and
+    no score is combined; the weights below are a function of the RANK and of
+    the field size, and of nothing else (deferrals 1 and 2).
     """
     ordered = tuple(sorted(contenders, key=lambda c: (-scores[c.pair], c.arrival_seq)))
+    field_size = len(ordered)
+    ranks = _dense_ranks(ordered, scores)
+    weights = {
+        pair: weight_for(position, field_size) for pair, position in ranks.items()
+    }
     return ContentionRanking(
         policy=ContentionPolicy.PERFORMANCE_WEIGHTED,
         ordering=ordered,
-        weights={contender.pair: NEUTRAL_WEIGHT for contender in ordered},
+        weights=weights,
         scored=len(scores),
         contenders=len(contenders),
         reason=(
             f"{len(scores)} live ranking row(s) with distinct realized-P&L EMAs "
-            "— ordered by comparison (§6.6:453), arrival breaking ties. The "
-            "score -> SIZING WEIGHT transform is NOT implemented: §6.6:459 "
-            "gives it to the Allocator and the spec fixes no transform, so "
-            f"every weight is {NEUTRAL_WEIGHT} and the weighting is deferred to "
-            "R5 with the Scoring process. This ordering is ADVISORY: §6.6:459 "
+            "— ordered by comparison (§6.6:453), arrival breaking ties. Sizing "
+            "weight is ORDINAL IN THE DENSE RANK and never in the score "
+            "(§6.6:461): weight = clamp(1.0 + "
+            f"{WEIGHT_STEP} * ((n + 1) / 2 - rank), {WEIGHT_FLOOR}, "
+            f"{WEIGHT_CEILING}) over n={field_size} contender(s), giving "
+            f"{sorted(set(weights.values()))}; "
+            f"{_bound_note(ranks, field_size)}. The literals are ARC 037's "
+            "architect ruling (downloads/ARC037-SEAM-FREEZE.md, SEAM (b)), not "
+            "this module's invention. This ordering is ADVISORY: §6.6:459 "
             "gives arbitration to the Limiter, not to this module"
         ),
     )
