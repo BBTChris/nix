@@ -211,3 +211,22 @@ discharge (D3.342, and the owner chain is now eight arcs long). Full pytest
 ### Post-write-back re-measure (ARC 037), banked before the marker
 
 D3.343's prediction, stated before `sessions/SESSION.md` named this arc complete.
+
+`sessions/SESSION.md` now names ARC 037 complete, so the D3.40/D3.144 guard-owner
+transition is **live, not hypothetical**: `nixverify.contract.completed_arcs`
+returns an empty error and reports `37 in arcs = True`, highest **37**. That is the
+mechanism running against this arc's own summary — the condition D3.343 was written
+to be falsified by.
+
+**D3.343's prediction, stated before the write-back, HELD in both halves:**
+
+| | predicted | measured after |
+|---|---|---|
+| `check_artifact_gate_coverage` | GUARDED, unchanged | **guarded (exit 3), 120 tracked / 119 declared / 8 uncovered** |
+| `verify.py` | 87 / 2 / 2 / 0 / 1, exit 1 | **87 passed / 2 failed / 2 cannot measure / 0 skipped / 1 guarded, exit 1** |
+
+The guard survived because D3.342 re-pointed its eight exclusions ARC 037 -> ARC 038
+*before* the write-back. Had they been left naming ARC 037, this re-measure would
+have read GUARDED -> CANNOT_MEASURE and the guarded count would have gone 1 -> 0.
+**A re-measure taken after the fact and then described is not a test of anything**,
+which is why the row was banked first.
