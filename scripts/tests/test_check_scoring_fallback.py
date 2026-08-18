@@ -122,12 +122,32 @@ def _run_staged(home: Path) -> subprocess.CompletedProcess[str]:
     This is D3.205's class one layer over — an inherited environment variable
     silently re-pointing a subprocess at the wrong tree — and the repair is the
     same shape: name the environment the child gets instead of inheriting it.
+
+    **THE FIRST REPAIR WAS TOO BROAD, AND THE BINDING CENSUS SAID SO.**
+    Replacing `PYTHONPATH` outright also dropped `binding_census.py`'s
+    `sitecustomize` directory, which is the only way its tracer reaches a child
+    — so the staged runs stopped being OBSERVED at all and
+    `check_scoring_fallback` went BOUND -> EXERCISED-NEVER-RED, taking the table
+    78 -> 77. Correct plants, invisible to the instrument: the repair for a gate
+    that measures the wrong tree must not become a gate nothing can watch.
+    Both properties are wanted at once, so the REAL-TREE entries are filtered
+    out and every other inherited entry is KEPT.
     """
+    repo_entries = {
+        str(REPO / "scripts"),
+        str(REPO / "scripts" / "tests"),
+        str(REPO / "checks"),
+    }
+    inherited = [
+        part
+        for part in os.environ.get("PYTHONPATH", "").split(os.pathsep)
+        if part and part not in repo_entries
+    ]
     env = dict(os.environ)
-    # The staged tree FIRST, and the real tree nowhere. A staged gate that can
-    # reach `REPO/scripts` is not measuring the tree it was staged from.
+    # The staged tree FIRST and the real tree NOWHERE, but anything else the
+    # parent put on the path — a tracer's sitedir above all — is preserved.
     env["PYTHONPATH"] = os.pathsep.join(
-        (str(home / "scripts"), str(home / "checks"))
+        [str(home / "scripts"), str(home / "checks"), *inherited]
     )
     return subprocess.run(  # nosec B603 - argv built here, no shell
         [sys.executable, str(home / "checks" / "check_scoring_fallback.py")],
