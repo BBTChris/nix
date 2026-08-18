@@ -67,7 +67,13 @@ from nixscore.liveness import (
     LivenessVerdict,
     PublisherLiveness,
 )
-from nixscore.process import SIGNALLED_EXIT, RankingReader
+from nixscore.process import SIGNALLED_EXIT
+
+# ARC 037 STAGE 2 — the CROSS-BRANCH repair. Sub-agent D wrote this suite
+# against `nixscore.process.RankingReader`; sub-agent F, in a worktree D
+# could not see, deleted that class as CHECK-DEBT D3.271's duplicate and
+# kept the survivor here. Both branches were green alone.
+from nixscore.publisher import RankingReader
 from nixscore.seam import RANKING_TOPIC, SEAM_REV, Arbitration, RankingMirror
 
 FIRST = ("alpha", "ES")

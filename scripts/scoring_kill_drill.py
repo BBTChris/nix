@@ -66,7 +66,7 @@ WHAT THIS DRILL DOES NOT PROVE, STATED RATHER THAN IMPLIED
 
 **There is no Allocator or Limiter here.** §6.6 names them as the two readers;
 neither has a run loop in this tree yet (sub-agent E owns the Allocator's
-consumption). The reader driven here is `nixscore.process.RankingReader` — the
+consumption). The reader driven here is `nixscore.publisher.RankingReader` — the
 shipped consumer-side plumbing both of them will hold — so what is proven is
 that the READ PATH survives and keeps deciding. That an Allocator wired to it
 also keeps proposing is a separate claim and is not made.
@@ -102,9 +102,14 @@ from nixscore.process import (
     SCORING_DOWN_CODE,
     SIGNALLED_EXIT,
     FallbackAlarm,
-    RankingReader,
     RecordingAlertSink,
 )
+
+# ARC 037 (CHECK-DEBT D3.271): `RankingReader` moved here from
+# `nixscore.process` when the two same-named classes ARC 036's parallel
+# sub-agents invented were COLLAPSED into one. The surviving class kept the
+# direct-poll `pump` this drill depends on (D3.240) — see its docstring.
+from nixscore.publisher import RankingReader
 from nixscore.seam import RANKING_TOPIC
 
 #: The two contenders. §6.6's arbitration compares the competing PAIR-rows, so
@@ -181,7 +186,13 @@ def spawn_scoring(
 
 
 def open_reader(endpoint: str) -> RankingReader:
-    """A real subscriber on a real socket, wrapped in the shipped reader."""
+    """A real subscriber on a real socket, wrapped in the shipped reader.
+
+    The subscriber is built HERE and handed in, rather than letting the reader
+    build its own, because this drill is the case the reader's second
+    construction shape exists for: a consumer that owns its socket. The reader
+    takes over its lifetime — `reader.close()` releases it.
+    """
     return RankingReader(
         StateSubscriber(endpoint, [RANKING_TOPIC]), stale_after_s=STALE_AFTER_S
     )
@@ -191,7 +202,11 @@ def pump_until_fresh(reader: RankingReader, budget_s: float = 5.0) -> float | No
     """Pump until the mirror holds a snapshot. Returns the monotonic time it landed."""
     deadline = time.monotonic() + budget_s
     while time.monotonic() < deadline:
-        if reader.pump(STARTUP_PUMP_MS) and reader.mirror.fresh():
+        # `.accepted` and not the PumpResult itself: a `PumpResult` is a
+        # populated tuple and is therefore ALWAYS truthy, so testing the object
+        # would silently drop the "a snapshot actually landed" half of this
+        # condition. ARC 037, at the collapse (D3.271).
+        if reader.pump(STARTUP_PUMP_MS).accepted and reader.mirror.fresh():
             return time.monotonic()
     return None
 
@@ -320,7 +335,7 @@ def kill_mid_contention(root: Path) -> dict[str, Any]:
         "pid_alive_before_kill": alive_before,
         "pid_gone_after_reap": _proc_gone(int(hello["pid"])),
         "snapshot_landed": first_apply is not None,
-        "snapshots_applied": reader.pumped,
+        "snapshots_applied": reader.applied,
         "stale_after_s": STALE_AFTER_S,
         "table_age_at_kill_s": last_apply_age,
         "pre": _counts(log.before(kill_mono)),
@@ -370,7 +385,7 @@ def control_no_kill(root: Path) -> dict[str, Any]:
         "pid": int(hello["pid"]),
         "reap_status": status,
         "snapshot_landed": landed is not None,
-        "snapshots_applied": reader.pumped,
+        "snapshots_applied": reader.applied,
         "still_fresh_at_end": still_fresh,
         "counts": _counts(log.rows),
         "max_decision_gap_s": log.max_gap_s(),

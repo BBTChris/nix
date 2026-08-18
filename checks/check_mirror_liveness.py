@@ -435,10 +435,29 @@ def _proc_gone(pid: int) -> bool:
     return not Path(f"/proc/{pid}").exists()
 
 
+def _reader_module() -> Any:
+    """The module that DEFINES the shipped `RankingReader`, resolved not assumed.
+
+    ARC 037 STAGE 2, AND IT IS A CROSS-BRANCH REPAIR. Sub-agent D wrote this
+    gate against `nixscore.process.RankingReader`; sub-agent F, in a worktree D
+    could not see, DELETED that class as CHECK-DEBT D3.271's duplicate and kept
+    the survivor in `nixscore.publisher`. Both branches were green alone. On the
+    merged tree the gate would have raised `AttributeError` before measuring
+    anything — a liveness bound proven against a class that no longer exists.
+    Resolved through one function so the name has one home.
+    """
+    module, error = _load("nixscore.publisher")
+    if module is None:  # pragma: no cover - §17 path, handled by the caller
+        raise RuntimeError(error)
+    return module
+
+
 def _open_reader(process_mod: Any, statebus: Any, endpoint: str, **kwargs: Any) -> Any:
     """A real subscriber on a real socket, wrapped in the SHIPPED reader."""
     subscriber = statebus.StateSubscriber(endpoint, [process_mod.RANKING_TOPIC])
-    return process_mod.RankingReader(subscriber, stale_after_s=STALE_AFTER_S, **kwargs)
+    return _reader_module().RankingReader(
+        subscriber, stale_after_s=STALE_AFTER_S, **kwargs
+    )
 
 
 def _warm(readers: list[Any], budget_s: float = 5.0) -> bool:
@@ -1213,7 +1232,7 @@ def drive_raise(process_mod: Any, statebus: Any, root: Path) -> dict[str, Any]: 
     proc, hello = spawn_scoring(endpoint)
     subscriber = statebus.StateSubscriber(endpoint, [process_mod.RANKING_TOPIC])
     observer = ExplodingObserver(liveness_mod.PublisherLiveness(subscriber))
-    reader = process_mod.RankingReader(
+    reader = _reader_module().RankingReader(
         subscriber, stale_after_s=STALE_AFTER_S, liveness=observer
     )
     log = Decisions()

@@ -1014,7 +1014,30 @@ _ARC036_B_CARRIED = (
 #: truncated, so every name below was INVISIBLE in two consecutive runs of
 #: `checks/check_uncalled_entry_points.py`. This suite caught what that output
 #: hid. CHECK-DEBT D3.253.
-_ARC036_STAGE1_C_CARRIED = ("scripts/nixscore/process.py::RankingReader.close",)
+#: EMPTIED, ARC 037 sub-agent F — and it is the obligation being met, not waived.
+#:
+#: The single name here was `scripts/nixscore/process.py::RankingReader.close`.
+#: That class no longer exists: CHECK-DEBT D3.271 recorded that ARC 036's
+#: parallel sub-agents shipped TWO classes named `RankingReader` in one package,
+#: and ARC 037 COLLAPSED them into `nixscore.publisher.RankingReader` rather
+#: than renaming one — a rename repairs the MEASUREMENT and leaves the
+#: duplication. The surviving class kept sub-agent C's direct-poll `pump`
+#: (D3.240), which was the half worth keeping.
+#:
+#: **WHAT THE COLLAPSE MEASURED, and it is the reason D3.271 called this worse
+#: than untidy.** On the pre-collapse tree, renaming `process.RankingReader.pump`
+#: to a unique name made `scripts/nixscore/publisher.py::RankingReader.pump`
+#: appear as a NEW `gate_only` finding (229 findings -> 230). It had never been
+#: called by shipped code; `scripts/scoring_kill_drill.py`'s legitimate call to
+#: the OTHER class's `pump` was being credited to it by the attribute-name
+#: resolver (D3.234), and a real finding was invisible for the whole of ARC 036.
+#: After the collapse there is one `pump`, the drill calls THAT one, and its
+#: not-a-finding status is true rather than borrowed.
+#:
+#: Left in place, empty, for the same reason `_ARC036_PHASE0_CARRIED` is: the
+#: `vanished` assertion is what turned the carry into an obligation, and an
+#: empty tuple is the honest record that the obligation was met.
+_ARC036_STAGE1_C_CARRIED: tuple[str, ...] = ()
 
 _ARC036_STAGE1_D_CARRIED = (
     "scripts/nixscore/store.py::ArchiveOutcome.moved",

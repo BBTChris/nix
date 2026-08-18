@@ -143,10 +143,13 @@ def test_a_mirror_that_can_never_go_stale_reddens_the_gate(tmp_path: Path) -> No
     with liveness switched OFF, which is where the old reason still lives.
     """
     home = _stage(tmp_path)
+    # `publisher.py` and not `process.py` since ARC 037's D3.271 collapse: the
+    # reader the drill drives lives there now, and the gate DERIVES that rather
+    # than being told, so the plant follows the class the same way the gate does.
     _edit(
-        home / "scripts" / "nixscore" / "process.py",
-        "self.mirror = RankingMirror(stale_after_s=stale_after_s, identity=identity)",
-        "self.mirror = RankingMirror(stale_after_s=1e9, identity=identity)",
+        home / "scripts" / "nixscore" / "publisher.py",
+        "self._mirror = RankingMirror(stale_after_s=stale_after_s, identity=identity)",
+        "self._mirror = RankingMirror(stale_after_s=1e9, identity=identity)",
     )
     result = _run_staged(home)
     assert result.returncode == 1, f"stdout={result.stdout!r}"
@@ -185,9 +188,9 @@ def test_a_raise_on_the_order_path_reddens_the_gate(tmp_path: Path) -> None:
     """
     home = _stage(tmp_path)
     _edit(
-        home / "scripts" / "nixscore" / "process.py",
-        '        """THE ORDER PATH. One delegation to the frozen seam; no I/O, no math."""\n',
-        '        """THE ORDER PATH. One delegation to the frozen seam; no I/O, no math."""\n'
+        home / "scripts" / "nixscore" / "publisher.py",
+        '        """Delegate to the frozen seam. Never blocks, never raises, never math."""\n',
+        '        """Delegate to the frozen seam. Never blocks, never raises, never math."""\n'
         "        if first is None:\n"
         '            raise ValueError("unreachable")\n',
     )
@@ -195,6 +198,31 @@ def test_a_raise_on_the_order_path_reddens_the_gate(tmp_path: Path) -> None:
     assert result.returncode == 1, f"stdout={result.stdout!r}"
     assert "can raise" in result.stdout
     assert "stall wearing a traceback" in result.stdout
+
+
+def test_a_SECOND_RankingReader_in_the_package_reddens_the_gate(tmp_path: Path) -> None:
+    """PLANT D3.271 ITSELF: re-introduce the duplicate class ARC 036 shipped.
+
+    This is the state the tree was actually in — `nixscore.process.RankingReader`
+    beside `nixscore.publisher.RankingReader` — and nothing in the tree could see
+    it. The gate must now name BOTH files, not merely say a duplicate exists
+    (check contract §18: assert the REASON).
+    """
+    home = _stage(tmp_path)
+    process = home / "scripts" / "nixscore" / "process.py"
+    process.write_text(
+        process.read_text(encoding="utf-8")
+        + "\n\nclass RankingReader:  # planted duplicate, D3.271\n"
+        "    def arbitrate(self, first, second):\n"
+        "        return self.mirror.arbitrate(first, second)\n",
+        encoding="utf-8",
+    )
+    result = _run_staged(home)
+    assert result.returncode == 1, f"stdout={result.stdout!r}"
+    assert "2 classes named RankingReader" in result.stdout
+    assert "scripts/nixscore/process.py" in result.stdout
+    assert "scripts/nixscore/publisher.py" in result.stdout
+    assert "D3.271" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -213,8 +241,11 @@ def test_gate_passes_against_the_real_tree() -> None:
 def test_declarations_are_present_and_honest() -> None:
     """§4.4's declaration set, read the way `verify.py` reads it: statically."""
     declared = read_declaration(GATE_FILE)
+    # `publisher.py` joined in ARC 037: D3.271's collapse moved
+    # `RankingReader.arbitrate` there and this gate's shape scan followed it.
     assert declared.subjects == (
         "scripts/nixscore/process.py",
+        "scripts/nixscore/publisher.py",
         "scripts/scoring_kill_drill.py",
     )
     assert "zmq-ipc" in declared.resources

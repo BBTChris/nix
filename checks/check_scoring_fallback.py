@@ -131,6 +131,17 @@ THIS GATE TO PASS WHILE MEASURING NOTHING
    Widening the offsets was the cheap fix and is refused for `docs/CHECK-DEBT.md`
    D3.204's reason: a tolerated failure is invisible where a CANNOT_MEASURE is
    loud, and a red attributed to the scheduler is as dishonest as a green.
+8. *The shape arm scanned the WRONG `RankingReader`.* ADDED ARC 037, and it is
+   not hypothetical: ARC 036 shipped TWO classes of that name in
+   `scripts/nixscore/` (CHECK-DEBT D3.271), so this gate was naming
+   `process.py` as a constant while `scripts/scoring_kill_drill.py` drove the
+   other one. A gate can scan a pure delegation forever while the order path
+   that actually runs is somewhere else. Closed by `reader_module`, which
+   DERIVES the single module defining the class and makes **any other count a
+   defect naming every file it found** — with `_reader_module_arm` planting a
+   duplicate, and a vacuum, on every run so the derivation's silence is worth
+   something. `SUBJECTS` still names the file statically and the two can
+   disagree; that gap is recorded as CHECK-DEBT D3.338 rather than claimed shut.
 """
 
 from __future__ import annotations
@@ -192,8 +203,16 @@ INSTALLABLE = False
 #: `scripts/nixscore/seam.py` is deliberately NOT claimed here: it is frozen and
 #: `check_scoring_seam` owns it, and a second declarer would be the duplicate
 #: instrument doctrine C.9 forbids.
+#:
+#: `scripts/nixscore/publisher.py` JOINED THIS TUPLE IN ARC 037. The order path
+#: `RankingReader.arbitrate` lived in `process.py` until D3.271's collapse moved
+#: it; this gate's shape scan follows it, so the file it now parses is declared.
+#: `check_ranking_table` also declares `publisher.py` and that is not a duplicate
+#: instrument: it measures the PUBLISH/READ transport, this measures whether the
+#: order path can stall. Two properties, two gates, one file.
 SUBJECTS: tuple[str, ...] = (
     "scripts/nixscore/process.py",
+    "scripts/nixscore/publisher.py",
     "scripts/scoring_kill_drill.py",
 )
 
@@ -270,6 +289,64 @@ BANNED_VERBS = ("halt", "set_halt", "flatten", "deny", "refuse_entry", "quaranti
 STALLING_NODES = (ast.While, ast.For, ast.AsyncFor, ast.Await, ast.Try)
 
 _ORDER_PATH = "RankingReader.arbitrate"
+
+#: The package the consumer-side reader lives in, and the class name. The FILE
+#: is deliberately NOT named here — see `reader_module`.
+READER_PACKAGE = "scripts/nixscore"
+READER_CLASS = "RankingReader"
+
+
+def reader_module(repo: Path) -> tuple[str, str]:
+    """The ONE module in `scripts/nixscore/` defining `RankingReader`.
+
+    DERIVED, never restated, and the derivation is itself the control.
+
+    **ARC 036 SHIPPED TWO CLASSES OF THIS NAME IN THIS PACKAGE** — sub-agent B's
+    in `publisher.py` and sub-agent C's in `process.py`, invented in parallel
+    worktrees that could not see each other (CHECK-DEBT D3.271). The order path
+    this gate exists to police was one of them, and a gate that names its file as
+    a constant would have kept scanning the one that was NOT being called while
+    `scripts/scoring_kill_drill.py` drove the other. Deriving the file makes the
+    duplicate impossible to reintroduce quietly: **anything other than exactly
+    one definition is an error naming every file that defines it**, which is
+    D3.271's property gated rather than remembered.
+
+    Returns `(relative_path, error)`. A non-empty error is a defect, never a
+    skip: a scan that cannot find its subject has not proven the subject is fine.
+    """
+    package = repo / READER_PACKAGE
+    if not package.is_dir():
+        return "", f"{READER_PACKAGE}/ is absent — the reader has no home to scan"
+    found: list[str] = []
+    unreadable: list[str] = []
+    for path in sorted(package.glob("*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except (OSError, SyntaxError) as exc:
+            unreadable.append(f"{path.name}: {exc!r}")
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name == READER_CLASS:
+                found.append(f"{READER_PACKAGE}/{path.name}")
+    if unreadable:
+        return "", f"{READER_PACKAGE}/ did not parse: {'; '.join(unreadable)}"
+    if len(found) == 1:
+        return found[0], ""
+    if not found:
+        return "", (
+            f"no class named {READER_CLASS} exists anywhere in {READER_PACKAGE}/ "
+            "— the order path this gate polices has no definition to scan, and a "
+            "scan over nothing proves nothing (§17)"
+        )
+    return "", (
+        f"{len(found)} classes named {READER_CLASS} live in {READER_PACKAGE}/ "
+        f"({', '.join(found)}). That is the duplicate instrument doctrine C.9 "
+        "forbids, and it is measurably worse than untidy: "
+        "`check_uncalled_entry_points` resolves a call site by ATTRIBUTE NAME "
+        "(D3.234), so one class's callers are credited to the other and a real "
+        "finding silently stops being one. CHECK-DEBT D3.271 is the record of "
+        "this happening. Collapse them; do not rename one"
+    )
 
 
 def _load_drill() -> tuple[Any, str]:
@@ -873,13 +950,22 @@ def restart_defects(
 # ---------------------------------------------------------------------------
 
 
-def shape_defects(source: str) -> tuple[list[tuple[str, str]], int]:
-    """`arbitrate` is a pure delegation, and nothing here can HALT. (findings, scanned)."""
+def shape_defects(
+    source: str, module: str = PROCESS_MODULE
+) -> tuple[list[tuple[str, str]], int]:
+    """`arbitrate` is a pure delegation, and nothing here can HALT. (findings, scanned).
+
+    `module` is the file the source came from, and it exists because ARC 037's
+    D3.271 collapse moved `RankingReader` out of `process.py`: the scan follows
+    the class rather than the filename. It defaults to `PROCESS_MODULE` so the
+    can-fail plants below — which are source STRINGS with no file — keep reading
+    the way they read before.
+    """
     findings: list[tuple[str, str]] = []
     try:
         tree = ast.parse(source)
     except SyntaxError as exc:
-        return [(PROCESS_MODULE, f"cannot parse: {exc}")], 0
+        return [(module, f"cannot parse: {exc}")], 0
     scanned = 0
     for node in ast.walk(tree):
         if (
@@ -887,14 +973,16 @@ def shape_defects(source: str) -> tuple[list[tuple[str, str]], int]:
             and node.name == "arbitrate"
         ):
             scanned += 1
-            findings += _delegation_defects(node)
-    findings += _banned_verb_defects(tree)
+            findings += _delegation_defects(node, module)
+    findings += _banned_verb_defects(tree, module)
     return findings, scanned
 
 
-def _delegation_defects(node: ast.AST) -> list[tuple[str, str]]:
+def _delegation_defects(
+    node: ast.AST, module: str = PROCESS_MODULE
+) -> list[tuple[str, str]]:
     """Anything in `arbitrate` that makes it more than one delegation."""
-    site = f"{PROCESS_MODULE}:{_ORDER_PATH}"
+    site = f"{module}:{_ORDER_PATH}"
     out: list[tuple[str, str]] = []
     for inner in ast.walk(node):
         if isinstance(inner, STALLING_NODES):
@@ -912,7 +1000,9 @@ def _delegation_defects(node: ast.AST) -> list[tuple[str, str]]:
     return out
 
 
-def _banned_verb_defects(tree: ast.AST) -> list[tuple[str, str]]:
+def _banned_verb_defects(
+    tree: ast.AST, module: str = PROCESS_MODULE
+) -> list[tuple[str, str]]:
     """A HALT/deny verb anywhere in the Scoring module. §6.6 stated backwards."""
     out: list[tuple[str, str]] = []
     for node in ast.walk(tree):
@@ -923,7 +1013,7 @@ def _banned_verb_defects(tree: ast.AST) -> list[tuple[str, str]]:
         if name in BANNED_VERBS:
             out.append(
                 (
-                    f"{PROCESS_MODULE}:line {node.lineno}",
+                    f"{module}:line {node.lineno}",
                     (
                         f"calls {name}() — §6.6:465 makes ranking an optimization, "
                         "NEVER a safety gate, and a scoring outage must never halt "
@@ -1154,8 +1244,55 @@ def _as_findings(reason: str) -> list[tuple[str, str]]:
     return [(f"{NAME}:boundary", reason)] if reason else []
 
 
+def _reader_module_arm() -> tuple[str, str]:
+    """CAN-FAIL for the DERIVATION itself — plant a duplicate and a vacuum.
+
+    `reader_module` is the arm that decides WHICH file the order-path scan reads,
+    so a `reader_module` that cannot see a duplicate would send this gate to
+    scan one of two classes and call it the order path — which is exactly the
+    state ARC 036 shipped (D3.271). Three drives, in a throwaway package:
+
+      1. ONE definition resolves to that file and returns no error (the arm can
+         return clean, so its errors carry information).
+      2. TWO definitions produce an error that NAMES BOTH FILES — not "a
+         duplicate exists" (check contract §18: assert the REASON).
+      3. ZERO definitions produce an error, so a vacuum is never a pass.
+    """
+    with tempfile.TemporaryDirectory(prefix="nixscoredup") as tmp:
+        pkg = Path(tmp) / READER_PACKAGE
+        pkg.mkdir(parents=True)
+        body = f"class {READER_CLASS}:\n    pass\n"
+        (pkg / "publisher.py").write_text(body, encoding="utf-8")
+        one, error = reader_module(Path(tmp))
+        if error or one != f"{READER_PACKAGE}/publisher.py":
+            return "reader-module/false-positive", (
+                f"a package holding ONE {READER_CLASS} resolved to {one!r} with "
+                f"error {error!r} — the derivation cannot return clean"
+            )
+        (pkg / "process.py").write_text(body, encoding="utf-8")
+        _two, dup = reader_module(Path(tmp))
+        if not dup or "process.py" not in dup or "publisher.py" not in dup:
+            return "reader-module/duplicate-blind", (
+                f"two {READER_CLASS} classes in one package produced {dup!r} — "
+                "the duplicate D3.271 records is invisible, or is reported "
+                "without naming both files"
+            )
+        (pkg / "publisher.py").unlink()
+        (pkg / "process.py").unlink()
+        _none, absent = reader_module(Path(tmp))
+        if not absent:
+            return "reader-module/vacuum-blind", (
+                "a package with NO reader class produced no error — a scan with "
+                "no subject would be reported as a clean order path"
+            )
+    return "", ""
+
+
 def _arms_can_fail() -> tuple[str, str]:
     """The first arm that cannot demonstrate its defect, or ("", "")."""
+    blind, why = _reader_module_arm()
+    if blind:
+        return blind, why
     for label, findings in _plants():
         if not findings:
             return label, (
@@ -1247,10 +1384,27 @@ def _evidence(outcome: dict, scanned: int) -> str:
 def _measure(drill: Any, root: Path) -> tuple[list[tuple[str, str]], dict, int]:
     """Run the drill once and judge it. Returns (defects, outcome, scanned)."""
     outcome = drill.run_drill(root)
-    source = (Path(__file__).resolve().parent.parent / PROCESS_MODULE).read_text(
-        encoding="utf-8"
-    )
-    shape, scanned = shape_defects(source)
+    repo = Path(__file__).resolve().parent.parent
+    # WHERE THE ORDER PATH LIVES IS DERIVED, NOT NAMED (ARC 037 / D3.271). A
+    # second class of the same name in the package is itself a defect, and the
+    # shape scan then has nothing it can honestly scan.
+    reader_rel, reader_error = reader_module(repo)
+    shape: list[tuple[str, str]] = []
+    scanned = 0
+    if reader_error:
+        shape.append((f"{READER_PACKAGE}:{READER_CLASS}", reader_error))
+    else:
+        shape, scanned = shape_defects(
+            (repo / reader_rel).read_text(encoding="utf-8"), reader_rel
+        )
+    # The banned-verb sweep stays over the SCORING PROCESS module as well: §6.6's
+    # hazard is a HALT reachable from the scoring side, and that is true whether
+    # or not the reader still lives in the same file.
+    process_source = (repo / PROCESS_MODULE).read_text(encoding="utf-8")
+    try:
+        shape += _banned_verb_defects(ast.parse(process_source), PROCESS_MODULE)
+    except SyntaxError as exc:
+        shape.append((PROCESS_MODULE, f"cannot parse: {exc}"))
     down = drill.SCORING_DOWN_CODE
     up = "scoring-restored-ranked"
     defects = (
@@ -1270,8 +1424,8 @@ def _measure(drill: Any, root: Path) -> tuple[list[tuple[str, str]], dict, int]:
                 f"{NAME}:non-vacuity",
                 (
                     f"the shape scan found {scanned} `arbitrate` definition(s) in "
-                    f"{PROCESS_MODULE}, expected 1 — a scan over nothing cannot report "
-                    "an order path that stalls"
+                    f"{reader_rel or READER_PACKAGE}, expected 1 — a scan over "
+                    "nothing cannot report an order path that stalls"
                 ),
             )
         )

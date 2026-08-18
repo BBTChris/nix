@@ -108,6 +108,7 @@ from nixbus.statebus import (
     endpoint_for,
 )
 
+from nixscore.liveness import LivenessError, LivenessObserver, PublisherLiveness
 from nixscore.seam import (
     RANKING_TOPIC,
     SCORING_WRITER_IDENTITY,
@@ -260,23 +261,76 @@ class RankingReader:  # pylint: disable=too-many-instance-attributes
     module docstring. Every read verb below is O(1) and does no arithmetic
     beyond one age subtraction and one float comparison, both inside the frozen
     seam.
+
+    ------------------------------------------------------------------------
+    THIS IS THE COLLAPSE OF TWO CLASSES, ARC 037 (CHECK-DEBT D3.271)
+    ------------------------------------------------------------------------
+
+    ARC 036 ran five sub-agents in parallel worktrees that could not see each
+    other, and two of them invented this class: `nixscore.publisher.RankingReader`
+    (sub-agent B, this one) and `nixscore.process.RankingReader` (sub-agent C).
+    Two independent classes doing one job — wrap a `StateSubscriber` and the
+    frozen `RankingMirror` — which is the duplicate instrument doctrine C.9
+    forbids on its own.
+
+    **The measured consequence was worse than the duplication.**
+    `check_uncalled_entry_points` resolves a call site by ATTRIBUTE NAME
+    (D3.234), and the two classes shared the verbs `arbitrate`, `close` and
+    `pump`. `scripts/scoring_kill_drill.py`'s entirely legitimate call to
+    `process.RankingReader.pump` was credited to **this** class's `pump`, whose
+    only callers were a gate and a test — so a real finding silently stopped
+    being one. Renaming either class would have repaired the MEASUREMENT and
+    left the duplication, which is why they were collapsed instead.
+
+    **What was kept from the other one, and it is the important half:** `pump`
+    polls the socket DIRECTLY rather than calling `StateSubscriber.drain`. See
+    `pump`'s own docstring for the measurement (D3.240) — `drain` never polls at
+    all for a sub-2 ms budget, and this class used to call it.
+
+    ------------------------------------------------------------------------
+    TWO WAYS IN, ONE CLASS
+    ------------------------------------------------------------------------
+
+    `source` is either the endpoint string — in which case this reader BUILDS
+    and owns its subscriber, which is what a consumer that only wants a ranking
+    table needs — or an already-constructed `StateSubscriber`, which is what a
+    consumer that owns its own socket (the kill drill, and any consumer holding
+    a `zmq.Poller` across several sockets) hands in. `close()` releases the
+    socket in both cases: whoever handed it in is handing over its lifetime,
+    and a reader that half-owned its transport would be a leak wearing a
+    contract.
     """
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments
+        # R0913 refused rather than satisfied, and the count is ARC 037's merge
+        # rather than either branch's design. Sub-agent D put the liveness
+        # arguments on `process.RankingReader` and sub-agent F deleted that
+        # class in a worktree D could not see; the integrator moved them here,
+        # onto the survivor, because a liveness bound that lives on a deleted
+        # class is D3.244 un-repaired with a green gate over it. Each argument
+        # is one independent fact a consumer must be able to state, and every
+        # one defaults to the correct production value.
         self,
-        endpoint: str,
+        source: str | StateSubscriber,
         *,
         stale_after_s: float,
         identity: str = SCORING_WRITER_IDENTITY,
         context: Any | None = None,
+        observe_liveness: bool = True,
+        heartbeat_deadline_s: float | None = None,
+        liveness: LivenessObserver | None = None,
     ) -> None:
-        self.endpoint = endpoint
-        self._subscriber = StateSubscriber(
-            endpoint,
-            [RANKING_TOPIC],
-            required=[RANKING_TOPIC],
-            context=context,
-        )
+        if isinstance(source, StateSubscriber):
+            self._subscriber = source
+            self.endpoint = source.endpoint
+        else:
+            self.endpoint = source
+            self._subscriber = StateSubscriber(
+                source,
+                [RANKING_TOPIC],
+                required=[RANKING_TOPIC],
+                context=context,
+            )
         self._mirror = RankingMirror(stale_after_s=stale_after_s, identity=identity)
         #: The atomically-swapped view. `None` until a snapshot is accepted —
         #: §12.7's *"mirror incomplete => treated as stale"*, spelled as an
@@ -293,27 +347,112 @@ class RankingReader:  # pylint: disable=too-many-instance-attributes
         #: restart rebuild requires a restarted publisher's snapshot to land.
         self.sequence_regressions = 0
         self.off_topic = 0
+        #: ARC 037 / D3.244. **ON by default**, and that is the repair rather
+        #: than a convenience: without it this reader RANKS from a dead
+        #: publisher's frozen table for `stale_after_s`, which ARC 036 measured
+        #: at 144,699 decisions over 0.483 s. `observe_liveness=False` is kept
+        #: for the one legitimate case — a caller measuring the AGE path in
+        #: isolation, where an early liveness FCFS would pre-empt the very
+        #: transition being measured.
+        self.liveness: LivenessObserver | None = liveness
+        if self.liveness is None and observe_liveness:
+            self.liveness = PublisherLiveness(
+                self._subscriber, heartbeat_deadline_s=heartbeat_deadline_s
+            )
+        #: Exceptions out of the observer. NOT re-raised: see `_observe`.
+        self.liveness_errors: list[str] = []
 
     # -- ingress (MUTATES — owner thread only) ---------------------------
 
-    def pump(self, timeout_ms: int) -> PumpResult:
+    def pump(self, timeout_ms: int = 0) -> PumpResult:
         """Drain the socket into the mirror. Returns what was carried.
 
         Never blocks past `timeout_ms`. This is the only method that mutates.
+
+        **IT POLLS THE SOCKET DIRECTLY AND DOES NOT CALL `StateSubscriber.drain`,
+        AND THAT IS DELIBERATE.** MEASURED, ARC 036 sub-agent C, and carried
+        into this class by ARC 037's collapse (CHECK-DEBT D3.240, D3.271):
+        `drain` computes its remaining budget as
+        `int((deadline - time.monotonic()) * 1000)`, so **any budget under 2 ms
+        truncates to `0` on the first pass and the method returns having never
+        called `poll`.** A caller asking for one millisecond silently gets
+        "never". The first observed symptom was `snapshots_applied = 0` across
+        every arm of `scripts/scoring_kill_drill.py` with every socket healthy
+        and a real publisher publishing every 50 ms — the mirror reported
+        §12.7's never-fed FCFS trigger for a reason that had nothing to do with
+        the publisher, which is a transport failure disguised as the safety
+        property working.
+
+        `drain` is `scripts/nixbus/statebus.py`, shared transport this module
+        does not own, and D3.240 is open against it. Until it is repaired, the
+        direct poll below is the behaviour that makes a tight consumer loop —
+        the Allocator's and the Limiter's — able to ask for a millisecond and
+        get one. `timeout_ms=0` is therefore a genuinely non-blocking sweep:
+        take everything the socket already holds and return.
+
+        THE SHAPE THAT MUST NOT COME BACK: replacing this loop with
+        `self._subscriber.drain(timeout_ms)` restores the truncation for every
+        consumer at once and the symptom is a stale mirror, not an error.
+        `scripts/tests/test_ranking_reader_collapse.py` plants exactly that and
+        requires it to be caught.
         """
         before = self._counters()
-        messages = self._subscriber.drain(timeout_ms)
-        for message in messages:
+        received = 0
+        budget = timeout_ms
+        while True:
+            message = self._subscriber.poll(budget)
+            budget = 0
+            if message is None:
+                self._observe()
+                break
+            received += 1
+            self._note_message(message)
             self.ingest(message)
         after = self._counters()
         return PumpResult(
-            received=len(messages),
+            received=received,
             accepted=after[0] - before[0],
             foreign=after[1] - before[1],
             malformed=after[2] - before[2],
             off_topic=after[3] - before[3],
             bytes_received=self._subscriber.bytes_received,
         )
+
+    def _note_message(self, message: StateMessage) -> None:
+        """Tell the liveness observer a real update arrived, with its §12.7 seq.
+
+        Fed BEFORE the monitor is drained (`_observe` runs when the socket is
+        empty), which is the ordering that makes the latch correct: bytes that
+        were already buffered when the publisher died must never undo the
+        `EVENT_DISCONNECTED` that follows them.
+        """
+        if self.liveness is not None:
+            self.liveness.note_message(message.seq)
+
+    def _observe(self) -> None:
+        """Drain the liveness monitor and feed the mirror. **Never raises.**
+
+        §6.6:467 — *"a scoring outage must NEVER halt order flow"* — and an
+        observer built to make the outage visible SOONER must not become a new
+        way for it to halt. So anything out of `observe()` is caught here, on
+        the pump loop, and turned into a `live=False` verdict: the consumer
+        keeps deciding, on FCFS, and the reason names the exception. Fail closed
+        and loud (directive 4), where closed means DEGRADED and never DENIED.
+
+        This is also why the mirror is FED rather than asked: the `try` lives
+        here, off the order path, and `RankingMirror.arbitrate` stays a
+        stalling-node-free read of one boolean.
+        """
+        observer = self.liveness
+        if observer is None:
+            return
+        try:
+            observer.observe()
+        except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
+            observer.note_observe_error(exc)
+            self.liveness_errors.append(f"{type(exc).__name__}: {exc}")
+        verdict = observer.verdict()
+        self._mirror.note_liveness(verdict.live, verdict.reason, verdict.signal)
 
     def _counters(self) -> tuple[int, int, int, int]:
         return (
@@ -436,5 +575,20 @@ class RankingReader:  # pylint: disable=too-many-instance-attributes
         return self._mirror.age_s(now)
 
     def close(self) -> None:
-        """Release the socket and its private context."""
+        """Release the liveness monitor, THEN the socket and its private context.
+
+        The order is not cosmetic. MEASURED on this node (ARC 037 sub-agent D):
+        a monitor socket left open makes the subscriber's `Context.term()` block
+        forever, so closing the subscriber first hangs the consumer at shutdown.
+        A `LivenessError` during detach is swallowed rather than allowed to skip
+        the subscriber's own close — a leaked socket is worse than an unreported
+        teardown.
+        """
+        observer = self.liveness
+        if observer is not None:
+            self.liveness = None
+            try:
+                observer.close()
+            except LivenessError as exc:  # pragma: no cover - teardown diagnostics
+                self.liveness_errors.append(f"close: {exc}")
         self._subscriber.close()
