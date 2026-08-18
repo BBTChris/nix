@@ -1,0 +1,1083 @@
+#!/usr/bin/env python3
+# pylint: disable=duplicate-code,too-many-lines
+# C0302 (too-many-lines): one arm per declared property, each carrying its own
+# reason string — an operator reads those instead of the code, and
+# `docs/nix_check_contract.md` §5.5 keeps ONE gate to ONE property, so splitting
+# the arms across two modules would create a second gate over half a property.
+# §4.2 forbids the shared helper module that is the only other way to shorten it.
+# R0801 pairs this file's DECLARATION BLOCK — `PRIVILEGE`/`INTERACTIVE`/
+# `DISRUPTIVE`, `DEPENDS_ON`/`RESOURCES`/`TIME_BOUND`/`CORRECTABLE`/`SUBJECTS`,
+# and the `standalone_main` `__main__` — against every other check's. That
+# similarity is the CONTRACT (`docs/nix_check_contract.md` §4.2, §4.4): the
+# symbols are read STATICALLY, by AST, without importing the check, so a shared
+# base module would be invisible to that reader and would break the contract to
+# satisfy a similarity counter.
+"""Gate: order flow SURVIVES the Scoring process being killed, and a stale table
+falls back exactly as an absent one does.
+
+Every bare `§` cites `docs/nics_risk_subsystem_spec_v1.3.md`, the frozen risk
+spec. Where another document is meant it is named on the line.
+
+ARC 036 / sub-agent C. The property is **§6.6:465's locked fallback, holding
+against a real death and a real clock.**
+
+Subjects: `scripts/nixscore/process.py` and `scripts/scoring_kill_drill.py`,
+driven as REAL objects in REAL processes — never re-implemented here. One gate
+over one property, as `docs/nix_check_contract.md` §5.5 requires.
+
+`checks/check_scoring_seam.py` already drives all five FCFS triggers IN-PROCESS
+and this gate does not repeat it (doctrine C.9). What that gate structurally
+cannot do is the thing §6.6 is actually about: **kill the writer.** Every outage
+it drives is a Python object that was never fed. So the division is exact —
+that gate owns the seam's SHAPE and its five triggers; this one owns what
+happens when a pid stops existing.
+
+------------------------------------------------------------------------------
+THE ARMS
+------------------------------------------------------------------------------
+
+* **ARM KILL — the death was real.** The reaped wait status must be exactly
+  `-SIGKILL` for a pid the CHILD announced, the pid must be alive before the
+  signal and gone from `/proc` after the reap. Paired with **ARM CLEAN**, the
+  §18 discriminator: the identical child stopped with `SIGTERM` reaps
+  `SIGNALLED_EXIT`, so "it died" cannot be satisfied by "it exited" — and a
+  child that never started raises inside the drill before any arm runs, so it
+  cannot be satisfied by "it never lived" either.
+
+* **ARM FLOW — order flow did not halt, MEASURED.** Every arbitration carries a
+  monotonic stamp and the gate reads the WORST gap between consecutive ones,
+  including the gap that straddles the kill instant. A mean would hide the one
+  event that matters. Floors on the decision counts before and after, because
+  "it never stopped" is a statement about a loop that never ran unless the loop
+  ran. Any exception out of the order path is a defect: §6.6 forbids the stall,
+  and a raise is a stall wearing a traceback.
+
+* **ARM LIVE — the ranking was working before the kill.** `fcfs_pre` must be
+  ZERO and `ranked_pre` above its floor. Without this the "fallback" could be a
+  mirror that was cold from the start, and the kill would have changed nothing.
+
+* **ARM CONTROL — the un-break half.** The same loop for the same wall-clock
+  with the publisher ALIVE: zero FCFS, still fresh at the end, no alert. This is
+  what makes the FCFS in ARM KILL attributable to the kill rather than to the
+  passage of time.
+
+* **ARM STALE — a LIVE process whose table stopped moving.** The dangerous case
+  and the reason this arm exists separately: the table is real, complete,
+  populated and confidently answerable, and it stopped being true. Nothing died,
+  so an implementation keying freshness on process liveness passes every other
+  arm and fails only here. Driven from BOTH sides of the threshold against REAL
+  elapsed wall-clock, plus never-fed — the middle of the range is the one place
+  a broken predicate and a correct one agree. `rows_held == 2` on both samples
+  is the *present* in stale-but-present.
+
+* **ARM WINDOW — the interval in which readers RANK on a dead process's table.**
+  Not a defect: it is what §12.7's freshness model costs, and it is exactly
+  `stale_after_s` long. It is gated anyway, in both directions — a window of
+  zero would mean the threshold is not being measured against elapsed time, and
+  an unbounded one would mean the transition never happens. The count of orders
+  ranked from a corpse's table is reported as evidence rather than left to be
+  discovered.
+
+* **ARM ALERT — §12.9's Warning tier fired, with the cause.** *Scoring down ⇒
+  FCFS fallback* must reach an operator once (edge, not level) carrying the age,
+  the threshold and the row count — §12.9: *"alerts carry the cause and the
+  relevant snapshot values, not just a code"*.
+
+* **ARM RESTART — nothing wedges.** Scoring relaunches on the same endpoint and
+  the reader, which was NOT restarted and NOT resubscribed, must RANK again.
+  If it could not, an operator restarting Scoring would leave every consumer on
+  FCFS permanently and silently — the alarm is edge-triggered and has already
+  fired.
+
+* **ARM SHAPE — the hazard stated backwards.** §6.6 forbids the fallback from
+  denying or stalling. So `RankingReader.arbitrate` must be a pure delegation
+  (no raise, no loop, no try, no I/O), and `process.py` must contain no
+  HALT/deny/flatten verb anywhere: a Scoring module that can halt order flow is
+  the failure this whole section is written to prevent, spelled as a feature.
+
+------------------------------------------------------------------------------
+THE STANDING QUESTION (`docs/debug.md` §7.12) — WHAT WOULD HAVE TO BE TRUE FOR
+THIS GATE TO PASS WHILE MEASURING NOTHING
+------------------------------------------------------------------------------
+
+1. *The drill reported a kill it never made.* Closed by reading the KERNEL's
+   reaped status and `/proc`, and by ARM CLEAN producing a DIFFERENT status from
+   the same code path.
+2. *Every arm read the same one drill run, so a broken drill greens everything.*
+   Closed by the counter-arms: ARM CONTROL and ARM STALE run their own processes
+   and demand OPPOSITE answers, so a drill that returned a constant fails at
+   least one.
+3. *The gate's defect functions cannot fire.* Closed by `_arms_can_fail`, which
+   feeds each defect function a DOCTORED outcome — a reap status of 0, a decision
+   gap of ten seconds, a stale sample reported fresh, a delegating `arbitrate`
+   rewritten to loop — and refuses to certify unless every one of them produces a
+   finding. A control that cannot demonstrate the defect is BLIND, not passing.
+4. *The plants ran against the shipped files.* They do not: every AST plant is a
+   source STRING authored in this file (doctrine C.8), and no arm writes to a
+   production artifact.
+5. *Everything was inspected and nothing was counted.* Closed by the floors, all
+   of which are ORDERS OF MAGNITUDE below the figures measured on this node
+   (`docs/debug.md` §7.4) and none of which is zero.
+6. *`pyzmq` is missing so the gate skipped and the runner read the skip as
+   fine.* Closed by `docs/nix_check_contract.md` §17: an unimportable drill is
+   `CANNOT_MEASURE`, never PASS, and the reason names the interpreter.
+"""
+
+from __future__ import annotations
+
+import ast
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+import _preamble  # noqa: F401  pylint: disable=unused-import,wrong-import-order
+from nixverify.contract import CheckResult, Context, Mode, Status, result_from_defects
+
+# pylint: disable=duplicate-code
+
+PRIVILEGE = "user"
+INTERACTIVE = False
+DISRUPTIVE = False
+
+# --- orchestration declarations (read statically, never imported) ---
+#: The drill spawns `.venv/bin/python` children that import `pyzmq`.
+DEPENDS_ON: tuple[str, ...] = ("check_venv",)
+#: Declared against what the drill OBSERVABLY does, not against what it intends
+#: (check contract rule 12 / §17: the observer outranks the declaration).
+#: * `subprocess:python` / `subprocess:python3` — the drill spawns
+#:   `scripts/nixscore/process.py` under `sys.executable`, six times. BOTH
+#:   spellings, because the observer matches a subprocess claim by BASENAME and
+#:   `sys.executable` is `.venv/bin/python` under pytest and `/usr/bin/python3`
+#:   under `nix-verify.service`.
+#: * `file-write:/tmp` — the bus root is a `tempfile.TemporaryDirectory`.
+#: * `zmq-ipc` — `StatePublisher` binds an `ipc://` endpoint and
+#:   `StateSubscriber` connects it. NOT observable by
+#:   `check_observed_resource_claims` (libzmq calls `bind(2)` from C, so no
+#:   Python-level syscall is seen), so it is declared for the PLAN's benefit:
+#:   shared with `check_state_bus`, `check_feed_kill_drill` and the allocator
+#:   mirror gates, which must therefore not run parallel with this one.
+RESOURCES: tuple[str, ...] = (
+    "subprocess:python",
+    "subprocess:python3",
+    "file-write:/tmp",
+    "zmq-ipc",
+)
+TIME_BOUND = True
+#: Five arms, each spawning at least one real interpreter, plus a ~1.0 s kill
+#: window and a ~0.6 s staleness sweep. MEASURED on this node at ~5.5 s; the
+#: declaration carries headroom for a loaded box.
+EXPECTED_S = 15.0
+ON_FAIL = "continue"
+CORRECTABLE = False
+NON_CORRECTABLE_REASON = (
+    "the subject is what the READERS do when the Scoring process stops "
+    "existing. There is no state on disk to repair, and a 'correction' would "
+    "mean editing the fallback while the fallback is the thing under "
+    "measurement — the one path in §6.6 that keeps order flow alive when a "
+    "process just died."
+)
+INSTALLABLE = False
+#: The artifacts this gate MEASURES, for `check_artifact_gate_coverage`.
+#: `scripts/nixscore/seam.py` is deliberately NOT claimed here: it is frozen and
+#: `check_scoring_seam` owns it, and a second declarer would be the duplicate
+#: instrument doctrine C.9 forbids.
+SUBJECTS: tuple[str, ...] = (
+    "scripts/nixscore/process.py",
+    "scripts/scoring_kill_drill.py",
+)
+
+NAME = "check_scoring_fallback"
+
+PROCESS_MODULE = "scripts/nixscore/process.py"
+DRILL_MODULE = "scripts/scoring_kill_drill.py"
+
+#: FLOORS, all orders of magnitude below what this node measures (133k pre-kill
+#: and 340k post-kill decisions, 9 snapshots), so they are floors and not a
+#: restatement of today's throughput — a figure anchored to the current rate
+#: would redden the day the box got slower for an unrelated reason
+#: (`docs/debug.md` §7.4).
+MIN_SNAPSHOTS = 3
+MIN_PRE_DECISIONS = 200
+MIN_PRE_RANKED = 200
+MIN_POST_DECISIONS = 200
+MIN_POST_FCFS = 50
+MIN_CONTROL_DECISIONS = 200
+
+#: Ceiling on the gap between two consecutive order decisions. Observed on this
+#: node: ~3.3 ms, including the gap that straddles the kill. The ceiling is two
+#: orders of magnitude above that and still infinitely below "halted", which is
+#: the only alternative §6.6 cares about.
+MAX_DECISION_GAP_S = 0.5
+
+#: How far past the freshness threshold the FCFS transition may land. Slack for
+#: a loaded scheduler, not for a broken predicate: the LOWER bound is what
+#: catches a threshold that is not real elapsed time.
+WINDOW_SLACK_S = 0.5
+
+#: Ceiling on the un-restarted reader re-acquiring the table after Scoring comes
+#: back. Observed: ~30 ms via libzmq reconnect plus §12.7 snapshot-on-subscribe.
+MAX_REGAIN_S = 3.0
+
+#: Verbs that would make a scoring outage produce a deny or a stall rather than
+#: FCFS — §6.6's hazard stated backwards. Not a style list: each one is a way
+#: for the optimization to become the safety gate §6.6 forbids it from being.
+BANNED_VERBS = ("halt", "set_halt", "flatten", "deny", "refuse_entry", "quarantine")
+
+#: Constructs that make a delegation stop being one.
+STALLING_NODES = (ast.While, ast.For, ast.AsyncFor, ast.Await, ast.Try)
+
+_ORDER_PATH = "RankingReader.arbitrate"
+
+
+def _load_drill() -> tuple[Any, str]:
+    """Import the drill lazily. CANNOT_MEASURE when the interpreter lacks pyzmq —
+    `nix-verify.service` runs `verify.py` under `/usr/bin/python3` (§17)."""
+    scripts = Path(__file__).resolve().parent.parent / "scripts"
+    if str(scripts) not in sys.path:
+        sys.path.append(str(scripts))
+    try:
+        import scoring_kill_drill  # pylint: disable=import-outside-toplevel
+    except ImportError as exc:
+        return None, (
+            f"cannot import scoring_kill_drill under {sys.executable}: {exc!r} — "
+            "the subject is unreachable, and §17 makes an unobservable subject "
+            "CANNOT_MEASURE, never PASS"
+        )
+    return scoring_kill_drill, ""
+
+
+# ---------------------------------------------------------------------------
+# ARM KILL + ARM CLEAN — the death was real, and it was a death
+# ---------------------------------------------------------------------------
+
+
+def kill_defects(kill: dict, clean: dict) -> list[tuple[str, str]]:
+    """The kernel's account of the death, and the control that gives it meaning."""
+    site = "os.kill(pid, SIGKILL) / subprocess.Popen.wait"
+    out: list[tuple[str, str]] = []
+    expected = kill.get("expected_reap_status")
+    if kill.get("reap_status") != expected:
+        out.append(
+            (
+                site,
+                (
+                    f"pid {kill.get('pid')} reaped {kill.get('reap_status')!r}, not "
+                    f"{expected!r}. Only the kernel's reaped wait status distinguishes "
+                    "a process that was KILLED from one that exited, one that failed "
+                    "to start, and a flag that said 'down' (check contract §18)"
+                ),
+            )
+        )
+    if not kill.get("pid_alive_before_kill"):
+        out.append(
+            (site, "the pid was already gone before the signal — nothing was killed")
+        )
+    if not kill.get("pid_gone_after_reap"):
+        out.append((site, f"/proc/{kill.get('pid')} still exists after the reap"))
+    if clean.get("reap_status") != clean.get("expected_reap_status"):
+        out.append(
+            (
+                "scoring_kill_drill:control_clean_exit",
+                (
+                    f"the SIGTERM control reaped {clean.get('reap_status')!r}, not "
+                    f"{clean.get('expected_reap_status')!r}. Without a control that "
+                    "exits cleanly through the same code path, '-SIGKILL' is a number "
+                    "with nothing to be different from"
+                ),
+            )
+        )
+    if clean.get("reap_status") == kill.get("reap_status"):
+        out.append(
+            (
+                "scoring_kill_drill:control_clean_exit",
+                (
+                    "the killed child and the cleanly-stopped child reaped the SAME "
+                    "status, so the drill cannot tell a death from a shutdown"
+                ),
+            )
+        )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# ARM FLOW + ARM LIVE — order flow kept deciding, and it had been ranking
+# ---------------------------------------------------------------------------
+
+
+def flow_defects(kill: dict) -> list[tuple[str, str]]:
+    """§6.6:465: *a scoring outage must NEVER halt order flow.* Measured."""
+    site = f"{PROCESS_MODULE}:{_ORDER_PATH}"
+    out: list[tuple[str, str]] = []
+    post = kill.get("post", {})
+    if int(post.get("decisions", 0)) < MIN_POST_DECISIONS:
+        out.append(
+            (
+                site,
+                (
+                    f"only {post.get('decisions')} arbitration(s) after the kill, "
+                    f"below the {MIN_POST_DECISIONS} floor — 'order flow continued' "
+                    "is a statement about a loop that never ran"
+                ),
+            )
+        )
+    for field, ceiling in (
+        ("max_decision_gap_s", MAX_DECISION_GAP_S),
+        ("gap_across_kill_s", MAX_DECISION_GAP_S),
+    ):
+        gap = kill.get(field)
+        if gap is None or float(gap) > ceiling:
+            out.append(
+                (
+                    site,
+                    (
+                        f"{field}={gap!r} against a {ceiling}s ceiling. §6.6 makes "
+                        "ranking an optimization, never a safety gate: the reader "
+                        "must keep deciding at the instant the writer dies"
+                    ),
+                )
+            )
+    errors = kill.get("order_path_exceptions") or []
+    if errors:
+        out.append(
+            (
+                site,
+                (
+                    f"the order path raised {errors!r}. An exception out of the "
+                    "fallback is a stall wearing a traceback: the caller is an order "
+                    "path that has to keep going"
+                ),
+            )
+        )
+    return out
+
+
+def live_before_defects(kill: dict) -> list[tuple[str, str]]:
+    """The ranking was LIVE before the kill, or the fallback proved nothing."""
+    site = "scoring_kill_drill:kill_mid_contention[pre-kill]"
+    out: list[tuple[str, str]] = []
+    pre = kill.get("pre", {})
+    if not kill.get("snapshot_landed"):
+        out.append((site, "no ranking snapshot ever reached the reader"))
+    if int(kill.get("snapshots_applied", 0)) < MIN_SNAPSHOTS:
+        out.append(
+            (
+                site,
+                (
+                    f"{kill.get('snapshots_applied')} snapshot(s) applied, below the "
+                    f"{MIN_SNAPSHOTS} floor — the mirror was barely fed"
+                ),
+            )
+        )
+    if int(pre.get("ranked", 0)) < MIN_PRE_RANKED:
+        out.append(
+            (
+                site,
+                (
+                    f"only {pre.get('ranked')} RANKED verdict(s) before the kill, "
+                    f"below the {MIN_PRE_RANKED} floor. A reader that was never "
+                    "ranking cannot be shown to have fallen back"
+                ),
+            )
+        )
+    if int(pre.get("fcfs", 0)) != 0:
+        out.append(
+            (
+                site,
+                (
+                    f"{pre.get('fcfs')} FCFS verdict(s) BEFORE the kill. The fallback "
+                    "was already firing, so the kill changed nothing and the post-kill "
+                    "FCFS is not attributable to it"
+                ),
+            )
+        )
+    age = kill.get("table_age_at_kill_s")
+    stale_after = float(kill.get("stale_after_s", 0.0))
+    if age is None or float(age) >= stale_after:
+        out.append(
+            (
+                site,
+                (
+                    f"the table was {age!r}s old at the instant of the kill against a "
+                    f"{stale_after}s threshold — it was already stale, so what "
+                    "followed was not caused by the death"
+                ),
+            )
+        )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# ARM WINDOW — the interval readers RANK on a dead process's table
+# ---------------------------------------------------------------------------
+
+
+def window_defects(kill: dict) -> list[tuple[str, str]]:
+    """The FCFS transition happened, and it happened on the CLOCK."""
+    site = f"{PROCESS_MODULE}:RankingReader.mirror[freshness]"
+    out: list[tuple[str, str]] = []
+    post = kill.get("post", {})
+    if int(post.get("fcfs", 0)) < MIN_POST_FCFS:
+        out.append(
+            (
+                site,
+                (
+                    f"only {post.get('fcfs')} FCFS verdict(s) after the kill, below "
+                    f"the {MIN_POST_FCFS} floor — the fallback did not take over"
+                ),
+            )
+        )
+    window = kill.get("frozen_table_window_s")
+    stale_after = float(kill.get("stale_after_s", 0.0))
+    if window is None:
+        out.append((site, "the reader NEVER fell back to FCFS after Scoring died"))
+        return out
+    if float(window) > stale_after + WINDOW_SLACK_S:
+        out.append(
+            (
+                site,
+                (
+                    f"the reader kept RANKING for {float(window):.3f}s after the death, "
+                    f"past the {stale_after}s threshold plus {WINDOW_SLACK_S}s slack"
+                ),
+            )
+        )
+    if float(window) < stale_after / 2:
+        out.append(
+            (
+                site,
+                (
+                    f"the fallback fired {float(window):.3f}s after the kill, less than "
+                    f"half the {stale_after}s threshold. The threshold is not being "
+                    "measured against real elapsed time — something told the reader "
+                    "the process had died, and §6.6's condition is the TABLE's age, "
+                    "not the writer's liveness"
+                ),
+            )
+        )
+    if int(kill.get("rows_held_at_first_fcfs", 0)) < 2:
+        out.append(
+            (
+                site,
+                (
+                    "the mirror held fewer than both contenders' rows when it fell "
+                    "back, so this measured the ABSENT-table trigger, not the "
+                    "stale-but-PRESENT one that arrives when a publisher dies"
+                ),
+            )
+        )
+    reason = str(kill.get("first_fcfs_reason") or "")
+    if "stale" not in reason.lower():
+        out.append(
+            (
+                site,
+                (
+                    f"the first post-kill FCFS named {reason!r} — an operator cannot "
+                    "tell which of the five triggers fired (check contract §18)"
+                ),
+            )
+        )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# ARM CONTROL — the un-break half
+# ---------------------------------------------------------------------------
+
+
+def control_defects(no_kill: dict) -> list[tuple[str, str]]:
+    """Publisher ALIVE for the same wall-clock: zero FCFS, still fresh, no alert."""
+    site = "scoring_kill_drill:control_no_kill"
+    out: list[tuple[str, str]] = []
+    counts = no_kill.get("counts", {})
+    if int(counts.get("decisions", 0)) < MIN_CONTROL_DECISIONS:
+        out.append(
+            (
+                site,
+                (
+                    f"the control took {counts.get('decisions')} decision(s), below "
+                    f"the {MIN_CONTROL_DECISIONS} floor — a control proves restraint "
+                    "by running, not by being silent"
+                ),
+            )
+        )
+    if int(counts.get("fcfs", 0)) != 0:
+        out.append(
+            (
+                site,
+                (
+                    f"{counts.get('fcfs')} FCFS verdict(s) with the publisher ALIVE. "
+                    "The fallback fires without an outage, so the post-kill FCFS is "
+                    "not evidence of anything the kill did"
+                ),
+            )
+        )
+    if not no_kill.get("still_fresh_at_end"):
+        out.append(
+            (
+                site,
+                (
+                    "the mirror went STALE while its publisher was alive and "
+                    "publishing — the freshness threshold is below the republish "
+                    "period, which makes FCFS the normal mode"
+                ),
+            )
+        )
+    if list(no_kill.get("alert_codes") or []):
+        out.append(
+            (
+                site,
+                (
+                    f"the §12.9 Warning fired {no_kill.get('alert_codes')!r} with "
+                    "nothing wrong. An alarm that pages on a healthy system is an "
+                    "alarm that gets muted"
+                ),
+            )
+        )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# ARM STALE — a LIVE process whose table stopped moving
+# ---------------------------------------------------------------------------
+
+
+def stale_defects(stale: dict) -> list[tuple[str, str]]:
+    """Stale-but-present, on a process that never died. The silent failure."""
+    site = f"{PROCESS_MODULE}:RankingReader[stale-but-present]"
+    out: list[tuple[str, str]] = []
+    if not stale.get("publisher_alive_throughout"):
+        out.append(
+            (
+                site,
+                (
+                    "the publisher was NOT alive through this arm, so it measured a "
+                    "death again rather than a live process with a frozen table"
+                ),
+            )
+        )
+    threshold = float(stale.get("stale_after_s", 0.0))
+    out += _sample_defects(site, stale.get("inside", {}), threshold, want_fresh=True)
+    out += _sample_defects(site, stale.get("outside", {}), threshold, want_fresh=False)
+    never = stale.get("never_fed", {})
+    if never.get("fresh") or never.get("outcome") != "fcfs":
+        out.append(
+            (
+                site,
+                (
+                    f"a mirror that has NEVER received a snapshot reported "
+                    f"fresh={never.get('fresh')!r} / {never.get('outcome')!r}. §12.7: "
+                    "an incomplete mirror IS stale, and §0i says stale until proven "
+                    "fresh"
+                ),
+            )
+        )
+    if never.get("age_s") is not None:
+        out.append((site, f"a never-fed mirror reported an age {never.get('age_s')!r}"))
+    return out
+
+
+def _sample_defects(
+    site: str, sample: dict, threshold: float, *, want_fresh: bool
+) -> list[tuple[str, str]]:
+    """One side of the freshness boundary, driven against real elapsed time."""
+    label = "just inside" if want_fresh else "just outside"
+    if not sample.get("measured"):
+        return [(site, f"the {label} sample was not taken: {sample.get('why')!r}")]
+    out: list[tuple[str, str]] = []
+    age = float(sample.get("observed_age_s") or 0.0)
+    if want_fresh and age >= threshold:
+        out.append((site, f"the {label} sample aged {age:.3f}s, past {threshold}s"))
+    if not want_fresh and age <= threshold:
+        out.append((site, f"the {label} sample aged {age:.3f}s, short of {threshold}s"))
+    if bool(sample.get("fresh")) is not want_fresh:
+        out.append(
+            (
+                site,
+                (
+                    f"a table {age:.3f}s old under a {threshold}s threshold reported "
+                    f"fresh={sample.get('fresh')!r}. A stale-but-present table read as "
+                    "FRESH is the silent failure: the reader answers instantly and "
+                    "confidently from a ranking that stopped updating, which is worse "
+                    "than no table at all because it never falls back"
+                ),
+            )
+        )
+    expected = "ranked" if want_fresh else "fcfs"
+    if sample.get("outcome") != expected:
+        out.append(
+            (
+                site,
+                (
+                    f"the {label} sample arbitrated {sample.get('outcome')!r}, "
+                    f"expected {expected!r} — the verdict does not follow the age"
+                ),
+            )
+        )
+    if int(sample.get("rows_held", 0)) < 2:
+        out.append(
+            (site, f"the {label} sample held {sample.get('rows_held')!r} rows, not 2")
+        )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# ARM ALERT + ARM RESTART
+# ---------------------------------------------------------------------------
+
+
+def alert_defects(kill: dict, down_code: str) -> list[tuple[str, str]]:
+    """§12.9's Warning tier fired once, and carried the CAUSE."""
+    site = f"{PROCESS_MODULE}:FallbackAlarm"
+    codes = list(kill.get("alert_codes") or [])
+    if codes != [down_code]:
+        return [
+            (
+                site,
+                (
+                    f"expected exactly one {down_code!r} alert across the kill and got "
+                    f"{codes!r}. §12.9 puts 'Scoring down ⇒ FCFS fallback' in the "
+                    "Warning tier, and edge-triggering is why an operator gets one "
+                    "page rather than a stream"
+                ),
+            )
+        ]
+    message = "".join(text for _, text in kill.get("alerts") or [])
+    missing = [
+        token
+        for token in ("threshold", "snapshot", "age")
+        if token not in message.lower()
+    ]
+    if missing:
+        return [
+            (
+                site,
+                (
+                    f"the alert body omits {missing!r}. §12.9: alerts carry the cause "
+                    "and the relevant snapshot values, not just a code"
+                ),
+            )
+        ]
+    return []
+
+
+def restart_defects(
+    restart: dict, down_code: str, up_code: str
+) -> list[tuple[str, str]]:
+    """Scoring comes back and the un-restarted reader RANKS again."""
+    site = f"{PROCESS_MODULE}:RankingReader[restart]"
+    out: list[tuple[str, str]] = []
+    if not restart.get("rebound"):
+        return [(site, f"Scoring could not restart: {restart.get('why')!r}")]
+    regained = restart.get("regained_s")
+    if regained is None or float(regained) > MAX_REGAIN_S:
+        out.append(
+            (
+                site,
+                (
+                    f"the reader did not RANK again after Scoring restarted "
+                    f"(regained_s={regained!r}, ceiling {MAX_REGAIN_S}s). It was not "
+                    "restarted and not resubscribed, by design: if §12.7's "
+                    "snapshot-on-subscribe does not carry it, an operator restarting "
+                    "Scoring leaves every consumer on FCFS permanently and silently, "
+                    "because the alarm is edge-triggered and has already fired"
+                ),
+            )
+        )
+    codes = list(restart.get("alert_codes") or [])
+    if codes != [down_code, up_code]:
+        out.append(
+            (
+                site,
+                (
+                    f"the alarm reported {codes!r} across a kill and a restart, "
+                    f"expected {[down_code, up_code]!r}. An operator told the system "
+                    "degraded and never told it recovered has to go and look, which "
+                    "is what §12.9's push tier exists to avoid"
+                ),
+            )
+        )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# ARM SHAPE — the hazard stated backwards
+# ---------------------------------------------------------------------------
+
+
+def shape_defects(source: str) -> tuple[list[tuple[str, str]], int]:
+    """`arbitrate` is a pure delegation, and nothing here can HALT. (findings, scanned)."""
+    findings: list[tuple[str, str]] = []
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        return [(PROCESS_MODULE, f"cannot parse: {exc}")], 0
+    scanned = 0
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "arbitrate"
+        ):
+            scanned += 1
+            findings += _delegation_defects(node)
+    findings += _banned_verb_defects(tree)
+    return findings, scanned
+
+
+def _delegation_defects(node: ast.AST) -> list[tuple[str, str]]:
+    """Anything in `arbitrate` that makes it more than one delegation."""
+    site = f"{PROCESS_MODULE}:{_ORDER_PATH}"
+    out: list[tuple[str, str]] = []
+    for inner in ast.walk(node):
+        if isinstance(inner, STALLING_NODES):
+            out.append(
+                (
+                    site,
+                    (
+                        f"contains {type(inner).__name__} — the order path must answer "
+                        "at the instant a process died (§6.6:465, §11:595)"
+                    ),
+                )
+            )
+        if isinstance(inner, ast.Raise):
+            out.append((site, "can raise — a stall wearing a traceback"))
+    return out
+
+
+def _banned_verb_defects(tree: ast.AST) -> list[tuple[str, str]]:
+    """A HALT/deny verb anywhere in the Scoring module. §6.6 stated backwards."""
+    out: list[tuple[str, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        if name in BANNED_VERBS:
+            out.append(
+                (
+                    f"{PROCESS_MODULE}:line {node.lineno}",
+                    (
+                        f"calls {name}() — §6.6:465 makes ranking an optimization, "
+                        "NEVER a safety gate, and a scoring outage must never halt "
+                        "order flow. A deny or a HALT reachable from this module is "
+                        "the locked hazard stated backwards"
+                    ),
+                )
+            )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# CAN-FAIL: every defect function driven over a DOCTORED subject
+# ---------------------------------------------------------------------------
+
+_GOOD_KILL = {
+    "pid": 1,
+    "reap_status": -9,
+    "expected_reap_status": -9,
+    "pid_alive_before_kill": True,
+    "pid_gone_after_reap": True,
+    "snapshot_landed": True,
+    "snapshots_applied": 9,
+    "stale_after_s": 0.5,
+    "table_age_at_kill_s": 0.01,
+    "pre": {"decisions": 9999, "ranked": 9999, "fcfs": 0},
+    "post": {"decisions": 9999, "ranked": 5000, "fcfs": 4999},
+    "max_decision_gap_s": 0.003,
+    "gap_across_kill_s": 0.003,
+    "frozen_table_window_s": 0.49,
+    "first_fcfs_reason": "ranking table stale: age 0.500s exceeds ...",
+    "rows_held_at_first_fcfs": 2,
+    "order_path_exceptions": [],
+    "alerts": [("scoring-down-fcfs", "age 0.5s threshold 0.5s 9 snapshot(s)")],
+    "alert_codes": ["scoring-down-fcfs"],
+}
+_GOOD_CLEAN = {"reap_status": 7, "expected_reap_status": 7}
+_GOOD_NO_KILL = {
+    "counts": {"decisions": 9999, "ranked": 9999, "fcfs": 0},
+    "still_fresh_at_end": True,
+    "alert_codes": [],
+}
+_GOOD_SAMPLE_IN = {
+    "measured": True,
+    "observed_age_s": 0.4,
+    "fresh": True,
+    "rows_held": 2,
+    "outcome": "ranked",
+}
+_GOOD_SAMPLE_OUT = {
+    "measured": True,
+    "observed_age_s": 0.6,
+    "fresh": False,
+    "rows_held": 2,
+    "outcome": "fcfs",
+}
+_GOOD_STALE = {
+    "publisher_alive_throughout": True,
+    "stale_after_s": 0.5,
+    "inside": _GOOD_SAMPLE_IN,
+    "outside": _GOOD_SAMPLE_OUT,
+    "never_fed": {"fresh": False, "age_s": None, "outcome": "fcfs"},
+}
+_GOOD_RESTART = {
+    "rebound": True,
+    "regained_s": 0.03,
+    "alert_codes": ["scoring-down-fcfs", "scoring-restored-ranked"],
+}
+
+_DELEGATING = (
+    "class RankingReader:\n"
+    "    def arbitrate(self, first, second):\n"
+    "        return self.mirror.arbitrate(first, second)\n"
+)
+_LOOPING = (
+    "class RankingReader:\n"
+    "    def arbitrate(self, first, second):\n"
+    "        while not self._ready:\n"
+    "            self.pump(10)\n"
+    "        return self.mirror.arbitrate(first, second)\n"
+)
+_HALTING = (
+    "class RankingReader:\n"
+    "    def arbitrate(self, first, second):\n"
+    "        return self.mirror.arbitrate(first, second)\n"
+    "\n"
+    "def on_scoring_stale(halter):\n"
+    "    halter.set_halt('scoring down')\n"
+)
+
+
+def _with(base: dict, **overrides: Any) -> dict:
+    """A copy of `base` with fields replaced. The plant, never the shipped dict."""
+    return {**base, **overrides}
+
+
+def _plants() -> tuple[tuple[str, list[tuple[str, str]]], ...]:
+    """Every defect function, fed a doctored subject that MUST produce a finding."""
+    return (
+        (
+            "kill/exited-not-killed",
+            kill_defects(_with(_GOOD_KILL, reap_status=0), _GOOD_CLEAN),
+        ),
+        (
+            "kill/indistinguishable-control",
+            kill_defects(_GOOD_KILL, _with(_GOOD_CLEAN, reap_status=-9)),
+        ),
+        ("flow/halted", flow_defects(_with(_GOOD_KILL, gap_across_kill_s=10.0))),
+        (
+            "flow/raised",
+            flow_defects(_with(_GOOD_KILL, order_path_exceptions=["boom"])),
+        ),
+        (
+            "live/already-fcfs",
+            live_before_defects(
+                _with(_GOOD_KILL, pre={"decisions": 9999, "ranked": 0, "fcfs": 9999})
+            ),
+        ),
+        (
+            "window/never-fell-back",
+            window_defects(_with(_GOOD_KILL, frozen_table_window_s=None)),
+        ),
+        (
+            "window/instant-not-clock",
+            window_defects(_with(_GOOD_KILL, frozen_table_window_s=0.001)),
+        ),
+        (
+            "window/absent-not-stale",
+            window_defects(_with(_GOOD_KILL, rows_held_at_first_fcfs=0)),
+        ),
+        (
+            "control/fcfs-while-healthy",
+            control_defects(
+                _with(
+                    _GOOD_NO_KILL, counts={"decisions": 9999, "ranked": 0, "fcfs": 9999}
+                )
+            ),
+        ),
+        (
+            "stale/read-fresh-when-old",
+            stale_defects(
+                _with(
+                    _GOOD_STALE,
+                    outside=_with(_GOOD_SAMPLE_OUT, fresh=True, outcome="ranked"),
+                )
+            ),
+        ),
+        (
+            "stale/died-instead-of-aged",
+            stale_defects(_with(_GOOD_STALE, publisher_alive_throughout=False)),
+        ),
+        (
+            "alert/silent",
+            alert_defects(_with(_GOOD_KILL, alert_codes=[]), "scoring-down-fcfs"),
+        ),
+        (
+            "alert/no-cause",
+            alert_defects(
+                _with(_GOOD_KILL, alerts=[("scoring-down-fcfs", "scoring is down")]),
+                "scoring-down-fcfs",
+            ),
+        ),
+        (
+            "restart/wedged",
+            restart_defects(
+                _with(_GOOD_RESTART, regained_s=None),
+                "scoring-down-fcfs",
+                "scoring-restored-ranked",
+            ),
+        ),
+        ("shape/looping-order-path", shape_defects(_LOOPING)[0]),
+        ("shape/halt-on-outage", shape_defects(_HALTING)[0]),
+    )
+
+
+def _arms_can_fail() -> tuple[str, str]:
+    """The first arm that cannot demonstrate its defect, or ("", "")."""
+    for label, findings in _plants():
+        if not findings:
+            return label, (
+                f"the {label} plant produced NO finding — that arm cannot see the "
+                "defect it exists to see, so its silence is blind, not green"
+            )
+    clean_findings, scanned = shape_defects(_DELEGATING)
+    if scanned != 1 or clean_findings:
+        return "shape/false-positive", (
+            f"a pure delegation was reported as a defect ({clean_findings!r}) over "
+            f"{scanned} scanned function(s) — the arm flags everything, which is "
+            "the same blindness pointed the other way"
+        )
+    for label, findings in (
+        ("kill", kill_defects(_GOOD_KILL, _GOOD_CLEAN)),
+        ("flow", flow_defects(_GOOD_KILL)),
+        ("live", live_before_defects(_GOOD_KILL)),
+        ("window", window_defects(_GOOD_KILL)),
+        ("control", control_defects(_GOOD_NO_KILL)),
+        ("stale", stale_defects(_GOOD_STALE)),
+        ("alert", alert_defects(_GOOD_KILL, "scoring-down-fcfs")),
+        (
+            "restart",
+            restart_defects(
+                _GOOD_RESTART, "scoring-down-fcfs", "scoring-restored-ranked"
+            ),
+        ),
+    ):
+        if findings:
+            return f"{label}/false-positive", (
+                f"a healthy {label} outcome produced {findings!r} — the arm cannot "
+                "return clean, so its findings carry no information"
+            )
+    return "", ""
+
+
+# ---------------------------------------------------------------------------
+
+
+def _num(value: Any, scale: float = 1.0, unit: str = "s") -> str:
+    """A measured number, or `n/a` — **never a crash**.
+
+    MEASURED, ARC 036 sub-agent C: the first version of this formatter used
+    plain f-string float formatting, and the staged both-halves test — a mirror
+    widened so it can never go stale — turned the gate's own headline FAIL into
+    `CANNOT_MEASURE: TypeError`. Every optional field here is `None` in exactly
+    the case the gate exists to report, so a renderer that cannot print `None`
+    is a renderer that masks the defect (§17: masking is the failure, and the
+    verdict after it is not the one that was measured).
+    """
+    if value is None:
+        return "n/a"
+    return f"{float(value) * scale:.3f}{unit}"
+
+
+def _evidence(outcome: dict, scanned: int) -> str:
+    """What WAS measured, attached to the PASS and to the FAIL alike."""
+    kill = outcome["kill"]
+    stale = outcome["stale"]
+    return (
+        f"nonce {outcome['nonce']}: pid {kill['pid']} SIGKILLed mid-contention and "
+        f"reaped {kill['reap_status']} (/proc gone={kill['pid_gone_after_reap']}), "
+        f"against a SIGTERM control reaping {outcome['clean']['reap_status']}; "
+        f"{kill['pre']['ranked']} RANKED decisions before the kill and "
+        f"{kill['post']['decisions']} after it, worst inter-decision gap "
+        f"{_num(kill['max_decision_gap_s'], 1000, 'ms')} (across-kill "
+        f"{_num(kill['gap_across_kill_s'], 1000, 'ms')}) with "
+        f"{len(kill['order_path_exceptions'])} order-path exception(s); "
+        f"{kill['post']['ranked']} decisions RANKED from the dead process's frozen "
+        f"table over a {_num(kill['frozen_table_window_s'])} window before FCFS "
+        f"took over at {kill['stale_after_s']}s; the live-publisher control took "
+        f"{outcome['no_kill']['counts']['decisions']} decisions with "
+        f"{outcome['no_kill']['counts']['fcfs']} FCFS; a LIVE publisher's frozen "
+        f"table read fresh at {_num(stale['inside'].get('observed_age_s'))} and "
+        f"stale at {_num(stale['outside'].get('observed_age_s'))} against "
+        f"{stale['stale_after_s']}s with both contenders' rows present; the "
+        f"un-restarted reader RANKED again "
+        f"{_num(outcome['restart'].get('regained_s'))} after Scoring relaunched; "
+        f"{scanned} `arbitrate` definition(s) scanned; all "
+        f"{len(_plants())} defect arms proved they can fail on planted subjects "
+        f"this run"
+    )
+
+
+def _measure(drill: Any, root: Path) -> tuple[list[tuple[str, str]], dict, int]:
+    """Run the drill once and judge it. Returns (defects, outcome, scanned)."""
+    outcome = drill.run_drill(root)
+    source = (Path(__file__).resolve().parent.parent / PROCESS_MODULE).read_text(
+        encoding="utf-8"
+    )
+    shape, scanned = shape_defects(source)
+    down = drill.SCORING_DOWN_CODE
+    up = "scoring-restored-ranked"
+    defects = (
+        kill_defects(outcome["kill"], outcome["clean"])
+        + flow_defects(outcome["kill"])
+        + live_before_defects(outcome["kill"])
+        + window_defects(outcome["kill"])
+        + control_defects(outcome["no_kill"])
+        + stale_defects(outcome["stale"])
+        + alert_defects(outcome["kill"], down)
+        + restart_defects(outcome["restart"], down, up)
+        + shape
+    )
+    if scanned != 1:
+        defects.append(
+            (
+                f"{NAME}:non-vacuity",
+                (
+                    f"the shape scan found {scanned} `arbitrate` definition(s) in "
+                    f"{PROCESS_MODULE}, expected 1 — a scan over nothing cannot report "
+                    "an order path that stalls"
+                ),
+            )
+        )
+    return defects, outcome, scanned
+
+
+def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argument
+    """Measure it. See the module docstring for what, and for §0a."""
+    try:
+        blind, why = _arms_can_fail()
+        if blind:
+            return CheckResult(
+                name=NAME,
+                status=Status.CANNOT_MEASURE,
+                site=f"{NAME}:{blind}",
+                detail=f"the {blind} arm cannot fail: {why}",
+            )
+        drill, error = _load_drill()
+        if drill is None:
+            return CheckResult(name=NAME, status=Status.CANNOT_MEASURE, detail=error)
+        with tempfile.TemporaryDirectory(prefix="nixscoregate") as tmp:
+            defects, outcome, scanned = _measure(drill, Path(tmp))
+        return result_from_defects(NAME, defects, _evidence(outcome, scanned))
+    except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
+        return CheckResult(
+            name=NAME,
+            status=Status.CANNOT_MEASURE,
+            detail=f"gate raised {type(exc).__name__}: {exc}",
+        )
+
+
+# pylint: disable=duplicate-code
+if __name__ == "__main__":
+    from nixverify.actuation import standalone_main
+
+    sys.exit(standalone_main(Path(__file__).resolve(), run, NAME))

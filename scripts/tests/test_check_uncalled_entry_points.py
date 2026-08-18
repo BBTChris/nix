@@ -864,12 +864,17 @@ _ARC035_D_CARRIED = (
 #: `arbitrate`, that name STOPS being a finding and this tuple must shrink with
 #: it, or the test goes red for the opposite reason. A carried red that cannot
 #: be quietly kept is the only kind worth carrying. CHECK-DEBT D3.214.
+#: SHRUNK, ARC 036 Stage 1 / sub-agent C — seven to three, and the four that
+#: left are the obligation above being paid rather than waived. `arbitrate`,
+#: `fresh` and `lookup` acquired shipped callers in
+#: `nixscore.process.RankingReader` / `FallbackAlarm` / `scoring_kill_drill`,
+#: and `RankingPublisher.service` in `ScoringProcess.tick`. The three that
+#: remain are still uncalled and still carried BY NAME: `span_days` and
+#: `RankingSnapshot.lookup` are read-side conveniences no consumer needs yet,
+#: and `Verdict.fell_back` is the predicate the Allocator will branch on when
+#: sub-agent E wires it. CHECK-DEBT D3.214.
 _ARC036_PHASE0_CARRIED = (
-    "scripts/nixscore/seam.py::RankingMirror.arbitrate",
-    "scripts/nixscore/seam.py::RankingMirror.fresh",
-    "scripts/nixscore/seam.py::RankingMirror.lookup",
     "scripts/nixscore/seam.py::RankingMirror.span_days",
-    "scripts/nixscore/seam.py::RankingPublisher.service",
     "scripts/nixscore/seam.py::RankingSnapshot.lookup",
     "scripts/nixscore/seam.py::Verdict.fell_back",
 )
