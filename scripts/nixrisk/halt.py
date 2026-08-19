@@ -195,6 +195,17 @@ SOURCE_REPLAY = "marker_replay"
 #: The §12.11:773 verb name an operator clear is booked under. Spelled once.
 OPERATOR_VERB = "HALT clear"
 
+#: The three outcomes §3:173's onset sweep can have, as the value that rides the
+#: Plane-1 row's `onset_sweep` field. ARC 038 / A (FA-3) turned this from a bool
+#: into three named states, because the bool had no way to say *the sweep started
+#: and could not finish* — the state in which orders are still working inside a
+#: window they were not approved for. `SWEEP_SKIPPED` is the not-an-onset case (a
+#: second cause arriving while HALT is already set) and books no field at all.
+SWEEP_RAN = "ran"
+SWEEP_PARTIAL = "partial"
+SWEEP_NOT_WIRED = "not_wired"
+SWEEP_SKIPPED = "skipped"
+
 
 class HaltCause(enum.Enum):
     """§12.5:631's setter list, TRANSCRIBED and closed.
@@ -349,11 +360,12 @@ class HaltRecord:
 
 @dataclasses.dataclass(frozen=True)
 class HaltTransition:  # pylint: disable=too-many-instance-attributes
-    # Eight fields, and each is one fact §12.5:633's audit needs: the cause, the
+    # Nine fields, and each is one fact §12.5:633's audit needs: the cause, the
     # verb, the reason, the stamp, whether the flag is still set afterwards,
-    # whether a row was booked, whether the booking was retroactive, and whether
-    # the §3:173 onset sweep ran. A frozen value type with no behaviour; the
-    # threshold is about behavioural classes accreting state.
+    # whether a row was booked, whether the booking was retroactive, whether the
+    # §3:173 onset sweep ran, and WHICH of its three outcomes it had. A frozen
+    # value type with no behaviour; the threshold is about behavioural classes
+    # accreting state.
     """One audited set or clear (§12.5:633: *"every set/clear is an audited event
     with reason"*).
 
@@ -371,6 +383,13 @@ class HaltTransition:  # pylint: disable=too-many-instance-attributes
     booked: bool
     retroactive: bool = False
     swept: bool = False
+    #: ARC 038 / A (FA-3). `swept` is True only for a CLEAN sweep, so it stays the
+    #: field a caller asserts; `sweep` names which of `SWEEP_RAN` /
+    #: `SWEEP_PARTIAL` / `SWEEP_NOT_WIRED` / `SWEEP_SKIPPED` actually happened.
+    #: A bool could not distinguish *the sweep could not finish* — the state in
+    #: which orders are still working inside a window they were not approved for —
+    #: from *nothing was wired*, and those need different operator responses.
+    sweep: str = SWEEP_SKIPPED
 
 
 # ---------------------------------------------------------------------------
@@ -790,7 +809,7 @@ class HaltFlag:  # pylint: disable=too-many-instance-attributes
             self._marker.record_set(cause, detail, stamp, seq, self._boot_id)
         self._active[cause] = HaltRecord(cause=cause, reason=detail, set_ts=stamp)
         self._refresh()
-        swept = False
+        swept = SWEEP_SKIPPED
         if not was_halted:
             swept = self._sweep_pending_entries()
         self._book(EventKind.HALT_SET, cause, detail, stamp, swept=swept)
@@ -803,7 +822,8 @@ class HaltFlag:  # pylint: disable=too-many-instance-attributes
             ts=stamp,
             halted_after=True,
             booked=True,
-            swept=swept,
+            swept=swept is SWEEP_RAN,
+            sweep=swept,
         )
 
     # -- the condition's own lifecycle (§12.5:632) --------------------------
@@ -1009,13 +1029,26 @@ class HaltFlag:  # pylint: disable=too-many-instance-attributes
         )
         self._flag = (True, f"global HALT (§3:138 branch 0, §12.5) — {why}")
 
-    def _sweep_pending_entries(self) -> bool:
+    def _sweep_pending_entries(self) -> str:
         """§3:173: HALT onset cancels pending ENTRY orders. Exits are untouched.
 
-        Returns whether a sweep ran. `False` when the sweep is not wired, and that
-        distinction rides the Plane-1 row (`onset_sweep`) rather than being
+        Returns WHICH of `SWEEP_RAN` / `SWEEP_PARTIAL` / `SWEEP_NOT_WIRED` happened,
+        and that distinction rides the Plane-1 row (`onset_sweep`) rather than being
         invisible: an onset that cancelled nothing because nothing was wired must
         not read like an onset that found nothing to cancel.
+
+        **`SWEEP_PARTIAL` and the `except` below are ARC 038 / A (FA-3).** The call
+        was unguarded, and `set` runs it BEFORE `self._book` and before
+        `record_booked` — so a sweep that raised took the whole `set()` down with
+        it: the flag was up (money gated) but §12.10:753's `halt_set` row was never
+        enqueued and the marker never recorded the booking. MEASURED: three pending
+        entries, a broker refusing the second, ZERO `halt_set` rows, one CANCEL row
+        of three, and the two surviving entries filled inside the HALT for four
+        contracts of exposure. The executor now completes its own loop (see
+        `flatten.cancel_entries_on_onset`), so the residual exception here is the
+        one from a sink or a ledger; either way the HALT must still be RECORDED,
+        because a declared-and-unrecorded HALT is the one state §12.5:637's replay
+        cannot repair.
 
         **`TerminalPath` is imported at MODULE scope and that is load-bearing.**
         It was written as a deferred import first, and the gate caught it on the
@@ -1029,11 +1062,24 @@ class HaltFlag:  # pylint: disable=too-many-instance-attributes
         reason, not for style.
         """
         if self._onset is None or self._pending is None:
-            return False
-        self._onset.cancel_entries_on_onset(
-            TerminalPath.HALT_ONSET, tuple(self._pending.pending_entries())
-        )
-        return True
+            return SWEEP_NOT_WIRED
+        try:
+            result = self._onset.cancel_entries_on_onset(
+                TerminalPath.HALT_ONSET, tuple(self._pending.pending_entries())
+            )
+        except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
+            self._plane2.emit(
+                "halt_onset_sweep_failed",
+                cause="sweep",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return SWEEP_PARTIAL
+        # The executor reports which entries it could NOT get to the venue. A
+        # `complete` that is False means orders are still working inside a window
+        # they were not approved for, so the HALT row must not claim a clean sweep.
+        if getattr(result, "complete", True) is False:
+            return SWEEP_PARTIAL
+        return SWEEP_RAN
 
     def _book(  # pylint: disable=too-many-arguments
         self,
@@ -1042,7 +1088,7 @@ class HaltFlag:  # pylint: disable=too-many-instance-attributes
         reason: str,
         stamp: float,
         *,
-        swept: bool | None = None,
+        swept: str | None = None,
         by_operator: bool | None = None,
     ) -> None:
         """One §12.10:753 event on BOTH planes. Plane 1 first — it gates money.
@@ -1060,7 +1106,7 @@ class HaltFlag:  # pylint: disable=too-many-instance-attributes
             "active": ",".join(c.value for c in self._active),
         }
         if swept is not None:
-            fields["onset_sweep"] = "ran" if swept else "not_wired"
+            fields["onset_sweep"] = swept
         if by_operator is not None:
             fields["by_operator"] = repr(by_operator)
         self._plane1.enqueue(

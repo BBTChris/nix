@@ -216,6 +216,8 @@ __all__ = [
     "BlackoutOnset",
     "CalendarQueryPort",
     "OnsetSink",
+    "OnsetSweepPort",
+    "PendingEntriesPort",
     "ScheduledEvent",
     "ScheduledEventPort",
     "SessionWindowSource",
@@ -223,6 +225,13 @@ __all__ = [
     "UnusableCalendarError",
     "record_source_conflict",
 ]
+
+# pylint: disable=too-many-lines
+# C0302: ARC 038 / A pushed this module past pylint's 1000-line default, and the
+# overflow is DOCSTRING — `_fire_onset`'s note on why the venue cancel was
+# MISSING (§15:995 C4, measured end-to-end) and why releasing a reservation
+# without cancelling is worse than doing neither. Same suppression and same
+# reason as `nixrisk/halt.py` and `nixrisk/gate.py`.
 
 # pylint: disable=too-few-public-methods
 # Every Protocol below carries exactly the verbs its spec clause gives it, for
@@ -442,6 +451,38 @@ class OnsetSink(Protocol):
 
     def on_blackout_onset(self, onset: BlackoutOnset) -> None:
         """Record one onset. Called once per clear -> in-window transition."""
+
+
+@runtime_checkable
+class PendingEntriesPort(Protocol):
+    """Where the pending ENTRY orders §3:173 cancels on onset are listed.
+
+    ARC 038 / A (FA-2). Declared with the same shape `halt.PendingEntriesPort`
+    already has, so one book satisfies both onsets — §3:173 is ONE sentence
+    covering blackout and HALT, and two incompatible port shapes would guarantee
+    two books.
+    """
+
+    def pending_entries(self) -> Sequence[object]:
+        """Every pending ENTRY order. Exits are not in this set and never are."""
+
+
+@runtime_checkable
+class OnsetSweepPort(Protocol):
+    """§3:173's onset sweep. Structurally `flatten.ProtectiveFlatten`, not imported.
+
+    ARC 038 / A (FA-2). Declared rather than imported for the reason
+    `halt.OnsetSweepPort` gives: the executor is the one place a cancel is issued
+    (§14 makes execution Limiter-only) and a window evaluator must not become a
+    second one. The `cause` this module supplies is
+    `TerminalPath.BLACKOUT_ONSET`, so the reservation release records the window
+    and not a HALT.
+    """
+
+    def cancel_entries_on_onset(
+        self, cause: object, pending: Sequence[object]
+    ) -> object:
+        """Cancel every pending ENTRY order under `cause`. Exits untouched."""
 
 
 @dataclass(frozen=True)
@@ -721,6 +762,8 @@ class BlackoutEvaluator:  # pylint: disable=too-many-instance-attributes
         alert: AlertSink | None = None,
         onset: OnsetSink | None = None,
         ledger: ReservationLedgerPort | None = None,
+        sweep: OnsetSweepPort | None = None,
+        pending: PendingEntriesPort | None = None,
     ) -> None:
         self._windows = windows
         self._baselines = baselines
@@ -730,7 +773,18 @@ class BlackoutEvaluator:  # pylint: disable=too-many-instance-attributes
         self._alert = alert
         self._onset = onset
         self._ledger = ledger
+        #: ARC 038 / A (FA-2). §3:173's sweep, wired the same way `halt.HaltFlag`
+        #: wires it: BOTH the executor and the pending-entry book, or neither.
+        self._sweep = sweep
+        self._pending = pending
         self._state: dict[str, _MarginState] = {}
+        if (sweep is None) != (pending is None):
+            raise BlackoutKnobError(
+                "the §3:173 onset sweep needs BOTH the executor and the pending-"
+                "entry book, or neither: an executor with nothing to sweep would "
+                "report a successful cancellation of zero orders on every onset, "
+                "which is indistinguishable from a sweep that works"
+            )
 
     # -- the port -----------------------------------------------------------
 
@@ -943,9 +997,65 @@ class BlackoutEvaluator:  # pylint: disable=too-many-instance-attributes
             self._fire_onset(symbol, window, now)
 
     def _fire_onset(self, symbol: str, window: Window, now: datetime) -> None:
-        """Release the symbol's reservations and record the onset."""
+        """§3:173: CANCEL the symbol's pending ENTRY orders, then record the onset.
+
+        ------------------------------------------------------------------------
+        THE CANCEL IS THE POINT, AND IT WAS MISSING — ARC 038 / A (FA-2)
+        ------------------------------------------------------------------------
+        §15:995 C4 is *"Blackout onset cancels pending entry orders"* and §3:172-174
+        is *"Blackout/HALT onset ⇒ Limiter cancels all pending ENTRY orders (exits
+        untouched) — no order may fill inside a window it was not approved for."*
+        This method used to do the RELEASE half and nothing else: no broker port
+        existed on this evaluator and no production code anywhere connected an
+        onset to `flatten.ProtectiveFlatten.cancel_entries_on_onset`, while the
+        HALT half of that same one sentence was fully wired.
+
+        MEASURED end-to-end before the repair: a gate-approved entry, working at a
+        real broker, driven across a real EOD window edge — the reservation was
+        RELEASED, the order stayed LIVE with zero cancels, and it then FILLED
+        inside the window. Releasing without cancelling is *worse* than doing
+        neither: the margin is un-reserved while the order is still going to fill,
+        so `committed` under-counts by the full reservation and the freed headroom
+        is available to size another symbol. That is the double-spend §15:987 C1
+        closed, re-opened from the window side.
+
+        The sweep goes through the executor rather than through a broker port held
+        here, because §14 makes execution Limiter-only and `nixrisk.flatten` owns
+        it — this module DETECTS the edge. When the sweep is unwired the previous
+        ledger-only behaviour is unchanged, so no existing caller moves; the
+        wiring gap that remains is that nothing in production constructs either
+        object (CHECK-DEBT).
+
+        ONE DIVERGENCE IN THE WIRED PATH, and it is the fail-CLOSED direction.
+        The executor releases the reservations of the entries it CANCELS, so a
+        reservation with no matching pending entry is no longer released on onset,
+        where the ledger-only path released every reservation for the symbol.
+        Measured both ways: an empty pending book leaves `Σ reservations` at its
+        pre-onset figure and issues no cancel; a book holding the entry cancels it
+        and releases once. §3:150-152's release path is *"blackout-onset
+        CANCELLATION"*, so a reservation with nothing to cancel has had no
+        cancellation, and keeping its margin committed is correct while the order
+        it belongs to may still reach the venue.
+        """
         released: list[str] = []
-        if self._ledger is not None:
+        if self._sweep is not None and self._pending is not None:
+            entries = [
+                entry
+                for entry in self._pending.pending_entries()
+                if getattr(entry, "symbol", None) == symbol
+            ]
+            # The executor cancels at the venue AND releases each entry's
+            # reservation under BLACKOUT_ONSET, so the release below must not also
+            # run for those orders — a second release is a DoubleRelease the ledger
+            # correctly refuses (§14: exactly one terminal release).
+            outcome = self._sweep.cancel_entries_on_onset(
+                TerminalPath.BLACKOUT_ONSET, tuple(entries)
+            )
+            released.extend(
+                reservation.reservation_id
+                for reservation in getattr(outcome, "released", ())
+            )
+        elif self._ledger is not None:
             for reservation in self._ledger.outstanding():
                 if reservation.symbol != symbol:
                     continue

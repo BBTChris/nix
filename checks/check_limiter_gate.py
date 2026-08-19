@@ -986,6 +986,171 @@ def arm_boot_validation(subject: _Subject) -> tuple[list[tuple[str, str]], str]:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# ARM 8 — THE PARTITION IS A PARTITION. Every rule handed in is dispatched
+# exactly once. ARC 038 / A (FA-1).
+# ---------------------------------------------------------------------------
+
+#: The site ARM 8 names. Separate from `BOOT_SITE` because the defect it finds is
+#: not a boot refusal that failed to fire — it is the partition itself losing or
+#: duplicating a member.
+PARTITION_SITE = f"{GATE}:GatePass.__init__[partition]"
+
+
+class _PhaseFlipRule:
+    """A rule whose `phase` answers a DIFFERENT valid `Phase` on successive reads.
+
+    NOT a hypothetical. `RulePort.phase` is a PROPERTY, so every read is a fresh
+    call, and the frozen seam gives it no stability contract — a rule computing its
+    phase from a knob, a cache or a clock satisfies the port exactly as written.
+    ARM 7's bad-phase case uses a CONSTANT non-`Phase` value, which every read
+    agrees on, so it cannot reach this.
+
+    MEASURED, which is why this arm exists: with the partition re-reading
+    `rule.phase` after `_validate` had already read it, the read sequence
+    `A, B, A` DROPPED this rule from both phases — nine dispatched from a
+    ten-rule manifest, a rule that always DENIES never ran, and the pass APPROVED
+    and took the reservation — while `A, A, B` put it in BOTH and dispatched it
+    TWICE inside §3's one authoritative pass (eleven names from ten rules).
+    """
+
+    def __init__(self, log: list[str], name: str, sequence: tuple[Any, ...], seam: Any):
+        self._log = log
+        self._name = name
+        self._sequence = sequence
+        self._reads = 0
+        self._seam = seam
+
+    @property
+    def name(self) -> str:
+        """The identifier a denial is reported under."""
+        return self._name
+
+    @property
+    def phase(self) -> Any:
+        """A valid `Phase` on every read, and not the SAME one on every read."""
+        self._reads += 1
+        return self._sequence[min(self._reads - 1, len(self._sequence) - 1)]
+
+    @property
+    def reads(self) -> int:
+        """How many times the executor read the declaration. Evidence, not a verdict."""
+        return self._reads
+
+    def evaluate(self, order: Any, picture: Any) -> Any:
+        """Record the invocation and DENY — so being skipped is visible in the outcome."""
+        del order, picture
+        self._log.append(self._name)
+        return self._seam.RuleVerdict(
+            rule=self._name,
+            decision=self._seam.Decision.DENY,
+            reason="planted denial by the phase-flipping rule",
+        )
+
+
+def arm_partition_is_a_partition(  # pylint: disable=too-many-locals
+    subject: _Subject,
+) -> tuple[list[tuple[str, str]], str]:
+    # R0914: twenty locals, and each is one side of a comparison this arm makes —
+    # the handed roster, the dispatched roster, the flip sequence, the outcome, the
+    # missing set and the duplicated set. Bundling them into a struct to satisfy a
+    # counter would hide which pair disagreed, which is the whole report.
+    """Every rule handed to `GatePass` is dispatched EXACTLY ONCE.
+
+    The precondition of every ordering arm above, and none of them can see it: a
+    rule DROPPED from both phases produces the same empty phase-B record as a
+    correct Phase-A denial, and a rule dispatched twice still runs in the right
+    phase. The only observable is CARDINALITY — the dispatch manifest against the
+    manifest handed in, and the invocation log against the rule set.
+
+    Both flip directions are driven, because they fail in opposite directions and
+    a single sequence would only ever catch one.
+    """
+    gate = gate_module = subject.gate
+    seam = subject.seam
+    phase_a = seam.Phase.SIZE_INDEPENDENT
+    phase_b = seam.Phase.SIZE_DEPENDENT
+    defects: list[tuple[str, str]] = []
+    driven = 0
+    for label, sequence in (
+        ("dropped-from-both", (phase_a, phase_b, phase_a, phase_b, phase_a)),
+        ("duplicated-into-both", (phase_a, phase_a, phase_b, phase_a, phase_b)),
+    ):
+        log: list[str] = []
+        base = _scrambled(subject, log)
+        flipper = _PhaseFlipRule(log, "phase_flipper", sequence, seam)
+        handed = [*base, flipper]
+        try:
+            passer = gate_module.GatePass(
+                _RecordingHalt(log, gate.HALT_RULE, False), handed
+            )
+        except gate_module.UndispatchableManifest:
+            # A boot refusal is a legitimate way to hold this property — the rule
+            # never reaches a partition at all. Not a defect; not a measurement of
+            # the partition either, so it is not counted as driven.
+            continue
+        driven += 1
+        dispatched = tuple(passer.manifest)
+        expected = tuple(rule.name for rule in handed)
+        if len(dispatched) != len(expected):
+            defects.append(
+                (
+                    PARTITION_SITE,
+                    (
+                        f"[{label}] {len(expected)} rule(s) were handed to GatePass and "
+                        f"{len(dispatched)} were partitioned into the dispatch manifest "
+                        f"{list(dispatched)} after {flipper.reads} read(s) of "
+                        "`phase`. §3 fixes ONE authoritative pass over the manifest: a "
+                        "rule LOST by the partition never runs and its absence looks "
+                        "exactly like an approval, and a rule DUPLICATED by it is "
+                        "evaluated twice in a pass the spec calls one"
+                    ),
+                )
+            )
+        if sorted(dispatched) != sorted(expected):
+            missing = sorted(set(expected) - set(dispatched))
+            extra = sorted(name for name in dispatched if dispatched.count(name) > 1)
+            defects.append(
+                (
+                    PARTITION_SITE,
+                    (
+                        f"[{label}] the dispatch manifest is not the manifest handed "
+                        f"in: DROPPED={missing} DUPLICATED={extra}"
+                    ),
+                )
+            )
+        outcome = passer.evaluate(_order(seam), _picture(seam), 1.0)
+        if flipper.name not in outcome.evaluated:
+            defects.append(
+                (
+                    PARTITION_SITE,
+                    (
+                        f"[{label}] {flipper.name!r} was in the manifest and does not "
+                        f"appear in GateOutcome.evaluated={list(outcome.evaluated)}; it "
+                        f"DENIES on every call and the pass returned "
+                        f"{outcome.decision} via {outcome.rule!r}"
+                    ),
+                )
+            )
+        if tuple(outcome.evaluated).count(flipper.name) > 1:
+            defects.append(
+                (
+                    PARTITION_SITE,
+                    (
+                        f"[{label}] {flipper.name!r} appears "
+                        f"{tuple(outcome.evaluated).count(flipper.name)} times in one "
+                        f"pass: evaluated={list(outcome.evaluated)}"
+                    ),
+                )
+            )
+    if driven < 1:
+        return [], (
+            "no flip sequence reached a partition — every one was refused at boot, "
+            "so this arm measured the boot validation and not the partition"
+        )
+    return defects, ""
+
+
 def _measure(subject: _Subject) -> CheckResult:
     """Every arm, in order. A non-vacuity complaint is CANNOT_MEASURE."""
     floor, complaint = non_vacuity(subject)
@@ -999,6 +1164,7 @@ def _measure(subject: _Subject) -> CheckResult:
         arm_halt_first,
         arm_records_agree,
         arm_boot_validation,
+        arm_partition_is_a_partition,
     ):
         found, refusal = arm(subject)
         if refusal:

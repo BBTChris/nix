@@ -31,6 +31,15 @@ partition and never evaluated — a rule that is in the manifest, is never run, 
 whose absence looks exactly like an approval. That is rejected at boot, loudly,
 rather than discovered as a quiet green.
 
+**And `phase` is read EXACTLY ONCE per rule (ARC 038 / A, FA-1).** It is a
+property, so a rule can answer two different valid `Phase` members on two reads;
+the partition used to read it twice more after `_validate` had read it, and a
+rule that flipped between those reads was dropped from BOTH partitions (never
+evaluated — the failure the paragraph above promises is refused) or placed in
+BOTH and dispatched TWICE inside §3's one authoritative pass. `_validate` now
+returns what it read and the partition is built from that, so the reads cannot
+disagree because there is only one.
+
 ------------------------------------------------------------------------------
 BRANCH 0 — the HALT flag is read BEFORE the manifest, not first IN it
 ------------------------------------------------------------------------------
@@ -91,6 +100,7 @@ and are carried as CHECK-DEBT rows; see `SurvivalHeadroomRule` and
 from __future__ import annotations
 
 import dataclasses
+import math
 from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
@@ -120,6 +130,38 @@ HALT_RULE = "global_halt"
 #: named suppression `nixverify.contract.Status.PASS` already uses.
 PASS_COMPLETE = "manifest_exhausted"  # nosec B105
 
+#: The branch a DEGENERATE PROPOSAL is denied under. ARC 038 / A (FA-4).
+#:
+#: Not a `RulePort` and deliberately not manifest-supplied, for the same reason
+#: `HALT_RULE` is not: a manifest could omit it. §3:131 ends the Allocator's
+#: sizing block with "**size 0 ⇒ deny**" and §3:118-119 puts the authoritative
+#: answer at the Limiter ("the rare race ... is caught authoritatively at the
+#: Limiter"), so a proposal that arrives with a non-positive quantity must be
+#: denied HERE and not trusted to have been denied upstream.
+#:
+#: It is read AFTER §11.5's HALT flag so `evaluated[0] is HALT_RULE` still holds
+#: on every pass, which is the property `check_limiter_gate.arm_halt_first`
+#: measures.
+#:
+#: MEASURED, which is why it exists: `qty=0` and `qty=-5` were both APPROVED by
+#: the shipped manifest. A negative quantity makes `proposed_margin` NEGATIVE, so
+#: every Phase-B rule gets EASIER — the §6.5 cap sees `committed - 5000 < cap`,
+#: the survival floor drops, the deployable ceiling passes trivially. With a
+#: `ReservationLedger` wired the pass did deny, but under the rule name
+#: `reservation_ledger` via `MIN_MARGIN` — §3's "deny (rule named)" naming the
+#: persistence layer for a fault in the proposal.
+PROPOSAL_RULE = "proposal_shape"
+
+
+# pylint: disable=too-many-lines
+# C0302: ARC 038 / A pushed this module past pylint's 1000-line default, and the
+# overflow is DOCSTRING, not code — the FA-1 note on why `phase` is read once and
+# the FA-4 note on why a degenerate proposal is denied here rather than at the
+# ledger are both reasoning a future arc cannot re-derive from the four lines of
+# code they explain. Splitting the file to satisfy a line count would put the
+# pre-gate in one module and the partition that depends on its ordering in
+# another, which is the coupling this file exists to keep visible. Same
+# suppression, same reason, as `nixrisk/halt.py`.
 
 # R0903 (too-few-public-methods) disabled at module scope. Every class below is
 # either a single-verb `Protocol` -- a DECLARATION with exactly the surface §11
@@ -668,13 +710,43 @@ class GatePass:
         """
         self._halt = halt
         self._ledger = ledger
-        self._validate(halt, rules)
-        self._phase_a = tuple(r for r in rules if r.phase is Phase.SIZE_INDEPENDENT)
-        self._phase_b = tuple(r for r in rules if r.phase is Phase.SIZE_DEPENDENT)
+        # ARC 038 / A (FA-1). `phase` is a PROPERTY, so every read is a fresh
+        # call. This used to be read three times — once in `_validate`'s
+        # `isinstance` check and once per partition comprehension — and each read
+        # was trusted on its own. A rule whose property answered a DIFFERENT
+        # (still valid) Phase on successive reads was therefore either DROPPED
+        # from both partitions — never evaluated, and its absence looks exactly
+        # like an approval, which is the failure this module's docstring promises
+        # is "rejected at boot, loudly" — or placed in BOTH, dispatched twice
+        # inside §3's "ONE authoritative pass". Measured, both directions: a
+        # denying rule dropped from a ten-rule manifest and the pass APPROVED,
+        # and an eleven-name dispatch manifest built from ten rules.
+        #
+        # The repair is to read it ONCE. `_validate` returns what it read and the
+        # partitions are built from that tuple, so the three reads cannot
+        # disagree because there is only one. Nothing else about the validation
+        # moves, and an honest rule sees no change.
+        declared = self._validate(halt, rules)
+        self._phase_a = tuple(
+            rule
+            for rule, phase in zip(rules, declared, strict=True)
+            if phase is Phase.SIZE_INDEPENDENT
+        )
+        self._phase_b = tuple(
+            rule
+            for rule, phase in zip(rules, declared, strict=True)
+            if phase is Phase.SIZE_DEPENDENT
+        )
 
     @staticmethod
-    def _validate(halt: HaltFlagPort, rules: Sequence[RulePort]) -> None:
-        """§12A boot validation for the manifest. Raises `UndispatchableManifest`."""
+    def _validate(halt: HaltFlagPort, rules: Sequence[RulePort]) -> tuple[Phase, ...]:
+        """§12A boot validation. Returns each rule's phase, READ EXACTLY ONCE.
+
+        The return value is the point: the caller partitions from it rather than
+        re-reading `rule.phase`, so a `phase` property that answers differently on
+        a second read cannot move a rule out of both partitions (never evaluated)
+        or into both (evaluated twice). Raises `UndispatchableManifest`.
+        """
         if not hasattr(halt, "is_set"):
             raise UndispatchableManifest(
                 "the HALT port declares no is_set() — §11.5's first atomic read "
@@ -687,19 +759,24 @@ class GatePass:
                 "so a gate with no rules approves every proposal. Refused at boot"
             )
         seen: set[str] = set()
+        declared: list[Phase] = []
         for index, rule in enumerate(rules):
             if not isinstance(rule, RulePort):
                 raise UndispatchableManifest(
                     f"manifest[{index}] does not satisfy RulePort (needs name, "
                     f"phase, evaluate): {type(rule).__name__}"
                 )
-            if not isinstance(rule.phase, Phase):
+            # THE ONE READ. Everything below, and the partition in `__init__`,
+            # uses this value (ARC 038 / A, FA-1).
+            phase_of_rule = rule.phase
+            if not isinstance(phase_of_rule, Phase):
                 raise UndispatchableManifest(
                     f"manifest[{index}] {rule.name!r} declares phase "
-                    f"{rule.phase!r}, which is not a Phase member — the partition "
+                    f"{phase_of_rule!r}, which is not a Phase member — the partition "
                     "would DROP it, and a rule that is in the manifest and never "
                     "runs is indistinguishable from a rule that approved"
                 )
+            declared.append(phase_of_rule)
             if rule.name in seen:
                 raise UndispatchableManifest(
                     f"manifest[{index}] repeats the name {rule.name!r} — §3 and §5 "
@@ -710,12 +787,13 @@ class GatePass:
                 raise UndispatchableManifest(f"manifest[{index}] has a blank name")
             seen.add(rule.name)
         for phase in Phase:
-            if not any(rule.phase is phase for rule in rules):
+            if phase not in declared:
                 raise UndispatchableManifest(
                     f"manifest declares no rule in phase {phase.name} — §3 fixes a "
                     "TWO-phase pass, and a pass whose phase B is empty checks "
                     "committed margin never while looking exactly like one that does"
                 )
+        return tuple(declared)
 
     @property
     def manifest(self) -> tuple[str, ...]:
@@ -737,6 +815,26 @@ class GatePass:
                 reason=why.strip() or "global HALT flag is set (§3 branch 0, §12.5)",
                 phase=Phase.SIZE_INDEPENDENT,
                 evaluated=tuple(evaluated),
+            )
+
+        shape = _proposal_defect(order)
+        if shape:
+            # Appended HERE and not unconditionally, unlike `HALT_RULE`, and the
+            # asymmetry is deliberate. `HALT_RULE` rides EVERY pass because the
+            # docstring's property is "evaluated[0] is HALT_RULE on every pass",
+            # which is only checkable if it is always there. This branch has no
+            # such property: its one job is to ATTRIBUTE a denial, so it appears
+            # on the outcome it produced. Naming it on a clean pass would put a
+            # name in `evaluated` that no rule double and no port double can
+            # record, which would make `check_limiter_gate.arm_records_agree` —
+            # the arm that proves `evaluated` is not fabricated — structurally
+            # unable to agree. Measured: it reddened on exactly that.
+            return GateOutcome(
+                decision=Decision.DENY,
+                rule=PROPOSAL_RULE,
+                reason=shape,
+                phase=Phase.SIZE_INDEPENDENT,
+                evaluated=(*evaluated, PROPOSAL_RULE),
             )
 
         first = self._dispatch(
@@ -865,6 +963,39 @@ class GatePass:
         )
 
 
+def _proposal_defect(order: ProposedOrder) -> str:
+    """Why this proposal is not a possible order, or `''`. ARC 038 / A (FA-4).
+
+    Size-INDEPENDENT by construction — it reads the proposal and no picture — so
+    it belongs on the pre-gate beside §11.5's HALT read, and it is two comparisons
+    and an `isfinite`, which §11's "cache reads + arithmetic only" allows.
+
+    Fails CLOSED in both directions: a quantity at or below zero is §3:131's
+    `size 0 ⇒ deny`, and a `margin_per_contract` that is negative or non-finite
+    makes `proposed_margin` a figure no Phase-B comparison can be trusted on
+    (a NaN turns every `<` into `False`, which reads as "the cap was not
+    exceeded").
+    """
+    if order.qty <= 0:
+        return (
+            f"§3:131 'size 0 ⇒ deny': the proposal carries qty={order.qty!r}, "
+            "which is not a sendable order. A non-positive quantity makes "
+            "proposed_margin zero or NEGATIVE, and a negative margin makes every "
+            "size-dependent rule easier to pass than an empty account would — "
+            "denying on the proposal rather than letting the reservation ledger "
+            "refuse it under a rule name that names the wrong subsystem"
+        )
+    if not math.isfinite(order.margin_per_contract) or order.margin_per_contract < 0.0:
+        return (
+            f"the proposal carries margin_per_contract="
+            f"{order.margin_per_contract!r}, which is not a usable figure. §3's "
+            "sizing guard C3 (§15:989) makes 'missing margin ⇒ not-tradable', and "
+            "a non-finite margin turns every Phase-B '<' comparison into False, "
+            "which reads exactly like a cap that was not exceeded"
+        )
+    return ""
+
+
 def _verdict_defect(  # pylint: disable=too-many-return-statements
     rule: RulePort, verdict: RuleVerdict, phase: Phase, order: ProposedOrder
 ) -> str:
@@ -896,11 +1027,18 @@ def _verdict_defect(  # pylint: disable=too-many-return-statements
         )
     if verdict.sized_qty is None:
         return "SIZE_DOWN with sized_qty=None — a clamp that names no quantity"
-    if not 0 <= verdict.sized_qty < order.qty:
+    # ARC 038 / A (FA-4): the floor is ONE, not zero. `0 <=` admitted a clamp to
+    # zero contracts, and a zero-quantity order is a DENY wearing SIZE_DOWN's
+    # clothes — §5 makes the two DISTINCT outcomes, and `_settle` would go on to
+    # ask the ledger to reserve nothing for it. No shipped rule can produce it
+    # (`_size_down_or_deny` already returns DENY at `fits <= 0`), so this closes a
+    # door rather than moving a behaviour.
+    if not 1 <= verdict.sized_qty < order.qty:
         return (
             f"SIZE_DOWN to {verdict.sized_qty} against a proposal of {order.qty} — "
-            "a clamp must reduce; §5 makes size-down distinct from deny and "
-            "neither of them may INCREASE a proposal"
+            "a clamp must reduce to a SENDABLE quantity; §5 makes size-down "
+            "distinct from deny, so a clamp to zero is a deny and must be "
+            "returned as one, and neither may INCREASE a proposal"
         )
     return ""
 
