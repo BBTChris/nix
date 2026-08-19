@@ -327,3 +327,30 @@ identity; age-only freshness; the restart rebuild) · FE1/FE2/FE3 (superuser app
 non-Limiter writers; `wal_seq`) · FE6 (the cap reads no distance) · FE10 (`breached(NaN)`) ·
 FF4/FG4 (the hot-path gate's coverage and its unexecuted verdict assembly) · FG6 (the §12.1
 replay ordering).
+
+### Post-write-back re-measure (ARC 038), banked BEFORE the marker
+
+D3.417's prediction, stated before `sessions/SESSION.md` named this arc complete.
+
+`sessions/SESSION.md` now names ARC 038 complete, so the D3.40/D3.144 guard-owner transition is
+**live, not hypothetical**: `nixverify.contract.completed_arcs` returns a set that **includes 38**,
+put there by this arc's own summary — the condition D3.417 was written to be falsified by.
+
+**The prediction held in both halves:**
+
+| | predicted (banked first) | measured after |
+|---|---|---|
+| `check_artifact_gate_coverage` | GUARDED, unchanged, 120 / 119 / 8 | **guarded (exit 3), 120 tracked / 119 declared / 8 uncovered** |
+| `verify.py` | byte-for-byte the pre-write-back figure | **87 passed / 2 failed / 2 cannot measure / 0 skipped / 1 guarded, exit 1** |
+
+The guard survived because the eight CHECK-A8/CHECK-A9 exclusions were re-pointed ARC 038 → ARC 039
+*before* the write-back. Had they been left naming ARC 038, this re-measure would have read
+GUARDED → CANNOT_MEASURE and the guarded count would have gone 1 → 0. **A re-measure taken after
+the fact and then described is not a test of anything**, which is why the row was banked first.
+
+What this arc adds beyond ARC 037's identical row: sub-agent G drove **both** ratchet arms of that
+gate to RED on the real tree and back to green, so "GUARDED, unchanged" is now a statement about an
+instrument **proven able to fail in both directions** rather than one assumed to be. G's own restore
+failed the first time and was caught only by `sha256`, because `git checkout --` restores from the
+**index** — the same lesson the abandoned `capture.py` plant (D3.419) taught the integrator four
+hours later.
