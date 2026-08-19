@@ -4832,3 +4832,120 @@ instrument **proven able to fail in both directions** rather than one assumed to
 failed the first time and was caught only by `sha256`, because `git checkout --` restores from the
 **index** — the same lesson the abandoned `capture.py` plant (D3.419) taught the integrator four
 hours later.
+
+---
+
+## ARC 039R — Limiter slice 1 CLOSE-OUT AND BANK (INTERIOR tier)
+
+**What this arc was.** Not a build. ARC 039 slice 1 — the minimal Limiter runtime
+loop — was already built and committed at `17bb390`; its run was **killed during
+close-out** when the full pytest + full binding census turned a ~1h slice into
+2.5h+. 039R banks that slice under the **INTERIOR tier** of the tiered close-out
+rule. The loop, `scripts/limiterd.py`, `checks/check_limiter_loop_alive.py` and the
+tests were on disk and committed before this arc started; two files were
+modified-not-committed and are now banked at `a64978a`.
+
+**The Limiter badge STAYS RED.** This is slice 1 of many.
+
+**S1 — the committed slice re-measured from OUTSIDE the process.** `17bb390`'s
+commit message was not trusted; the running process was measured.
+`.venv/bin/python scripts/limiterd.py` came up as pid 3869046 with `PPid 1` (its
+own session, not this shell's child), `exe` the venv python, `cwd` the nix home,
+2 threads. The heartbeat advanced `seq 22 -> 27` with a strictly increasing `ts`,
+and **each beat carried `pid: 3869046`** — the beat names the process publishing
+it. `kill -9` **by PID** (never `pkill -f`) removed `/proc/3869046`; `kill -0`
+returned ESRCH; `seq` **froze at 54 across two 3-second windows**, ~12 heartbeat
+intervals with zero beats. The runtime record left behind had `stopped_ts: null`,
+which is §12.2:617's documented signature of a death with no clean stop. Restart
+on the same runtime directory produced a **new** pid 3887085, `flat: true`,
+`in_flight: []`, and `seq` restarting at 4 — the beat is bound to the process, not
+to the file the killed one left behind. A closing SIGTERM produced the clean
+record: `ticks=135, heartbeats=26, sender_joined=true`, `reason` naming the site.
+
+**S2 — the gate ships with a demonstrated FAIL.** All three plants FAIL and NAME
+their site, and every assertion is on the **reason**, never the exit code: the
+ghost writer that outlives the killed loop (`site` contains *"seq advanced after
+death"*, detail *"THE HEARTBEAT ADVANCED WITHOUT THE LOOP"* / *"blind to a dead
+Limiter"*); the entrypoint that returns (`detail` *"EXITED with rc 0"* /
+*"A Limiter is a resident loop"*, and it asserts *"below the floor"* is **absent**
+— a subject that silences the instrument by dying does not buy the milder
+verdict); and the foreign pid (`site` `risk_engine.heartbeat.json:pid`, detail
+*"is another process's beat"* with both pids, plus a `pgrep` leak control proving
+the gate reaps what it launched). Non-vacuity three independent ways: the real
+daemon arm PASSES, an absent entrypoint is CANNOT_MEASURE not Pass, and S1 killed
+a real loop by hand. 6 passed in 15.0s.
+
+**S3a — `verify.py` on trunk: one delta, and it was ours.** 87 passed / **3**
+failed / 2 cannot measure / 0 skipped / 1 guarded, exit 1, against the ARC 038
+baseline of 87/2/2/0/1. Total 93 vs 92 because `check_limiter_loop_alive` is new
+and ran `[ok]`. The two baseline FAILs stood unchanged (`check_ibgateway_service`,
+ECONNREFUSED on 127.0.0.1:4002; `check_uncalled_entry_points`, 25 unadmitted entry
+points plus a baseline row whose bucket drifted). The **third** was
+`check_derived_claims`: `derived:ledger_rows=374` vs
+`stated:series_table_latest_row=371` — the killed run appended three ledger rows
+and never wrote the series row. Both cannot-measures are the unreachable gateway,
+correctly refused rather than passed (check-contract rule 10). The guard read
+`EXCLUDED -> ARC 040`.
+
+**S3b — the DERIVED reverse-dependency closure, non-vacuity proven first.** Thirty
+test files derived from the tree by grepping importers of the six changed
+artifacts, against the ~3400-test full suite. The closure was **proven
+non-vacuous before it was trusted**: every one of the six changed artifacts is
+referenced by at least one member (loop.py 1, limiterd.py 3,
+check_limiter_loop_alive.py 1, registry.json 18, gate_coverage_baseline.json 5,
+CHECK-DEBT.md 9) and every member exists on disk. Result: **7 failed, 644 passed**
+— and all 7 were in one module, `test_check_derived_claims.py`, every one naming
+`check_debt_open_items: DISAGREEMENT derived:ledger_rows=374,
+stated:series_table_latest_row=371` with the other 12 of 13 claims agreeing. One
+root cause, two instruments.
+
+**S3c — binding.** `check_limiter_loop_alive` is **BOUND**, established from the
+already-observed real FAIL rather than by re-running the census: the census keys a
+binding on a `CheckResult` with a failing status returned by the gate's own
+`run()` (D3.418), and S2 observed exactly that three times, asserted by status
+object.
+
+**S3d — the reconcile.** D3.423 opened, the ARC 039 series row written stating
+**375**, derived by the gate's own probe rather than by arithmetic on a remembered
+figure. The first token written for D3.423 was `environment`; the gate **refused
+it** as outside the controlled vocabulary — a loud `ProbeError` naming the row by
+id, which is exactly the failure mode that table exists to produce. Corrected to
+`verify`, because the artefact that must change to discharge the row is a new
+`checks/check_tmpfs_headroom.py`. Independent re-measure, fresh process, the
+check's own CLI: `pass: 13/13 claim(s) compared`, exit 0. The 7 closure failures
+went green: **16 passed**.
+
+**S4 — guard survival, before the write-back.** All eight CHECK-A8/CHECK-A9
+exclusions read `owner = ARC 040`, `temporary = true`. The re-point was made
+before `sessions/SESSION.md` names this arc complete, so `guard_owner_defect`
+still finds a live owner and the gate stays GUARDED instead of degrading to
+CANNOT_MEASURE with the guarded count 1 -> 0 (the D3.342 / D3.417 pattern).
+
+**The finding that stopped the arc mid-flight.** `/tmp` (tmpfs) **ran out of
+inodes** — 1,048,576 of 1,048,576 used, **0 free, with 16 GB of space still
+available**. It surfaced as a bare `No space left on device` that swallowed a file
+write and stopped `limiterd.py` booting, and it read as a code fault. The consumer
+was `/tmp/pytest-of-bbt/`: **1,004,087 inodes across 32 retained pytest basetemp
+sessions**, 96% of the whole inode table — the accumulated debris of exactly the
+full-suite runs this tiered close-out exists to avoid. Removing it reclaimed
+1,004,194 inodes and 14 GB. Nothing in `checks/` samples `f_favail`. That is
+D3.423, owed to ARC 040.
+
+**The kickoff finding.** The heartbeat watchdog's self-verify returned FAIL at
+kickoff — and the watchdog was alive the whole time. `$!` under `setsid` names the
+**wrapper**, which had already exited, not the daemon. The pid was recovered from
+the watchdog's own first log line and the instrument corrected. A blind run would
+have carried a wrong pid all arc; the self-verify is what caught it, which is the
+argument for requiring one.
+
+**Explicitly DEFERRED, as a stated decision and not a silent skip.** The **full
+~3400-test pytest suite** and the **full binding census** were NOT run. Under the
+tiered close-out rule an interior slice runs the interior tier; that full-suite tax
+is what killed the previous run. Both are deferred to the Limiter's **GREENING
+slice**. What was run instead is recorded above with its non-vacuity proof.
+
+**Slice 2 is named: the GO-TIMEOUT (I5)**, driven against this now-running loop —
+and D3.420 is its first input, because `§4:210` is the GO-timeout, not the
+one-in-flight lock, and shipped code has been citing it for the lock since ARC 034.
+
+Banked at `a64978a`; ledger 371 -> 375.
