@@ -102,6 +102,22 @@ SHIPPED_INFLIGHT_RELEASE_SITES: tuple[str, ...] = (
 #: `limiter.go_timeout_s`; §14's *"it can never wedge (GO-timeout)"* has no
 #: implementation. CHECK-DEBT D3.398.
 SHIPPED_GO_TIMEOUT_MENTIONS: tuple[str, ...] = (
+    # ARC 039 (slice 1, the runtime loop) added the first two, and the ratchet
+    # fired exactly as it was built to: a seventh and an eighth mention were READ
+    # rather than absorbed. BOTH ARE NAMES. `scripts/nixrisk/loop.py` spells
+    # "GO-timeout" in the refusal the running loop returns for a second GO on a
+    # held lock — the reason text says, in so many words, that §4:210-212's
+    # deadlock breaker IS NOT IMPLEMENTED in that arc — and `scripts/limiterd.py`
+    # spells it in the same place. Neither reads `limiter.go_timeout_s`, neither
+    # measures elapsed time, and neither releases the lock: the two SIBLING
+    # ratchets in this file are the proof of that and both still hold at their
+    # ARC 038 baselines — `force_deregister` is still the only shipped release
+    # site, and no shipped module outside the boot validator reads the knob.
+    # That combination is the honest signature of this slice: it stood up the
+    # PROCESS the timeout will live in and deliberately did not build the
+    # timeout. D3.398 stays open; slice 2 discharges it.
+    "scripts/limiterd.py",
+    "scripts/nixrisk/loop.py",
     "scripts/nixrisk/plane1_seed.py",
     "scripts/nixrisk/plane1_sink.py",
     "scripts/nixrisk/projection.py",

@@ -802,7 +802,15 @@ _ARC034_CARRIED = (
     "scripts/nixrisk/recovery.py::HeartbeatMonitor.grace_cycles",
     "scripts/nixrisk/recovery.py::HeartbeatMonitor.interval_s",
     "scripts/nixrisk/recovery.py::HeartbeatMonitor.miss",
-    "scripts/nixrisk/recovery.py::StrategyRegistry.register",
+    # `StrategyRegistry.register` STOOD HERE AND IS NOW WIRED.
+    # ARC 039 / sub-agent A: `scripts/nixrisk/loop.py`'s `LimiterLoop` holds a
+    # `StrategyRegistry` as LIVE STATE and `scripts/limiterd.py`'s `register`
+    # verb admits a strategy into it from the running loop's own tick, so the
+    # gate now reports the method CALLED in shipped code. It was carried red
+    # for five arcs for the reason ARC 038 finally named: every Limiter
+    # invariant was proven about a LIBRARY, and a registration table with no
+    # process to live in has nobody to call `register`. The row leaves this
+    # tuple in the same diff that gave it a caller.
     "scripts/nixrisk/recovery.py::heartbeat_from_config",
     # `CrashLoopBreaker.is_quarantined` STOOD HERE AND IS NOW WIRED.
     # ARC 037 / sub-agent E: `scripts/nixalloc/lifecycle.py` declares

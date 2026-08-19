@@ -43,6 +43,7 @@
         "check_ibgateway_service",
         "check_ledger_row_preservation",
         "check_limiter_gate",
+        "check_limiter_loop_alive",
         "check_limiter_seam",
         "check_measurement_path",
         "check_monitor_tui",

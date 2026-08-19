@@ -379,7 +379,18 @@ def test_the_control_passes_and_its_evidence_names_what_it_read(
     # merged evidence, exactly as ARC 035 Stage 2 did. Re-read rather than
     # assumed: over the widened scope the gate still reports 0 banned modules
     # and 0 banned calls under arm(ii).
-    assert "arm(ii) imported 35 order-path module(s)" in evidence, evidence
+    # ARC 039: 35 -> 36. `scripts/nixrisk/loop.py` — the §5:322 single-threaded
+    # event loop this arc stood up — is the thirty-sixth module arm(ii)
+    # imports, and it is IN this gate's scope by construction rather than by
+    # accident: arm(ii) imports `scripts/nixrisk/` whole, and the loop is the
+    # process the order path will run inside. D3.192's shape for the SIXTH arc
+    # running, and this time the bump is made by the integrator from the
+    # merged tree, so the worktree-blindness that made ARC 035 and ARC 037
+    # re-bank it does not apply. Re-read rather than assumed: over the widened
+    # scope the gate still reports 0 banned modules and 0 banned calls under
+    # arm(ii) — 232 modules resident, 0 banned. The literal went stale; the
+    # property did not.
+    assert "arm(ii) imported 36 order-path module(s)" in evidence, evidence
 
 
 def test_the_reviewed_suppressions_are_the_two_known_fanouts_and_no_plant_is_pre_silenced(
