@@ -14,11 +14,17 @@ proven was a property of a library that a test constructed and then discarded
 WHAT THIS PROCESS IS NOT, STATED FIRST SO NOTHING READS IT AS MORE
 -------------------------------------------------------------------
 It places no orders. It holds no positions. It has no broker session, no gate
-pass, no reservations, no stops, no Plane-1 writer, and no GO-timeout
-(§4:210-212 is explicitly out of this arc). It is the SUBSTRATE: a single-
-threaded loop that beats, a low-priority sender thread that records, and a live
-`StrategyRegistry` that outlives the commands it serves. Anything else a reader
-wants from a Limiter is in `nixrisk/` and is not wired to this process yet.
+pass, no reservations, no stops and no Plane-1 writer. It is the SUBSTRATE: a
+single-threaded loop that beats, a low-priority sender thread that records, and a
+live `StrategyRegistry` that outlives the commands it serves. Anything else a
+reader wants from a Limiter is in `nixrisk/` and is not wired to this process yet.
+
+ARC 040 (slice 2) added ONE invariant to that substrate and no other: §4:210-212's
+GO-TIMEOUT, the deadlock breaker on the one-in-flight lock. The `resolve` verb
+came with it, because §4:203-206's terminal feedback is the only thing that can
+show the breaker does NOT fire on a healthy GO. §14:971's *"it can never wedge"*
+is the claim; `checks/check_go_timeout.py` is what measures it from outside this
+process, through the `go_timeouts` rows in the stop record below.
 
 WHY FILES AND A DIRECTORY RATHER THAN ZMQ
 ------------------------------------------
@@ -102,6 +108,7 @@ from typing import Any, Final
 from nixrisk.loop import (
     LimiterLoop,
     LoopStop,
+    go_timeout_from_config,
     heartbeat_interval_from_config,
     tick_interval_for,
 )
@@ -144,7 +151,17 @@ _MODE: Final[int] = 0o600
 VERB_REGISTER: Final[str] = "register"
 VERB_GO: Final[str] = "go"
 VERB_STATUS: Final[str] = "status"
-VERBS: Final[tuple[str, ...]] = (VERB_REGISTER, VERB_GO, VERB_STATUS)
+#: ARC 040. §4:203-206's terminal feedback, landed because §4:210-212's breaker
+#: cannot be shown NOT to fire early unless a GO can end some other way. Without
+#: it every GO in this process would end at the timeout and a gate would read
+#: that as the invariant working — §0a of this arc's brief, exactly.
+VERB_RESOLVE: Final[str] = "resolve"
+VERBS: Final[tuple[str, ...]] = (
+    VERB_REGISTER,
+    VERB_GO,
+    VERB_STATUS,
+    VERB_RESOLVE,
+)
 
 
 @dataclass(frozen=True)
@@ -315,6 +332,10 @@ class CommandHandler:
                     f"{None if beat is None else beat.ts}, registrations "
                     f"{list(self._loop.registry.registered())}, in flight "
                     f"{[list(pair) for pair in self._loop.in_flight_holders()]}, "
+                    f"go armed "
+                    f"{[[s, c, round(e, 3)] for s, c, e in self._loop.go_armed()]}, "
+                    f"go timeouts {len(self._loop.go_timeouts())}, "
+                    f"go timeout knob {self._loop.go_timeout_s}, "
                     f"sender handoffs {self._loop.sender.handoffs}"
                 ),
             )
@@ -340,6 +361,12 @@ class CommandHandler:
             return self._refuse(
                 command_id, verb, f"{verb!r} requires a non-empty client_order_id"
             )
+        if verb == VERB_RESOLVE:
+            outcome = str(raw.get("outcome") or "")
+            accepted, reason = self._loop.resolve_in_flight(
+                strategy_id, client_order_id, outcome
+            )
+            return self._reply(command_id, verb, accepted=accepted, reason=reason)
         if not self._loop.registry.is_registered(strategy_id):
             return self._refuse(
                 command_id,
@@ -424,6 +451,11 @@ def _runtime_record(
         "flat": not holders,
         "registrations": list(loop.registry.registered()),
         "in_flight": [list(pair) for pair in holders],
+        #: §12A:831's T, in the record the gate reads. Written rather than
+        #: inferable because `check_go_timeout` has to distinguish *the breaker
+        #: did not fire* from *the breaker was configured never to*.
+        "go_timeout_s": loop.go_timeout_s,
+        "go_armed": [[sid, cid, round(el, 3)] for sid, cid, el in loop.go_armed()],
         "stopped_ts": stopped_ts,
     }
 
@@ -459,6 +491,24 @@ def _stop_record(
                 for row in loop.sender.ledger()
             ],
             "overruns": stop.overruns,
+            # THE EVIDENCE `checks/check_go_timeout.py` READS. One row per
+            # §4:210-212 firing, each carrying its own elapsed against its own
+            # T, so a breaker that fired on EVERY GO is distinguishable from one
+            # that fired on a lost one — a bare count is not.
+            "go_timeouts": [
+                {
+                    "strategy_id": row.strategy_id,
+                    "client_order_id": row.client_order_id,
+                    "admitted_tick": row.admitted_tick,
+                    "fired_tick": row.fired_tick,
+                    "elapsed_s": row.elapsed_s,
+                    "timeout_s": row.timeout_s,
+                    "released": row.released,
+                    "resent": row.resent,
+                    "reason": row.reason,
+                }
+                for row in stop.go_timeouts
+            ],
             "faults": list(stop.faults),
         }
     )
@@ -502,6 +552,20 @@ def _parser() -> argparse.ArgumentParser:
             "Seconds between ticks. Default: the heartbeat interval divided by "
             "nixrisk.loop.TICKS_PER_HEARTBEAT (a declared Nix addition — §12A "
             "names no tick cadence)."
+        ),
+    )
+    parser.add_argument(
+        "--go-timeout",
+        type=float,
+        default=None,
+        help=(
+            "Seconds a GO may hold the §4:208 one-in-flight lock with no "
+            "terminal feedback before §4:210-212's deadlock breaker releases it. "
+            "Default: §12A:831 go_timeout_s from risks/limiter.config.json. "
+            "Overridable so a control can drive the breaker inside a test's "
+            "budget; the shipped value is the one the platform ISSUES to every "
+            "strategy in its REGISTER_ACK (nix_strategy_contract_v1.1.md §4.2) "
+            "and production must not pass this."
         ),
     )
     parser.add_argument(
@@ -558,10 +622,16 @@ def main(argv: list[str] | None = None) -> int:
         for directory in (runtime_dir, inbox_dir, outbox_dir):
             directory.mkdir(parents=True, exist_ok=True)
         publisher = HeartbeatPublisher(runtime_dir / HEARTBEAT_NAME)
+        go_timeout = (
+            go_timeout_from_config()
+            if args.go_timeout is None
+            else float(args.go_timeout)
+        )
         loop = LimiterLoop(
             heartbeat=publisher,
             heartbeat_interval_s=interval,
             tick_interval_s=tick,
+            go_timeout_s=go_timeout,
             max_ticks=max(0, int(args.max_ticks)),
         )
     except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001

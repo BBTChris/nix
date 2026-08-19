@@ -97,6 +97,13 @@ def build(runtime: Path, **kwargs: Any) -> LimiterLoop:
         "heartbeat": publisher,
         "heartbeat_interval_s": FAST_HEARTBEAT_S,
         "tick_interval_s": FAST_HEARTBEAT_S / 4,
+        # ARC 040. REQUIRED and deliberately without a constructor default: a
+        # Limiter that invented its own §12A:831 T would deny GOs a strategy
+        # still believes are live, so §4:210-212's breaker has to be stated by
+        # whoever builds the loop. The default here is a TEST cadence, large
+        # against this file's tick so no test in the file trips the breaker by
+        # accident; the tests that exercise the breaker state their own.
+        "go_timeout_s": FAST_HEARTBEAT_S * 100,
     }
     params.update(kwargs)
     return LimiterLoop(**params)

@@ -1,322 +1,158 @@
-# ARC 039R — Limiter slice 1: CLOSE-OUT AND BANK (INTERIOR tier)
-
-**Status: COMPLETE and BANKED.** **Limiter badge: RED** (slice 1 of many).
-Ledger 371 -> 376. HEAD advanced `17bb390` -> `a64978a` -> the write-back commit.
-
----
-
-## 0. What this arc was, and what it was not
-
-ARC 039 slice 1 — the minimal Limiter runtime loop — was **already built and
-committed at `17bb390`**. That run was **killed during close-out**: the full
-pytest + full binding census tail turned a ~1h slice into 2.5h+. It left two
-files modified-not-committed (`checks/gate_coverage_baseline.json`,
-`docs/CHECK-DEBT.md`).
-
-039R **does not rebuild the loop**. It banks it under the **INTERIOR tier** of
-the tiered close-out rule. `scripts/nixrisk/loop.py`, `scripts/limiterd.py`,
-`checks/check_limiter_loop_alive.py` and the tests were on disk and committed
-before this arc started.
-
-**This is an interior slice. The Limiter badge stays RED.**
-
----
-
-## 1. DEFERRED — a stated decision, not a silent skip
-
-| deferred | to | why |
-|---|---|---|
-| the full ~3400-test pytest suite | the Limiter's **GREENING slice** | tiered close-out: an interior slice runs the interior tier. This tax is what killed the previous run. |
-| the full binding census | the Limiter's **GREENING slice** | same rule. `check_limiter_loop_alive`'s binding was instead established from an **already-observed real FAIL** (S3c). |
-
-What ran in their place — a derived reverse-dependency closure, proven
-non-vacuous before it was trusted — is in §5.
-
----
-
-## 2. S1 — the committed slice, re-measured from OUTSIDE the process
-
-`17bb390`'s commit message was not trusted. The running process was measured.
-
-| claim | evidence | verdict |
-|---|---|---|
-| a live process on its own PID | pid **3869046**, `PPid 1` (own session, not this shell's child), `exe -> python`, `cwd -> /home/bbt/nix`, `Threads 2` | PASS |
-| the heartbeat advances on the tick | `seq 22->23->24->25->26->27`, `ts` strictly increasing, and **every beat carries `pid: 3869046`** — the beat names its own publisher | PASS |
-| SIGKILL **by PID** kills the beat | `/proc/3869046` gone, `kill -0` -> ESRCH, **`seq` froze at 54 across two 3s windows** (~12 heartbeat intervals, zero beats) | PASS |
-| a SIGKILL leaves no clean stop record | `limiter.runtime.json` -> `stopped_ts: null`, §12.2:617's documented signature | PASS |
-| restart proves flat | **new** pid 3887085, `flat: true`, `in_flight: []`, `seq` restarting at 4 — bound to the process, not to the file the killed one left | PASS |
-| SIGTERM gives the clean record | `ticks=135, heartbeats=26, sender_alive=false, sender_joined=true, overruns=0, faults=[]`, `reason` naming the site | PASS |
-
-`pkill -f` was never used — kills were by PID throughout (the ARC 038 hazard).
-The hazard was nonetheless **observed live** this arc: `pgrep -af "scripts/verify.py"`
-matched **its own wrapper shell** (pid 3889610) alongside the real process (3889646).
-
-**§0a — what would make this pass while measuring nothing?** A "loop" that is a
-function called once: refuted by `PPid 1` residency plus 135 ticks in one run.
-A heartbeat set by a test rather than the tick: refuted structurally —
-`loop.py:71` refuses `_publish_heartbeat` unless the caller is the tick thread,
-and `heartbeat_publisher_idents` (`loop.py:79`) is the set the gate reads — and
-empirically, the beat froze the instant the process died.
-
----
-
-## 3. S2 — the gate ships with a demonstrated FAIL
-
-`scripts/tests/test_check_limiter_loop_alive.py`: **6 passed in 15.0s**. Every
-plant asserts the **reason**, never the exit code.
-
-| plant | status asserted | site asserted | detail asserted |
-|---|---|---|---|
-| ghost heartbeat outliving the killed loop | `FAIL_NEEDS_OPERATOR` | *"seq advanced after death"* | *"THE HEARTBEAT ADVANCED WITHOUT THE LOOP"*, *"blind to a dead Limiter"* |
-| entrypoint that returns (rc 0) | `FAIL_NEEDS_OPERATOR` | `scripts/limiterd.py` | *"EXITED with rc 0"*, *"A Limiter is a resident loop"*, **and asserts *"below the floor"* is ABSENT** — a subject that silences the instrument by dying must not buy the milder verdict |
-| heartbeat naming a foreign pid | `FAIL_NEEDS_OPERATOR` | `risk_engine.heartbeat.json:pid` | *"is another process's beat"*, both pids, **plus a `pgrep` leak control** proving the gate reaps what it launched |
-
-**Non-vacuity, three independent ways:** the real-daemon arm PASSES (so the arm
-*can* pass — the plants drive something); an absent entrypoint is
-`CANNOT_MEASURE` naming the path, never a Pass; and S1 killed a real loop by hand.
-
----
-
-## 4. S3a — `verify.py` on trunk: ONE delta, and it was ours
-
-`87 passed | 3 failed | 2 cannot measure | 0 skipped | 1 guarded — exit 1`
-against the ARC 038 baseline `87 / 2 / 2 / 0 / 1, exit 1`.
-Totals 93 vs 92 because **`check_limiter_loop_alive` is new** and ran `[ok]`.
-
-| verdict | check | reason |
-|---|---|---|
-| FAIL | `check_ibgateway_service` | 127.0.0.1:4002 ECONNREFUSED — **baseline FAIL, unchanged** |
-| FAIL | `check_uncalled_entry_points` | 25 unadmitted public entry points; plus `scripts/nixrisk/gate.py::GatePass.manifest` recorded `uncalled`, **measured** `gate_only` — **baseline FAIL, unchanged** |
-| **FAIL** | **`check_derived_claims`** | **THE DELTA.** `derived:ledger_rows=374` vs `stated:series_table_latest_row=371` |
-| ?? | `check_ibgateway_config` | ECONNREFUSED. Correctly Cannot-measure, **not Pass** (check-contract rule 10) |
-| ?? | `check_observed_resource_claims` | downstream of the unreachable gateway; its resource use is UNOBSERVED |
-| **GRD** | `check_artifact_gate_coverage` | `EXCLUDED -> ARC 040`, guard owner **live** |
-
-The delta is **not a regression in the slice**: the killed run appended three
-ledger rows (D3.420–D3.422) and never wrote the series row. Discharged in S3d.
-
----
-
-## 5. S3b — the DERIVED closure, non-vacuity proven BEFORE it was trusted
-
-**30 test files**, derived by grepping the tree for importers/readers of the six
-changed artifacts. Not the ~3400-test suite.
-
-**Non-vacuity gate (run first — a closure that is empty goes green by having
-nothing in it):**
-
-| changed artifact | closure members referencing it |
-|---|---|
-| `scripts/nixrisk/loop.py` | 1 |
-| `scripts/limiterd.py` | 3 |
-| `checks/check_limiter_loop_alive.py` | 1 |
-| `checks/registry.json` | 18 |
-| `checks/gate_coverage_baseline.json` | 5 |
-| `docs/CHECK-DEBT.md` | 9 |
-
-All six covered; every member exists on disk. **Non-vacuous.**
-
-**Result: 7 failed, 644 passed (27m17s).** All 7 in **one** module,
-`test_check_derived_claims.py`, each naming
-`check_debt_open_items: DISAGREEMENT derived:ledger_rows=374,
-stated:series_table_latest_row=371` with the **other 12 of 13 claims agreeing**.
-One root cause, two independent instruments reddened by it.
-
-*Cost note:* the closure took 27 min because `test_end_to_end.py` — a legitimate
-reverse-dependency of the changed `registry.json` — runs whole `verify.py`
-invocations. A reference-derived closure can pull in the most expensive module in
-the tree; worth knowing before the greening slice sizes its own.
-
----
-
-## 6. S3c — binding, without re-running the census
-
-`check_limiter_loop_alive` is **BOUND**. The census keys a binding on a
-`CheckResult` with a failing status returned by the gate's own `run()` (D3.418).
-S2 observed exactly that **three times**, asserted by status object plus `site`
-plus `detail`. No census re-run was needed to establish it.
-
----
-
-## 7. S3d — the reconcile, and a gate that refused a bad token
-
-1. **D3.423 opened** (the inode finding, §9).
-2. **ARC 039 series row written stating 375** — derived by the gate's own probe
-   `_p_check_debt_open_count`, not by arithmetic on a remembered figure.
-3. The row's owning module was first written **`environment`**. The gate
-   **REFUSED it**: `ProbeError: open row(s) carry no valid 'owning module' token:
-   D3.423=environment` — loud, naming the row by id, exactly the failure mode
-   that controlled vocabulary exists to produce. Corrected to **`verify`**, by
-   that table's own rule *"the artefact that must CHANGE for the row to be
-   discharged"*: discharging D3.423 means writing `checks/check_tmpfs_headroom.py`,
-   and `verify` owns every `checks/check_*.py`. `node` owns the box's identity and
-   units; it does not own the instrument that is missing.
-
-**Independent re-measurement — fresh process, the check's own CLI, verify-only:**
-`pass: 13/13 claim(s) compared`, `check_debt_open_items=375
-[derived:ledger_rows=375, stated:series_table_latest_row=375]`, **exit 0**.
-
-**The 7 closure failures went green:** `test_check_derived_claims.py` **16 passed**.
-Closure total now **651 passed / 0 failed**.
-
----
-
-## 8. S4 — guard survival, re-pointed BEFORE the write-back
-
-All **eight** CHECK-A8/CHECK-A9 exclusions read `owner = ARC 040`,
-`temporary = true`:
-`actuation.py`, `contract.py`, `engine.py`, `gitenv.py`, `loader.py`,
-`optimize.py`, `registry.py`, `render.py`.
-
-Nothing was discharged — they are nixverify machinery already driven by pytest,
-and doctrine C.9 still forbids a second instrument over them. The re-point is made
-**before** `sessions/SESSION.md` names this arc complete: `guard_owner_defect`
-reads the completion record, so an exclusion still owned by a completed arc would
-take the gate GUARDED -> CANNOT_MEASURE and the guarded count 1 -> 0. The
-D3.342 / D3.417 pattern, applied in the right order.
-
----
-
-## 9. FINDING — the arc was stopped mid-flight by an exhausted INODE table
-
-`/tmp` (tmpfs): **1,048,576 of 1,048,576 inodes used, 0 free — with 16 GB of
-space still available.**
-
-It surfaced as a bare `bash: /tmp/...: No space left on device` that silently
-swallowed a file write and prevented `scripts/limiterd.py` from starting at all.
-**It read as a code fault**, and it was diagnosed as one until `df -i` was run:
-every operator reflex answers "No space left on device" with `df -h`, and `df -h`
-said the disk was 49% full.
-
-Consumer: `/tmp/pytest-of-bbt/` — **1,004,087 inodes across 32 retained pytest
-basetemp sessions**, 96% of the whole tmpfs inode table. The accumulated debris of
-exactly the full-suite runs this tiered close-out exists to avoid. `rm -rf`
-reclaimed **1,004,194 inodes and 14 GB**.
-
-Nothing in `checks/` samples `os.statvfs(...).f_favail`. **D3.423**, owed to
-**ARC 040**: a `check_tmpfs_headroom` sampling *both* `f_bavail` and `f_favail`
-against declared floors and refusing on either, plus a basetemp reaper in the
-close-out path. Its can-fail plant must fill a scratch tmpfs's **inode** table and
-require the gate to name the **inode** axis — a gate that only reads bytes passes
-on the very state that stopped this arc.
-
----
-
-## 10. The status contract (the new observability system)
-
-- **Total stages fixed at kickoff: 11**, enumerated once, tier declared INTERIOR.
-- **Background heartbeat watchdog** on its own 300s timer, a separate detached
-  process (pid 3868453) writing its own log — so no foreground operation can
-  starve it. It beat through a 7-minute `verify.py`, a 27-minute closure, and the
-  inode exhaustion itself.
-- **Self-verify at kickoff caught a real defect — in the instrument.** The first
-  self-verify returned **FAIL**, and the watchdog was alive the whole time: `$!`
-  under `setsid` names the **wrapper**, which had already exited. The pid was
-  recovered from the watchdog's own first log line (`[watchdog] up pid=...`) and
-  the instrument corrected. A blind run would have carried a wrong pid all arc.
-  **This is the argument for requiring the self-verify, made by the self-verify.**
-- **Progress file** `scratchpad/arc_progress.txt` stamped `arc=039R` + a monotonic
-  timestamp; the watchdog validated the stamp before trusting it (STALE PROGRESS
-  FILE otherwise) and re-derived HEAD live from `git log --oneline -1` on a
-  scrubbed git env every beat, never from a cached summary. Motion reported per
-  beat; no STALL WARNING fired.
-
----
-
-## 11. Badge verdict and slice 2
-
-**Limiter: RED.** Slice 1 — the minimal runtime loop — is **banked**: it is a
-resident process, its heartbeat is published from the tick and dies with the
-process, and a gate proves that by killing it.
-
-**Slice 2 = the GO-TIMEOUT (I5)**, driven against this now-running loop.
-Its first input is already on the ledger: **D3.420** — `§4:210` is the
-GO-timeout, not the one-in-flight lock, and shipped code has been citing it for
-the lock since ARC 034. Also standing against the Limiter: **D3.421** (the daemon
-has no systemd unit, so §12.2's supervision governs a process nothing starts) and
-**D3.422** (the tick cadence is a declared Nix addition with no home in `risks/`).
-
-
----
-
-## 12. LATE FINDING — the write-back named the arc complete in a way no instrument could read
-
-Caught by the post-write-back re-measure, before the marker.
-
-`nixverify.contract.completed_arcs` reads `##`-level headings with
-`_ARC_IN_HEADING = re.compile(r"\bARC (\d{3})\b")` — exactly three digits with a
-trailing word boundary. The summary heading written in §10's write-back was
-`## ARC 039R — …`, and `9` and `R` are both word characters, so **there is no
-boundary between them and the regex matched nothing**. Measured: `completed_arcs`
-returned a set whose maximum was **38**, while the same file's prose said ARC 039
-slice 1 was complete and banked.
-
-`check_derived_claims._p_check_debt_series_latest` reads the same identity out of
-the same kind of row and was **deliberately widened to `ARC [\w-]+`** by D3.112,
-when ARC CRUCIBLE-CALENDAR-INFRA's brief withheld a number. One reader was taught
-that arc ids are not always three digits; the other was not; nothing connects them.
-
-**The dangerous half is the failure mode, not the miss.** An unmatched heading is
-indistinguishable from an arc that has not completed, so `completed_arcs` returns
-a confident wrong answer exactly where its own docstring insists a non-empty
-`error` (-> CANNOT_MEASURE) is the only honest response to a log it cannot read.
-
-Fixed **additively** — banked evidence is appended to, never rewritten: a second
-`##` heading carrying the bare `ARC 039` token now closes the log. Re-measured:
-`39 in completed_arcs -> True`, `40 -> False`. That is a workaround in the log,
-not a repair of the reader, and the repair is **D3.424** owed to ARC 040 (widen
-the regex to its sibling's vocabulary, plant a can-fail whose subject is a
-*suffixed* heading — a plant using a plain three-digit heading passes on the
-pristine regex and proves nothing — and add a `derived_claims.json` claim pairing
-the two readers, which have never been compared).
-
-**Ledger 375 -> 376.** The 375 series row is **struck through, not edited**, and a
-376 row appended, per the table's own append-only convention. Re-measured with the
-gate's own CLI in a fresh process: `pass: 13/13`, `check_debt_open_items=376
-[derived:ledger_rows=376, stated:series_table_latest_row=376]`, exit 0.
-
-**This is also why the guard-owner prediction is a real test rather than a
-vacuous one.** Until this fix, ARC 039 was not in the completion record at all, so
-`guard_owner_defect` could not have fired on any owner. The prediction in §13 is
-made against a tree where ARC 039 *is* recorded complete and the exclusions are
-owned by ARC 040, which is not.
-
----
-
-## 13. Post-write-back re-measure — prediction, then result
-
-**Predicted before running** (banked in commit `7375769`, and re-stated here after
-D3.424 moved the ledger): naming ARC 039 complete must move **no** verdict.
-`check_artifact_gate_coverage` stays **GUARDED** because all eight exclusions were
-re-pointed to ARC 040 first and ARC 040 is not complete. Predicted aggregate:
-
-    88 passed | 2 failed | 2 cannot measure | 0 skipped | 1 guarded — exit 1
-
-i.e. the pre-write-back 87/3/2/0/1 with `check_derived_claims` moved FAIL -> pass.
-**If the guarded count comes back 0, the re-point failed and this prediction is
-what says so.**
-
-**RESULT — the prediction held on every term:**
-
-    88 passed | 2 failed | 2 cannot measure | 0 skipped | 1 guarded — exit 1
-
-| term | predicted | measured | |
-|---|---|---|---|
-| passed | 88 | 88 | held |
-| failed | 2 | 2 | held |
-| cannot measure | 2 | 2 | held |
-| skipped | 0 | 0 | held |
-| **guarded** | **1** | **1** | **held — the guard survived** |
-| exit | 1 | 1 | held |
-
-`check_artifact_gate_coverage`: **GUARDED**, `EXCLUDED -> ARC 040`. The guarded
-count is **1, not 0**, which is the whole point of re-pointing before the
-write-back rather than after. `check_derived_claims` moved **FAIL -> [ok]**
-(87 passed -> 88, 3 failed -> 2). The two survivors are the standing baseline
-FAILs, unchanged: `check_ibgateway_service` and `check_uncalled_entry_points`.
-Both cannot-measures remain the unreachable gateway, correctly refused rather
-than passed.
-
-This was run against the tree where `completed_arcs` **does** record ARC 039
-complete — so the guard-owner transition genuinely fired and was not masked by
-D3.424.
+## ARC 040 — ULTRAREVIEW: Limiter, slice 2 of many — the GO-timeout (I5)
+
+**Tier: INTERIOR.** The Limiter badge **STAYS RED**. This is not the greening slice.
+**Canonical path: `/home/bbt/nix`** (absolute). **Predecessor: ARC 039R, HEAD `39b8a45`.**
+Interpreter for every measurement below: `/home/bbt/nix/.venv/bin/python` → `/usr/bin/python3.14`
+(Python 3.14.4).
+
+### What this slice discharged
+
+**I5 — §4:210-212's GO-timeout, the deadlock breaker on the one-in-flight lock.** ARC 038 found it
+had **no implementation anywhere in shipped code**: `limiter.go_timeout_s` was a knob whose only
+reader was the boot cross-validator, which validates the value and acts on nothing. §14:971 locks
+*"One in-flight action per strategy — and it can never wedge (GO-timeout)"*; the invariant was
+prose.
+
+### S1 — the defect REPRODUCED FIRST, on the live ARC-039 loop, before a line changed
+
+A real `limiterd` process. A real GO admitted through the real `StrategyRegistry`. The **GO HOLDER
+killed by `SIGKILL`, by PID taken from its own self-report** (never `pkill -f`).
+
+```
+AT ADMISSION  t+0.0s   in flight [['s-040', 'c-040']]
+SIGKILL sent to the GO HOLDER pid=3941502
+  t+ 23.35s  in_flight=[['s-040', 'c-040']]   <-- LAST SAMPLE
+VERDICT: LOCK STILL HELD at t+23.35s = +13.35s PAST the 10.0s knob. NOT RELEASED.
+STOP RECORD: flat=False in_flight=[['s-040','c-040']] ticks=501
+             go_timeouts=<field absent — no timeout machinery in this build>
+```
+
+The loop **ticked 501 times and beat 25 times** while holding it. It was alive, healthy, and simply
+never measured elapsed time. 038 measured 11.0 s past; this run measured 13.35 s past, and the only
+difference is that it watched longer.
+
+### S2 — the implementation
+
+`scripts/nixrisk/loop.py`:
+* `go_timeout_from_config()` — the read ARC 038 measured as missing, through `load_risk_configs` so
+  the config's own `liveness.go_timeout_outlasts_pending_ack` cross-knob rule governs the reader.
+* `take_in_flight` **stamps the loop's own monotonic clock** at admission.
+* `_break_go_deadlocks()` — the whole mechanism is one comparison, `elapsed >= self.go_timeout_s`,
+  run once per tick, and that comparison is what did not exist anywhere in the tree.
+* **Placed AFTER the drain and BEFORE the beat**, and both halves are the invariant: after the drain
+  so terminal feedback arriving in the same tick wins (no false release); before the beat so
+  §12.1's `positions_open_hint` never advertises a lock this same tick already broke.
+* **NO retry, NO auto-resend** (§4:240-241). `GoTimeout.resent` is a recorded `False`, a field and
+  not a comment.
+
+`scripts/nixrisk/recovery.py`: `StrategyRegistry.release_in_flight` — the **flat-and-FREE** release
+§4:211-212 needs and `force_deregister` could not be. `force_deregister` is §4:266-268 and takes
+slot and registration down with the lock: right for a strategy that has DIED, catastrophic for one
+that merely lost a message. Purely additive; no existing method changed.
+
+`scripts/limiterd.py`: `--go-timeout`, the `resolve` verb (§4:203-206 terminal feedback), and
+`go_timeouts` rows in the stop record — the evidence the gate reads from outside the process.
+
+### S3 — proven in BOTH directions, on real processes
+
+**(a) It FIRES on a real kill.** Same scenario as S1, knob driven at 4.0 s:
+
+```
+  t+  3.54s  in_flight=[['s-040','c-040']]  go armed [[...,3.6]], go timeouts 0
+  t+  4.10s  in_flight=[]                   go armed [],          go timeouts 1
+VERDICT: lock RELEASED at t+4.10s (+0.10s vs the 4.0s knob)
+STOP RECORD: flat=True registrations=['s-040']
+  elapsed_s 4.049889  timeout_s 4.0  released True  resent False
+```
+
+Released **one tick** past T, not 11 s past it. `registrations=['s-040']` with `in_flight=[]` is
+flat-and-**free**: the strategy survived, which is what distinguishes §4:211-212 from a
+deregistration.
+
+**(b) It does NOT fire early.** Terminal feedback at t+1.10 s against a 3.0 s knob released the lock
+normally, and the run was then **watched to t+4.96 s = 1.65×T** — past the point the breaker would
+have fired — with `go timeouts 0` at every sample and `go_timeouts=[]` in the stop record. **Zero
+false releases.** Stopping at the healthy release would have proven only that the breaker had not
+fired *yet*, which is the §0a trap this direction exists to close.
+
+### S4 — `checks/check_go_timeout.py`, with a demonstrated FAIL in BOTH arms
+
+Two arms, because neither alone is the check: an **AST string-literal reader census** that NAMES the
+unread site, and a **live drive** of a real `limiterd` (register → admit a GO → abandon it → watch
+the lock through the process's own `status` verb → then a second GO fed normal feedback and held
+past T).
+
+* **PLANT A** — the knob key renamed away, 038's exact *knob-present-but-unread* state:
+  `fail_needs_operator`, **exit 1**, naming `scripts/nixrisk/loop.py`.
+* **PLANT B** — the knob read but the comparison neutered: `fail_needs_operator`, **exit 1**, naming
+  `scripts/nixrisk/loop.py` and reporting the measured wedge (`8.0s later, against T=2.0s`,
+  `go armed [[...,8.04]]`, `go timeouts 0`).
+* **Plants removed**: `pass`, **exit 0**.
+* **NON-VACUITY is asserted, not assumed**: the drive REQUIRES the status verb to report the lock
+  **HELD** before any later empty reading may count as a release. A run that watched an empty
+  registry returns CANNOT_MEASURE, never PASS (§17 / rule 10).
+
+### TWO FINDINGS AGAINST THE ARC'S OWN INSTRUMENT — both caught by the plants, both recorded
+
+* **D3.426** — the static arm was **VACUOUS as first written** and PLANT A **passed it**. It matched
+  the substring `go_timeout_s` anywhere in a module, so a constructor parameter name and an argparse
+  help string counted as "reading the knob". It was measuring the spelling of an identifier. Now an
+  AST census for a string **literal** equal to the key.
+* **D3.427** — the gate first reported a positively-observed **WEDGE as `cannot_measure` (exit 2)**
+  rather than FAIL. With the lock wedged, the second arm's GO was refused *by the wedged lock
+  itself*, and that consequential refusal was raised as the gate's `Cannot`, overwriting a finding it
+  had already made. Fail-closed held; the REASON did not, which is the half check contract v2 rule 11
+  makes the assertion. Fixed; the plant now returns exit 1.
+
+A third finding was caught the same way and fixed in flight: the arc's own S3a **driver printed a
+VERDICT that contradicted the samples printed above it** — it parsed `in flight` by splitting on a
+field that the post-fix status string no longer put next to it, so a released lock read as held.
+The fix is in the harness and the same bounded-parse discipline is in the gate's `_held`.
+
+### FREEZE — held
+
+`git diff --stat 39b8a45 -- risks/` is **empty**. The knob was already on disk; this slice made it
+**read**. No other invariant's logic moved. Production changes: `loop.py` (the breaker),
+`limiterd.py` (flag/verb/records), `recovery.py` (one additive verb). Two test files changed because
+the change necessarily invalidated them — see below.
+
+### The ARC 038 defect-witness ratchets fired, and were READ rather than absorbed
+
+`scripts/tests/test_arc038_f_inflight_lock.py` pinned three censuses so the fix could not land
+unnoticed. All three moved, exactly as designed:
+* the release-site census gained `StrategyRegistry.release_in_flight`;
+* `test_NO_shipped_module_MEASURES_the_go_timeout_knob` was **INVERTED** into
+  `test_the_LOOP_MEASURES_the_go_timeout_knob` — the inversion IS the discharge;
+* the mention census now records that two of its entries are no longer names.
+
+### CLOSE-OUT (INTERIOR tier — a STATED decision, not a silent skip)
+
+**The full ~3400-test pytest run and the full binding census are DEFERRED to the Limiter's greening
+slice**, per the tiered rule. What was run instead:
+
+* **(b) The DERIVED reverse-dependency closure**, derived from the tree by grepping importers of the
+  changed files: **281 passed, 0 failed**. **Non-vacuity proven before trusting green** — the
+  closure contains `test_limiter_loop.py` and `test_arc038_f_inflight_lock.py`, the direct dependents
+  of the changed files, and both were **RED before the fix and GREEN after**. **COST-AWARE
+  EXCLUSIONS, named**: `test_check_artifact_gate_coverage.py` and `test_check_uncalled_entry_points.py`
+  were detected as shelling out to `verify.py`/the census and excluded (deferred to the greening
+  slice) — the detection was a scan, not a guess.
+* **(c)** `check_go_timeout` is **BOUND** from its **observed real FAIL** — two independent planted
+  defects, each returning exit 1 with the site named, not a constructed exit code.
+* **(d)** CHECK-DEBT reconciled: **D3.398 DISCHARGED** with its residual named rather than absorbed;
+  **D3.425/426/427 opened**.
+
+### Residual explicitly NOT claimed as done
+
+**D3.425 — the `go_timeout` Plane-1 row is still unwritten.** §9:553 lists GO-timeout among the
+event types the sole writer books, and `projection.py` already carries the event name. The breaker
+now fires and releases, and every firing is in the runtime record and readable live — but that is a
+RUNTIME record, not §9's evidence plane, and `limiterd` has no Plane-1 writer wired at all. Blocked
+behind I8, which is slice 3.
+
+### BADGE VERDICT — Limiter STAYS RED
+
+**Discharged: I5** (the GO-timeout), one invariant, reproduced → fixed → re-audited in both
+directions → gated with a demonstrated FAIL. **Eleven invariants remain open** from 038's pass 1.
+**Slice 3 targets I7 (commit-before-validate torn state) + I8 (sole-writer enforcement)** — the next
+blockers, and I8 is what unblocks D3.425.

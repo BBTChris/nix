@@ -96,6 +96,13 @@ HELD_CID = "c-held"
 #: discharge of CHECK-DEBT D3.398 and must be read, not absorbed.
 SHIPPED_INFLIGHT_RELEASE_SITES: tuple[str, ...] = (
     "scripts/nixrisk/recovery.py:StrategyRegistry.force_deregister",
+    # ARC 040 (slice 2) — D3.398 DISCHARGED, and the ratchet fired exactly as it
+    # was built to: this row was READ, not absorbed. `release_in_flight` is the
+    # §4:211-212 flat-and-FREE release the breaker needs and `force_deregister`
+    # could not be: the latter takes the slot and the registration down with the
+    # lock (§4:266-268), which is right for a strategy that has DIED and
+    # catastrophic for one that merely lost a message.
+    "scripts/nixrisk/recovery.py:StrategyRegistry.release_in_flight",
 )
 #: Shipped modules that so much as MENTION the `go_timeout` token, and what
 #: each one does with it. Not one of them measures elapsed time against
@@ -116,6 +123,14 @@ SHIPPED_GO_TIMEOUT_MENTIONS: tuple[str, ...] = (
     # That combination is the honest signature of this slice: it stood up the
     # PROCESS the timeout will live in and deliberately did not build the
     # timeout. D3.398 stays open; slice 2 discharges it.
+    # ARC 040 (slice 2). These two are NO LONGER NAMES. `scripts/nixrisk/loop.py`
+    # now reads `limiter.go_timeout_s`, stamps the loop's own monotonic clock at
+    # admission, and compares elapsed against T once per tick in
+    # `_break_go_deadlocks`; `scripts/limiterd.py` supplies the knob and writes
+    # the firings into its stop record. The sibling ratchet below is what proves
+    # it — `test_NO_shipped_module_MEASURES...` is inverted this arc for that
+    # reason, and this census keeps naming the surface so a NINTH mention is
+    # still read rather than absorbed.
     "scripts/limiterd.py",
     "scripts/nixrisk/loop.py",
     "scripts/nixrisk/plane1_seed.py",
@@ -414,15 +429,28 @@ def test_the_ONLY_shipped_release_of_the_inflight_lock_is_a_DEREGISTRATION() -> 
     assert all(site.startswith("scripts/nixrisk/recovery.py:") for site in sites), sites
 
 
-def test_NO_shipped_module_MEASURES_the_go_timeout_knob() -> None:
-    """`limiter.go_timeout_s` is read by the BOOT VALIDATOR and by nothing else,
-    so §4:212's *'no sized/denied feedback within T'* has no T. D3.398."""
+def test_the_LOOP_MEASURES_the_go_timeout_knob() -> None:
+    """§4:212's *'no sized/denied feedback within T'* HAS a T. D3.398 discharged.
+
+    THIS TEST IS THE INVERSION OF ITS OWN ARC 038 SELF, and the inversion is the
+    discharge. It asserted `not readers` for two arcs, and it was TRUE: the knob
+    had exactly one reader, `scripts/risk_config.py`, which validated the value
+    and acted on nothing. ARC 040 measured the consequence directly before
+    changing a line — a SIGKILLed GO holder left the §4:208 lock held 13.35s past
+    a 10s knob on a loop that was alive, ticking and beating throughout.
+
+    The assertion is now the other way round, and it is deliberately about
+    `scripts/nixrisk/loop.py` SPECIFICALLY rather than about any reader: §4:212
+    measures T as a DURATION, and a duration needs a clock that is still running
+    when nobody is calling anything. Only the loop has one.
+    """
     readers = _census().knob_readers
 
-    assert not readers, (
-        f"{list(readers)} now reads `go_timeout_s` outside "
-        f"scripts/risk_config.py's cross-knob validator. §14's deadlock breaker "
-        f"may finally exist — CHECK-DEBT D3.398 is being discharged"
+    assert "scripts/nixrisk/loop.py" in readers, (
+        f"§4:210-212's deadlock breaker lost its reader — `go_timeout_s` is read "
+        f"by {list(readers)} and NOT by scripts/nixrisk/loop.py. This is ARC "
+        f"038's measured state returning: the knob present and unread, and "
+        f"§14:971's *'it can never wedge'* with no implementation behind it"
     )
 
 

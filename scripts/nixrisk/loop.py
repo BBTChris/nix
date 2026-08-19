@@ -25,11 +25,18 @@ because nothing is asking it to.
 ------------------------------------------------------------------------------
 WHAT THIS MODULE DELIBERATELY DOES NOT DO
 ------------------------------------------------------------------------------
-It implements NO invariant. There is no GO-timeout (§4:210-212), no sole-writer
-enforcement (§9), no torn-state detection, no sizing, no placement, no flatten,
-no cold start. Those live in the modules named above and stay there; this is the
-floor they will eventually stand on, and building the floor and the walls in one
-arc would mean neither could be measured without the other.
+ARC 039 (slice 1) implemented NO invariant here, deliberately. ARC 040 (slice 2)
+added EXACTLY ONE — §4:210-212's GO-TIMEOUT, `_break_go_deadlocks` below — and
+nothing else moved: there is still no sole-writer enforcement (§9), no torn-state
+detection, no sizing, no placement, no flatten and no cold start. Those live in
+the modules named above and stay there.
+
+The GO-timeout is here rather than in a library for the reason this whole module
+exists. §4:212 says *"within T of emitting GO"*: T is a DURATION, a duration
+needs a clock that is still running when nobody is calling anything, and slice 1
+built the only such clock in this tree. ARC 038 (F) measured the consequence of
+its absence directly — a real SIGKILL of the GO holder left the lock held past
+the knob, because the knob had no reader anywhere in the shipped population.
 
 Two things it DOES own, because both are properties of the *running* thing and
 of nothing else:
@@ -161,6 +168,12 @@ true for `LimiterLoop.run()` to complete while proving nothing?
 
 from __future__ import annotations
 
+# C0302 (too-many-lines): this module is one §5:322 event loop plus the ONE
+# invariant ARC 040 put inside it, and the length is documentation rather than
+# code — the prose blocks above and the §-citing reason strings below outweigh
+# the executable lines. Splitting the breaker out of the loop to clear a line
+# count would put §4:212's duration measurement in a module with no clock.
+# pylint: disable=too-many-lines
 import os
 import queue
 import threading
@@ -176,7 +189,12 @@ from nixsentinel.heartbeat import HeartbeatPublisher
 from nixsentinel.seam import Heartbeat
 
 from nixrisk.gate import InFlightPort
-from nixrisk.recovery import RecoveryError, Registration, StrategyRegistry
+from nixrisk.recovery import (
+    RecoveryError,
+    Registration,
+    ReleasedInFlight,
+    StrategyRegistry,
+)
 
 #: Named once so every refusal below points at the same file. Doctrine C.2: the
 #: instrument names the site, and a reason that names no site sends the reader
@@ -188,6 +206,15 @@ SITE: Final[str] = "scripts/nixrisk/loop.py"
 #: for the same reason (directive 3 — one number, one home).
 CONFIG_MODULE: Final[str] = "limiter"
 HEARTBEAT_INTERVAL_KEY: Final[str] = "heartbeat_interval_s"
+
+#: §12A:831's `GO_TIMEOUT_T`. Its one physical home is the SAME
+#: `risks/limiter.config.json` the interval above comes from, and this is the
+#: name under which that file spells it. ARC 038 (F) measured that no shipped
+#: module outside `scripts/risk_config.py`'s cross-knob validator read this
+#: key: the deadlock breaker was a knob nobody read, which is why §14:971's
+#: *"it can never wedge (GO-timeout)"* had no implementation. This module is
+#: the first reader (CHECK-DEBT D3.398).
+GO_TIMEOUT_KEY: Final[str] = "go_timeout_s"
 
 #: DECLARED NIX ADDITION — see the module docstring. §12A names no tick cadence,
 #: so the loop's is DERIVED from the one interval the spec does give rather than
@@ -226,6 +253,18 @@ FAULT_LEDGER_MAX: Final[int] = 64
 #: rather than showing an anonymous `python3`. Truncated by the kernel to 15
 #: bytes, so it is chosen short enough to survive that.
 SENDER_THREAD_NAME: Final[str] = "nix-sender"
+
+#: §4:203-205's outcome vocabulary, transcribed rather than invented: *"every
+#: outcome (sized / denied / pending / open / closed / rejected /
+#: protective-flatten) is pushed to the originating strategy FSM"*. Split in two
+#: because ONE of the seven is not terminal — §4:201-202 makes `pending` the
+#: state the one-in-flight lock is held THROUGH, so a release on it would free
+#: the lock on a live order, which is the §4:243 indeterminate case arriving by
+#: the front door.
+TERMINAL_OUTCOMES: Final[frozenset[str]] = frozenset(
+    {"sized", "denied", "open", "closed", "rejected", "protective-flatten"}
+)
+NON_TERMINAL_OUTCOMES: Final[frozenset[str]] = frozenset({"pending"})
 
 
 class LoopError(RuntimeError):
@@ -404,6 +443,49 @@ class SenderThread:
             )
 
 
+@dataclass(frozen=True)
+class GoTimeout:
+    """ONE firing of §4:210-212's deadlock breaker. AN OBSERVATION.
+
+    `elapsed_s` is the loop's OWN monotonic clock measured between the tick that
+    admitted the GO and the tick that broke it — not a `time.time()` read taken
+    at whichever call site happened to notice. Two reasons, both of them the
+    property this record exists to make checkable: a wall-clock read is not
+    monotonic, so an NTP step could make a breaker fire early or never on a
+    process whose whole job is holding money-bearing state; and a reading taken
+    off the clock the beat is published from is the ONLY reading whose lateness
+    is bounded by the same tick cadence §12.1:604's Sentinel is watching.
+
+    `resent` is `False` and is a field rather than a comment because §4:240-241
+    forbids the auto-resend outright — *"issue order-status query, never auto-
+    resend"* — and a breaker that re-placed would turn one intended order into
+    two. A record that could only say *what it released* could not say that it
+    released and did nothing else.
+    """
+
+    strategy_id: str
+    client_order_id: str
+    admitted_tick: int
+    fired_tick: int
+    elapsed_s: float
+    timeout_s: float
+    released: bool
+    resent: bool = False
+
+    @property
+    def reason(self) -> str:
+        """The §4-citing sentence an operator reads. Check contract v2 rule 11."""
+        return (
+            f"{SITE}: §4:210-212 GO-timeout FIRED for {self.strategy_id!r} — "
+            f"{self.client_order_id!r} was admitted on tick {self.admitted_tick} "
+            f"and had no terminal feedback {self.elapsed_s:.3f}s later on tick "
+            f"{self.fired_tick}, past the {self.timeout_s}s "
+            f"limiter.{GO_TIMEOUT_KEY}. The GO is treated as DENIED and the "
+            f"strategy is reset to flat-and-free; released={self.released}, "
+            f"resent={self.resent} (§4:240-241 forbids the resend)"
+        )
+
+
 # R0902 (too-many-instance-attributes): a RECORD, not an object with
 # behaviour. Every field is one observation the arc-end evidence needs, and
 # a record that reported fewer facts to clear a threshold would be a
@@ -431,6 +513,12 @@ class LoopStop:
     sender_joined: bool
     sender_handoffs: int
     overruns: int
+    #: Every §4:210-212 breaker firing this run, oldest first. An EMPTY tuple on
+    #: a run that held no lock is the honest reading and is why the count is
+    #: reported beside `in_flight` rather than instead of it: a timeout that
+    #: never fired because nothing was ever in flight has measured nothing, and
+    #: the pair says so.
+    go_timeouts: tuple[GoTimeout, ...] = field(default_factory=tuple)
     faults: tuple[str, ...] = field(default_factory=tuple)
 
     @property
@@ -465,6 +553,27 @@ def heartbeat_interval_from_config(root: Path | None = None) -> float:
     """
     configs = risk_config.load_risk_configs(root)
     return risk_config.knob(configs.modules[CONFIG_MODULE], HEARTBEAT_INTERVAL_KEY)
+
+
+def go_timeout_from_config(root: Path | None = None) -> float:
+    """§12A:831's `GO_TIMEOUT_T`, read from its one physical home.
+
+    THE READ ARC 038 (F) MEASURED AS MISSING. Deliberately the same
+    `load_risk_configs` path as `heartbeat_interval_from_config` above and for
+    the same reason: `risks/limiter.config.json` carries a cross-knob boot rule
+    `liveness.go_timeout_outlasts_pending_ack` whose whole purpose is to reject
+    a timeout that would fire while the Limiter's own pending-ack machinery is
+    still resolving the same GO — *"the breaker fires on the healthy path"*, in
+    that file's own words. Reading the number through the validator is what
+    makes that rule govern the reader; reading the raw JSON here would leave the
+    rule validating a value this module then ignored.
+
+    No default (directive 4). A breaker that invented its own T would deny GOs
+    the strategy still believes are live, and §4:211-212 has the strategy reset
+    to flat-and-free on that signal — a wrong T is a wrong flat.
+    """
+    configs = risk_config.load_risk_configs(root)
+    return risk_config.knob(configs.modules[CONFIG_MODULE], GO_TIMEOUT_KEY)
 
 
 def tick_interval_for(heartbeat_interval_s: float) -> float:
@@ -537,6 +646,7 @@ class LimiterLoop:
         registry: StrategyRegistry | None = None,
         ingress: Callable[[int], object] | None = None,
         handler: Callable[[object], None] | None = None,
+        go_timeout_s: float,
         max_ticks: int = 0,
         max_drain_per_tick: int = DEFAULT_DRAIN_PER_TICK,
         sender_nice: int = DEFAULT_SENDER_NICE,
@@ -567,6 +677,21 @@ class LimiterLoop:
                 "keep §12A:832's cadence and the Sentinel would read a "
                 "systematically late heartbeat as a sick Limiter"
             )
+        if float(go_timeout_s) <= 0.0:
+            raise LoopError(
+                f"{SITE}: go_timeout_s={go_timeout_s!r} is not positive. "
+                "§12A:831 gives GO_TIMEOUT_T as the deadlock breaker's T and a "
+                "non-positive T fires on the tick that admitted the GO — every "
+                "GO denied, order flow shredded, and the gate beside it still "
+                "green because 'the timeout works'"
+            )
+        if float(go_timeout_s) <= tick_s:
+            raise LoopError(
+                f"{SITE}: go_timeout_s={go_timeout_s!r} does not outlast one "
+                f"tick ({tick_s!r}s). §4:210-212's breaker measures elapsed time "
+                "ACROSS ticks; a T inside one tick cannot distinguish a lost GO "
+                "from a GO the loop has not yet had a chance to serve"
+            )
         if int(max_drain_per_tick) < 1:
             raise LoopError(
                 f"{SITE}: max_drain_per_tick={max_drain_per_tick!r} — a tick "
@@ -581,6 +706,9 @@ class LimiterLoop:
             )
 
         self.heartbeat_interval_s = float(heartbeat_interval_s)
+        #: §12A:831's T. LIVE — read once at boot per §12.11's restart-only
+        #: config lifecycle, never re-read inside the tick.
+        self.go_timeout_s = float(go_timeout_s)
         self.tick_interval_s = tick_s
         self.max_ticks = int(max_ticks)
         self.max_drain_per_tick = int(max_drain_per_tick)
@@ -594,6 +722,15 @@ class LimiterLoop:
         #: gate reads: one element, equal to the loop's own ident, is the §12.1
         #: property. Two elements is the catastrophe named in the module docstring.
         self.heartbeat_publisher_idents: set[int] = set()
+        #: strategy_id -> (client_order_id, admitted_at_monotonic, admitted_tick).
+        #: THE CLOCK §4:212's *"within T"* is measured on. Stamped by
+        #: `take_in_flight` at the moment the lock was taken and cleared by every
+        #: path that releases it, so the map and `registry.in_flight` cannot
+        #: disagree about whether something is in flight — a second copy of that
+        #: fact is exactly what `in_flight_holders` refuses to keep.
+        self._go_admitted: dict[str, tuple[str, float, int]] = {}
+        #: Every breaker firing this process has seen, bounded like the others.
+        self._go_timeouts: deque[GoTimeout] = deque(maxlen=FAULT_LEDGER_MAX)
 
         self._heartbeat = heartbeat
         self._ingress = ingress
@@ -714,16 +851,94 @@ class LimiterLoop:
                 f"{SITE}: {why} — §3:140 puts the one-in-flight-per-strategy "
                 f"lock in PHASE A and §4:208-209 rejects the next signal "
                 f"with-reason until resolution, so {client_order_id!r} is "
-                "refused. §4:210-212's GO-timeout is the deadlock breaker for "
-                "this state and IS NOT IMPLEMENTED in this arc"
+                f"refused. §4:210-212's GO-timeout is the deadlock breaker for "
+                f"this state and fires at {self.go_timeout_s}s "
+                f"(limiter.{GO_TIMEOUT_KEY}), so this lock cannot wedge"
             )
         try:
             self.registry.take_in_flight(strategy_id, client_order_id)
         except RecoveryError as exc:
             return False, f"{SITE}: {exc}"
+        # THE CLOCK STARTS HERE, on the loop's own monotonic, inside the tick
+        # that admitted the GO. §4:212 measures T from the emission of the GO;
+        # the admission is the first instant this process can observe, and it is
+        # the LATER of the two, so the breaker is never early on account of it.
+        self._go_admitted[strategy_id] = (
+            client_order_id,
+            self._monotonic(),
+            self.tick_count,
+        )
         return True, (
             f"{SITE}: {strategy_id!r} took the §4:208 one-in-flight lock with "
-            f"{client_order_id!r}"
+            f"{client_order_id!r}; §4:210-212's GO-timeout is armed at "
+            f"{self.go_timeout_s}s (limiter.{GO_TIMEOUT_KEY})"
+        )
+
+    def resolve_in_flight(
+        self, strategy_id: str, client_order_id: str, outcome: str
+    ) -> tuple[bool, str]:
+        """§4:203-206's TERMINAL FEEDBACK — the healthy release of the lock.
+
+        *"every outcome (sized / denied / pending / open / closed / rejected /
+        protective-flatten) is pushed to the originating strategy FSM"*. This is
+        the Limiter side of that: the outcome arrived, the in-flight action is
+        RESOLVED, the lock comes off and the strategy is free for its next
+        signal — with no breaker involved.
+
+        This verb is what makes the breaker falsifiable in the OTHER direction.
+        A timeout with no normal release beside it cannot be shown not to fire
+        early: every GO would end at the breaker, and a gate would read that as
+        the invariant working. `pending` is refused for the reason
+        `NON_TERMINAL_OUTCOMES` gives.
+        """
+        self._require_loop_thread("resolve_in_flight")
+        if outcome in NON_TERMINAL_OUTCOMES:
+            return False, (
+                f"{SITE}: {outcome!r} is not a TERMINAL outcome — §4:201-202 "
+                f"makes PENDING the state the §4:208 lock is held THROUGH, so "
+                f"resolving on it would release the lock on a live order. "
+                f"Terminal outcomes: {sorted(TERMINAL_OUTCOMES)}"
+            )
+        if outcome not in TERMINAL_OUTCOMES:
+            return False, (
+                f"{SITE}: unknown outcome {outcome!r}; §4:203-205 enumerates "
+                f"{sorted(TERMINAL_OUTCOMES | NON_TERMINAL_OUTCOMES)}"
+            )
+        try:
+            released = self.registry.release_in_flight(
+                strategy_id,
+                client_order_id=client_order_id,
+                reason=f"§4:203-206 terminal feedback outcome={outcome!r}",
+            )
+        except RecoveryError as exc:
+            return False, f"{SITE}: {exc}"
+        if not released.held:
+            return False, f"{SITE}: {released.reason}"
+        self._go_admitted.pop(strategy_id, None)
+        return True, f"{SITE}: {released.reason}"
+
+    def go_timeouts(self) -> tuple[GoTimeout, ...]:
+        """Every §4:210-212 breaker firing, oldest first. THE OBSERVATION.
+
+        Read by `checks/check_go_timeout.py` from outside the process, through
+        the stop record `scripts/limiterd.py` writes. A count alone would not
+        distinguish *the breaker fired on a lost GO* from *the breaker fired on
+        every GO including the healthy ones*, so each firing carries its own
+        elapsed time against its own T.
+        """
+        return tuple(self._go_timeouts)
+
+    def go_armed(self) -> tuple[tuple[str, str, float], ...]:
+        """`(strategy_id, client_order_id, elapsed_s)` for every armed GO. LIVE.
+
+        Elapsed is computed at READ time off the loop's clock, so an operator
+        asking the running process how long a lock has been held gets the answer
+        as of the question rather than as of the last tick that happened to look.
+        """
+        now = self._monotonic()
+        return tuple(
+            (strategy_id, cid, now - at)
+            for strategy_id, (cid, at, _tick) in sorted(self._go_admitted.items())
         )
 
     def hand_to_sender(self, payload: object) -> SenderHandoff:
@@ -796,6 +1011,22 @@ class LimiterLoop:
         the beat goes out last so a published `seq` means the whole tick
         completed. §11:581 — cache reads and arithmetic only; the only outside
         contact is the ingress callable, which is §5:322's ZMQ-inbox read.
+
+        THE BREAKER RUNS AFTER THE DRAIN AND BEFORE THE BEAT, and both halves of
+        that placement are the invariant rather than a preference:
+
+        * AFTER the drain, because terminal feedback that arrived in this very
+          tick has already been handled by the time the breaker looks. A breaker
+          that ran first would fire on a GO whose `resolved` reply was sitting
+          two lines below it in the same inbox — a FALSE RELEASE on the healthy
+          path, which is the failure mode §0a of this arc's brief names and the
+          one `risks/limiter.config.json`'s own
+          `liveness.go_timeout_outlasts_pending_ack` rule exists to prevent one
+          layer down.
+        * BEFORE the beat, because §12.1:604's beat carries
+          `positions_open_hint`, which is DERIVED from the held locks. A beat
+          published before the breaker would tell the Sentinel a lock is held
+          that this same tick already broke.
         """
         self._claim_loop_thread()
         self._in_tick = True
@@ -803,6 +1034,7 @@ class LimiterLoop:
             self.tick_count += 1
             self._run_ingress()
             self._drain()
+            self._break_go_deadlocks()
             self._beat_if_due()
         finally:
             self._in_tick = False
@@ -935,6 +1167,71 @@ class LimiterLoop:
                 )
         return handled
 
+    def _break_go_deadlocks(self) -> tuple[GoTimeout, ...]:
+        """§4:210-212's DEADLOCK BREAKER, run once per tick on the LOOP'S CLOCK.
+
+        *"if a strategy receives no sized/denied feedback within T of emitting
+        GO (e.g. Allocator died holding it), it treats the GO as denied and
+        resets to flat-and-free. The in-flight lock can never wedge on a lost
+        message."* (§4:210-212, and §14:971 restates it as a locked invariant.)
+
+        THE WHOLE MECHANISM IS THE COMPARISON ON THE NEXT LINE — `elapsed >=
+        self.go_timeout_s` — and ARC 038 (F) measured that this tree contained
+        no such comparison anywhere: a real SIGKILL of the GO holder left the
+        lock held past the knob, on a loop that was alive, ticking and beating
+        the whole time. The knob existed and nothing read it.
+
+        THREE THINGS IT DOES NOT DO, each one a way this could pass while
+        measuring nothing:
+          * it does NOT resend, re-place, or retry (§4:240-241 — *"never auto-
+            resend"*). `GoTimeout.resent` is a recorded `False`, not a comment;
+          * it does NOT deregister. `release_in_flight` keeps the registration
+            and the slot, because §4:211-212 resets the strategy to
+            *flat-and-free* and a deregistration would be flat-and-GONE;
+          * it does NOT fire on a strategy whose GO resolved normally — the
+            stamp is popped by `resolve_in_flight` in the same tick's drain,
+            which is why this runs after it.
+
+        Reads the loop's own monotonic, never `time.time()`: T is a DURATION,
+        and a wall clock that steps under an NTP correction would make the
+        breaker fire early or never on the process holding every synthetic stop.
+        """
+        if not self._go_admitted:
+            return ()
+        now = self._monotonic()
+        fired: list[GoTimeout] = []
+        for strategy_id, (cid, admitted_at, admitted_tick) in sorted(
+            self._go_admitted.items()
+        ):
+            elapsed = now - admitted_at
+            if elapsed < self.go_timeout_s:
+                continue
+            released: ReleasedInFlight = self.registry.release_in_flight(
+                strategy_id,
+                client_order_id=cid,
+                reason=(
+                    f"§4:210-212 GO-timeout: no terminal feedback in "
+                    f"{elapsed:.3f}s against T={self.go_timeout_s}s"
+                ),
+            )
+            record = GoTimeout(
+                strategy_id=strategy_id,
+                client_order_id=cid,
+                admitted_tick=admitted_tick,
+                fired_tick=self.tick_count,
+                elapsed_s=elapsed,
+                timeout_s=self.go_timeout_s,
+                released=released.held,
+            )
+            fired.append(record)
+            self._go_timeouts.append(record)
+        for record in fired:
+            # Popped only AFTER the release succeeded. A stamp dropped first
+            # would leave a lock held by a strategy the breaker no longer
+            # watches — the wedge, rebuilt by the code that breaks it.
+            self._go_admitted.pop(record.strategy_id, None)
+        return tuple(fired)
+
     def _beat_if_due(self) -> Heartbeat | None:
         """Publish §12.1's beat if `heartbeat_interval_s` has elapsed. LOOP CLOCK."""
         now = self._monotonic()
@@ -995,5 +1292,6 @@ class LimiterLoop:
             sender_joined=joined,
             sender_handoffs=self.sender.handoffs,
             overruns=self.overruns,
+            go_timeouts=self.go_timeouts(),
             faults=self.faults(),
         )

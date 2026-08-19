@@ -368,6 +368,23 @@ class Registration:
 
 
 @dataclass(frozen=True)
+class ReleasedInFlight:
+    """What a §4:210-212 lock release actually did. Flat-and-free, not a teardown.
+
+    `kept_slot` is in the record because it is the half that distinguishes this
+    verb from `force_deregister`: the slot SURVIVING is what makes the strategy
+    *free* rather than gone (§4:211-212).
+    """
+
+    strategy_id: str
+    held: bool
+    released_in_flight: str | None
+    dropped_pending: str | None
+    kept_slot: int | None
+    reason: str
+
+
+@dataclass(frozen=True)
 class ForcedDeregistration:
     """What a force-deregister actually tore down. Four observed facts."""
 
@@ -457,6 +474,87 @@ class StrategyRegistry:
             return False, f"{strategy_id}: no order in flight"
         return True, (
             f"{strategy_id}: one-in-flight lock held by {row.in_flight} (§4:210)"
+        )
+
+    def release_in_flight(
+        self, strategy_id: str, *, reason: str, client_order_id: str | None = None
+    ) -> ReleasedInFlight:
+        """Release the one-in-flight lock and leave the strategy FLAT-AND-FREE.
+
+        §4:210-212's deadlock breaker needs a release that is NOT a teardown.
+        `force_deregister` above is the §4:266-268 verb: it takes the slot and
+        the registration down with the lock, which is correct when a strategy
+        has DIED and catastrophic when one has merely lost a message — the
+        strategy is alive, it is about to be reset to flat-and-free, and a
+        Limiter that deregistered it would have converted a lost GO into a
+        strategy that no longer exists to the Risk Engine.
+
+        *"it treats the GO as denied and resets to flat-and-free"* (§4:211-212).
+        FLAT: the lock is cleared and that order leaves `pending`. FREE: the
+        registration and the slot are untouched, so the next signal is servable.
+
+        RELEASES ONLY. There is no resend here and there must never be one:
+        §4:240-241 makes the Limiter *"issue order-status query, never auto-
+        resend"*, and a breaker that re-placed would turn one intended order
+        into two the moment the original was merely slow rather than lost.
+
+        Returns WHAT was released, never a bare boolean, for `force_deregister`'s
+        own reason: a release that reports success cannot distinguish "cleared
+        the lock held by c-1" from "found no lock and said yes". Idempotent —
+        an unheld lock returns `held=False` rather than raising, because the
+        breaker fires from a loop that may have raced a normal resolution and a
+        loop that could raise on the healthy path is a worse bug than the one
+        this verb fixes.
+        """
+        row = self._rows.get(strategy_id)
+        if row is None:
+            return ReleasedInFlight(
+                strategy_id=strategy_id,
+                held=False,
+                released_in_flight=None,
+                dropped_pending=None,
+                kept_slot=None,
+                reason=(
+                    f"{_SITE}: {strategy_id!r} holds no registration, so there is "
+                    "no one-in-flight lock keyed to it to release. NOT a "
+                    "successful release of a live lock"
+                ),
+            )
+        held = row.in_flight
+        if held is None:
+            return ReleasedInFlight(
+                strategy_id=strategy_id,
+                held=False,
+                released_in_flight=None,
+                dropped_pending=None,
+                kept_slot=row.slot,
+                reason=(
+                    f"{_SITE}: {strategy_id!r} holds no order in flight — nothing "
+                    f"to release ({reason})"
+                ),
+            )
+        if client_order_id is not None and client_order_id != held:
+            raise RecoveryError(
+                f"{_SITE}: asked to release {client_order_id!r} for "
+                f"{strategy_id!r}, but the §4:210 lock is held by {held!r}. "
+                "Releasing on a name the lock does not carry would free a "
+                "DIFFERENT order's slot and leave the real one in flight with "
+                "nothing naming it"
+            )
+        dropped = held if row.pending.pop(held, None) is not None else None
+        row.in_flight = None
+        return ReleasedInFlight(
+            strategy_id=strategy_id,
+            held=True,
+            released_in_flight=held,
+            dropped_pending=dropped,
+            kept_slot=row.slot,
+            reason=(
+                f"{_SITE}: released {strategy_id!r}'s §4:210 one-in-flight lock "
+                f"held by {held!r} ({reason}) — pending entry {dropped!r} "
+                f"dropped, slot {row.slot!r} and the registration KEPT, so the "
+                "strategy is flat-and-free per §4:211-212. Nothing was resent"
+            ),
         )
 
     def force_deregister(self, strategy_id: str) -> ForcedDeregistration:
