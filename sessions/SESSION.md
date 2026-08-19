@@ -5413,3 +5413,110 @@ the price of one `grep`.
 
 Every measurement: `/home/bbt/nix/.venv/bin/python` → `/usr/bin/python3.14` (Python 3.14.4).
 Canonical path `/home/bbt/nix`, absolute.
+
+## ARC 041-T — STATUS EMIT TOOLING: the beat format moved out of memory and into code, and the axis that killed 039R is measured
+
+**TOOLING tier.** No Limiter slice, no invariant touched, no badge movement. Predecessor derived
+live rather than taken from the brief: the brief said `≈ e033f98`, `git rev-parse HEAD` said
+**`41299aa`**, and every measurement below is against that tip.
+
+**What shipped.** Three drop-ins installed at their canonical paths and one instruction block
+appended: `scripts/arc_heartbeat.sh` (chmod +x — the single source of the pulse/banner format),
+`checks/check_arc_status_contract.py`, `checks/check_tmpfs_inode_headroom.py`, and CLAUDE.md's
+`## STATUS EMIT` section plus a `### The standing arc prompt, rewired` subsection. All three files
+were installed **byte-verbatim** (`cmp` clean against the drop-in) before anything else happened.
+
+**BOTH GATES BOUND FROM THEIR OWN FAIL, and then bound a SECOND time.** `--selftest` is the
+drop-ins' own can-fail and both are green: `check_arc_status_contract` 7/7 (two of them
+`[watchdogd]` false-positive guards), `check_tmpfs_inode_headroom` 8/8 with the exact 039R state
+(`1048576 1048576 0 100% /tmp`) as the plant. **That was not enough, and the reason is
+check-contract rule 9: a retrofitted check is a NEW check.** Registering these required a verify.py
+entry point neither drop-in had, so the adapter arm is new code and its can-fail was established
+separately, against the real `loader.load_check` → `run(Mode, Context)` → `validate_result` path:
+the status gate went no-log → CANNOT_MEASURE, real log → PASS, heartbeats-stripped plant → FAIL
+naming the site, plant removed → PASS; the inode gate went live `/tmp` → PASS, 039R plant → FAIL
+naming `/tmp`, no-inode-cap plant → CANNOT_MEASURE, plants removed → PASS.
+
+**EMITTER↔READER PARITY, which is the trap this arc existed to spring.** The reader's `RE_PULSE`
+is a second implementation of a format the emitter owns, and two implementations of one property
+disagree silently (doctrine C.9). Measured rather than assumed: a scratch log built from **real
+`arc_heartbeat.sh` output** — `selfcheck` plus a `pulse`, not a hand-typed line — with a marker, a
+`[watchdogd]` decoy and a real teardown line, audited by the shipped gate: `[PASS]
+arc_status_contract arc=041T pulses=2 teardowns=1 wd_pid=4107773`. The bar renders `#`/`-`, the
+regex accepts `[#\-]{2,}`, and the arc id and watchdog pid were both DERIVED from the log. They
+agree. The one format the reader cannot see is the STALE pulse (`stage ?/?` fails `\d+/\d+`), which
+is correct — a stale beat is not evidence the operator was informed.
+
+**DOGFOODED.** Every banner and every pulse in this run came from the script; cc hand-formatted
+nothing after Stage 2. The kickoff enumeration is the one thing still typed, by the WAYPOINT
+BANNERS rule's own wording.
+
+**THE ONE DEPARTURE FROM VERBATIM, recorded because it was found by a gate and not by taste.**
+`check_price_ring` FAILED on `checks/check_tmpfs_inode_headroom.py:163` — the `_NOLIMIT` self-test
+fixture named `/dev/shm` in its "Mounted on" column, and risk spec §12.7 gives the price firehose
+the SOLE shared-memory exception. The tempting repair was adding the path to the gate's `ALLOWED`
+set; doctrine B.4 forbids closing a red by weakening the instrument, and the gate is RIGHT. Fixed
+at the subject: the column now reads `/mnt/nolimit`. The fixture asserts that `df` printing `-`
+yields CANNOT-MEASURE and the mount's spelling is no part of that — proven, not argued:
+`--selftest` is 8/8 before and after.
+
+**A SECOND DEPARTURE FROM VERBATIM, and this one was demanded by four gates at once.** The
+drop-ins are described as pre-validated in a real interpreter; they were not validated against THIS
+tree's pre-commit chain, and it refused them. `ruff` (0.16.0, `--fix --exit-non-zero-on-fix`):
+`EXE001` shebang without the executable bit, `PLW1510` `subprocess.run` without `check=`, `ISC004`,
+`RUF059`, and four `BLE001` blind excepts — the blind excepts are check-contract rule 1 and were
+kept with `# noqa` plus the reason, never narrowed. `ruff format --check` (a reporter since ARC 018,
+never a repairer) reformatted both files. `bandit` needed `# nosec B404 / B603 B607 / B108` with
+stated reasons; the comma-separated form `B603,B607` silenced B607 and NOT B603, so the
+space-separated spelling is the one that works here. `pylint --fail-on=E,F` and `mypy` both flagged
+the adapter's `run` as a redefinition — it IS one, deliberately, and it is now declared as such.
+
+**The one that was a real design fault, caught by a test rather than a linter.**
+`scripts/tests/test_check_standalone_nonvacuity.py::test_every_real_check_standalone_block_calls_validate_result`
+named both files: every `checks/check_*.py` must route its `__main__` through `validate_result` (or
+through `standalone_main`, which applies it). The drop-ins could not — their `__main__` sat ABOVE
+the appended adapter, so the CLI exited before the engine entry point existed. That worked, and it
+worked *by statement order*. The block now lives at the END of each file and splits two surfaces:
+the drop-in's own flags (`--selftest`, `--log`, `--mount`, …) keep the drop-in's CLI, because the
+brief's binding steps are spelled in them and a `--selftest` has no `CheckResult` to validate;
+everything else goes through `standalone_main`. Both end at the same `run`. **Every self-test, the
+parity check, the live measurement and the four-arm adapter can-fail were re-run after each repair
+and none of them moved.**
+
+**REGISTERED, BOTH PERIODIC, and `VERIFY-AND-CHECKS.md` was read directly to decide it.** Part B.1
+is explicit that the registry IS the standing-gate suite run at every arc bank and that the only
+non-registry category is the `prove_*` harnesses — there is no "close-out-invoked" tier to wire
+into. Both gates are therefore in `checks/registry.json` level-0, `on_fail: continue`, and the plan
+was **derived** by `verify.py --optimize --commit` rather than hand-written. `check_tmpfs_inode_headroom`
+is the straightforward one: live node state, +1 PASS on a healthy box. `check_arc_status_contract`
+defaults `--log` to the newest `scratchpad/arc_logs/*.log` inside a 24 h window and returns
+**CANNOT-MEASURE, never PASS**, when there is none — rule 10, a property proven while its subject
+is unavailable is not proven. **It cost the sweep one light-blue and that is the honest price**;
+see D3.433 for what that costs in coverage.
+
+**verify.py, and the baseline is the interesting half.** Baseline at `41299aa` on a clean tree:
+**86 | 5 | 2 | 0 | 1**, against the **89 | 2 | 2 | 0 | 1** ARC 041 banked at the SAME commit.
+Three gates had moved with no commit between them. Two were this arc's own untracked inbox
+(`check_untracked_attribution`; `check_price_ring` reading the `/dev/shm` literal in the
+`downloads/` copy) and both cleared when the drop-ins were installed and the inbox emptied. The
+third did not and is now **D3.431**: `check_monitor_tui` ARM3 STALE PIN, on arms whose subject is
+the operator's out-of-tree statusline. Had the baseline been skipped, all three would have been
+attributed to this arc — which is exactly the incident `VERIFY-AND-CHECKS.md` B.6 records.
+Post-change on trunk: **88 | 4 | 3 | 0 | 1**. +2 passed (the inode gate, and price_ring recovered),
+-1 failed, +1 cannot-measure (the status gate). The remaining `check_untracked_attribution` names
+exactly the three new uncommitted files and is a statement about the write-back, not about the work.
+
+**CHECK-DEBT: 379 → 382, +4 opened, -1 DISCHARGED, both figures the probe's own.** **D3.423
+DISCHARGED** — the row ARC 039R opened when `/tmp` exhausted its inode table with 16 GB free. Its
+residual is **D3.430**, named rather than absorbed: D3.423 asked for BOTH axes plus a basetemp
+reaper, and only the inode axis ships. Also opened: **D3.431** (above), **D3.432** — `--optimize`
+proposed dropping `file-write:tmp` and `process:limiterd` from the committed plan and no check
+declares either any more, so the plan had silently drifted from the declarations it is derived from
+and nothing compares them at load — and **D3.433**, the new status gate's own ceiling: it splits at
+the completion marker, the marker is by construction the last token an arc prints, so the gate
+audits the PREVIOUS arc and never the running one.
+
+**Housekeeping.** `/tmp/pytest-of-bbt` removed at kickoff (888 inodes, 4 retained sessions against
+pytest's documented 3 — the retention setting is not being honoured, which is half of D3.430). The
+three drop-in duplicates and the CLAUDE.md block source were removed from `downloads/`; the brief
+stays. No full pytest and no census: no trading-path code and no invariant were touched.

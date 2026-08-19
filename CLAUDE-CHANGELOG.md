@@ -390,3 +390,17 @@ CANNOT_MEASURE) and not the pytest one, so ARC 034's 0.1 re-measure opened on
 `test_the_REAL_TREES_THIRTEEN_ceiling_tripped_artifacts_are_the_D3104_EXCLUSION` FAILING with
 *"'ARC 033' has ALREADY COMPLETED"*. Re-owning to `ARC 035` discharged it. **A re-own is not a
 discharge** and the amendments say so; it is the fourth consecutive one.
+
+## ARC 041-T (2026-08-19) — STATUS EMIT
+
+Added `## STATUS EMIT — call the script, never re-invent the format` and its `### The standing arc
+prompt, rewired (ARC 041-T)` subsection to `CLAUDE.md`. The heartbeat/banner format moves OUT of
+cc's memory and INTO `scripts/arc_heartbeat.sh`; cc calls it. Rationale: a format cc reconstructs
+from priors degrades under context compaction — the observed failure was a 65-line banner emitted
+per beat, burying the compact ticker the rule exists to produce. The WAYPOINT BANNERS rule is not
+rewritten or contradicted; the new section says who FORMATS the beat, and names the script as the
+tie-breaker against its own prose, on directive 8 (enforce mechanically, keep prose brief).
+
+Paired instruments registered in the same arc: `checks/check_arc_status_contract.py` (audits an
+arc's own log for heartbeat evidence + `[watchdogd]`-safe teardown proof) and
+`checks/check_tmpfs_inode_headroom.py` (the axis that stopped ARC 039R — CHECK-DEBT D3.423).

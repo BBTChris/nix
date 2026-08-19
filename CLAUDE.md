@@ -129,3 +129,59 @@ Append all instruction changes to `~/nix/CLAUDE-CHANGELOG.md`. Treat this file a
   The purpose is that an operator reads position from a glance at the terminal without reading the run.
 - End of each arc: `cc` cleans up temporary files created in the arc.
 - End of each arc: `cc` approximates what percent this arc moved development forward for this module and the whole project, and states `**** ARC completed ****` **LAST — the marker is the final token, with nothing after it** (`nix_check_contract.md` §16.4 / `CHECK-A10`). The percentage precedes it. If the arc cannot reach a stable state, `cc` prints no marker and reports `STATUS: IN FLIGHT` naming what is still moving.
+
+## STATUS EMIT — call the script, never re-invent the format
+
+The heartbeat/banner format lives in **`scripts/arc_heartbeat.sh`**, NOT in memory. cc CALLS it;
+cc never hand-formats a beat. (This closes the fat-banner drift: a format cc recalls degrades under
+context compaction; a format in code does not.)
+
+Every arc:
+
+- **Write progress each stage + sub-step** to `$NIX_SCRATCH/arc_progress.txt` (key=value, stamped
+  with THIS arc + a monotonic ts — D3.244 class):
+  `arc=<id>  start=<epoch>  ts=<epoch-now>  stage=<k>  total=<T>  op=<text>  pct=<0-100>`
+- **PULSE** — one line, ~5-min cadence *within* a stage (also the watchdog's beat):
+  `scripts/arc_heartbeat.sh pulse`
+- **BANNER** — boxed, **only at a stage transition**:
+  `scripts/arc_heartbeat.sh banner --name "<stage name>"`
+- **SELF-VERIFY at kickoff** — prove the emitter works before Stage 1 (exit 0 = ok):
+  `scripts/arc_heartbeat.sh selfcheck`
+
+Hard rules the script enforces so cc can't drift them:
+- **One line per pulse.** Never wrap every pulse in the banner. Banner is transitions only.
+- **ASCII rules only** — box-drawing chars fold/misalign in the TUI; the script uses `=` and `#-`.
+- **Motion + stall** — the pulse shows ADVANCED / no-motion vs last beat and escalates to
+  `STALL WARNING` after 3 no-motion beats. A frozen/missing progress file reads as
+  `STALE PROGRESS FILE`, never a confident-but-wrong status.
+- **Teardown proof** — at close-out print `WATCHDOG TEARDOWN: confirmed dead (pid <N> / arc_heartbeat)`
+  matched to cc's OWN watchdog by pid/signature, **never `[watchdogd]`** (root-owned kernel thread,
+  always present, cannot be killed, is NOT a leak).
+
+`checks/check_arc_status_contract.py` audits the arc log for this contract (heartbeat evidence +
+teardown proof, `[watchdogd]`-safe; exit 0/1/2). It is the measured backstop — keep it green.
+
+### The standing arc prompt, rewired (ARC 041-T)
+
+The WAYPOINT BANNERS rule above states the CONTENT of a beat; this states WHO FORMATS IT, and from
+ARC 041-T on the answer is the script, never cc:
+
+| moment | command |
+|---|---|
+| kickoff, before Stage 1 | `scripts/arc_heartbeat.sh selfcheck` |
+| every in-stage pulse and every watchdog beat | `scripts/arc_heartbeat.sh pulse` |
+| every stage / sub-agent / convergence transition | `scripts/arc_heartbeat.sh banner --name "<stage>"` |
+
+**cc no longer hand-formats a beat.** Where the banner rule's prose and the script's output differ,
+the script is the format: prose is what drifts under compaction, which is the whole reason this
+section exists.
+
+`$NIX_SCRATCH` is `~/nix/scratchpad` (gitignored). Two files live there per arc, both untracked
+because they are evidence about a run rather than artifacts of one:
+
+- `arc_progress.txt` — the key=value progress record the emitter reads.
+- `arc_logs/arc_<id>.log` — the arc's own run log: the beats, the teardown line, the marker.
+  `check_arc_status_contract` defaults to the NEWEST `arc_logs/*.log` inside a 24 h freshness
+  window and returns **CANNOT-MEASURE (light blue), never PASS**, when there is none — a bare
+  periodic sweep with no arc running has no subject, and check-contract rule 10 forbids certifying
+  a safety property whose subject is unavailable. It PASSES against a real completed arc's log.
