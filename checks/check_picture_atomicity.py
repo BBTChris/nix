@@ -281,6 +281,57 @@ def _import_subjects() -> tuple[Any, Any, str]:
     return picture, statebus, ""
 
 
+def subject_root_complaint(home: Path, picture_mod: Any) -> str:
+    """The home this gate was GIVEN, against the tree its subject came FROM.
+
+    ARC 038 sub-agent G, finding FG1 (CHECK-DEBT D3.408). This gate resolves
+    `nixrisk.picture` through the process's `sys.path` and never opens
+    `SUBJECTS[0]` at `ctx.nix_home` — so `nix_home` was a DEAD INPUT, and the
+    gate returned **PASS, with a full paragraph of evidence, over a home whose
+    `scripts/nixrisk/picture.py` was not valid Python.** That is
+    `docs/CHECK-DEBT.md` D3.344's defect — *the gate measured production code
+    while reporting on a staged tree, and passed* — reached without any
+    environment variable at all, so D3.344's repair (name the child's `env`)
+    does not close it.
+
+    The repair is not to relocate the drive: this gate races real threads through
+    the SHIPPED module and importing a staged copy would change what ships under
+    measurement. The repair is to REFUSE, loudly, when the two disagree — a false
+    PASS becomes an honest CANNOT_MEASURE naming both paths (§17, and directive 4
+    *fail closed and loud*). Under every normal launch the two AGREE and this is a
+    no-op; it bites exactly in the condition that used to be silent, which is a
+    gate run against one tree while `PYTHONPATH` points at another.
+
+    Returns "" when the subject came from `home`, else the complaint.
+
+    **A subject with no `__file__` is NOT a complaint, and that boundary was set
+    by measurement.** This gate's own can-fail mechanism substitutes a
+    `types.SimpleNamespace` carrying the real module's parts with one swapped
+    (`test_check_picture_atomicity._subjects`), because the plantable surface is
+    the sink the gate CONSTRUCTS rather than a name in a namespace — the suite
+    records finding that out the hard way. A namespace has no `__file__`, so the
+    first cut of this comparison refused all sixteen of those plants and turned a
+    working can-fail into CANNOT_MEASURE. A double is a TEST condition, not a tree
+    mismatch; it is reported in the evidence by the caller and never refused, and
+    in production `_import_subjects` returns a real module, which always has one.
+    """
+    declared = SUBJECTS[0]
+    expected = (home / declared).resolve()
+    actual_raw = getattr(picture_mod, "__file__", "")
+    if not actual_raw:
+        return ""
+    actual = Path(actual_raw).resolve()
+    if actual == expected:
+        return ""
+    return (
+        f"THE TREE MEASURED IS NOT THE TREE NAMED. ctx.nix_home names {home}, so "
+        f"the subject is {expected}; this process imported {declared} from "
+        f"{actual} instead (sys.path[0:3]={sys.path[:3]}). Nothing about the tree "
+        f"under measurement was measured (§17), and a PASS here would be a green "
+        f"over a subject this gate never opened (CHECK-DEBT D3.344 / D3.408)"
+    )
+
+
 # ---------------------------------------------------------------------------
 # The world, and the two detectors
 # ---------------------------------------------------------------------------
@@ -1209,6 +1260,20 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
     picture_mod, statebus, complaint = _import_subjects()
     if complaint:
         return _cannot(complaint, evidence)
+    # ARC 038 G / FG1: the home is an INPUT, and it used to be a dead one.
+    root_complaint = subject_root_complaint(ctx.nix_home, picture_mod)
+    if root_complaint:
+        return _cannot(root_complaint, evidence)
+    if not getattr(picture_mod, "__file__", ""):
+        # Named rather than silent: the only way to get here is a substituted
+        # double, which is what this gate's own plants do, and a reader of a
+        # PASS is entitled to know the subject was not a file on disk.
+        evidence.append(
+            "SUBJECT IS A SUBSTITUTED DOUBLE (no __file__), so the tree named by "
+            "ctx.nix_home was NOT the thing measured"
+        )
+    else:
+        evidence.append(f"subject rooted at {Path(picture_mod.__file__).resolve()}")
     try:
         from nixrisk import seam  # pylint: disable=import-outside-toplevel
     except ImportError as exc:  # pragma: no cover - picture.py imports seam already

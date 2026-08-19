@@ -1,4 +1,13 @@
 #!/usr/bin/env python3
+# C0302: this module crossed pylint's 1 000-line ceiling in ARC 038 (sub-agent
+# G, finding FG2 / CHECK-DEBT D3.409) and the excess is PROSE — the measurement
+# that showed this gate discarding an already-observed second Plane-1 author
+# whenever Postgres was unreachable, written beside the handler it corrects.
+# Doctrine B.7 puts the argument next to the instrument it argues for, which is
+# the same trade `check_artifact_gate_coverage.py` states at its own head;
+# moving the reasoning away from the code it explains to satisfy a line counter
+# is the trade the check contract refuses.
+# pylint: disable=too-many-lines
 # pylint: disable=duplicate-code
 # R0801 pairs this file's DECLARATION BLOCK and its `standalone_main` footer
 # against every other house-style check's. That shape is REQUIRED, not
@@ -881,6 +890,11 @@ def _load_module(path: Path, name: str):
 def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argument
     """Measure Plane-1 authorship: by attempt, and over the code."""
     home = ctx.nix_home
+    #: What the STATIC half already established, bound here so the handlers below
+    #: can never read it unbound (ARC 038 G / FG2 — see the `Unmeasurable`
+    #: handler). Empty means the static half had not finished, and an empty list
+    #: is the honest CANNOT_MEASURE it always was.
+    observed: list[str] = []
     try:
         defects, counts = scan_authorship(home)
         defects = list(defects) + _arm_b1b_conduit_proofs(home)
@@ -903,6 +917,12 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
                     ),
                 )
         defects += wiring_defects(home)
+        # ARC 038 sub-agent G, finding FG2 (CHECK-DEBT D3.409). Everything above
+        # is STATIC and is now MEASURED; everything below needs a reachable
+        # cluster. `observed` carries the static verdict past the availability
+        # wall so the handler at the bottom of this function cannot throw a
+        # positively-observed second writer away as "nothing was measured".
+        observed = list(defects)
         tmp = Path(tempfile.mkdtemp(prefix="nixp1sw-"))
         try:
             attempt_defects, evidence = attempt_privilege(tmp)
@@ -936,6 +956,35 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
             ),
         )
     except Unmeasurable as exc:
+        # ARC 038 G / FG2 (CHECK-DEBT D3.409). MEASURED: with a second Plane-1
+        # author planted in the tree and `PGHOST` pointing at nothing, this
+        # handler returned CANNOT_MEASURE and the ARM B1 defect string — a live
+        # §12.10 violation, already found — vanished from the verdict. Same tree,
+        # same violation, exit 1 with the cluster up and exit 2 without it; and
+        # under check-contract rule 4's `Fail > Cannot-measure` ordering that is
+        # the difference between a certified-failed run and an uncertified one.
+        # On any box without the cluster a second author shipped as "cannot
+        # measure", while this detail asserted "nothing was measured" — which the
+        # gate is in a position to know is false.
+        #
+        # Rule 10's own sentence, applied in the direction it was written for:
+        # *the attempt is the claim; a positively-observed claim outranks
+        # masking.* An unreachable LATER arm cannot unmeasure an EARLIER one, so
+        # the static defects are reported and the unavailability is NAMED beside
+        # them rather than substituted for them.
+        if observed:
+            return CheckResult(
+                name=NAME,
+                status=Status.FAIL_NEEDS_OPERATOR,
+                site=ANCHOR,
+                evidence=(
+                    f"{len(observed)} sole-writer defect(s) OBSERVED by the static "
+                    f"half BEFORE the privilege attempt became unreachable. THE "
+                    f"ATTEMPT ARM DID NOT RUN, so the DATABASE's refusal of a "
+                    f"second writer is unproven on this box: {exc}"
+                ),
+                detail="; ".join(observed),
+            )
         return CheckResult(
             name=NAME,
             status=Status.CANNOT_MEASURE,
