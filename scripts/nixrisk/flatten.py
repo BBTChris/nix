@@ -72,6 +72,7 @@ the same port. Reservation releases already went onto real Plane 1 under
 from __future__ import annotations
 
 import enum
+import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -99,6 +100,16 @@ from nixrisk.seam import (
 )
 
 # pylint: disable=too-few-public-methods
+# too-many-lines: 1075 of a 1000 default, and every line over is PROSE. ARC 038 /
+# sub-agent C added ~180 lines of docstring to `_book`, `request_close`,
+# `cancel_entries_on_onset` and `UnbookedRow` recording WHY a persistence failure
+# may not abort the exit and WHY the arbiter is serialised — each with the
+# measurement behind it (§12.4:625, §3:172, and the tracebacks). The alternative
+# was to cut the reasoning to satisfy a line count, which inverts directive 8:
+# the rule is enforced mechanically where it can be, and the prose that cannot be
+# is what makes the next reader's edit safe. Same call `check_fill_handler.py` and
+# a dozen other files in this tree already make.
+# pylint: disable=too-many-lines
 # duplicate-code: the ClosedRecord construction here is mirrored by test_flatten's
 # expected-value builder (R0801 flags the pair); the test asserting equality
 # against a hand-built record is the coverage, not copied logic.
@@ -366,6 +377,28 @@ class ConfirmedFlat:
 
 
 @dataclass(frozen=True)
+class UnbookedRow:
+    """An exit row §9's WAL REFUSED (ARC 038 / C, FC1). The exit fired anyway.
+
+    Six fields, all of them the refused row's own identity plus the port's reason.
+    It exists because §12.4:625's *"open positions remain protected"* and §9's
+    *"every money-moving event is recorded"* cannot BOTH hold when the WAL cannot
+    append, and §14:968 decides which one gives way: the position is flattened
+    and the row is lost. A loss that is recorded is a §12.9 alert; a loss that is
+    silent is the failure `positions.py:_refuse_unstopped` names — *"the
+    condition is recorded where a supervising loop can act on it instead of
+    vanishing into a log"*.
+    """
+
+    kind: EventKind
+    trade_id: str | None
+    strategy_id: str
+    symbol: str
+    ts: float
+    reason: str
+
+
+@dataclass(frozen=True)
 class _Intent:
     """A per-symbol protective intent, so reconcile can attribute an untargeted
     close (the §4 uncertainty flatten fires with no known trade)."""
@@ -447,6 +480,44 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
         #: `protective_exit` and `reconcile_and_publish` books `closed` for the
         #: same trade_id.
         self._realized_booked: dict[str, str] = {}
+        #: ARC 038 / C, FC1. Exit rows §9's WAL REFUSED — the escalation surface
+        #: the fix owes. A non-empty list means the Limiter FLATTENED but could
+        #: not record it, which is §12.4's degraded-persistence state and a §12.9
+        #: alert a supervising loop must raise; routing it into those tiers is
+        #: CHECK-DEBT D3.368. Each row carries the port's own REASON, not just a
+        #: count (check contract rule 11). See `_book` for why a refusal is
+        #: recorded here instead of aborting the flatten.
+        #:
+        #: A PUBLIC ATTRIBUTE and deliberately NOT a `unbooked_rows()` accessor.
+        #: The accessor was written first and `check_uncalled_entry_points`
+        #: refused it BY NAME — *"scripts/nixrisk/flatten.py::
+        #: ProtectiveFlatten.unbooked_rows … NEW uncalled surface"* — because
+        #: nothing in shipped code calls it and nothing can until D3.368 is
+        #: wired. That gate's baseline is a one-way ratchet that may only shrink,
+        #: so accepting the row was not available and papering over it would have
+        #: been the D3.150/D3.178 class this arc exists to hunt: a verb built,
+        #: gated, and driven by nothing. A public observable attribute is the
+        #: idiom every other counter in this module's neighbourhood already uses
+        #: (`writes`, `duplicates`, `refusals`, `enqueued`, `fsyncs`), and it adds
+        #: no callable surface for a caller that does not exist yet.
+        self.unbooked: list[UnbookedRow] = []
+        #: ARC 038 / C, FC2. The arbiter's read-modify-write on `self._closed`
+        #: (read at `request_close`'s first line, committed six lines later) was
+        #: NOT atomic, and a real threaded interleaving made a DISCRETIONARY
+        #: close the recorded winner over a protective one, with
+        #: `hard_reset=False` so §4's one-in-flight slot was never freed.
+        #: §5 mandates a single-threaded Limiter loop and nothing in this tree
+        #: violates it — but nothing ENFORCED it either, and §3:172's
+        #: *"protective exit always wins"* is a LOCKED invariant, so it may not
+        #: rest on an unenforced convention. BLOCKING, not `acquire(False)`:
+        #: `FinancialPictureBook.commit` refuses a second writer outright, which
+        #: is right for a table with one owner, but refusing here would let a
+        #: discretionary close in flight REFUSE a protective one — the invariant
+        #: inverted. Waiting instead makes the two serialise, and the existing
+        #: precedence rules then give the right answer in both arrival orders.
+        #: An uncontended acquire is tens of nanoseconds, so §11's hot path is
+        #: unaffected and the single-threaded case is bit-for-bit unchanged.
+        self._arbiter = threading.Lock()
 
     # -- B2 / B3: the protective action and the dual-authority arbiter --------
 
@@ -530,6 +601,31 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
         `hard_reset` is True exactly for a protective win — §4: the FSM
         hard-resets to flat and the one-in-flight slot is freed. The broker
         `flatten` is the same zero-wire in-process call `fire` uses.
+
+        **ARC 038 / sub-agent C, FINDING FC2.** Every rule above is a decision
+        made by READING `self._closed` and then, six lines later, WRITING it.
+        That pair was not atomic, and the gap is not theoretical: driven with two
+        real threads and the read window forced open, a discretionary close
+        became the recorded winner over a protective one, with `hard_reset=False`
+        so §4's one-in-flight slot stayed wedged. §3:172's *"protective exit
+        always wins"* is LOCKED, so it is serialised here rather than left to
+        §5's single-threaded loop, which nothing enforces. See `__init__`'s note
+        on `self._arbiter` for why the lock BLOCKS instead of refusing.
+        """
+        with self._arbiter:
+            return self._arbitrate(target, authority, reason)
+
+    def _arbitrate(
+        self, target: CloseTarget, authority: CloseAuthority, reason: str
+    ) -> CloseOutcome:
+        """`request_close`'s critical section. The caller MUST hold `_arbiter`.
+
+        Split out for ONE reason: so the lock is visible at the entry point while
+        the body stays byte-identical to what `request_close` held before ARC 038.
+        Every rule, every message and every ordering below is unchanged, which is
+        what makes FC2's fix provably a SERIALISATION and not a re-decision —
+        a re-indent-in-place would have made the diff unreadable and the claim
+        unverifiable.
         """
         prior = self._closed.get(target.trade_id)
         if prior is not None:
@@ -599,6 +695,30 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
         This method calls `cancel_order` ONLY. It never calls `flatten`, because
         §3 says exits are untouched — a pending ENTRY is a window a fill has not
         entered, and cancelling it is not closing a position.
+
+        **ARC 038 / sub-agent C, FINDING FC1 (second site): THE SWEEP FINISHES.**
+        §3:172 is *"Blackout/HALT onset ⇒ Limiter cancels ALL pending ENTRY
+        orders"*, and measured against a real disk-critical WAL it cancelled ONE.
+        The traceback, taken from the drive rather than read off the page:
+        `flatten.py:cancel_entries_on_onset → reservations.py:368 resolve →
+        :441 _settle → :498 _emit → degraded.py:378 enqueue → wal.py:307 enqueue`
+        raising `DiskCritical`. Two pending entries were left WORKING at the venue
+        inside a window they were not approved for, with their reservations
+        unreleased — the precise thing §3:174 exists to prevent (*"no order may
+        fill inside a window it was not approved for"*).
+
+        `reservations.py:_emit` writes its row AFTER its store mutation and names
+        the residual it leaves (CHECK-DEBT D3.53: *"an enqueue that raises leaves
+        a settled reservation with no Plane-1 row"*), which is a decision that
+        module is entitled to make about ITS OWN row. What it cannot decide is
+        whether the OTHER entries in this sweep get cancelled, and that decision
+        is here. So a persistence failure out of `resolve` is caught PER ENTRY,
+        recorded on `unbooked` with the port's own reason, and the sweep
+        continues. The reservation is already settled when `_emit` runs, so
+        continuing loses the row and nothing else — the same §12.4 / §14:968
+        trade `_book` makes, applied at the one boundary that can lose a whole
+        sweep. `reservations.py` is NOT edited; the residual D3.53 names is still
+        true and is re-recorded as D3.369 with the consequence measured here.
         """
         if cause not in _ONSET_CAUSES:
             raise NotAnOnsetCause(
@@ -612,13 +732,32 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
         refusals: list[Refusal] = []
         for entry in pending:
             self._broker.cancel_order(entry.client_order_id)
-            resolution = self._ledger.resolve(
-                entry.client_order_id, cause, now, reason=cause.value
-            )
-            if resolution.released is not None:
-                released.append(resolution.released)
-            if resolution.refusal is not None:
-                refusals.append(resolution.refusal)
+            try:
+                resolution = self._ledger.resolve(
+                    entry.client_order_id, cause, now, reason=cause.value
+                )
+            except Exception as exc:  # noqa: BLE001  pylint: disable=broad-except
+                # FC1's second site. See the docstring: the reservation is already
+                # settled by the time its row is enqueued, so the loss is the row,
+                # and abandoning the remaining entries would be far worse.
+                self.unbooked.append(
+                    UnbookedRow(
+                        kind=EventKind.RESERVATION_RELEASED,
+                        trade_id=None,
+                        strategy_id=entry.strategy_id,
+                        symbol=entry.symbol,
+                        ts=now,
+                        reason=(
+                            f"releasing {entry.client_order_id} under "
+                            f"{cause.value}: {type(exc).__name__}: {exc}"
+                        ),
+                    )
+                )
+            else:
+                if resolution.released is not None:
+                    released.append(resolution.released)
+                if resolution.refusal is not None:
+                    refusals.append(resolution.refusal)
             cancelled.append(entry.client_order_id)
             self._book(
                 kind=EventKind.CANCEL,
@@ -785,21 +924,70 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
         No new event type, no new writer and no new port — the figure rides the
         `closed` / `protective_exit` rows this method already books, which is
         §12.10:768's own pattern for a per-trade figure.
+
+        **ARC 038 / sub-agent C, FINDING FC1: A FAILED APPEND MAY NOT ABORT THE
+        EXIT.** The paragraph above says booking a row *"adds no wire dependency
+        to the exit path"*, and until this arc that was a claim about `enqueue`'s
+        SUCCESS path only. It was false on the failure path, and the falsity was
+        measured: with the kernel refusing the WAL append (`RLIMIT_FSIZE`, real
+        `EFBIG`), `Plane1Wal.enqueue` raises `DiskCritical`, `Plane1Enqueuer`
+        propagates it unchanged by design, and it came out through `_book` →
+        `request_close` → `fire`. A three-target protective flatten closed ONE
+        position and left the other two OPEN at the broker; the onset sweep
+        cancelled ONE pending entry and left the rest working. §12.4:625 is
+        explicit about which way this resolves — *"Disk-critical (WAL cannot
+        append) ⇒ HALT new entries … **Open positions remain protected (stops
+        read memory, not disk)**"* — and §14:968 makes flat the resolution of
+        every uncertainty. So the append is ATTEMPTED and a failure is RECORDED,
+        never raised: losing the audit row while the position is flattened beats
+        keeping neither.
+
+        `Exception` is caught deliberately broadly, and that is not laziness.
+        `self._plane1` is the FROZEN `Plane1Port` Protocol; naming
+        `wal.DiskCritical` here would make this module import a concrete
+        persistence implementation, which is the coupling §14 forbids in the one
+        place it matters most. Any exception out of a port whose contract is
+        *"append to the local WAL buffer, bounded, hot-path-safe, not durable"*
+        IS a persistence failure by construction. It is not swallowed: every one
+        lands on `unbooked` carrying the port's own reason text, so the
+        condition is recorded where a supervising loop can act on it instead of
+        vanishing (`positions.py:_refuse_unstopped`'s argument, one module over).
+        `_realized_or_reason` already makes exactly this trade on this same path
+        for a malformed cost fact; this extends it to the row itself.
         """
-        self._plane1.enqueue(
-            EventRow(
-                kind=kind,
-                ts=ts,
-                strategy_id=strategy_id,
-                reason=reason,
-                trade_id=trade_id,
-                fields=(
-                    self._realizing_fields(kind, trade_id, symbol)
-                    if realizing
-                    else {SYMBOL_FIELD: symbol}
-                ),
-            )
+        row = EventRow(
+            kind=kind,
+            ts=ts,
+            strategy_id=strategy_id,
+            reason=reason,
+            trade_id=trade_id,
+            fields=(
+                self._realizing_fields(kind, trade_id, symbol)
+                if realizing
+                else {SYMBOL_FIELD: symbol}
+            ),
         )
+        try:
+            self._plane1.enqueue(row)
+        except Exception as exc:  # noqa: BLE001  pylint: disable=broad-except
+            # The realizing mark was set while BUILDING the row (above), and the
+            # row did not land. Leaving it set would make the NEXT realizing row
+            # for this trade say "already booked on this trade's 'protective_exit'
+            # row" about a row §9 never received, and the figure would be lost
+            # twice over. Un-marking restores the one-figure-per-close rule to
+            # counting rows that actually exist.
+            if trade_id is not None and realizing:
+                self._realized_booked.pop(trade_id, None)
+            self.unbooked.append(
+                UnbookedRow(
+                    kind=kind,
+                    trade_id=trade_id,
+                    strategy_id=strategy_id,
+                    symbol=symbol,
+                    ts=ts,
+                    reason=f"{type(exc).__name__}: {exc}",
+                )
+            )
 
     # -- ARC 037 / D3.220: the realized figure the durable record did not carry -
 
