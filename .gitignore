@@ -100,3 +100,19 @@ downloads/*.py
 # also put a SECOND copy of the execution plan in the tree, which is the
 # derive-never-restate violation directly above, one directory over.
 checks/*.proposed
+
+# Per-arc scratch working directory (temp measurement output, frozen-SHA manifests,
+# heartbeat helpers, sub-agent briefs). NOT in directory_structure.md's canonical
+# topology and it held zero tracked files before ARC 038.
+#
+# D2.24's rule, third instance in this file, and ARC 038 walked straight into it:
+# this project MANDATES `git add -A` before every gate measurement, so an unignored
+# scratch path reaches the index on the FIRST measurement any agent takes — and
+# ARC 038's Stage 2 commit duly swept eight temp files into history before the
+# rule existed. Same shape as `checks/*.proposed` above and the `state/` symlink:
+# a generated path entering history because nobody wrote the rule.
+#
+# BOTH SPELLINGS, per the ARC 022 precedent above: `scratchpad/` matches a
+# DIRECTORY only, and a provisioned worktree could hold a symlink instead.
+scratchpad
+scratchpad/
