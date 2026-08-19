@@ -371,8 +371,18 @@ audit itself (§0a).
   `check_fill_handler` (0), `check_execution_ledger` (0), and their can-fail suites
   `test_check_reservation_lifecycle` + `test_check_execution_ledger` +
   `test_check_fill_handler` + `test_reservations` + mine → **97 passed**.
-- A frozen file changed, so the FULL suite was run — numbers in the final report.
+- A frozen file changed, so the FULL suite was run:
+  `.venv/bin/python -m pytest scripts/tests -q` → **3269 passed, 3 skipped, 2 xfailed
+  in 2178.14s (0:36:18)** — zero failures.
+- The pre-commit hook suite passed all eight stages on the banked commit: ruff check,
+  ruff format, pylint (10.00/10), mypy, bandit (production), bandit (tests),
+  complexipy, and Stage 3's runtime gate.
 
 ## COMMITS
 
-See `git log --oneline arc-038-b ^f059ea4`.
+| sha | subject |
+|---|---|
+| `cbefac3` | ARC 038 / B: F-B1 — a take whose Plane-1 row is refused no longer leaks the reservation (+ F-B2's ARM TERMINALITY, F-B6's evidence repair, the new suite, and both deliverables) |
+| (this file's final numbers) | ARC 038 / B: the full-suite re-measure banked |
+
+`git status --short` empty on `arc-038-b`.
