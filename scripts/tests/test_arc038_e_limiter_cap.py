@@ -80,6 +80,7 @@ from nixrisk.gate import (  # pylint: disable=import-error
     DeployableCeilingRule,
     GatePass,
     KnobError,
+    PROPOSAL_RULE,
     SurvivalHeadroomRule,
     default_manifest,
 )
@@ -224,31 +225,138 @@ def test_the_MARGIN_CAP_is_BLIND_to_the_STOP_DISTANCE_and_that_is_MEASURED() -> 
 
 _UNPRICEABLE: tuple[float, ...] = (0.0, -1000.0, float("nan"), float("inf"))
 
+#: The subset that actually produced an APPROVE before the guards existed.
+#: ARC 038 Stage 2: measured on the merged tree, not assumed from the set above.
+_FAILS_OPEN: tuple[float, ...] = (0.0, -1000.0)
+
+
+def _denying_layer(mpc: float) -> str:
+    """Which layer refuses this margin, MEASURED on the merged tree.
+
+    ARC 038 Stage 2 merge. Sub-agents A and E found §15 C3's *"missing margin ⇒
+    not-tradable"* independently, in worktrees neither could see, and each fixed
+    it at the layer it had measured: A on the PRE-GATE (`gate._proposal_defect`,
+    finding FA-4) and E inside the two phase-B margin rules
+    (`gate._unpriceable_margin`, finding FE7). On the merged tree they PARTITION
+    the offending values, and the partition is derived here by driving rather
+    than read off either branch's page: A's clause is
+    `not isfinite(mpc) or mpc < 0.0`, so it does NOT catch `0.0`, which reaches
+    the cap; `-1000.0`, `nan` and `inf` never get that far any more.
+
+    This function exists so the controls below assert the DECIDING RULE'S NAME
+    (§7.12 answer 2) against the pathway as merged, instead of against the one
+    branch that wrote them. Neither layer is redundant and the tests below prove
+    it by neutralising each ALONE.
+    """
+    return PROPOSAL_RULE if (not math.isfinite(mpc) or mpc < 0.0) else "aggregate_margin_cap"
+
 
 def test_the_UNPROTECTED_half_really_APPROVES_a_hundred_UNPRICEABLE_contracts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The fail-open must APPEAR, or the guard below is over nothing (§0a).
+    """The fail-open must APPEAR, or the guards below are over nothing (§0a).
 
-    The guard is NEUTRALISED — patched to report every margin priceable — which
-    reproduces the pre-fix code path exactly: the dollar figure is `<= 0`, so
-    `committed + proposed < cap` clears on the cheapest branch.
+    BOTH layers are neutralised — A's pre-gate margin clause and E's rule-level
+    guard — which reproduces the pre-audit code path exactly: the dollar figure
+    is `<= 0`, so `committed + proposed < cap` clears on the cheapest branch and
+    the manifest runs out with nothing having objected.
+
+    Neutralising only E's guard is no longer sufficient on the merged tree, and
+    that is the point: A's `_proposal_defect` clause catches `-1000.0` before the
+    cap is reached, so a control that patched one guard would be reading a deny
+    it did not cause.
+
+    THE SET HERE IS `_FAILS_OPEN`, NOT `_UNPRICEABLE`, AND THE DIFFERENCE IS
+    MEASURED (ARC 038 Stage 2 merge). Only `0.0` and `-1000.0` ever produced an
+    APPROVE. With both guards off, `nan` and `inf` are denied anyway — but NOT
+    for §15 C3's reason: `_largest_fit` computes `int(room // mpc)`, which RAISES
+    on `nan` (caught by `GatePass._dispatch`, so the deny names an interpreter
+    error) and yields a bare `0 contracts fit` on `inf`. `test_the_UNGUARDED_
+    NONFINITE_deny_is_NOT_a_SPEC15_C3_deny` below drives exactly that, because a
+    deny arriving for the wrong reason is §7.12 answer 3 and is the whole reason
+    this guard is not redundant with the arithmetic that precedes it.
     """
     monkeypatch.setattr(gate_mod, "_unpriceable_margin", lambda rule, order: None)
+    monkeypatch.setattr(gate_mod, "_proposal_defect", lambda order: "")
     approved = []
-    for mpc in (0.0, -1000.0):
+    for mpc in _FAILS_OPEN:
         outcome = _pass().evaluate(_order(qty=100, mpc=mpc), _picture(), 1.0)
         approved.append((mpc, outcome.decision, outcome.rule))
     assert all(d is Decision.APPROVE for _, d, _ in approved), (
-        f"with the §15 C3 guard neutralised the pass must APPROVE, reproducing "
+        f"with BOTH §15 C3 guards neutralised the pass must APPROVE, reproducing "
         f"the measured fail-open; got {approved}. If it denies anyway, some other "
-        f"rule is doing this work and the guard below proves nothing"
+        f"rule is doing this work and the guards below prove nothing"
     )
     assert {rule for _, _, rule in approved} == {"manifest_exhausted"}
 
 
-def test_an_UNPRICEABLE_margin_is_DENIED_by_the_CAP_naming_SPEC15_C3() -> None:
-    """FE7, protected half. §15 C3: *missing margin ⇒ not-tradable*."""
+def test_the_UNGUARDED_NONFINITE_deny_is_NOT_a_SPEC15_C3_deny(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Why the guard is not redundant with the arithmetic it sits in front of.
+
+    `nan` and `inf` are refused even with both §15 C3 layers neutralised, so a
+    lazy reading says the guard buys nothing. Driven, the refusals are of the
+    wrong KIND: neither cites the spec clause, and the `nan` one is an
+    interpreter error out of `int(room // mpc)` that `GatePass._dispatch` turns
+    into a deny. Check-contract rule 11 — the reason is the subject, never the
+    decision alone.
+    """
+    monkeypatch.setattr(gate_mod, "_unpriceable_margin", lambda rule, order: None)
+    monkeypatch.setattr(gate_mod, "_proposal_defect", lambda order: "")
+    for mpc in (float("nan"), float("inf")):
+        outcome = _pass().evaluate(_order(qty=100, mpc=mpc), _picture(), 1.0)
+        assert outcome.decision is Decision.DENY, (
+            f"margin_per_contract={mpc!r} did not deny even unguarded: "
+            f"{outcome.decision.name}. Then it belongs in _FAILS_OPEN"
+        )
+        assert "C3" not in outcome.reason, (
+            f"unguarded, margin_per_contract={mpc!r} already denied CITING C3: "
+            f"{outcome.reason[:200]!r}. Then a third protection is doing this "
+            f"work and both guards' non-vacuity here is over nothing"
+        )
+
+
+def test_NEITHER_SPEC15_C3_LAYER_IS_REDUNDANT(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each layer alone, so the merge cannot quietly drop one (Stage 2).
+
+    A merge that kept only ONE of the two fixes would still pass the protected
+    half below — every value would still be denied — while losing real coverage.
+    So each guard is neutralised ALONE and the values that then APPROVE are
+    required to be exactly the ones the OTHER guard does not cover.
+    """
+    with monkeypatch.context() as m:
+        m.setattr(gate_mod, "_unpriceable_margin", lambda rule, order: None)
+        leaked = [
+            mpc
+            for mpc in _UNPRICEABLE
+            if _pass().evaluate(_order(qty=100, mpc=mpc), _picture(), 1.0).decision
+            is Decision.APPROVE
+        ]
+    assert leaked == [0.0], (
+        f"with only E's rule-level guard removed, exactly the values A's pre-gate "
+        f"clause does not cover must leak; got {leaked!r}. A different set means "
+        f"the partition this suite documents is wrong"
+    )
+
+    with monkeypatch.context() as m:
+        m.setattr(gate_mod, "_proposal_defect", lambda order: "")
+        leaked = [
+            mpc
+            for mpc in _UNPRICEABLE
+            if _pass().evaluate(_order(qty=100, mpc=mpc), _picture(), 1.0).decision
+            is Decision.APPROVE
+        ]
+    assert not leaked, (
+        f"with only A's pre-gate removed, E's rule-level guard must still deny "
+        f"every unpriceable margin; got {leaked!r} approved"
+    )
+
+
+def test_an_UNPRICEABLE_margin_is_DENIED_naming_SPEC15_C3_AND_ITS_LAYER() -> None:
+    """FE7, protected half, against the merged pathway."""
     control = _pass().evaluate(_order(qty=100, mpc=1000.0), _picture(), 1.0)
     assert control.decision is Decision.SIZE_DOWN, (
         f"the CONTROL must reach the cap and clamp — a priceable margin that did "
@@ -265,8 +373,13 @@ def test_an_UNPRICEABLE_margin_is_DENIED_by_the_CAP_naming_SPEC15_C3() -> None:
             f"§2:35 makes the Limiter prohibitive — it may not accept a number "
             f"the permissive Allocator supplied without pricing it"
         )
-        assert outcome.rule == "aggregate_margin_cap", outcome.rule
-        assert "§15 C3" in outcome.reason, (
+        assert outcome.rule == _denying_layer(mpc), (
+            f"margin_per_contract={mpc!r} was denied by {outcome.rule!r}, not by "
+            f"{_denying_layer(mpc)!r}. Both §15 C3 layers deny, so a decision "
+            f"arriving from the wrong one means the pathway changed shape and "
+            f"this control is no longer measuring the layer it names"
+        )
+        assert "C3" in outcome.reason, (
             f"denied for the wrong reason: {outcome.reason[:200]!r}. A rule that "
             f"RAISES also denies (GatePass catches it), and that deny names an "
             f"interpreter error rather than the spec clause — rule 11"
