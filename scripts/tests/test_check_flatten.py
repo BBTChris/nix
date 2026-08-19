@@ -163,15 +163,21 @@ def test_an_ONSET_CAUSE_COLLAPSED_TO_CANCEL_fails_and_NAMES_the_wrong_cause(
 ) -> None:
     """SPEC-A7: booking a HALT-onset release under a shared CANCEL erases which
     onset released the capital. The plant forces every onset release via CANCEL."""
+    # ARC 038 / C (FC1): the release is now inside a `try:` in
+    # `cancel_entries_on_onset` — a persistence failure out of `resolve` may not
+    # abort the sweep (§3:172 cancels ALL pending entries) — so the anchor gained
+    # one indent level. `_plant` asserts the anchor appears exactly once, so a
+    # stale anchor reddens LOUDLY rather than planting nothing, which is why this
+    # was caught by the suite and not by a reviewer.
     _plant(
         home,
-        "            resolution = self._ledger.resolve(\n"
-        "                entry.client_order_id, cause, now, reason=cause.value\n"
-        "            )",
-        "            resolution = self._ledger.resolve(\n"
-        "                entry.client_order_id, TerminalPath.CANCEL, now, "
+        "                resolution = self._ledger.resolve(\n"
+        "                    entry.client_order_id, cause, now, reason=cause.value\n"
+        "                )",
+        "                resolution = self._ledger.resolve(\n"
+        "                    entry.client_order_id, TerminalPath.CANCEL, now, "
         "reason=cause.value\n"
-        "            )",
+        "                )",
     )
 
     result = _run(home)

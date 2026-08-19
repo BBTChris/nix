@@ -683,6 +683,9 @@ class LimiterFillSink:
         #: Observables: how many venue events arrived and what they produced.
         self.delivered = 0
         self._outcomes: list[FillOutcome] = []
+        #: ARC 038 / C, FC3. `(client_order_id, exec_id)` -> the stamp this sink
+        #: gave that execution the FIRST time it arrived. See `on_fill`.
+        self._stamped: dict[tuple[str, str], float] = {}
 
     # The six positional fields are §2A's own `on_fill` signature, transcribed.
     # Collapsing them into a struct would redefine a locked seam shape.
@@ -695,7 +698,28 @@ class LimiterFillSink:
         price: float,
         cumulative_qty: int,
     ) -> None:
-        """One §2A broker fill event. Returns nothing — the sink's shape is fixed."""
+        """One §2A broker fill event. Returns nothing — the sink's shape is fixed.
+
+        **ARC 038 / sub-agent C, FINDING FC3: THE STAMP IS PER EXECUTION, NOT PER
+        DELIVERY.** §2A's `on_fill` carries no timestamp, so this sink is the
+        place the report's `ts` is INVENTED — and `ts` is a member of
+        `execution._IDENTITY_FIELDS`, the set two same-key reports must agree on.
+        Calling `self._clock()` on every delivery therefore made an EXACT
+        re-delivery of one venue execution disagree with itself on the one field
+        the venue never sent, and `ExecutionLedger._on_duplicate_key` raised
+        `ContradictoryExecution` naming *"ts: … then …"*. Measured: the identical
+        report replayed with the ORIGINAL stamp returns `DUPLICATE`, so the stamp
+        was the whole defect. §15's *"idempotent exec-report dedup"* and §12.4's
+        reconnect case both make a re-delivery EXPECTED, not exceptional.
+
+        So the stamp is memoised by `(client_order_id, exec_id)`: one execution
+        gets one receipt time, whatever the wire does. The fix is here rather
+        than in `_IDENTITY_FIELDS` on purpose — dropping `ts` from the identity
+        set would discard a real cross-check for a future adapter that carries a
+        genuine venue timestamp, whereas this class is the one that has none to
+        carry. `self.delivered` still counts DELIVERIES, so a re-delivery is
+        still visible as one.
+        """
         order = self._orders.order_for(client_order_id)
         if order is None:
             raise UnapprovedFill(
@@ -706,6 +730,11 @@ class LimiterFillSink:
                 "rather than guessing a direction"
             )
         self.delivered += 1
+        key = (client_order_id, exec_id)
+        ts = self._stamped.get(key)
+        if ts is None:
+            ts = self._clock()
+            self._stamped[key] = ts
         outcome = self._handler.on_fill(
             ExecutionReport(
                 order_id=client_order_id,
@@ -715,7 +744,7 @@ class LimiterFillSink:
                 filled_qty=filled_qty,
                 price=price,
                 cumulative_qty=cumulative_qty,
-                ts=self._clock(),
+                ts=ts,
             )
         )
         self._outcomes.append(outcome)
