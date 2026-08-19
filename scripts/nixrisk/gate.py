@@ -169,6 +169,15 @@ PROPOSAL_RULE = "proposal_shape"
 # value type. The threshold is about behavioural classes that should have been
 # functions; a port declaring one O(1) read is the shape the spec asks for.
 # pylint: disable=too-few-public-methods
+# pylint: disable=too-many-lines
+# ARC 038 / sub-agent E. The module crossed the 1000-line default when FE7/FE8/
+# FE9's guards landed, and the overflow is DOCSTRING, not code: the three guards
+# are eleven lines of `if`, and the measured numbers beside them (which drive
+# produced which APPROVE, against which control) are the part a future arc cannot
+# re-derive from the code. Same rationale, in the same words, as `halt.py:173`,
+# `recovery.py:134`, `supervision.py:162` and `drift_audit.py:1`. Splitting the
+# file to satisfy a line count would put §3's rule set in one module and the
+# executor that partitions it in another.
 
 # ---------------------------------------------------------------------------
 # The O(1) read ports the Phase-A rules stand on (§11.1)
@@ -475,6 +484,38 @@ class PictureCoherenceRule:
         return _clear(self._name)
 
 
+def _unpriceable_margin(rule: str, order: ProposedOrder) -> RuleVerdict | None:
+    """§15 C3's *"missing margin ⇒ not-tradable"*, as a DENY. `None` when priceable.
+
+    ARC 038 / sub-agent E — FE7. Both margin rules compare a DOLLAR figure
+    (`proposed_margin` = `qty × margin_per_contract`) against a cap, so a
+    `margin_per_contract <= 0` prices the order at nothing and clears on the
+    CHEAPEST branch. Measured through the FULL pass: a hundred contracts at `0.0`
+    and at `-1000.0` both came out `APPROVE / manifest_exhausted`, against a
+    control at `1000.0` that came out `SIZE_DOWN / aggregate_margin_cap`. The
+    `<= 0.0` guard in `_largest_fit` is reached only once the cap has ALREADY
+    bitten, so it reads as coverage without being any. §2:35 makes the Limiter
+    **prohibitive** and `ProposedOrder` validates nothing, so the number cannot
+    be taken on the permissive Allocator's word. Non-finite is refused with zero:
+    `NaN` passes every ordering comparison and would otherwise raise inside
+    `int(NaN)`, a deny naming an interpreter error rather than §15 C3.
+    """
+    mpc = order.margin_per_contract
+    if math.isfinite(mpc) and mpc > 0.0:
+        return None
+    return RuleVerdict(
+        rule=rule,
+        decision=Decision.DENY,
+        reason=(
+            f"§15 C3 missing margin ⇒ NOT-TRADABLE: margin_per_contract={mpc!r} "
+            f"for {order.symbol!r} is not a positive finite number, so the "
+            f"proposed margin {order.proposed_margin!r} prices this order at "
+            f"nothing and every cap it meets clears trivially. An order whose "
+            f"margin the Limiter cannot price is one it cannot cap"
+        ),
+    )
+
+
 class AggregateMarginCapRule:
     """§6.5's hard aggregate cap: `committed + proposed < fraction × balance`.
 
@@ -511,6 +552,9 @@ class AggregateMarginCapRule:
 
     def evaluate(self, order: ProposedOrder, picture: FinancialPicture) -> RuleVerdict:
         """Four reads and a comparison. Aggregates arrive precomputed (§11.3)."""
+        unpriceable = _unpriceable_margin(self._name, order)
+        if unpriceable is not None:
+            return unpriceable
         cap = self._fraction * picture.balance
         room = cap - picture.committed
         proposed = order.proposed_margin
@@ -559,11 +603,21 @@ class SurvivalHeadroomRule:
     """
 
     def __init__(self, name: str, port: NetLiqMarkPort, safety_pad: float) -> None:
-        if safety_pad < 0.0:
+        # ARC 038 / sub-agent E — FE9. `isfinite` beside the ordering test: NaN
+        # passes every ordering comparison, so the original `pad < 0.0` ADMITTED
+        # a NaN pad, the floor became NaN, and `net_liq < NaN` is False for every
+        # mark — the floor was silently OFF at every size. Measured: the case
+        # that DENIES at pad 0.25 (net_liq 60 000, floor 63 750) came out APPROVE
+        # at pad NaN. `inf` goes with it — an infinite floor denies everything,
+        # which is §14's anti-lockout invariant in a knob's clothes.
+        if not math.isfinite(safety_pad) or safety_pad < 0.0:
             raise KnobError(
-                f"{name}: safety pad must be >= 0, got {safety_pad!r} — a negative "
-                "pad places the floor BELOW Σ open margin, which is the broker's "
-                "own liquidation trigger and the thing §6.5 exists to stay above"
+                f"{name}: safety pad must be a finite number >= 0, got "
+                f"{safety_pad!r} — a negative pad places the floor BELOW Σ open "
+                "margin, which is the broker's own liquidation trigger and the "
+                "thing §6.5 exists to stay above; a NaN pad makes the floor NaN "
+                "and every comparison against it False, which turns the floor "
+                "OFF while every gate over it stays green"
             )
         self._name = name
         self._port = port
@@ -592,6 +646,24 @@ class SurvivalHeadroomRule:
                     "its subject is unavailable is not proven "
                     "(nix_check_contract.md §17), and the mark is the only reading "
                     "that stands between this account and a broker liquidation"
+                ),
+            )
+        if not math.isfinite(net_liq):
+            # ARC 038 / sub-agent E — FE8. The `fresh` arm catches a STALE or
+            # ABSENT mark; this catches one present, FRESH and not a number.
+            # `NaN < floor` is False, so control fell through to `_clear` —
+            # measured: `(NaN, True)` came out of the full pass as APPROVE. A
+            # separate branch because a NaN is not stale: the feed is alive and
+            # the number is rubbish.
+            return RuleVerdict(
+                rule=self._name,
+                decision=Decision.DENY,
+                reason=(
+                    f"§6.5 net-liq mark is {net_liq!r} — present and fresh, and "
+                    f"not a number. Every comparison against it is False, so the "
+                    f"survival floor would be CLEARED by a reading that says "
+                    f"nothing. Denying: a safety property proven while its "
+                    f"subject is unavailable is not proven (§17)"
                 ),
             )
         projected = picture.sum_open_margin + order.proposed_margin
@@ -649,6 +721,9 @@ class DeployableCeilingRule:
 
     def evaluate(self, order: ProposedOrder, picture: FinancialPicture) -> RuleVerdict:
         """One field read and a comparison."""
+        unpriceable = _unpriceable_margin(self._name, order)
+        if unpriceable is not None:
+            return unpriceable
         proposed = order.proposed_margin
         if proposed <= picture.deployable:
             return _clear(self._name)
