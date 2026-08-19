@@ -158,7 +158,17 @@ CONCURRENT_CEILING: Final[float] = 0.10
 #: share of a commit; a 2x bound would catch the scheduler.
 CONCURRENT_VS_BASELINE_MAX: Final[float] = 10.0
 
-_SITE = "scripts/nixrisk/wal.py:GroupCommitWriter.drain_once (off the hot path)"
+#: The site a FAIL is reported under. ARC 038 / sub-agent F (finding FF6): this
+#: read `scripts/nixrisk/wal.py:GroupCommitWriter.drain_once (off the hot path)`,
+#: and with a 2 ms block PLANTED inside `GatePass.evaluate` the gate went RED
+#: while naming a collaborator the same string calls *off* the path the detail
+#: was about. A constant site cannot point at the subject that moved; naming the
+#: MEASURED path, with the commit path beside it, at least points at the thing
+#: the arms time. CHECK-DEBT D3.406.
+_SITE = (
+    "scripts/nixrisk/gate.py:GatePass.evaluate (the timed hot path) vs "
+    "scripts/nixrisk/wal.py:GroupCommitWriter.drain_once (the commit, off it)"
+)
 
 
 def _import_drill() -> tuple[Any, str]:

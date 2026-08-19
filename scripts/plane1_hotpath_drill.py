@@ -170,6 +170,24 @@ MAX_OVERLAP_STRETCH: Final[int] = 40
 #: repaired here — `wal.py` is shared with three sibling sub-agents in this
 #: stage, and a cursor rework belongs to whoever owns that seam next.
 MAX_WAL_ROWS: Final[int] = 2000
+#: The GIL handoff cadence the concurrent arm runs under. CHECK-DEBT D3.346,
+#: discharged ARC 038 / sub-agent F.
+#:
+#: CHOSEN BY MEASUREMENT, and the losing candidates are recorded because the
+#: obvious move — "as small as possible" — is the wrong one. Eight runs each on
+#: this box, against the gate's TWO ceilings (p99 < 200us, and p99 < 10x the
+#: BASELINE arm's ~10us, i.e. ~100us):
+#:
+#:   * default 0.005 : overlap 6/6 today, but overlap 1-2 on three of six runs
+#:                     once the interval is raised — that IS D3.346's mechanism.
+#:   * 0.0005        : overlap 6/6, max down to 640-1,660us, but p99 reached
+#:                     102.2us — INSIDE the 10x-baseline bound by 3us. Trading
+#:                     a CANNOT_MEASURE flake for a FAIL flake is worse.
+#:   * 0.002         : overlap 8/8, p99 <= 39.4us, but one max at 11,092us.
+#:   * 0.001         : overlap 8/8, p99 16.3-20.4us (the UNMODIFIED arm reads
+#:                     15.3-17.5us, so the cost is ~3us), max 1,161-1,421us
+#:                     against ~5,200us unpinned. Chosen.
+OVERLAP_SWITCH_INTERVAL_S: Final[float] = 0.001
 
 
 class SlowSink:  # pylint: disable=too-few-public-methods
@@ -331,8 +349,23 @@ def concurrent(  # pylint: disable=too-many-locals
 
     thread = threading.Thread(target=persist, name="plane1-persist", daemon=True)
     gate, order, picture = _gate(), _order(), _picture()
-    thread.start()
+    # CHECK-DEBT D3.346, DISCHARGED ARC 038 / sub-agent F. The overlap floor is
+    # not load-sensitive in general — it is sensitive to the GIL HANDOFF CADENCE,
+    # which is what this module's own docstring already names as the convoy's
+    # cause. MEASURED: at `setswitchinterval(0.05)` three of six runs fell to an
+    # overlap of 1-2, below the gate's floor of 3, and were reported
+    # CANNOT_MEASURE. Pinning it here removes the box's cadence from the
+    # measurement: at `OVERLAP_SWITCH_INTERVAL_S` the overlap reached 6 on 8 of
+    # 8 runs and this arm's MAX fell from ~5,200us to 1,161-1,421us. The
+    # direction is the honest one — the hot loop yields MORE often, so its p99
+    # rises by ~3us — the bias is AGAINST a pass, never toward one. See the
+    # constant for the candidates that were measured and rejected. Restored in
+    # the `finally`, and REPORTED in the result so no reader has to discover
+    # that the arm changed a process-global.
+    previous_switch_interval = sys.getswitchinterval()
+    sys.setswitchinterval(OVERLAP_SWITCH_INTERVAL_S)
     samples: list[int] = []
+    thread.start()
     try:
         # The loop runs until BOTH the sample floor and the OVERLAP floor are
         # met. Sizing it by iterations alone is what produced a zero-overlap run
@@ -357,6 +390,7 @@ def concurrent(  # pylint: disable=too-many-locals
     finally:
         stop.set()
         thread.join(timeout=5.0)
+        sys.setswitchinterval(previous_switch_interval)
     commits_during = sink.commits
     rows_enqueued = wal.enqueued
     wal.close()
@@ -367,6 +401,9 @@ def concurrent(  # pylint: disable=too-many-locals
         "commits_during_hot_loop": commits_during,
         "rows_committed": len(sink.rows),
         "rows_enqueued": rows_enqueued,
+        "iterations_driven": index,
+        "overlap_stretch_cap_hit": index >= cap,
+        "switch_interval_s": OVERLAP_SWITCH_INTERVAL_S,
         **_stats(samples),
     }
 

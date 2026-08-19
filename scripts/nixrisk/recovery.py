@@ -422,8 +422,29 @@ class StrategyRegistry:
         return tuple(sorted(self._rows))
 
     def take_in_flight(self, strategy_id: str, client_order_id: str) -> None:
-        """Occupy the one-in-flight lock (§4:210-212)."""
+        """Occupy the one-in-flight lock (§4:210-212). Refuses a SECOND take.
+
+        ARC 038 / sub-agent F (finding FF2). The guard is here and not only in
+        `gate.InFlightLockRule` because the rule READS the lock and this method
+        IS the lock: without it, eight `take_in_flight` calls for one strategy
+        were all accepted, `row.in_flight` was silently re-pointed at the last
+        `client_order_id`, the earlier ones stayed live in `pending` and
+        unreachable through `in_flight()`, and `force_deregister` reported ONE
+        `released_in_flight` for eight takes. §4:210 fixes *one* in-flight
+        action per strategy; a mutator that cannot say no leaves that invariant
+        resting entirely on every caller remembering to ask the gate first.
+        """
         row = self._require(strategy_id)
+        if row.in_flight is not None:
+            raise RecoveryError(
+                f"{_SITE}: {strategy_id!r} already holds the one-in-flight lock "
+                f"with {row.in_flight!r}; refusing to take it for "
+                f"{client_order_id!r}. §4:210 allows ONE in-flight action per "
+                "strategy, and overwriting the lock would leave "
+                f"{row.in_flight!r} pending with nothing naming it — the "
+                "release path reports the lock it can see, not the one it "
+                "replaced"
+            )
         row.in_flight = client_order_id
         row.pending[client_order_id] = "pending"
 
