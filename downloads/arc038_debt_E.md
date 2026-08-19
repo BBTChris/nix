@@ -1,6 +1,8 @@
 # ARC 038 sub-agent E — CHECK-DEBT rows, ready to paste
 
-Reserved id block: **D3.388 – D3.397**. Used: D3.388–D3.395. Unused: D3.396, D3.397.
+Reserved id block: **D3.388 – D3.397**. Which of them are used is the ROW LIST BELOW and is not
+restated here — a count of a growing table, written in the same file as the table, goes stale the
+moment a row lands (directive 3, and it went stale inside this arc when D3.396 was appended).
 Format is the ledger's 6 columns. Owning-module tokens are taken from the ledger's own
 **controlled vocabulary** (`limiter`, `database`, `verify` — note `risk` is NOT a token).
 Do NOT paste rows for FE4, FE7, FE8 or FE9: they were DISCHARGED in this arc.
