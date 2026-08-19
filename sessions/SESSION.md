@@ -4949,3 +4949,25 @@ and D3.420 is its first input, because `§4:210` is the GO-timeout, not the
 one-in-flight lock, and shipped code has been citing it for the lock since ARC 034.
 
 Banked at `a64978a`; ledger 371 -> 375.
+
+## ARC 039 slice 1 — completion record (banked by the 039R close-out run)
+
+**This heading exists because the previous one was invisible to the instrument
+that reads completions.** `nixverify.contract.completed_arcs` matches
+`\bARC (\d{3})\b` over `##`-level headings only. The 039R summary above is headed
+`## ARC 039R — …`, and there is no word boundary between `9` and `R`, so the
+regex found nothing: `completed_arcs` returned a set whose maximum was **38**
+while the log's own prose said ARC 039 slice 1 was complete and banked. The
+write-back named the arc complete in a way no instrument could read.
+
+Nothing above is rewritten — banked evidence is appended to, never edited. This
+heading carries the bare `ARC 039` token so the completion record can be read,
+and the defect it corrects is on the ledger as D3.424: `completed_arcs` accepts
+exactly three digits, while `check_derived_claims._p_check_debt_series_latest`
+was **deliberately widened to `ARC [\w-]+`** for precisely this case (D3.112,
+opened by ARC CRUCIBLE-CALENDAR-INFRA, whose brief withheld a number). Two
+readers of arc identity in one tree, disagreeing about what an arc id looks like,
+and the stricter one silently returns "not complete" rather than "cannot read".
+
+**ARC 039 slice 1 (the minimal Limiter runtime loop) is COMPLETE and BANKED.**
+Limiter badge RED; slice 2 is the GO-timeout (I5).

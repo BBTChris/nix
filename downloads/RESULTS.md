@@ -1,7 +1,7 @@
 # ARC 039R — Limiter slice 1: CLOSE-OUT AND BANK (INTERIOR tier)
 
 **Status: COMPLETE and BANKED.** **Limiter badge: RED** (slice 1 of many).
-Ledger 371 -> 375. HEAD advanced `17bb390` -> `a64978a` -> the write-back commit.
+Ledger 371 -> 376. HEAD advanced `17bb390` -> `a64978a` -> the write-back commit.
 
 ---
 
@@ -235,3 +235,65 @@ GO-timeout, not the one-in-flight lock, and shipped code has been citing it for
 the lock since ARC 034. Also standing against the Limiter: **D3.421** (the daemon
 has no systemd unit, so §12.2's supervision governs a process nothing starts) and
 **D3.422** (the tick cadence is a declared Nix addition with no home in `risks/`).
+
+
+---
+
+## 12. LATE FINDING — the write-back named the arc complete in a way no instrument could read
+
+Caught by the post-write-back re-measure, before the marker.
+
+`nixverify.contract.completed_arcs` reads `##`-level headings with
+`_ARC_IN_HEADING = re.compile(r"\bARC (\d{3})\b")` — exactly three digits with a
+trailing word boundary. The summary heading written in §10's write-back was
+`## ARC 039R — …`, and `9` and `R` are both word characters, so **there is no
+boundary between them and the regex matched nothing**. Measured: `completed_arcs`
+returned a set whose maximum was **38**, while the same file's prose said ARC 039
+slice 1 was complete and banked.
+
+`check_derived_claims._p_check_debt_series_latest` reads the same identity out of
+the same kind of row and was **deliberately widened to `ARC [\w-]+`** by D3.112,
+when ARC CRUCIBLE-CALENDAR-INFRA's brief withheld a number. One reader was taught
+that arc ids are not always three digits; the other was not; nothing connects them.
+
+**The dangerous half is the failure mode, not the miss.** An unmatched heading is
+indistinguishable from an arc that has not completed, so `completed_arcs` returns
+a confident wrong answer exactly where its own docstring insists a non-empty
+`error` (-> CANNOT_MEASURE) is the only honest response to a log it cannot read.
+
+Fixed **additively** — banked evidence is appended to, never rewritten: a second
+`##` heading carrying the bare `ARC 039` token now closes the log. Re-measured:
+`39 in completed_arcs -> True`, `40 -> False`. That is a workaround in the log,
+not a repair of the reader, and the repair is **D3.424** owed to ARC 040 (widen
+the regex to its sibling's vocabulary, plant a can-fail whose subject is a
+*suffixed* heading — a plant using a plain three-digit heading passes on the
+pristine regex and proves nothing — and add a `derived_claims.json` claim pairing
+the two readers, which have never been compared).
+
+**Ledger 375 -> 376.** The 375 series row is **struck through, not edited**, and a
+376 row appended, per the table's own append-only convention. Re-measured with the
+gate's own CLI in a fresh process: `pass: 13/13`, `check_debt_open_items=376
+[derived:ledger_rows=376, stated:series_table_latest_row=376]`, exit 0.
+
+**This is also why the guard-owner prediction is a real test rather than a
+vacuous one.** Until this fix, ARC 039 was not in the completion record at all, so
+`guard_owner_defect` could not have fired on any owner. The prediction in §13 is
+made against a tree where ARC 039 *is* recorded complete and the exclusions are
+owned by ARC 040, which is not.
+
+---
+
+## 13. Post-write-back re-measure — prediction, then result
+
+**Predicted before running** (banked in commit `7375769`, and re-stated here after
+D3.424 moved the ledger): naming ARC 039 complete must move **no** verdict.
+`check_artifact_gate_coverage` stays **GUARDED** because all eight exclusions were
+re-pointed to ARC 040 first and ARC 040 is not complete. Predicted aggregate:
+
+    88 passed | 2 failed | 2 cannot measure | 0 skipped | 1 guarded — exit 1
+
+i.e. the pre-write-back 87/3/2/0/1 with `check_derived_claims` moved FAIL -> pass.
+**If the guarded count comes back 0, the re-point failed and this prediction is
+what says so.**
+
+RESULT: see §14.
