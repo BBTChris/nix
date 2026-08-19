@@ -4971,3 +4971,30 @@ and the stricter one silently returns "not complete" rather than "cannot read".
 
 **ARC 039 slice 1 (the minimal Limiter runtime loop) is COMPLETE and BANKED.**
 Limiter badge RED; slice 2 is the GO-timeout (I5).
+
+### ARC 039 — post-write-back re-measure (banked after the write-back, before the marker)
+
+Run against the tree where `completed_arcs` **does** record ARC 039 complete
+(39 in the set, 40 not), so the D3.40/D3.144 guard-owner transition actually
+fired rather than being masked by D3.424's too-strict regex.
+
+**The prediction, banked at `7375769` before this ran:** naming ARC 039 complete
+must move no verdict; `check_artifact_gate_coverage` stays GUARDED because all
+eight exclusions were re-pointed to ARC 040 first; predicted
+`88 passed | 2 failed | 2 cannot measure | 0 skipped | 1 guarded — exit 1`.
+
+**Measured: `88 passed | 2 failed | 2 cannot measure | 0 skipped | 1 guarded —
+exit 1`. The prediction held on every term.**
+
+- `check_artifact_gate_coverage` **GUARDED**, `EXCLUDED -> ARC 040` — guarded
+  count **1, not 0**. The guard survived because it was re-pointed before the
+  write-back, not after.
+- `check_derived_claims` moved **FAIL -> [ok]**: 87 passed -> 88, 3 failed -> 2.
+- The two survivors are the standing baseline FAILs and are unchanged:
+  `check_ibgateway_service` (ECONNREFUSED on 127.0.0.1:4002) and
+  `check_uncalled_entry_points` (25 unadmitted entry points plus one drifted
+  baseline bucket).
+- Both cannot-measures remain the unreachable gateway, correctly refused rather
+  than passed.
+
+Ledger 371 -> 376. Limiter badge RED. Slice 2 is the GO-timeout (I5).

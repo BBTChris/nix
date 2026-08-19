@@ -296,4 +296,27 @@ i.e. the pre-write-back 87/3/2/0/1 with `check_derived_claims` moved FAIL -> pas
 **If the guarded count comes back 0, the re-point failed and this prediction is
 what says so.**
 
-RESULT: see §14.
+**RESULT — the prediction held on every term:**
+
+    88 passed | 2 failed | 2 cannot measure | 0 skipped | 1 guarded — exit 1
+
+| term | predicted | measured | |
+|---|---|---|---|
+| passed | 88 | 88 | held |
+| failed | 2 | 2 | held |
+| cannot measure | 2 | 2 | held |
+| skipped | 0 | 0 | held |
+| **guarded** | **1** | **1** | **held — the guard survived** |
+| exit | 1 | 1 | held |
+
+`check_artifact_gate_coverage`: **GUARDED**, `EXCLUDED -> ARC 040`. The guarded
+count is **1, not 0**, which is the whole point of re-pointing before the
+write-back rather than after. `check_derived_claims` moved **FAIL -> [ok]**
+(87 passed -> 88, 3 failed -> 2). The two survivors are the standing baseline
+FAILs, unchanged: `check_ibgateway_service` and `check_uncalled_entry_points`.
+Both cannot-measures remain the unreachable gateway, correctly refused rather
+than passed.
+
+This was run against the tree where `completed_arcs` **does** record ARC 039
+complete — so the guard-owner transition genuinely fired and was not masked by
+D3.424.
