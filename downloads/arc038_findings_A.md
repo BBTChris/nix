@@ -673,10 +673,11 @@ Interpreter `/home/bbt/nix-wt-arc-038-a/.venv/bin/python` (CPython 3.14.4), `-p 
 | run | result |
 |---|---|
 | baseline, Limiter selection, BEFORE any change | **1198 passed, 1 skipped, 2064 deselected** (304s) |
-| FULL suite AFTER the changes (frozen files were touched, so the full suite is owed) — run by the pre-commit runtime gate on the committed tree | **3272 passed, 3 skipped, 2 xfailed** in 2224.28s (0:37:04); `RUNTIME-GATE scope: in_scope_files=368 uncovered=0 drift=0 alien_env=0 SELECTED=3277` / `RUNTIME-GATE verdict: MEASURED-PASS` |
+| FULL suite on the COMMITTED tree (`a89342a`) — frozen files were touched, so the full suite is owed | **3273 passed, 3 skipped, 2 xfailed** in 2197.40s (0:36:37) |
+| FULL suite one commit-attempt earlier, run by the pre-commit runtime gate itself | **3272 passed, 3 skipped, 2 xfailed** in 2224.28s (0:37:04); `RUNTIME-GATE scope: in_scope_files=368 uncovered=0 drift=0 alien_env=0 SELECTED=3277` / `RUNTIME-GATE verdict: MEASURED-PASS`. That attempt did NOT land — two hooks failed and both failures were mine: `complexipy` at `_reach`, and Stage 3's *files were modified by this hook* because I edited the findings file WHILE the hook was running. Recorded rather than quietly retried; the +1 between the two runs is this arc's own race control |
 | `scripts/tests/test_arc038_a_gate_wall.py` (new) | **15 passed** |
 | the four fixes REVERTED via `git stash push -- scripts/nixrisk/*.py`, same suite | **14 failed, 1 passed** — the one pass is the reach-set control, which is independent of these repairs. This is the can-fail proof for the whole file, and it was run THREE times (after the initial repairs, after the `_executor` refactor, and after the `_classify` split) so a later edit could not have quietly removed a control's teeth |
-| gates, all exit 0 | `check_limiter_gate`, `check_limiter_seam`, `check_order_path_bans`, `check_blackout_windows`, `check_halt`, `check_flatten`, `check_reservation_lifecycle` |
+| gates on the COMMITTED tree, all exit 0 | `check_limiter_gate`, `check_limiter_seam`, `check_order_path_bans`, `check_blackout_windows`, `check_halt`, `check_flatten`, `check_reservation_lifecycle` |
 
 Lint on every changed file, using the PINNED pre-commit environments (not the venv):
 `ruff check` **All checks passed**, `ruff format --check` **7 files already formatted**,
@@ -686,3 +687,23 @@ Lint on every changed file, using the PINNED pre-commit environments (not the ve
 
 
 ## COMMITS
+
+| sha | subject |
+|---|---|
+| `a89342a` | ARC 038 sub-agent A (THE GATE WALL): five Limiter defects reproduced, four discharged, and one existing gate measured GREEN over one of them |
+| `<this file's own update>` | ARC 038 A: the post-commit re-measure — the full suite on the committed tree, and the two hook failures that were mine |
+
+One substantive commit rather than one per finding, and the reason is the box:
+`pre-commit`'s Stage 3 runs the FULL suite on every commit and took 37 minutes under
+six sibling worktrees committing at once, so five commits would have been three
+hours of contention for no extra evidence. Every finding is separable by path — the
+FILES I CHANGED table above maps each one — and the commit message enumerates all six.
+
+`git status --short` is EMPTY on `a89342a`, and `git ls-tree -r HEAD --name-only`
+contains all nine paths this sub-agent touched:
+`checks/check_limiter_gate.py`, `downloads/arc038_debt_A.md`,
+`downloads/arc038_findings_A.md`, `scripts/nixrisk/blackout.py`,
+`scripts/nixrisk/flatten.py`, `scripts/nixrisk/gate.py`, `scripts/nixrisk/halt.py`,
+`scripts/tests/test_arc038_a_gate_wall.py`, `scripts/tests/test_check_limiter_gate.py`.
+The `scratch_a/` exploratory drivers were removed at the end of the arc; each is
+named beside the pytest control that carries its drive forward.
