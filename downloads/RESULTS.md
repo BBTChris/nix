@@ -156,3 +156,44 @@ behind I8, which is slice 3.
 directions → gated with a demonstrated FAIL. **Eleven invariants remain open** from 038's pass 1.
 **Slice 3 targets I7 (commit-before-validate torn state) + I8 (sole-writer enforcement)** — the next
 blockers, and I8 is what unblocks D3.425.
+
+---
+
+### POST-WRITE-BACK RE-MEASURE — the prediction held on every term
+
+The D3.40/D3.144 guard-owner transition fires the moment `SESSION.md` names the arc complete, so the
+re-measure is ORDERED after the write-back, not waived. The prediction was stated BEFORE the run:
+
+| term | predicted | MEASURED at `a70a2c4` | |
+|---|---|---|---|
+| verify.py | `89 \| 2 \| 2 \| 0 \| 1`, exit 1 | `89 passed \| 2 failed \| 2 cannot measure \| 0 skipped \| 1 guarded`, exit 1 | **HELD** |
+| the guard | `check_artifact_gate_coverage` GUARDED, owner **ARC 041** | `[GRD] ... EXCLUDED -> ARC 041` | **HELD — it survived because it was re-pointed BEFORE the write-back** |
+| the new entry points | `go_timeout_from_config` and `release_in_flight` do NOT appear as uncalled | 0 occurrences in the run | **HELD — both have shipped call sites** |
+
+`check_go_timeout` is the 89th check and it reports `[ok]`. The two FAILs are the standing pair —
+`check_ibgateway_service` (the tap; code-independent) and `check_uncalled_entry_points` — and the two
+cannot-measures are the standing IB-gateway pair. **88 → 89 passed is the whole delta**, which is the
+shape a one-invariant slice should leave.
+
+### Interpreter, stated
+
+Every measurement in this document: `/home/bbt/nix/.venv/bin/python` → `/usr/bin/python3.14`
+(Python 3.14.4). Canonical path `/home/bbt/nix`, absolute.
+
+### Two OPS findings from this arc's own run, recorded rather than absorbed
+
+* **F6/F7 — the testmon sqlite DB was corrupted by TWO concurrent commits.** A `git commit` whose
+  runtime gate escalated to the full ~3252-test pass was still running after 26 minutes; a bounded
+  poll returned, the run was believed finished, and a SECOND commit was launched on top of it. Two
+  testmon writers on one sqlite file produced
+  `sqlite3.DatabaseError: database disk image is malformed`, and the gate reported that INTERNALERROR
+  as `FAIL - 1 of 3252 selected test(s) failed`. The orphan was killed **by PID from its own process
+  tree** (never by pattern — the 038/039/039R rule), `integrity_check` came back `ok`, no
+  `index.lock` was left, and the commit then passed every hook including the full runtime gate. The
+  general lesson is the same class as the three pipeline kills: **a bounded poll that returns is not
+  evidence that the thing it was polling has stopped.**
+* The arc **ran ~2.5x its ~1h target**, and the overrun is almost entirely the commit gate: a change
+  to `scripts/limiterd.py` selects no test (it is on the runtime gate's own `uncovered` list), so the
+  gate escalates to a full pass — which is exactly the cost the INTERIOR tier defers everywhere else.
+  Worth the operator's attention: the tier can defer the *close-out* pytest but cannot defer the
+  *commit*.
