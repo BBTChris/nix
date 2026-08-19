@@ -401,7 +401,33 @@ class ReservationLedger:
     # -- internals ----------------------------------------------------------
 
     def _book(self, order: ProposedOrder, margin: float, now: float) -> Reservation:
-        """Mint, store, increment Σ, and write the §12.10 Plane-1 row."""
+        """Mint, store, increment Σ, and write the §12.10 Plane-1 row.
+
+        **ALL-OR-NOTHING, and that is a MEASURED repair (ARC 038 / B, F-B1).**
+        `_emit` can raise: the shipped Plane-1 sink is `nixrisk.wal.Plane1Wal`,
+        whose `enqueue` raises `DiskCritical` when the WAL is disk-critical or the
+        append itself fails, and §12.4 makes that a real condition rather than a
+        hypothetical one. `gate.py::GatePass._settle` wraps this call in a blanket
+        `except Exception` and turns any failure into a DENY — so a `take` that
+        mutated the stores and THEN raised left a reservation held for an order
+        that is never sent, and no terminal event can ever release it. Driven
+        against a real `Plane1Wal` under a real `RLIMIT_FSIZE` refusal (EFBIG,
+        errno 27): three DENIED orders holding 12000.0 of margin permanently,
+        with `audit()` reporting drift 0.0 the whole time, because a LEAK breaks
+        no arithmetic identity and §11.7's reconcile is structurally blind to one.
+
+        The undo restores Σ by ASSIGNMENT rather than by `-= margin`: `+=` then
+        `-=` over binary floats does not return to the same bits, and the repair
+        for a leak must not introduce the drift §11.7 exists to watch.
+
+        The reservation_id counter is NOT rewound. Ids are identities, not a dense
+        sequence, and re-minting a withdrawn id would make two different refusals
+        indistinguishable in §9's record.
+
+        This is the TAKE direction ONLY. `_settle`'s deliberate
+        mutate-then-record order — releasing capital even when the record fails —
+        is CHECK-DEBT D3.53's ruling and is untouched here.
+        """
         reservation = Reservation(
             reservation_id=f"RSV-{next(self._seq):08d}",
             client_order_id=order.client_order_id,
@@ -413,8 +439,15 @@ class ReservationLedger:
         )
         self._live[reservation.reservation_id] = reservation
         self._by_order[order.client_order_id] = reservation.reservation_id
+        sigma_before = self._sigma
         self._sigma += margin
-        self._emit(EventKind.RESERVATION_TAKEN, reservation, "approved", now)
+        try:
+            self._emit(EventKind.RESERVATION_TAKEN, reservation, "approved", now)
+        except BaseException:
+            del self._live[reservation.reservation_id]
+            del self._by_order[order.client_order_id]
+            self._sigma = sigma_before
+            raise
         return reservation
 
     def _settle(

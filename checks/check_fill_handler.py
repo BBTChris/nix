@@ -167,6 +167,7 @@ from __future__ import annotations
 import ast
 import importlib
 import inspect
+import math
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -291,6 +292,11 @@ _ALT_ORDERS: tuple[tuple[str, str, str, int, int, float, int], ...] = (
 #: which is dollars per tick and is read from the repository's own config.
 _TICKS = {"ES": 0.25, "NQ": 0.25, "CL": 0.01, "GC": 0.10}
 _MARGIN = {"ES": 500.0, "NQ": 1000.0, "CL": 1700.0, "GC": 900.0}
+#: ARM TERMINALITY's comparison slack on ONE Σ step. Three orders of magnitude
+#: below `reservations.MIN_MARGIN` (1e-3), so it cannot swallow a release of the
+#: smallest admissible reservation, and far above the ~1e-11 an incremental float
+#: aggregate carries at these magnitudes. Not tuned against an observed run.
+_SIGMA_EPS = 1e-6
 _BALANCE = 250_000.0
 _FRACTION = 0.70
 
@@ -324,6 +330,11 @@ MIN_CANCELS = 1
 #: Distinct stop distances in the population. Below this a wrong join publishes
 #: the right number by luck.
 MIN_DISTINCT_DISTANCES = 2
+#: Σ-reservation steps observed FALLING by exactly one reserved margin (ARM
+#: TERMINALITY). Below three the trajectory cannot distinguish "each fill released
+#: its own reservation" from "the ledger emptied itself at some point", and a
+#: trajectory whose every step is 0.0 measures nothing at all.
+MIN_SIGMA_STEPS = 3
 #: Class->port pairs held against the frozen Protocols with a signature compare.
 #: Today 3 (the fourth pairing in `_CONFORMANCE` is one that must NOT hold, and
 #: it is counted nowhere).
@@ -387,6 +398,11 @@ class Tally:  # pylint: disable=too-many-instance-attributes
     cap_contributors: int = 0
     steps_seen: tuple[str, ...] = ()
     disagreements: int = 0
+    #: ARM TERMINALITY: Σ steps that fell by exactly the released reservation's
+    #: margin, and the total margin proven returned. Both DERIVED from the real
+    #: ledger's own `total_reserved()`, never from the handler's report.
+    sigma_steps: int = 0
+    sigma_returned: float = 0.0
     #: Verbs of `broker_seam.OrderEventSink` the shipped sink carries, and how
     #: many that Protocol declares. BOTH DERIVED — the wiring gap is the fact a
     #: reader of this green most needs, so it is measured, never typed.
@@ -416,6 +432,9 @@ class Drive:  # pylint: disable=too-many-instance-attributes
     origins: Any = None
     approvals: Any = None
     reservations: Any = None
+    #: ARM TERMINALITY's Σ readings, taken from the real ledger BEFORE each fill
+    #: and once after the last. Read from `total_reserved()`, never computed here.
+    sigma_trail: list[float] = field(default_factory=list)
     #: `client_order_id -> FillOutcome` for the FIRST fill of each order.
     outcomes: dict[str, Any] = field(default_factory=dict)
     #: `client_order_id -> the stop book's answer BEFORE that order's first fill`.
@@ -1045,6 +1064,238 @@ def _cancel_defects(
 
 
 # ==========================================================================
+# ARM TERMINALITY — §14: EVERY RESERVATION REACHES EXACTLY ONE TERMINAL RELEASE
+#
+# ADDED ARC 038 / B, and added because this gate was GREEN OVER THE PLANT.
+# Measured: with `IocRemainder.release_remainder`'s call to
+# `ReservationLedger.resolve` skipped for every partial fill — the IOC cancel
+# still firing, so `_cancel_defects` saw nothing wrong — this gate PASSED,
+# reported `RELEASE_REMAINDER` among the steps observed, and its docstring went
+# on claiming "the reservation is released". `FillStep.RELEASE_REMAINDER` is
+# appended by `fills.py::FillHandler.on_fill` unconditionally, so the step tuple
+# is a description of that function's SOURCE and not of the ledger's state; no
+# arm here read `total_reserved()`, `outstanding()`, `released()` or
+# `IocRemainder.releases`. A leak breaks no arithmetic identity — `audit()`
+# reports drift 0.0 over one — so nothing else was going to catch it either.
+#
+# THE TRAJECTORY, not the drain. `_run_drive` interleaves approve/fill/approve/
+# fill, so Σ is 0.0 after every fill and a trajectory read off it would be
+# `0 == 0` at every step: exactly the vacuity `debug.md` §7.12 asks about. This
+# arm therefore runs its OWN drive that approves all four orders FIRST and then
+# fills them one at a time, so Σ descends 12900 -> 10900 -> 7900 -> 4500 -> 0
+# and each step is one specific margin. A leak leaves Σ high; a double release
+# drops it too far, or below zero. Asserting only "Σ ended at 0" would see the
+# first and be blind to the second, which is the asymmetry `reservations.py`'s
+# own module docstring is about.
+# ==========================================================================
+
+
+def _expected_margin(row: tuple[Any, ...]) -> float:
+    """The margin `_approve` reserves for one population row. Derived here."""
+    _coid, _strategy, symbol, qty, _stop, _price, _filled = row
+    return float(qty) * _MARGIN[symbol]
+
+
+def _run_terminality(loaded: Loaded) -> tuple[Drive | None, Finding | None]:
+    """Approve EVERY order, then fill them one at a time. Σ falls per fill."""
+    drive = _build(loaded)
+    try:
+        for row in _ORDERS:
+            _approve(drive, row)
+        for row in _ORDERS:
+            drive.sigma_trail.append(drive.reservations.total_reserved())
+            _feed(drive, row)
+        drive.sigma_trail.append(drive.reservations.total_reserved())
+    except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
+        return None, Finding(
+            f"{HANDLER}:FillHandler.on_fill[terminality]",
+            (
+                f"approving every order before filling any raised "
+                f"{type(exc).__name__}: {exc}. Four approved orders with four "
+                "taken reservations is §3's ordinary state — the Limiter holds up "
+                "to five — so refusing it is a defect in the subject"
+            ),
+        )
+    return drive, None
+
+
+def _sigma_trajectory_defects(drive: Drive, tally: Tally) -> list[Finding]:
+    """(1) Each fill must return EXACTLY its own reservation, and no more.
+
+    The trajectory, not the drain. A leak leaves the step at 0.0; a double
+    release makes it larger than the reservation. Asserting only "Σ ended at 0"
+    would see the first and be blind to the second, which is the asymmetry
+    `reservations.py`'s own module docstring is about.
+    """
+    defects: list[Finding] = []
+    trail = drive.sigma_trail
+    for index, row in enumerate(_ORDERS):
+        coid = row[0]
+        site = f"{HANDLER}:IocRemainder.release_remainder[{coid}/sigma]"
+        if index + 1 >= len(trail):
+            defects.append(Finding(site, "the Σ trail is short — no step to read"))
+            continue
+        expected = _expected_margin(row)
+        fell = trail[index] - trail[index + 1]
+        if abs(fell - expected) > _SIGMA_EPS:
+            defects.append(
+                Finding(
+                    site,
+                    f"the fill moved Σ from {trail[index]!r} to "
+                    f"{trail[index + 1]!r} — by {fell!r}, against the "
+                    f"{expected!r} this order reserved. §14: every reservation "
+                    "reaches EXACTLY ONE terminal release. A step of 0.0 is a "
+                    "LEAK (capital committed to an order that is done); a step "
+                    "larger than the reservation is a DOUBLE RELEASE, which lets "
+                    "§3's Phase B approve against capital already spent",
+                )
+            )
+            continue
+        tally.sigma_steps += 1
+        tally.sigma_returned += fell
+    return defects
+
+
+def _release_record_defects(drive: Drive) -> list[Finding]:
+    """(2) The LEDGER's own records: one RELEASED row per order, under FILL."""
+    seam = drive.loaded.seam
+    released = drive.reservations.released()
+    site_base = f"{HANDLER}:IocRemainder.release_remainder"
+    counts: dict[str, int] = {}
+    for record in released:
+        counts[record.client_order_id] = counts.get(record.client_order_id, 0) + 1
+    defects: list[Finding] = []
+    for row in _ORDERS:
+        coid = row[0]
+        site = f"{site_base}[{coid}/records]"
+        if counts.get(coid, 0) != 1:
+            defects.append(
+                Finding(
+                    site,
+                    f"the ledger holds {counts.get(coid, 0)} RELEASED record(s) "
+                    f"for {coid}, not exactly one (§14)",
+                )
+            )
+            continue
+        record = next(r for r in released if r.client_order_id == coid)
+        if record.released_via is not seam.TerminalPath.FILL:
+            defects.append(
+                Finding(
+                    site,
+                    f"{coid} was released via {record.released_via} — §3 releases "
+                    "a filled entry's reservation under FILL, and booking another "
+                    "cause puts the wrong one in §9's record of money truth",
+                )
+            )
+    return defects
+
+
+def _reconcile_defects(drive: Drive) -> list[Finding]:
+    """(3) §11.7's reconcile and (4) the component's OWN observables.
+
+    The reconcile is COMPUTED HERE from the ledger's two independent figures
+    rather than read off `LedgerAudit`. Two reasons, and neither is taste. First,
+    a gate that asks the subject whether it agrees with itself has asked the
+    subject; the incremental aggregate (`total_reserved()`) and the ground-truth
+    scan (an `fsum` over `outstanding()`) are the two different pieces of
+    arithmetic §11.7 requires, and doing the subtraction here means the subject
+    cannot report a clean drift over a dirty one. Second, `drive.reservations` is
+    typed `Any`, so a `.audit()` call here would be credited by
+    `check_uncalled_entry_points` to EVERY class in the tree carrying a public
+    `audit` — measured: it silently moved `execution.py::ExecutionLedger.audit`
+    out of that gate's baseline, in a module this gate does not touch. A module
+    must not change the population a different instrument is measuring
+    (`drift_audit.py::_is_material`).
+    """
+    ledger = drive.reservations
+    remainder = drive.remainder
+    site_base = f"{HANDLER}:IocRemainder.release_remainder"
+    defects: list[Finding] = []
+    outstanding = ledger.outstanding()
+    if outstanding:
+        defects.append(
+            Finding(
+                f"{site_base}[outstanding]",
+                f"{len(outstanding)} reservation(s) still TAKEN after every "
+                f"order was filled: "
+                f"{[(r.reservation_id, r.client_order_id) for r in outstanding]} "
+                "— a LEAK, and §11.7's reconcile is blind to it because a leaked "
+                "row sums into the aggregate and the full scan identically",
+            )
+        )
+    scanned = math.fsum(res.margin for res in outstanding)
+    drift = ledger.total_reserved() - scanned
+    if abs(drift) > _SIGMA_EPS:
+        defects.append(
+            Finding(
+                f"{site_base}[reconcile]",
+                f"§11.7 reconcile after the drive: incremental Σ "
+                f"{ledger.total_reserved()!r} vs a full fsum scan of the TAKEN "
+                f"set {scanned!r}, drift {drift!r} — a DOUBLE RELEASE decrements "
+                "Σ twice for one commitment and shows up here as exactly this "
+                "disagreement, which is the direction that lets §3's Phase B "
+                "approve against capital already spent",
+            )
+        )
+    if len(ledger.released()) != len(_ORDERS):
+        defects.append(
+            Finding(
+                f"{site_base}[reconcile]",
+                f"the ledger booked {len(ledger.released())} release(s) for "
+                f"{len(_ORDERS)} filled order(s)",
+            )
+        )
+    # `FillStep.RELEASE_REMAINDER` is appended by `on_fill` unconditionally, so a
+    # step tuple must never stand in for a release.
+    if int(remainder.releases) != len(_ORDERS):
+        defects.append(
+            Finding(
+                f"{site_base}[releases]",
+                f"IocRemainder.releases is {remainder.releases} over "
+                f"{len(_ORDERS)} fills, each of which reported "
+                "FillStep.RELEASE_REMAINDER — the step is appended by on_fill "
+                "unconditionally, so it describes that function's source and not "
+                "the ledger's state",
+            )
+        )
+    if int(remainder.refused_releases) != 0:
+        defects.append(
+            Finding(
+                f"{site_base}[refusals]",
+                f"{remainder.refused_releases} terminal event(s) were REFUSED "
+                "over a drive in which every order is filled exactly once — a "
+                "refusal here means the reservation was already terminal, which "
+                "is the double-release attempt §14 forbids",
+            )
+        )
+    if int(remainder.over_fills) != 0:
+        defects.append(
+            Finding(
+                f"{site_base}[over_fills]",
+                f"{remainder.over_fills} over-fill(s) in a drive that fills no "
+                "order beyond its requested size",
+            )
+        )
+    return defects
+
+
+def terminality_defects(drive: Drive, tally: Tally) -> list[Finding]:
+    """§14 over the SHIPPED fill path: one release each, and Σ proves it.
+
+    Three parts rather than one function, and the split is by QUESTION: the Σ
+    trajectory, the ledger's own release records, and §11.7's reconcile plus the
+    component's own counters. Each answers §14 from a different side, and a
+    single leak or a single double release must show up in at least two of them
+    — which is what makes a green here more than one arm's opinion.
+    """
+    return (
+        _sigma_trajectory_defects(drive, tally)
+        + _release_record_defects(drive)
+        + _reconcile_defects(drive)
+    )
+
+
+# ==========================================================================
 # ARM ONCE — a successive partial fill does NOT re-convert the stop (§4)
 # ==========================================================================
 
@@ -1469,6 +1720,11 @@ def _floor_refusal(tally: Tally) -> CheckResult | None:
         (tally.full_sequences, MIN_FULL_SEQUENCES, "full three-step sequence(s)"),
         (tally.partial_orders, MIN_PARTIAL_ORDERS, "order(s) filled SHORT"),
         (tally.cancels, MIN_CANCELS, "IOC cancel(s) observed"),
+        (
+            tally.sigma_steps,
+            MIN_SIGMA_STEPS,
+            "Σ step(s) proven to fall by exactly one reserved margin",
+        ),
         (tally.conformance_pairs, MIN_CONFORMANCE_PAIRS, "class->port pair(s) driven"),
         (
             len(set(tally.cap_answers)),
@@ -1503,7 +1759,11 @@ def _evidence(tally: Tally) -> str:
         f"stop distance(s) each driven through the whole fill path; "
         f"{tally.conformance_pairs} class->port pair(s) held against the frozen "
         f"Protocols with a parameter-name comparison; "
-        f"{tally.disagreements} venue-vs-ledger cumulative disagreement(s). "
+        f"{tally.disagreements} venue-vs-ledger cumulative disagreement(s); "
+        f"§14 over the shipped path: {tally.sigma_steps} Σ step(s) each falling by "
+        f"exactly the reserved margin, {tally.sigma_returned:.2f} of margin proven "
+        f"returned, every figure read from the real ReservationLedger's own "
+        f"total_reserved/outstanding/released plus an fsum re-scan computed here. "
         "UNBOUND: nothing here proves a live broker event reaches this handler — "
         f"LimiterFillSink carries {tally.sink_verbs} of "
         f"{BROKER_SEAM}'s OrderEventSink's {tally.seam_verbs} verb(s), so it "
@@ -1545,7 +1805,7 @@ def _fill_tally(drive: Drive, expected: tuple[str, ...], tally: Tally) -> None:
 # one exit would either lose the reason or hide it in a flag a caller has to
 # decode. `debug.md` §7.12 asks what would make this gate pass while measuring
 # nothing, and every one of these returns is an answer to it.
-def _measure(  # pylint: disable=too-many-return-statements
+def _measure(  # pylint: disable=too-many-return-statements,too-many-locals
     home: Path,
 ) -> tuple[list[Finding], Tally | None, str]:
     """Run every arm. Returns `(defects, tally, refusal_detail)`."""
@@ -1571,6 +1831,10 @@ def _measure(  # pylint: disable=too-many-return-statements
     defects += ordering_defects(drive)
     defects += causation_defects(drive)
     defects += partial_defects(drive)
+    term, term_finding = _run_terminality(loaded)
+    if term is None:
+        return [term_finding] if term_finding else [], None, ""
+    defects += terminality_defects(term, tally)
     defects += once_defects(drive)
     defects += cap_defects(drive, alts, config, tally)
     defects += conformance_defects(drive, tally)

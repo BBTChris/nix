@@ -1072,8 +1072,12 @@ def _evidence(tally: Tally) -> str:
         f"and §3's reconcile in both; position proven to read the keyed store "
         f"and nothing else. Reference figures are hand-computed AND "
         f"independently re-derived here, never read from the subject. UNBOUND: "
-        f"drives the LEDGER, never the Limiter's broker-event handlers, which do "
-        f"not exist yet (the D3.51 residual, one module over)"
+        f"drives the LEDGER, never the Limiter's broker-event handlers. The FILL "
+        f"handler now exists (nixrisk/fills.py) and is judged by "
+        f"check_fill_handler; nothing anywhere handles a reject or a "
+        f"pending-timeout, and this ledger's ExecutionReport carries no status "
+        f"field on which one could arrive (the D3.51 residual, one module over, "
+        f"now bounded by CHECK-DEBT D3.358 — measured ARC 038/B)"
     )
 
 
