@@ -201,3 +201,29 @@ was typed.
 `/tmp/pytest-of-bbt` removed at kickoff. The three drop-in duplicates and the CLAUDE.md block source
 removed from `downloads/` (the brief stays). Scratch under `scratchpad/` and the session scratchpad;
 both gitignored.
+
+---
+
+## 12. POST-WRITE-BACK RE-MEASURE — banked at `1492beb`
+
+`verify.py` over the merged tree: **89 passed | 3 failed | 3 cannot measure | 0 skipped | 1 guarded,
+exit 1.**
+
+| | passed | failed | cannot | skipped | guarded |
+|---|---|---|---|---|---|
+| ARC 041 banked (`41299aa`) | 89 | 2 | 2 | 0 | 1 |
+| this arc's baseline (same commit, clean tree) | 86 | 5 | 2 | 0 | 1 |
+| pre-commit, on trunk | 88 | 4 | 3 | 0 | 1 |
+| **post-write-back (`1492beb`)** | **89** | **3** | **3** | **0** | **1** |
+
+`86 → 89 passed`: the inode gate's new PASS, plus `check_price_ring` and
+`check_untracked_attribution` recovering — the first when the `/dev/shm` literal left `downloads/`,
+the second when the three new files stopped being untracked. `5 → 3 failed`: the same two
+recoveries. `2 → 3 cannot-measure`: `check_arc_status_contract`, exactly as the brief predicted.
+
+Three standing reds, none of them this arc's: `check_ibgateway_service` (tap, ECONNREFUSED),
+`check_uncalled_entry_points` (standing since ARC 041), and `check_monitor_tui` — **already red at
+this arc's baseline, at the commit ARC 041 banked green** — now D3.431.
+
+The emitter's STALL arm fired for real during this run, unplanted: three pulses against a frozen
+progress file produced `STALL WARNING: no motion in 3 intervals`.

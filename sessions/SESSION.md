@@ -5520,3 +5520,32 @@ audits the PREVIOUS arc and never the running one.
 pytest's documented 3 — the retention setting is not being honoured, which is half of D3.430). The
 three drop-in duplicates and the CLAUDE.md block source were removed from `downloads/`; the brief
 stays. No full pytest and no census: no trading-path code and no invariant were touched.
+
+### ARC 041-T — POST-WRITE-BACK RE-MEASURE (forward-only, appended after the bank commit)
+
+Banked at **`1492beb`** with a clean `git status` for every path. `verify.py` re-run over the merged
+tree: **89 passed | 3 failed | 3 cannot measure | 0 skipped | 1 guarded, exit 1.**
+
+| | passed | failed | cannot | skipped | guarded |
+|---|---|---|---|---|---|
+| ARC 041 banked (at `41299aa`) | 89 | 2 | 2 | 0 | 1 |
+| this arc's baseline (same commit, clean tree) | 86 | 5 | 2 | 0 | 1 |
+| pre-commit, on trunk | 88 | 4 | 3 | 0 | 1 |
+| **post-write-back, at `1492beb`** | **89** | **3** | **3** | **0** | **1** |
+
+**Baseline → banked, term by term, and every term was predicted before the commit was made:**
+`86 → 89 passed` = `check_tmpfs_inode_headroom` (new, PASS on a healthy box) + `check_price_ring`
+(recovered when the `/dev/shm` literal left `downloads/`) + `check_untracked_attribution`
+(recovered when the three new files stopped being untracked — it had named exactly those three).
+`5 → 3 failed` = the same two recoveries. `2 → 3 cannot-measure` = `check_arc_status_contract`,
+which is the honest price of a gate whose subject does not exist in a bare sweep, and which the
+brief predicted. Guarded unchanged at 1.
+
+**The three standing reds, and none of them is this arc's:** `check_ibgateway_service` (tap,
+ECONNREFUSED on 127.0.0.1:4002, code-independent), `check_uncalled_entry_points` (standing since
+ARC 041), and `check_monitor_tui` — **which was already red at this arc's baseline, at the commit
+ARC 041 banked green**, and is now D3.431.
+
+**The marker is printed only after this re-measurement is itself banked.** The heartbeat emitter's
+STALL arm fired for real during this run, unprompted: three pulses with the progress file frozen on
+one long check produced `STALL WARNING: no motion in 3 intervals`. It was not planted.
