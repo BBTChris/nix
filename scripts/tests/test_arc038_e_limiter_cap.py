@@ -76,11 +76,11 @@ if str(SCRIPTS) not in sys.path:
 import risk_config  # pylint: disable=import-error
 from nixrisk import gate as gate_mod  # pylint: disable=import-error
 from nixrisk.gate import (  # pylint: disable=import-error
+    PROPOSAL_RULE,
     AggregateMarginCapRule,
     DeployableCeilingRule,
     GatePass,
     KnobError,
-    PROPOSAL_RULE,
     SurvivalHeadroomRule,
     default_manifest,
 )
@@ -248,7 +248,11 @@ def _denying_layer(mpc: float) -> str:
     branch that wrote them. Neither layer is redundant and the tests below prove
     it by neutralising each ALONE.
     """
-    return PROPOSAL_RULE if (not math.isfinite(mpc) or mpc < 0.0) else "aggregate_margin_cap"
+    return (
+        PROPOSAL_RULE
+        if (not math.isfinite(mpc) or mpc < 0.0)
+        else "aggregate_margin_cap"
+    )
 
 
 def test_the_UNPROTECTED_half_really_APPROVES_a_hundred_UNPRICEABLE_contracts(
