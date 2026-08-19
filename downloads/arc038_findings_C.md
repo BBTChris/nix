@@ -770,7 +770,27 @@ unlink them — killing another agent's segment mid-run would be worse than the 
 
 ## COMMITS
 
-- `<sha1>` — ARC 038 sub-agent C: the findings file, written BEFORE any fix
-- `<sha2>` — ARC 038 sub-agent C: the exit brake — FC1/FC2/FC3 DISCHARGED, FC4/FC5 named
+- `b0545e5` — ARC 038 sub-agent C: the exit brake — FC1/FC2/FC3 DISCHARGED, FC4/FC5
+  named. 7 files changed, 2529 insertions(+), 28 deletions(-).
+  `Stage 3 — runtime pass ... Passed`.
+- `<this one>` — the findings file's own closing sections (this commit).
+
+**One honest correction about the ORDER.** The plan, and the contract, put the
+findings file in a commit of its OWN before any code moved, and it was written
+first — every finding here was authored, with its executed evidence, before the
+corresponding line of `flatten.py` or `fills.py` changed. But the findings-only
+commit did not LAND: this worktree's `.testmondata` was cold, so the runtime gate
+escalated to a full non-incremental suite, and with six sibling worktrees running
+theirs at the same time that child was still going after ~45 minutes and was
+reaped twice before it could finish. So the findings file and the fixes are in ONE
+commit. The claim *"the finding was written before the fix"* is therefore
+verifiable from this file's content and from the fixes' own docstrings (each names
+its finding), not from two timestamps — and saying so is cheaper than implying an
+ordering the git history does not show.
+
+Second attempt also FAILED, usefully: the runtime gate — running incrementally
+once the reaped full run had warmed the graph — reddened on
+`test_check_uncalled_entry_points.py`, naming `unbooked_rows` as new uncalled
+surface. See FC1's status note. That refusal changed the fix.
 
 (exact shas: `git log --oneline arc-038-c`)
