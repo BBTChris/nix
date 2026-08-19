@@ -337,12 +337,25 @@ class FlattenAction:
 
 @dataclass(frozen=True)
 class OnsetCancellation:
-    """One onset's entry-cancel sweep: what was cancelled and released under `cause`."""
+    """One onset's entry-cancel sweep: what was cancelled and released under `cause`.
+
+    `failures` is ARC 038 / A (FA-3) and it carries the entries whose broker
+    `cancel_order` REFUSED — `(client_order_id, why)` per entry. It has a default
+    so no existing construction site moves, and it is a tuple rather than a
+    boolean because §3:173 cancels *all* pending entries: which ones survived is
+    the operationally load-bearing fact, and a count would not name them.
+    """
 
     cause: TerminalPath
     cancelled: tuple[str, ...]
     released: tuple[Reservation, ...]
     refusals: tuple[Refusal, ...]
+    failures: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def complete(self) -> bool:
+        """Did EVERY pending entry reach the venue as a cancel? §3:173's "all"."""
+        return not self.failures
 
 
 @dataclass(frozen=True)
@@ -599,6 +612,13 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
         This method calls `cancel_order` ONLY. It never calls `flatten`, because
         §3 says exits are untouched — a pending ENTRY is a window a fill has not
         entered, and cancelling it is not closing a position.
+
+        **The sweep COMPLETES (ARC 038 / A, FA-3).** A broker that refuses one
+        cancel does not stop the others: the refusal is recorded on
+        `OnsetCancellation.failures`, booked as its own Plane-1 `CANCEL` row, and
+        the loop continues. `complete` says whether every entry got there. The
+        reservation of a failed entry is deliberately NOT released — the order is
+        still live, so keeping its margin committed is the safe direction.
         """
         if cause not in _ONSET_CAUSES:
             raise NotAnOnsetCause(
@@ -610,8 +630,45 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
         cancelled: list[str] = []
         released: list[Reservation] = []
         refusals: list[Refusal] = []
+        failures: list[tuple[str, str]] = []
         for entry in pending:
-            self._broker.cancel_order(entry.client_order_id)
+            # ARC 038 / A (FA-3). The cancel was UNGUARDED here, and one refusal
+            # aborted the whole sweep: MEASURED with three working entries and a
+            # broker refusing the second — entries two and three stayed live at
+            # the venue, their reservations were never released, `HaltFlag.set`
+            # propagated the exception so NO `halt_set` Plane-1 row was booked at
+            # all (§12.10:753 owed one), and both survivors then FILLED inside the
+            # HALT. The refusal is not hypothetical: both shipped adapters raise
+            # `BrokerNotConnected` from `_require_session` when the session is
+            # down, and a dead session is a leading CAUSE of the HALT being
+            # declared (`HaltCause.STALE_DATA`).
+            #
+            # Continuing is the fail-CLOSED direction, not the lenient one:
+            # §3:173 cancels ALL pending entries, so attempting the rest maximises
+            # the number that leave the venue, and the ones that could not are
+            # NAMED — on the returned `failures`, on a Plane-1 row of their own,
+            # and (through `HaltFlag`) on the `onset_sweep` field of the HALT row.
+            # Aborting hid all three.
+            try:
+                self._broker.cancel_order(entry.client_order_id)
+            except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
+                why = f"{type(exc).__name__}: {exc}"
+                failures.append((entry.client_order_id, why))
+                self._book(
+                    kind=EventKind.CANCEL,
+                    trade_id=None,
+                    strategy_id=entry.strategy_id,
+                    symbol=entry.symbol,
+                    reason=(
+                        f"{cause.value} onset entry-cancel REFUSED by the broker "
+                        f"({why}) — the entry is STILL WORKING at the venue and can "
+                        "fill inside a window it was not approved for (§3:173). Its "
+                        "reservation is NOT released, so it is still counted in "
+                        "committed margin, which is the safe direction"
+                    ),
+                    ts=now,
+                )
+                continue
             resolution = self._ledger.resolve(
                 entry.client_order_id, cause, now, reason=cause.value
             )
@@ -633,6 +690,7 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
             cancelled=tuple(cancelled),
             released=tuple(released),
             refusals=tuple(refusals),
+            failures=tuple(failures),
         )
 
     # -- B5: reconcile-then-publish the CONFIRMED state ------------------------

@@ -149,8 +149,23 @@ def test_an_executor_that_RUNS_THE_MANIFEST_IN_SOURCE_ORDER_fails(home: Path) ->
     """PLANT 1 — the defect whose output is byte-identical to a correct pass."""
     pristine = _plant(
         home,
-        "        self._phase_a = tuple(r for r in rules if r.phase is Phase.SIZE_INDEPENDENT)\n"
-        "        self._phase_b = tuple(r for r in rules if r.phase is Phase.SIZE_DEPENDENT)",
+        # RE-POINTED, ARC 038 / A (FA-1). The partition it names moved when
+        # `_validate` began RETURNING the phase it read so the partition could
+        # stop re-reading `rule.phase` — a re-read that could drop a rule from
+        # both phases or place it in both. The PLANT is unchanged in meaning (the
+        # executor runs the manifest in source order); only the fragment it
+        # swaps is re-pointed, which is the D3.189 hazard of a plant keyed to a
+        # source literal, handled by re-pointing rather than by loosening.
+        "        self._phase_a = tuple(\n"
+        "            rule\n"
+        "            for rule, phase in zip(rules, declared, strict=True)\n"
+        "            if phase is Phase.SIZE_INDEPENDENT\n"
+        "        )\n"
+        "        self._phase_b = tuple(\n"
+        "            rule\n"
+        "            for rule, phase in zip(rules, declared, strict=True)\n"
+        "            if phase is Phase.SIZE_DEPENDENT\n"
+        "        )",
         "        self._phase_a = tuple(rules)\n        self._phase_b = ()",
     )
 
