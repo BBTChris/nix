@@ -123,7 +123,7 @@ from collections.abc import Sequence
 from typing import Final
 
 from nixrisk.seam import EventKind, EventRow
-from nixrisk.wal import encode_row
+from nixrisk.wal import decode_record, encode_row
 
 #: The live Plane-1 database. The same literal `check_plane1_schema.PLANE1_DB`
 #: carries; `test_plane1_sink.py` asserts the two agree, because a sink pointed
@@ -299,8 +299,39 @@ def natural_key_for(row: EventRow) -> str:
     so this hashes exactly the bytes that went to disk — a re-delivery of the
     same WAL record cannot produce a different key, and a different event cannot
     produce the same one without being identical in every field.
+
+    ARC 038 / sub-agent E — FE4, and the sentence above was FALSE in one
+    direction until this coercion existed. `encode_row` hashes the row it is
+    HANDED; `decode_record`, which is what the group-commit writer actually
+    feeds this function, COERCES on the way back off disk (`float(ts)`,
+    `str(strategy_id)`, `str(trade_id)`, `str(v)` on every field value). So a
+    row carrying an `int` `ts` or a non-`str` field value hashed to ONE key in
+    memory and a DIFFERENT key after the WAL round-trip — one event, two
+    identities, and `ON CONFLICT (natural_key, occurred_at) DO NOTHING` cannot
+    deduplicate what it cannot recognise. Measured: `EventRow(ts=1755004000)`
+    (int) keyed `…7f462a93c5e7` in memory and `…e00e58979319` off disk.
+    `EventRow`'s annotations forbid those values and nothing enforces them, so
+    the row is put THROUGH THE ROUND TRIP before it is hashed. Identity for every
+    value the annotations allow, so no existing key moves.
+
+    **The round trip is performed rather than re-implemented, and that is the
+    load-bearing choice.** The first version of this repair hand-copied
+    `decode_record`'s coercions into a fresh `EventRow(…)` here, and
+    `check_plane1_sole_writer` ARM B3 reddened on it naming
+    `plane1_sink.py:319` — *"constructs a Plane-1 EventRow with no syntactic
+    route to .enqueue(…)"*. The gate was right twice over: a second `EventRow`
+    construction inside the sole writer's own module is exactly the shape §12.10
+    forbids, AND a hand-copied coercion is a SECOND source of truth for the
+    canonical form that would drift the moment `decode_record` changed. Calling
+    the codec cannot drift from the codec. The cost is two extra JSON passes per
+    row, off the hot path by §11.6, and it buys a key that is the canonical form
+    BY CONSTRUCTION instead of by agreement.
     """
-    body = encode_row(row).split(b" ", 1)[1].rstrip(b"\n")
+    body = (
+        encode_row(decode_record(encode_row(row).rstrip(b"\n")))
+        .split(b" ", 1)[1]
+        .rstrip(b"\n")
+    )
     digest = hashlib.sha256(body).hexdigest()
     return f"{row.kind.value}:{digest[:40]}"
 

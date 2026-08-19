@@ -63,6 +63,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from itertools import pairwise
@@ -221,6 +222,22 @@ def _positive_scalars(loaded: Mapping[str, ModuleConfig]) -> list[str]:
                     problems.append(
                         f"{module}.{where}={leaf!r} is {type(leaf).__name__}, "
                         "expected a number"
+                    )
+                elif not math.isfinite(leaf):
+                    # ARC 038 / sub-agent E — FE9. `NaN` passes EVERY ordering
+                    # comparison, so `leaf <= 0` admitted it and only the
+                    # `_pct_range` rule — which inspects keys ending `_pct` alone
+                    # — happened to catch the fraction knobs. Measured: with this
+                    # branch absent, `limiter.netliq_safety_pad = nan`,
+                    # `= inf` and `limiter.ledger_drift_tolerance_usd = nan` were
+                    # all ACCEPTED AT BOOT, and a NaN survival pad turns §6.5's
+                    # floor off at every size. A finiteness test cannot be
+                    # written as an inequality; it has to be its own branch.
+                    problems.append(
+                        f"{module}.{where}={leaf!r} is not FINITE — a non-finite "
+                        "knob passes every ordering comparison a validator can "
+                        "make, so it reaches the rule that reads it and disables "
+                        "whatever comparison that rule performs (§12A:801-802)"
                     )
                 elif leaf <= 0:
                     problems.append(
