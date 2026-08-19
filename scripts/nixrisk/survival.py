@@ -387,7 +387,7 @@ class SurvivalWatch:  # pylint: disable=too-many-instance-attributes
         through the floor fires the flatten on the same tick it was observed —
         which is what "*before* Tradovate's trigger" requires.
         """
-        self._require_finite(cash, net_liq, "mark")
+        self._require_finite(cash, net_liq, "mark", sum_open_margin)
         self._store(net_liq=net_liq, cash=cash, sum_open_margin=sum_open_margin)
         return self._check_current("mark")
 
@@ -432,12 +432,17 @@ class SurvivalWatch:  # pylint: disable=too-many-instance-attributes
                 breached=self._current is not None and self._current.breached,
                 fired=False,
             )
-        self._require_finite(poll.cash, poll.net_liq, f"reconcile:{event}")
+        # Σ open margin is derived FIRST so the finite guard can see it: it is an
+        # input to the floor, and the floor is the predicate (finding FD2).
+        sum_open_margin = _sum_open_margin(poll.positions)
+        self._require_finite(
+            poll.cash, poll.net_liq, f"reconcile:{event}", sum_open_margin
+        )
         corrected, drift = self._note_drift(poll)
         self._store(
             net_liq=poll.net_liq,
             cash=poll.cash,
-            sum_open_margin=_sum_open_margin(poll.positions),
+            sum_open_margin=sum_open_margin,
         )
         self._last_venue_ts = poll.venue_ts
         self.applied += 1
@@ -455,15 +460,48 @@ class SurvivalWatch:  # pylint: disable=too-many-instance-attributes
 
     # -- internals ----------------------------------------------------------
 
-    def _require_finite(self, cash: float, net_liq: float, where: str) -> None:
-        """Refuse a non-finite figure LOUDLY. A NaN net-liq is not a safe one."""
-        for note in (_finite("cash", cash), _finite("net_liq", net_liq)):
+    def _require_finite(
+        self, cash: float, net_liq: float, where: str, sum_open_margin: float
+    ) -> None:
+        """Refuse a non-finite figure LOUDLY. A NaN net-liq is not a safe one.
+
+        ``sum_open_margin`` is checked HERE and was ADDED BY MEASUREMENT (ARC 038
+        / sub-agent D, finding FD2). It was the one input this guard omitted, and
+        it is the one the FLOOR is built from: with ``sum_open_margin = nan`` the
+        floor is ``nan``, ``SurvivalReading.breached`` is ``net_liq < nan`` which
+        is **False**, and the standing watch reported the account SAFE and NEVER
+        FIRED. MEASURED both ways in: a ``mark`` with cash 50,000 / net-liq 9,000
+        against a NaN Σ open margin gave ``flattens=0 criticals=0``, and ONE
+        broker position row carrying ``margin=nan`` did the same through
+        ``reconcile`` — ``applied=True, floor=nan, breached=False``. §17 is
+        explicit that a safety property which cannot be EVALUATED is not proven,
+        and this module's own ``_finite`` docstring says exactly that; the guard
+        now covers every term the predicate reads rather than two of the three.
+        """
+        for note in (
+            _finite("cash", cash),
+            _finite("net_liq", net_liq),
+            _finite("sum_open_margin", sum_open_margin),
+        ):
             if note:
                 raise SurvivalWatchError(f"{where}: {note}")
 
     def _floor_for(self, sum_open_margin: float) -> float:
-        """§6.5's floor formula, in ONE place: Σ open margin × (1 + safety_pad)."""
-        return sum_open_margin * (1.0 + self._safety_pad)
+        """§6.5's floor formula, in ONE place: Σ open margin × (1 + safety_pad).
+
+        The ``max(0.0, …)`` is §7:483's *"every term clamps ≥ 0 (no negative-floor
+        artifacts)"* applied to the one term that can go negative here, and it was
+        ADDED BY MEASUREMENT (ARC 038 / sub-agent D, finding FD2): a Σ open margin
+        of −10,000 produced a floor of −11,000, against which a net-liq of −5,000
+        — an account the broker has already liquidated — read ``breached=False``.
+        A floor below zero is not a floor. On every legitimate input (margins are
+        non-negative) the clamp is the identity, so it can only ever move a
+        verdict toward flat. It does NOT stand in for the finite guard above and
+        the pair is coupled: with the clamp alone, ``max(0.0, nan)`` is ``0.0``
+        and the watch still never fires — measured, and pinned by
+        ``test_arc038_d_money_truth.py``.
+        """
+        return max(0.0, sum_open_margin) * (1.0 + self._safety_pad)
 
     def _store(self, *, net_liq: float, cash: float, sum_open_margin: float) -> None:
         """THE single store. Atomicity of the published reading lives here."""

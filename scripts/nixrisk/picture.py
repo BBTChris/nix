@@ -245,6 +245,18 @@ def picture_defects(
             ("sum_reservations", picture.sum_reservations),
             ("committed", picture.committed),
             ("deployable", picture.deployable),
+            # ARC 038 / sub-agent D, finding FD3. `published_ts` was the ONE
+            # field the sweep omitted, and it is §12.7's *"freshness stamps ride
+            # each update"* — the whole of `PictureMirror.tradable()`'s staleness
+            # arm. MEASURED: with `published_ts = nan`, `age = clock() - nan` is
+            # `nan`, `nan > max_age_s` is **False**, and the mirror reported
+            # `(True, "picture version 2, age nans")` FOREVER; with `+inf` the
+            # age is `-inf` and it reported tradable forever too. A stamp that
+            # cannot be compared is not a freshness stamp, and §6.4's rule for a
+            # stale cache is refuse — so a non-finite one is a defect here, at
+            # the one place both the publisher's refusal and the consumer's
+            # fast-drop already read.
+            ("published_ts", picture.published_ts),
         )
         if (note := _finite(name, value))
     ]
@@ -374,6 +386,30 @@ class FinancialPictureBook:  # pylint: disable=too-many-instance-attributes
             picture = self._next(
                 balance, positions, margin_per_contract, sum_reservations
             )
+            # ARC 038 / sub-agent D, finding FD1. VALIDATE BEFORE THE STORE.
+            #
+            # This check used to live only in `publish()`, which runs AFTER the
+            # store below — so a refused publish still advanced `_current`, and
+            # the Limiter's OWN table was left holding the picture it had just
+            # declared unpublishable while the mirror kept the last good one.
+            # MEASURED end to end: `commit(sum_reservations=float("-inf"))` on a
+            # $10,000 account left `current()` at `committed=-inf`,
+            # `deployable=inf`, and the full §3 `GatePass` then **APPROVED 800
+            # contracts / $400,000 of margin** where the same order against the
+            # healthy picture was SIZE_DOWN to 12 by `aggregate_margin_cap`. A
+            # NaN balance instead left `deployable=0.0` and made `_largest_fit`
+            # raise. Directive 4 and §17: a refusal must not mutate the state it
+            # refused, and the mirror and the own table must not diverge.
+            defects = picture_defects(picture, self._fraction)
+            if defects:
+                self.refusals += 1
+                raise TornPicture(
+                    f"refusing to commit version {picture.version}: "
+                    + "; ".join(defects)
+                    + " — the previous picture (version "
+                    f"{self._current.version}) STANDS; a refused commit does not "
+                    "advance the Limiter's own table"
+                )
             self._current = picture  # <- THE single store. Atomicity lives here.
             self.commits += 1
         finally:
@@ -492,7 +528,15 @@ def _decode_row(raw: Mapping[str, Any]) -> PositionRow:
             # table it invented.
             stop_distance=int(raw["stop_distance"]),
         )
-    except (KeyError, TypeError, ValueError) as exc:
+    # `OverflowError` is in the tuple and was ADDED BY MEASUREMENT (ARC 038 /
+    # sub-agent D, finding FD4): `int(float("inf"))` raises `OverflowError`,
+    # which is an `ArithmeticError` and NOT a `ValueError`, so a wire body
+    # carrying `"size": Infinity` — which `json` both emits and parses — escaped
+    # this handler, escaped `decode_picture`, and came out of
+    # `PictureMirror.tradable()`, a verb whose docstring says *"Never raises"*
+    # and whose whole job is to DENY. A fast-drop verb that raises does not
+    # fast-drop.
+    except (KeyError, OverflowError, TypeError, ValueError) as exc:
         raise PictureError(f"undecodable position row {raw!r}: {exc!r}") from exc
 
 
@@ -519,7 +563,8 @@ def decode_picture(payload: Mapping[str, Any]) -> FinancialPicture:
             committed=float(payload["committed"]),
             deployable=float(payload["deployable"]),
         )
-    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+    # `OverflowError` — see `_decode_row`. MEASURED on `"version": Infinity`.
+    except (AttributeError, KeyError, OverflowError, TypeError, ValueError) as exc:
         raise PictureError(f"undecodable financial picture: {exc!r}") from exc
 
 
