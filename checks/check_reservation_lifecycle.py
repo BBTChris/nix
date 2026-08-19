@@ -76,7 +76,14 @@ release inside the noise floor is a double release nobody can see.
 
 It drives the LEDGER. It does not prove that the Limiter's event handlers call
 `resolve` on every real fill, cancel, reject, pending-timeout and blackout onset,
-because those handlers do not exist yet — stop conversion, protective-exit
+because THREE of those handlers now exist while THREE of §3's release paths still
+have no production caller at all — D3.358 names which three, measured ARC 038/B,
+and this file deliberately does not, for the reason the section above gives: a
+path spelled here as a literal would make the expected side a constant this gate
+chose. When ARC 028 wrote this paragraph none of the handlers existed and the
+residual was total; it is now partial, and a green here still does not mean the
+system releases on every path. Out of scope then and still out of scope now —
+stop conversion, protective-exit
 wiring, session-close flatten, HALT semantics, cold-start reconciliation, the
 Sentinel, Scoring and the Allocator are all outside ARC 028. A green here means
 *the ledger has no leak path and absorbs no double release across §3's path set*.
@@ -713,7 +720,15 @@ def _evidence(paths: tuple[str, ...], tally: Tally) -> str:
         f"{tally.plane1_rows} Plane-1 row(s) booked; every figure read back from "
         f"the ledger's own total_reserved/outstanding/audit, none of it asserted "
         f"by this gate. UNBOUND (D3.51): drives the LEDGER, never the Limiter's "
-        f"event handlers, which do not exist yet"
+        f"event handlers. THREE of those handlers now exist and call this ledger "
+        f"(nixrisk/fills.py, nixrisk/blackout.py, and nixrisk/flatten.py driven "
+        f"by nixrisk/halt.py), and THREE of the release paths above have NO "
+        f"production release site at all — so an entry that is rejected, times "
+        f"out, or fills nothing leaks its whole reservation while this reconcile "
+        f"reports drift 0.0. CHECK-DEBT D3.358 enumerates which three and "
+        f"scripts/tests/test_arc038_b_reservation_terminality.py is the ratchet "
+        f"in both directions (measured ARC 038/B). D3.51's own wording says "
+        f"those handlers do not exist; that stopped being true"
     )
 
 
