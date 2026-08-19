@@ -1,199 +1,173 @@
-## ARC 040 — ULTRAREVIEW: Limiter, slice 2 of many — the GO-timeout (I5)
+## ARC 041 — ULTRAREVIEW: Limiter, slice 3 of many — commit-before-validate torn state (I7)
 
-**Tier: INTERIOR.** The Limiter badge **STAYS RED**. This is not the greening slice.
-**Canonical path: `/home/bbt/nix`** (absolute). **Predecessor: ARC 039R, HEAD `39b8a45`.**
-Interpreter for every measurement below: `/home/bbt/nix/.venv/bin/python` → `/usr/bin/python3.14`
-(Python 3.14.4).
+**Tier: INTERIOR.** Limiter badge **STAYS RED**. Not the greening slice.
+**Canonical path: `/home/bbt/nix`** (absolute).
+**Predecessor: the brief names `a70a2c4`; the ACTUAL tip was `f5f517c`** — ARC 040 banked a second
+commit (its post-write-back re-measure) after `a70a2c4`. Both baselines are shown under FREEZE
+below, because a diff against the wrong one would have attributed 040's write-back to this arc.
+Interpreter for every measurement: `/home/bbt/nix/.venv/bin/python` → `/usr/bin/python3.14` (3.14.4).
 
-### What this slice discharged
+### KICKOFF — the invariant count, DERIVED, and a correction to ARC 040
 
-**I5 — §4:210-212's GO-timeout, the deadlock breaker on the one-in-flight lock.** ARC 038 found it
-had **no implementation anywhere in shipped code**: `limiter.go_timeout_s` was a knob whose only
-reader was the boot cross-validator, which validates the value and acts on nothing. §14:971 locks
-*"One in-flight action per strategy — and it can never wedge (GO-timeout)"*; the invariant was
-prose.
+Read from the tree (`sessions/SESSION.md:4527-4645`, the ARC 038 pass-1 register), verdict token per
+invariant — not from prose:
 
-### S1 — the defect REPRODUCED FIRST, on the live ARC-039 loop, before a line changed
+| | |
+|---|---|
+| CLEAN at 038 | **I6**, **I9*** , **I10**  (*I9 = "CLEAN as a property; its gate is not" — qualified) |
+| CLEAN via 040 | **I5** (the GO-timeout) |
+| clean at this arc's START | **{I5, I6, I10} = 3/12**, open = **9** |
 
-A real `limiterd` process. A real GO admitted through the real `StrategyRegistry`. The **GO HOLDER
-killed by `SIGKILL`, by PID taken from its own self-report** (never `pkill -f`).
+**ARC 040 wrote "Eleven invariants remain open". That was never true.** It computed `12 − 1` — its
+own discharge — and ignored that I6 and I10 were already CLEAN in the 038 register. The figure at
+040's close was **nine**. A count of a moving set restated in prose instead of derived: directive 3,
+on a line an arc wrote about its own result. Corrected here and in the CHECK-DEBT series row.
 
-```
-AT ADMISSION  t+0.0s   in flight [['s-040', 'c-040']]
-SIGKILL sent to the GO HOLDER pid=3941502
-  t+ 23.35s  in_flight=[['s-040', 'c-040']]   <-- LAST SAMPLE
-VERDICT: LOCK STILL HELD at t+23.35s = +13.35s PAST the 10.0s knob. NOT RELEASED.
-STOP RECORD: flat=False in_flight=[['s-040','c-040']] ticks=501
-             go_timeouts=<field absent — no timeout machinery in this build>
-```
+### S1 — REPRODUCE FIRST. One half would not reproduce, and that is the finding.
 
-The loop **ticked 501 times and beat 25 times** while holding it. It was alive, healthy, and simply
-never measured elapsed time. 038 measured 11.0 s past; this run measured 13.35 s past, and the only
-difference is that it watched longer.
+Bound to the real sites: `scripts/nixrisk/picture.py` — validation at **:403**, the `_current` store
+at **:413**, the guard released at **:416**, `publish()` called at **:417**.
 
-### S2 — the implementation
-
-`scripts/nixrisk/loop.py`:
-* `go_timeout_from_config()` — the read ARC 038 measured as missing, through `load_risk_configs` so
-  the config's own `liveness.go_timeout_outlasts_pending_ack` cross-knob rule governs the reader.
-* `take_in_flight` **stamps the loop's own monotonic clock** at admission.
-* `_break_go_deadlocks()` — the whole mechanism is one comparison, `elapsed >= self.go_timeout_s`,
-  run once per tick, and that comparison is what did not exist anywhere in the tree.
-* **Placed AFTER the drain and BEFORE the beat**, and both halves are the invariant: after the drain
-  so terminal feedback arriving in the same tick wins (no false release); before the beat so
-  §12.1's `positions_open_hint` never advertises a lock this same tick already broke.
-* **NO retry, NO auto-resend** (§4:240-241). `GoTimeout.resent` is a recorded `False`, a field and
-  not a comment.
-
-`scripts/nixrisk/recovery.py`: `StrategyRegistry.release_in_flight` — the **flat-and-FREE** release
-§4:211-212 needs and `force_deregister` could not be. `force_deregister` is §4:266-268 and takes
-slot and registration down with the lock: right for a strategy that has DIED, catastrophic for one
-that merely lost a message. Purely additive; no existing method changed.
-
-`scripts/limiterd.py`: `--go-timeout`, the `resolve` verb (§4:203-206 terminal feedback), and
-`go_timeouts` rows in the stop record — the evidence the gate reads from outside the process.
-
-### S3 — proven in BOTH directions, on real processes
-
-**(a) It FIRES on a real kill.** Same scenario as S1, knob driven at 4.0 s:
+**ARM 1 — 038's original commit-before-validate: NOT REPRODUCIBLE. Already fixed.**
+ARC 038 (sub-agent D, finding FD1) discharged it *inside the freeze*, and the code carries the fix
+with its citation. Driven anyway, because a defect assumed absent is not a defect measured absent:
 
 ```
-  t+  3.54s  in_flight=[['s-040','c-040']]  go armed [[...,3.6]], go timeouts 0
-  t+  4.10s  in_flight=[]                   go armed [],          go timeouts 1
-VERDICT: lock RELEASED at t+4.10s (+0.10s vs the 4.0s knob)
-STOP RECORD: flat=True registrations=['s-040']
-  elapsed_s 4.049889  timeout_s 4.0  released True  resent False
+BEFORE  version=2 balance=10000.0 committed=0.0 deployable=7000.0 rows=1
+commit(sum_reservations=-inf) RAISED TornPicture   <-- non-vacuity: validation DID fire
+AFTER   version=2 balance=10000.0 committed=0.0 deployable=7000.0 rows=1
+wire = [2] (unchanged)   refusals=1 commits=1 publishes=1
 ```
 
-Released **one tick** past T, not 11 s past it. `registrations=['s-040']` with `in_flight=[]` is
-flat-and-**free**: the strategy survived, which is what distinguishes §4:211-212 from a
-deregistration.
+The refusal did not mutate what it refused. **Half 1 of I7 was already discharged before this arc
+opened**, which the brief's premise did not know. Reported rather than re-fixed.
 
-**(b) It does NOT fire early.** Terminal feedback at t+1.10 s against a 3.0 s knob released the lock
-normally, and the run was then **watched to t+4.96 s = 1.65×T** — past the point the breaker would
-have fired — with `go timeouts 0` at every sample and `go_timeouts=[]` in the stop record. **Zero
-false releases.** Stopping at the healthy release would have proven only that the breaker had not
-fired *yet*, which is the §0a trap this direction exists to close.
+**ARM 2 — CHECK-DEBT D3.386: REPRODUCED EXACTLY.** `commit()` released `_writing` at :416 and only
+then called `publish()` at :417, so the sink ran **outside** the single-writer guard:
 
-### S4 — `checks/check_go_timeout.py`, with a demonstrated FAIL in BOTH arms
+```
+book._current.version = 3
+WIRE (order pictures reached the sink) = [3, 2]      <-- NON-MONOTONE
+re-entrant commit refused by = None                  <-- not refused at all
+```
 
-Two arms, because neither alone is the check: an **AST string-literal reader census** that NAMES the
-unread site, and a **live drive** of a real `limiterd` (register → admit a GO → abandon it → watch
-the lock through the process's own `status` verb → then a second GO fed normal feedback and held
-past T).
+A mirror applying wire order ends holding **v2 while the book holds v3**. Nothing detects it: the
+transport `_seq` is monotone by construction so it rises across both sends, and `picture_defects()`
+is empty on both because each picture is internally coherent. That is I7's half 2 — *publish emitted
+a state `_current` does not hold* — and it was the arc's real work.
 
-* **PLANT A** — the knob key renamed away, 038's exact *knob-present-but-unread* state:
-  `fail_needs_operator`, **exit 1**, naming `scripts/nixrisk/loop.py`.
-* **PLANT B** — the knob read but the comparison neutered: `fail_needs_operator`, **exit 1**, naming
-  `scripts/nixrisk/loop.py` and reporting the measured wedge (`8.0s later, against T=2.0s`,
-  `go armed [[...,8.04]]`, `go timeouts 0`).
-* **Plants removed**: `pass`, **exit 0**.
-* **NON-VACUITY is asserted, not assumed**: the drive REQUIRES the status verb to report the lock
-  **HELD** before any later empty reading may count as a release. A run that watched an empty
-  registry returns CANNOT_MEASURE, never PASS (§17 / rule 10).
+### S2 — the implementation, picture module only
 
-### TWO FINDINGS AGAINST THE ARC'S OWN INSTRUMENT — both caught by the plants, both recorded
+1. **`publish()` moved INSIDE the `try` whose `finally` clears `_writing`.** A sink that re-enters
+   `commit()` is now refused **by name** with `ConcurrentWriter`. §9/§12.10 make the Limiter the sole
+   writer and §5 makes it single-threaded, so a re-entrant commit is a design violation and §17's
+   answer is to refuse it loudly, not serialise it behind a lock.
+2. **`publish()` refuses any picture that is not `self._current`, by IDENTITY.** A picture can pass
+   every `picture_defects` test and still be the wrong one — an older version, or a foreign object —
+   and §12.7's mirror has no defence against a snapshot that arrives complete and stale. The two
+   refusals are ordered **defects-first** so every existing field-level reason string is unchanged.
 
-* **D3.426** — the static arm was **VACUOUS as first written** and PLANT A **passed it**. It matched
-  the substring `go_timeout_s` anywhere in a module, so a constructor parameter name and an argparse
-  help string counted as "reading the knob". It was measuring the spelling of an identifier. Now an
-  AST census for a string **literal** equal to the key.
-* **D3.427** — the gate first reported a positively-observed **WEDGE as `cannot_measure` (exit 2)**
-  rather than FAIL. With the lock wedged, the second arm's GO was refused *by the wedged lock
-  itself*, and that consequential refusal was raised as the gate's `Cannot`, overwriting a finding it
-  had already made. Fail-closed held; the REASON did not, which is the half check contract v2 rule 11
-  makes the assertion. Fixed; the plant now returns exit 1.
+**ARC 038's stated cost of repair (1) does not apply, and the reasoning is recorded rather than waved
+past.** D3.386 warned that moving `publish` inside the guard makes a transport failure leave
+`_current` advanced. But the STORE already preceded the PUBLISH before this change — that was already
+the behaviour. Moving the call inside the guard changes **who may re-enter**, not the order of the two
+operations. The genuine open question (should a transport failure roll `_current` back?) is an
+architect ruling and is banked as **D3.428**, not taken here.
 
-A third finding was caught the same way and fixed in flight: the arc's own S3a **driver printed a
-VERDICT that contradicted the samples printed above it** — it parsed `in flight` by splitting on a
-field that the post-fix status string no longer put next to it, so a released lock read as held.
-The fix is in the harness and the same bounded-parse discipline is in the gate's `_held`.
+No new helper, so nothing built-but-uncalled. No retry, no auto-resend.
 
-### FREEZE — held
+### S3 — both directions, with CONTINUOUS sampling by a real reader thread
 
-`git diff --stat 39b8a45 -- risks/` is **empty**. The knob was already on disk; this slice made it
-**read**. No other invariant's logic moved. Production changes: `loop.py` (the breaker),
-`limiterd.py` (flag/verb/records), `recovery.py` (one additive verb). Two test files changed because
-the change necessarily invalidated them — see below.
+A property about a *window* cannot be proven by one sample taken after it closed.
 
-### The ARC 038 defect-witness ratchets fired, and were READ rather than absorbed
+**(a) validation-failing commit ⇒ no advance, no torn read**
+```
+_current BEFORE = v2 balance=10000.0 rows=1     _current AFTER = v2 balance=10000.0 rows=1
+rejecting publish fired: True
+reader took 1,217,538 continuous samples across the window
+DISTINCT pictures the reader ever observed: [(2, 10000.0, 1, 0.0)]     wire emits: 0
+```
+One distinct picture across 1.2M samples, and it was the old valid one.
 
-`scripts/tests/test_arc038_f_inflight_lock.py` pinned three censuses so the fix could not land
-unnoticed. All three moved, exactly as designed:
-* the release-site census gained `StrategyRegistry.release_in_flight`;
-* `test_NO_shipped_module_MEASURES_the_go_timeout_knob` was **INVERTED** into
-  `test_the_LOOP_MEASURES_the_go_timeout_knob` — the inversion IS the discharge;
-* the mention census now records that two of its entries are no longer names.
+**(b) valid commit ⇒ one advance, published == committed, atomic**
+```
+advanced exactly once: True (v1 -> v2)
+published == committed field-for-field: True    published=(2,25000.0,2,0.0) committed=(2,25000.0,2,0.0)
+balance+table moved TOGETHER (no half-advanced sample): True   [4,719,020 samples]
+no delayed second emit after watching 0.30s PAST the op: True
+```
+Watching past the operation is the §0a trap closed: stopping at success proves only *not diverged
+yet*.
 
-### CLOSE-OUT (INTERIOR tier — a STATED decision, not a silent skip)
+**(c) the D3.386 arm** — re-entrant sink refused by name (`ConcurrentWriter`), wire `[2]` monotone,
+last emit == book version. **(d)** a clean-but-foreign picture is refused.
 
-**The full ~3400-test pytest run and the full binding census are DEFERRED to the Limiter's greening
-slice**, per the tiered rule. What was run instead:
+### S4 — the gate. A DELIBERATE DEVIATION FROM THE BRIEF, and why.
 
-* **(b) The DERIVED reverse-dependency closure**, derived from the tree by grepping importers of the
-  changed files: **281 passed, 0 failed**. **Non-vacuity proven before trusting green** — the
-  closure contains `test_limiter_loop.py` and `test_arc038_f_inflight_lock.py`, the direct dependents
-  of the changed files, and both were **RED before the fix and GREEN after**. **COST-AWARE
-  EXCLUSIONS, named**: `test_check_artifact_gate_coverage.py` and `test_check_uncalled_entry_points.py`
-  were detected as shelling out to `verify.py`/the census and excluded (deferred to the greening
-  slice) — the detection was a scan, not a guess.
-* **(c)** `check_go_timeout` is **BOUND** from its **observed real FAIL** — two independent planted
-  defects, each returning exit 1 with the site named, not a constructed exit code.
-* **(d)** CHECK-DEBT reconciled: **D3.398 DISCHARGED** with its residual named rather than absorbed;
-  **D3.425/426/427 opened**.
+**The brief named a new file `checks/check_commit_publish_atomicity.py`. I did not create it.**
+`VERIFY-AND-CHECKS.md` Part C.9 — which the brief itself instructs be read directly — states:
+*"Extend an instrument that already owns a property; never build a second. Two instruments measuring
+one property will disagree, and you will not know which is right."* `checks/check_picture_atomicity.py`
+already declares `scripts/nixrisk/picture.py` its subject and already owns the property *"the
+financial picture is observable only as one self-consistent snapshot under one version stamp"* —
+which is the sentence both halves of I7 live inside. The arms landed **in that gate**.
 
-### Residual explicitly NOT claimed as done
+Two arms, each closing the other's escape (the `debug.md` Tier-2 Stage 2 answer, recorded as required):
+* **`_arm_order` (STATIC)** — AST proof that validation dominates the `_current` store and that
+  `publish` sits inside the guarded `try`. **Structural, not a spelling match**: it identifies the
+  validate step by SHAPE — a bound call whose result is tested by an `if` that raises — so renaming
+  `picture_defects` cannot defeat it. Its escape is a decoy validator returning `[]`.
+* **`_arm_emit_identity` (LIVE)** — drives a refused commit, a re-entrant sink, and a foreign publish,
+  with non-vacuity asserted in front of each verdict. Kills the decoy. Its escape is timing.
 
-**D3.425 — the `go_timeout` Plane-1 row is still unwritten.** §9:553 lists GO-timeout among the
-event types the sole writer books, and `projection.py` already carries the event name. The breaker
-now fires and releases, and every firing is in the runtime record and readable live — but that is a
-RUNTIME record, not §9's evidence plane, and `limiterd` has no Plane-1 writer wired at all. Blocked
-behind I8, which is slice 3.
+**Demonstrated FAIL, three plants, each exit 1 naming the site:**
+
+| plant | verdict | what it reported |
+|---|---|---|
+| **A** store before validate | `fail_needs_operator`, exit 1 | static: `['store','validate','publish','unguard']`; live: *a REFUSED commit advanced `_current` from version 2 to 3* |
+| **B** publish outside the guard | `fail_needs_operator`, exit 1 | static: `['validate','store','unguard','publish_OUTSIDE']`; live: *answered with `None`, not ConcurrentWriter … the wire received `[3, 2]` for a book holding version 3* |
+| **B2** identity refusal removed | `fail_needs_operator`, exit 1 | live: *publish() emitted version 1 while the book holds 2* |
+
+Plants removed ⇒ `pass`, exit 0. Every verdict carries its measured reason, not a constructed code.
+
+### FREEZE — held, and tighter than allowed
+
+`git diff --stat f5f517c` is **four paths**: `scripts/nixrisk/picture.py` (the fix),
+`checks/check_picture_atomicity.py` (the two arms), `docs/CHECK-DEBT.md`, and this arc's own brief.
+**Nothing in `limiterd.py`, `projection.py`, `loop.py`, `recovery.py`, or the WAL** — I8 and D3.425
+are untouched and remain ARC 042. **No test file changed**: the fix invalidated none, and the
+existing `test_check_picture_atomicity.py` exercises the new arms (it goes RED against the pre-041
+module — see the closure's non-vacuity below).
+
+### CLOSE-OUT — INTERIOR tier (a STATED decision, not a silent skip)
+
+Full ~3400-test pytest and the full binding census **DEFERRED to the greening slice**.
+
+* **(b) DERIVED reverse-dependency closure** — 13 test modules grepped as importers of the picture
+  module: **239 passed, 0 failed**. **Non-vacuity proven before trusting green**: run against the
+  PRE-041 module the closure goes **RED (2 failed)**, so it genuinely contains the changed file's
+  dependents. **Cost-aware exclusion, and its own correction:** the mandated shell-out scan excluded
+  `test_arc038_c_exit_brake.py` on one hit that proved to be **the phrase "binding census" inside a
+  comment** — a false positive, caught by re-reading the exclusion before trusting it. The test was
+  put back and passed. Recorded as **D3.429**.
+* **(c) BINDING re-established.** Check contract v2 **rule 9** is the governing rule and it applies
+  squarely: *a retrofitted check is a NEW check; its can-fail binding does not survive the retrofit.*
+  Re-established from three observed real FAILs above.
+* **(d) CHECK-DEBT reconciled.** **D3.386 DISCHARGED** with the ruling written down. **D3.428** and
+  **D3.429** opened. Series row re-derived whole: 378 → **379** (+2 opened, −1 discharged).
+
+### Residual — explicitly NOT claimed as done
+
+* **D3.428** — a sink/transport failure still leaves `_current` advanced with nothing on the wire.
+  Not new, not introduced here, and now written down as the choice it is. **Architect ruling, not a
+  cc fix.**
+* **I8 (sole-writer enforcement) and D3.425 (the Plane-1 `go_timeout` row) remain open** — ARC 042.
+* I7's other 038 residuals — no writer identity on `tbl.financial_picture`, freshness keyed on age
+  alone, the §12.7 restart rebuild reaching no connected consumer — are the MIRROR seam, not the
+  commit/publish seam, and are untouched by this slice.
 
 ### BADGE VERDICT — Limiter STAYS RED
 
-**Discharged: I5** (the GO-timeout), one invariant, reproduced → fixed → re-audited in both
-directions → gated with a demonstrated FAIL. **Eleven invariants remain open** from 038's pass 1.
-**Slice 3 targets I7 (commit-before-validate torn state) + I8 (sole-writer enforcement)** — the next
-blockers, and I8 is what unblocks D3.425.
-
----
-
-### POST-WRITE-BACK RE-MEASURE — the prediction held on every term
-
-The D3.40/D3.144 guard-owner transition fires the moment `SESSION.md` names the arc complete, so the
-re-measure is ORDERED after the write-back, not waived. The prediction was stated BEFORE the run:
-
-| term | predicted | MEASURED at `a70a2c4` | |
-|---|---|---|---|
-| verify.py | `89 \| 2 \| 2 \| 0 \| 1`, exit 1 | `89 passed \| 2 failed \| 2 cannot measure \| 0 skipped \| 1 guarded`, exit 1 | **HELD** |
-| the guard | `check_artifact_gate_coverage` GUARDED, owner **ARC 041** | `[GRD] ... EXCLUDED -> ARC 041` | **HELD — it survived because it was re-pointed BEFORE the write-back** |
-| the new entry points | `go_timeout_from_config` and `release_in_flight` do NOT appear as uncalled | 0 occurrences in the run | **HELD — both have shipped call sites** |
-
-`check_go_timeout` is the 89th check and it reports `[ok]`. The two FAILs are the standing pair —
-`check_ibgateway_service` (the tap; code-independent) and `check_uncalled_entry_points` — and the two
-cannot-measures are the standing IB-gateway pair. **88 → 89 passed is the whole delta**, which is the
-shape a one-invariant slice should leave.
-
-### Interpreter, stated
-
-Every measurement in this document: `/home/bbt/nix/.venv/bin/python` → `/usr/bin/python3.14`
-(Python 3.14.4). Canonical path `/home/bbt/nix`, absolute.
-
-### Two OPS findings from this arc's own run, recorded rather than absorbed
-
-* **F6/F7 — the testmon sqlite DB was corrupted by TWO concurrent commits.** A `git commit` whose
-  runtime gate escalated to the full ~3252-test pass was still running after 26 minutes; a bounded
-  poll returned, the run was believed finished, and a SECOND commit was launched on top of it. Two
-  testmon writers on one sqlite file produced
-  `sqlite3.DatabaseError: database disk image is malformed`, and the gate reported that INTERNALERROR
-  as `FAIL - 1 of 3252 selected test(s) failed`. The orphan was killed **by PID from its own process
-  tree** (never by pattern — the 038/039/039R rule), `integrity_check` came back `ok`, no
-  `index.lock` was left, and the commit then passed every hook including the full runtime gate. The
-  general lesson is the same class as the three pipeline kills: **a bounded poll that returns is not
-  evidence that the thing it was polling has stopped.**
-* The arc **ran ~2.5x its ~1h target**, and the overrun is almost entirely the commit gate: a change
-  to `scripts/limiterd.py` selects no test (it is on the runtime gate's own `uncovered` list), so the
-  gate escalates to a full pass — which is exactly the cost the INTERIOR tier defers everywhere else.
-  Worth the operator's attention: the tier can defer the *close-out* pytest but cannot defer the
-  *commit*.
+**I7 discharged** (both halves: one already fixed at 038 and re-measured here, one fixed and gated
+here). **clean = {I5, I6, I7, I10} = 4/12, open = 8.**
+Next: **ARC 042 = I8 (sole-writer enforcement) + D3.425 (the Plane-1 `go_timeout` row)**.

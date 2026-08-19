@@ -141,6 +141,7 @@ say the Limiter is a safety spine.
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import secrets
 import sys
@@ -938,6 +939,9 @@ _SITE_BOOK = "scripts/nixrisk/picture.py:FinancialPictureBook.commit"
 _SITE_WIRE = "scripts/nixrisk/picture.py:encode_picture/decode_picture"
 _SITE_SINK = "scripts/nixrisk/picture.py:StateBusPictureSink.service"
 _SITE_MIRROR = "scripts/nixrisk/picture.py:PictureMirror.tradable"
+#: ARC 041 / I7. The ORDER inside `commit`, and the guard around `publish`.
+_SITE_ORDER = "scripts/nixrisk/picture.py:FinancialPictureBook.commit[ordering]"
+_SITE_EMIT = "scripts/nixrisk/picture.py:FinancialPictureBook.publish"
 
 
 def _arm_measured(races: dict[str, RaceResult], defects: list, ev: list) -> None:
@@ -1254,6 +1258,413 @@ def _nonvacuity(observed: dict[str, Any], evidence: list[str]) -> CheckResult | 
     return None
 
 
+# ---------------------------------------------------------------------------
+# ARC 041 / I7 — the two arms this gate gained, and why they are HERE
+# ---------------------------------------------------------------------------
+# `VERIFY-AND-CHECKS.md` Part C.9: *"Extend an instrument that already owns a
+# property; never build a second. Two instruments measuring one property will
+# disagree, and you will not know which is right."* This gate's ONE property is
+# already *"the financial picture is observable only as one self-consistent
+# snapshot under one version stamp"*, and both halves of §14's I7 are inside
+# that sentence: a `_current` holding a state its own validation rejects is not
+# self-consistent, and a wire carrying a version the book does not hold makes a
+# consumer's mirror inconsistent with the writer. ARC 041's brief named a NEW
+# file `checks/check_commit_publish_atomicity.py`; the brief also says to build
+# gates per `VERIFY-AND-CHECKS.md` read directly, and read directly it forbids
+# the second instrument. The arms land here.
+#
+# TWO ARMS, because neither is the check alone, and each closes the OTHER's
+# escape (the answer to `debug.md` Tier-2 Stage 2, recorded rather than left
+# implicit):
+#   * the STATIC arm proves the ORDER — validation dominates the store, and the
+#     publish sits inside the single-writer guard. Its escape is a DECOY: give
+#     the module a validator that returns `[]` and the ordering is still
+#     perfect while nothing is validated. It cannot see that.
+#   * the LIVE arm proves the BEHAVIOUR — a poisoned commit does not advance
+#     `_current`, a re-entrant sink is refused BY NAME, a clean-but-foreign
+#     picture is refused. Its escape is timing: a behaviour that happens to hold
+#     on this run says less than a structure that cannot do otherwise.
+# A decoy validator dies on the live arm; a reordered store dies on both.
+#
+# ANTI-D3.426: the static arm is a STRUCTURAL assertion over the AST — statement
+# ORDER within `commit`'s own body, and Try-block MEMBERSHIP for the publish —
+# not a substring or identifier-spelling match. ARC 040's `check_go_timeout`
+# shipped a census that matched the SPELLING of `go_timeout_s` and passed a
+# plant that renamed the real key away, because the token also appeared as a
+# parameter name. Nothing below asks whether a name appears; it asks where a
+# statement sits relative to another statement.
+
+
+def _commit_body_order(source: str, rel: str) -> tuple[list[str], str | None]:
+    """Statement kinds inside `commit`, in EXECUTION order. AST, not text.
+
+    Returns (ordered marks, complaint). Each mark is one of:
+      `validate`  a call whose result is tested and can `raise` before the store
+      `store`     `self._current = <...>`
+      `publish`   `self.publish(<...>)`
+      `unguard`   the `finally` that clears `self._writing`
+    Walking is deliberately structure-aware rather than a flat `ast.walk`: the
+    whole question is which statements are INSIDE the `try` whose `finally`
+    releases the guard, and `ast.walk` flattens exactly that away.
+    """
+    try:
+        tree = ast.parse(source, filename=rel)
+    except SyntaxError as exc:
+        return [], f"{rel} does not parse: {exc}"
+    commit = _find_commit(tree)
+    if commit is None:
+        return [], f"{rel}: FinancialPictureBook.commit not found"
+    marks: list[str] = []
+    _walk_commit(commit.body, False, marks)
+    return marks, None
+
+
+def _find_commit(tree: ast.AST) -> ast.FunctionDef | None:
+    """`FinancialPictureBook.commit`'s def node, or None. Class-scoped."""
+    for parent in ast.walk(tree):
+        if (
+            not isinstance(parent, ast.ClassDef)
+            or parent.name != "FinancialPictureBook"
+        ):
+            continue
+        for node in parent.body:
+            if isinstance(node, ast.FunctionDef) and node.name == "commit":
+                return node
+    return None
+
+
+def _is_store(stmt: ast.stmt) -> bool:
+    """`self._current = <...>` — the promotion, whatever it is promoting."""
+    return isinstance(stmt, ast.Assign) and any(
+        isinstance(t, ast.Attribute)
+        and t.attr == "_current"
+        and isinstance(t.value, ast.Name)
+        and t.value.id == "self"
+        for t in stmt.targets
+    )
+
+
+def _is_publish(stmt: ast.stmt) -> bool:
+    """A bare `<...>.publish(<...>)` statement."""
+    return (
+        isinstance(stmt, ast.Expr)
+        and isinstance(stmt.value, ast.Call)
+        and isinstance(stmt.value.func, ast.Attribute)
+        and stmt.value.func.attr == "publish"
+    )
+
+
+def _is_validate(body: list[ast.stmt], stmt: ast.stmt) -> bool:
+    """Is this the VALIDATE step? Decided by SHAPE, never by the callee's name.
+
+    A bound call whose result is then tested by an `if` that can `raise`. ARC
+    040's D3.426 is why this is not `"picture_defects" in source`: that gate
+    matched an identifier's spelling and passed a plant that renamed the real
+    key away. Rename `picture_defects` to anything and this still finds it;
+    delete the `raise` and it stops finding it, which is the point.
+    """
+    if not (isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.Call)):
+        return False
+    bound = {t.id for t in stmt.targets if isinstance(t, ast.Name)}
+    idx = body.index(stmt)
+    for later in body[idx + 1 : idx + 3]:
+        if (
+            isinstance(later, ast.If)
+            and any(isinstance(n, ast.Raise) for n in ast.walk(later))
+            and any(
+                isinstance(n, ast.Name) and n.id in bound for n in ast.walk(later.test)
+            )
+        ):
+            return True
+    return False
+
+
+def _clears_guard(stmt: ast.Try) -> bool:
+    """Does this `try`'s `finally` clear `self._writing`?"""
+    return any(
+        isinstance(f, ast.Assign)
+        and any(
+            isinstance(t, ast.Attribute) and t.attr == "_writing" for t in f.targets
+        )
+        for f in stmt.finalbody
+    )
+
+
+def _walk_commit(body: list[ast.stmt], guarded: bool, marks: list[str]) -> None:
+    """Append one mark per interesting statement, IN EXECUTION ORDER.
+
+    Structure-aware on purpose: the whole question is which statements sit
+    inside the `try` whose `finally` releases the single-writer guard, and a
+    flat `ast.walk` discards exactly that.
+    """
+    for stmt in body:
+        if _is_store(stmt):
+            marks.append("store")
+        elif _is_publish(stmt):
+            marks.append("publish" if guarded else "publish_OUTSIDE")
+        elif _is_validate(body, stmt):
+            marks.append("validate")
+        elif isinstance(stmt, ast.Try):
+            clears = _clears_guard(stmt)
+            _walk_commit(stmt.body, guarded or clears, marks)
+            if clears:
+                marks.append("unguard")
+            for handler in stmt.handlers:
+                _walk_commit(handler.body, guarded or clears, marks)
+        elif isinstance(stmt, ast.If):
+            _walk_commit(stmt.body, guarded, marks)
+            _walk_commit(stmt.orelse, guarded, marks)
+
+
+def _arm_order(home: Path, defects: list, ev: list) -> None:
+    """STATIC: validation dominates the store, and publish is inside the guard.
+
+    §14's I7, both halves, asserted as a property of the AST rather than of a
+    run. ARC 038 (D / FD1) measured half one: `commit()` stored `_current`
+    BEFORE `publish()` validated, so a refusal mutated what it refused and the
+    poisoned table drove a §3 gate pass to APPROVE 800 contracts / $400,000 on a
+    $10,000 account. ARC 041 measured half two: `publish` sat AFTER the `finally`
+    that clears `_writing`, so a re-entrant sink was not refused and the wire
+    carried versions `[3, 2]` — the book holding v3 while a mirror applying wire
+    order ends on v2.
+    """
+    rel = "scripts/nixrisk/picture.py"
+    path = home / rel
+    if not path.is_file():
+        defects.append((_SITE_ORDER, f"{rel} is absent from {home}"))
+        return
+    marks, complaint = _commit_body_order(path.read_text(), rel)
+    if complaint:
+        defects.append((_SITE_ORDER, complaint))
+        return
+    if "store" not in marks:
+        defects.append(
+            (_SITE_ORDER, f"no `self._current = ...` store found in commit: {marks}")
+        )
+        return
+    if "validate" not in marks:
+        defects.append(
+            (
+                _SITE_ORDER,
+                (
+                    "commit() contains NO bound call whose result is tested and "
+                    f"raises before the store — order observed {marks}. §14's I7 "
+                    "needs validation to gate the promotion; a store with nothing "
+                    "in front of it is ARC 038 (FD1)'s measured state, where a "
+                    "refused commit still advanced the Limiter's own table"
+                ),
+            )
+        )
+        return
+    if marks.index("validate") > marks.index("store"):
+        defects.append(
+            (
+                _SITE_ORDER,
+                (
+                    f"the `_current` store PRECEDES validation in commit(): {marks}. "
+                    "That is ARC 038 (FD1) exactly — a refusal mutates what it "
+                    "refuses, and the Limiter's own table is left holding the "
+                    "picture it just declared unpublishable"
+                ),
+            )
+        )
+    if "publish_OUTSIDE" in marks:
+        defects.append(
+            (
+                _SITE_ORDER,
+                (
+                    f"commit() calls publish() OUTSIDE the try whose finally clears "
+                    f"`self._writing`: {marks}. CHECK-DEBT D3.386 — the sink then "
+                    "runs unguarded, a re-entrant sink is not refused, and the wire "
+                    "can carry picture versions OUT OF ORDER, which the mirror's "
+                    "monotone transport seq cannot discard"
+                ),
+            )
+        )
+    if "publish" not in marks and "publish_OUTSIDE" not in marks:
+        defects.append((_SITE_ORDER, f"commit() never publishes: {marks}"))
+    if not defects:
+        ev.append(
+            f"{_SITE_ORDER}: AST statement order inside commit() is {marks} — "
+            "validation dominates the `_current` store and the publish sits "
+            "INSIDE the single-writer guard (structural, not a name match)"
+        )
+
+
+# R0914 (too-many-locals): three independent drives in one arm, each with its
+# own book, sink and verdict — the locals ARE the three drives. R0903/C0116 on
+# the doubles below: each is a one-verb stand-in for `PictureSink.emit`, and a
+# docstring would restate the method name. W0718: each drive catches broadly ON
+# PURPOSE and then asserts the exception's TYPE NAME, because the property under
+# test is *which* refusal fired — check contract v2 rule 11, the reason is the
+# assertion, and narrowing the catch would let a WRONG exception type escape as
+# a traceback instead of being reported as the finding it is.
+# R0915 (too-many-statements): three drives, each with a non-vacuity assertion
+# in front of its verdict. The statements ARE the arms.
+# pylint: disable=too-many-locals,too-few-public-methods,missing-function-docstring
+# pylint: disable=too-many-statements
+# pylint: disable=broad-exception-caught
+def _arm_emit_identity(picture_mod: Any, seam: Any, defects: list, ev: list) -> None:
+    """LIVE: what reaches the wire is the state the book HOLDS, and only that.
+
+    Three drives, each with its own failure mode, and a NON-VACUITY assertion in
+    front of every one: the refusal must actually fire, or the arm reports that
+    it measured nothing rather than reporting a pass.
+    """
+    rows = (
+        seam.PositionRow(
+            trade_id="T1",
+            symbol="MES",
+            strategy_id="s1",
+            size=2,
+            margin=1200.0,
+            state="OPEN",
+            stop_distance=20,
+        ),
+    )
+
+    class _Wire:
+        def __init__(self) -> None:
+            self.seen: list[int] = []
+
+        def emit(self, picture: Any) -> None:
+            self.seen.append(picture.version)
+
+    # (1) a poisoned commit must not advance `_current`, and must not publish.
+    wire = _Wire()
+    book = picture_mod.FinancialPictureBook(
+        balance=10_000.0, deployable_fraction=0.70, sink=wire
+    )
+    book.commit(positions=rows, margin_per_contract={"MES": 600.0})
+    before = book.current()
+    emits_before = len(wire.seen)
+    fired = False
+    try:
+        book.commit(sum_reservations=float("-inf"))
+    except Exception as exc:  # noqa: BLE001
+        fired = type(exc).__name__ == "TornPicture"
+    after = book.current()
+    if not fired:
+        defects.append(
+            (
+                _SITE_BOOK,
+                (
+                    "a commit carrying sum_reservations=-inf did NOT raise "
+                    "TornPicture — the validation this arm exists to measure never "
+                    "fired, so the rest of this arm proves nothing (§17: a property "
+                    "proven while its subject is unavailable is not proven)"
+                ),
+            )
+        )
+        return
+    if after is not before:
+        defects.append(
+            (
+                _SITE_BOOK,
+                (
+                    f"a REFUSED commit advanced `_current` from version "
+                    f"{before.version} to {after.version} — ARC 038 (FD1): the "
+                    "refusal mutated what it refused"
+                ),
+            )
+        )
+    if len(wire.seen) != emits_before:
+        defects.append(
+            (_SITE_EMIT, f"a refused commit still reached the wire: {wire.seen}")
+        )
+
+    # (2) a re-entrant sink must be REFUSED BY NAME (CHECK-DEBT D3.386).
+    class _Reentrant:
+        def __init__(self) -> None:
+            self.book: Any = None
+            self.armed = True
+            self.refused: str | None = None
+            self.seen: list[int] = []
+
+        def emit(self, picture: Any) -> None:
+            if self.armed:
+                self.armed = False
+                try:
+                    self.book.commit(balance=99_999.0)
+                except Exception as exc:  # noqa: BLE001
+                    self.refused = type(exc).__name__
+            self.seen.append(picture.version)
+
+    sink = _Reentrant()
+    book2 = picture_mod.FinancialPictureBook(
+        balance=10_000.0, deployable_fraction=0.70, sink=sink
+    )
+    sink.book = book2
+    book2.commit(balance=20_000.0)
+    if sink.armed:
+        defects.append(
+            (
+                _SITE_EMIT,
+                (
+                    "the re-entrant sink never ran, so the D3.386 window was never "
+                    "entered and this arm measured nothing"
+                ),
+            )
+        )
+    elif sink.refused != "ConcurrentWriter":
+        defects.append(
+            (
+                _SITE_EMIT,
+                (
+                    f"a sink that re-entered commit() was answered with "
+                    f"{sink.refused!r}, not ConcurrentWriter. D3.386: the sink runs "
+                    f"outside the single-writer guard, the wire received "
+                    f"{sink.seen} for a book holding version "
+                    f"{book2.current().version}, and §9/§12.10's SOLE WRITER is a "
+                    "convention rather than an enforcement"
+                ),
+            )
+        )
+    elif sink.seen != sorted(sink.seen) or sink.seen[-1] != book2.current().version:
+        defects.append(
+            (
+                _SITE_EMIT,
+                (
+                    f"the wire carried {sink.seen} while the book holds version "
+                    f"{book2.current().version} — publish emitted a state `_current` "
+                    "does not hold"
+                ),
+            )
+        )
+
+    # (3) a CLEAN but FOREIGN picture may not be published.
+    book3 = picture_mod.FinancialPictureBook(
+        balance=10_000.0, deployable_fraction=0.70, sink=_Wire()
+    )
+    stale = book3.current()
+    book3.commit(balance=20_000.0)
+    foreign_refused = False
+    try:
+        book3.publish(stale)
+    except Exception as exc:  # noqa: BLE001
+        foreign_refused = type(exc).__name__ == "TornPicture"
+    if not foreign_refused:
+        defects.append(
+            (
+                _SITE_EMIT,
+                (
+                    f"publish() emitted version {stale.version} while the book holds "
+                    f"{book3.current().version}: a stale-but-internally-coherent "
+                    "picture reached the wire. §12.7's mirror cannot detect it — the "
+                    "snapshot is complete and passes every defect test"
+                ),
+            )
+        )
+    if not defects:
+        ev.append(
+            f"{_SITE_EMIT}: drove a REFUSED commit (TornPicture fired, `_current` "
+            f"held at v{before.version}, 0 emits), a RE-ENTRANT sink (refused by "
+            f"name: {sink.refused}, wire {sink.seen} == book "
+            f"v{book2.current().version}), and a CLEAN-BUT-FOREIGN publish "
+            "(refused) — non-vacuity asserted on each before its verdict"
+        )
+
+
 def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argument
     """Race the publisher, plant the tear, judge the subject. Never repairs."""
     evidence: list[str] = []
@@ -1298,6 +1709,10 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
     _arm_bus(observed["bus"], defects, evidence)
     _arm_late(observed["late"], defects, evidence)
     _arm_stale(observed["stale"], defects, evidence)
+    # ARC 041 / I7 — see the block above these two for why they live in THIS
+    # gate rather than in a second one (VERIFY-AND-CHECKS.md Part C.9).
+    _arm_order(ctx.nix_home, defects, evidence)
+    _arm_emit_identity(picture_mod, seam, defects, evidence)
     return result_from_defects(NAME, defects, "; ".join(evidence))
 
 

@@ -346,12 +346,40 @@ class FinancialPictureBook:  # pylint: disable=too-many-instance-attributes
         REFUSES an incoherent picture rather than sending it. §12.7's consumers
         treat an incomplete mirror as stale and fast-drop; they have no defence
         at all against a mirror that arrived complete and wrong.
+
+        SECOND REFUSAL — ARC 041 (I7, D3.386). What goes on the wire must be the
+        picture this book CURRENTLY HOLDS, and identity is the check: §3:162's
+        atomicity rule is *"balance and the position table publish together as
+        one snapshot ... every consumer reads a self-consistent picture"*, and a
+        consumer's mirror is only self-consistent WITH THE WRITER if the writer
+        emitted its own canonical state rather than some other object that
+        happens to be internally coherent. A picture can pass every
+        `picture_defects` test and still be the WRONG one — an older version, or
+        a foreign object built elsewhere — and §12.7's mirror has no defence
+        against a snapshot that arrived complete and stale.
+
+        The two refusals are ORDERED defects-first deliberately: a caller handing
+        in a defective foreign picture gets told WHICH FIELD is wrong, which is
+        the more actionable reason, and the identity refusal then catches the
+        clean-but-not-ours case that the defect scan cannot see by construction.
         """
         defects = picture_defects(picture, self._fraction)
         if defects:
             self.refusals += 1
             raise TornPicture(
                 f"refusing to publish version {picture.version}: " + "; ".join(defects)
+            )
+        if picture is not self._current:
+            self.refusals += 1
+            raise TornPicture(
+                f"refusing to publish version {picture.version}: this book holds "
+                f"version {self._current.version}, so the argument is NOT the "
+                "canonical state. §3:162 has balance and the position table "
+                "publish together as ONE snapshot and every consumer read a "
+                "self-consistent picture; emitting a picture this writer does "
+                "not hold puts a mirror out of step with the book it mirrors, "
+                "and §12.7's freshness stamp cannot detect it because the "
+                "snapshot is complete and internally coherent"
             )
         if self._sink is not None:
             self._sink.emit(picture)
@@ -412,9 +440,35 @@ class FinancialPictureBook:  # pylint: disable=too-many-instance-attributes
                 )
             self._current = picture  # <- THE single store. Atomicity lives here.
             self.commits += 1
+            # ARC 041 / I7, CHECK-DEBT D3.386. THE PUBLISH IS INSIDE THE GUARD.
+            #
+            # It used to sit after the `finally` below, so `self._writing` was
+            # already False when the sink ran and a sink that called back into
+            # `commit()` was NOT refused. MEASURED on this tree before the
+            # change, with a sink whose `emit` re-enters: no `ConcurrentWriter`
+            # was raised and the wire received **[3, 2]** — the inner commit's
+            # version 3 reached the sink BEFORE the outer's version 2. A mirror
+            # applying wire order ends holding v2 while the book holds v3, and
+            # nothing detects it: the transport `_seq` is monotone by
+            # construction so it rises across both sends, and
+            # `picture_defects()` is empty on both because each picture is
+            # internally coherent. §9/§12.10 make the Limiter the SOLE writer
+            # and §5 makes it a single-threaded loop, so a re-entrant commit is
+            # a design violation and §17's fail-closed answer is to REFUSE IT BY
+            # NAME rather than to serialise it quietly behind a lock.
+            #
+            # WHAT THIS DOES NOT CHANGE, stated because ARC 038 named it as the
+            # cost of this repair: the STORE still precedes the PUBLISH exactly
+            # as before, so a sink/transport failure still leaves `_current`
+            # advanced with nothing on the wire. That was already true when
+            # `publish` sat outside the guard — moving it inside changes WHO MAY
+            # RE-ENTER, not the order of the two operations — and the designed
+            # degradation for it is §12.7's: the mirror goes stale and consumers
+            # fast-drop. Making a transport failure roll the book back is a
+            # different and larger ruling; it is recorded, not taken here.
+            self.publish(picture)
         finally:
             self._writing = False
-        self.publish(picture)
         return picture
 
     def _next(
