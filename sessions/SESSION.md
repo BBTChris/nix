@@ -5549,3 +5549,42 @@ ARC 041 banked green**, and is now D3.431.
 **The marker is printed only after this re-measurement is itself banked.** The heartbeat emitter's
 STALL arm fired for real during this run, unprompted: three pulses with the progress file frozen on
 one long check produced `STALL WARNING: no motion in 3 intervals`. It was not planted.
+
+### ARC 041-T — THE FINAL MEASUREMENT, and the gate refused its own author first
+
+**`90 passed | 3 failed | 2 cannot measure | 0 skipped | 1 guarded`, exit 1, at `1abcfd0`.**
+
+Two things happened after the re-measure above, in this order, and both are recorded rather than
+folded into a nicer number.
+
+**1. `check_arc_status_contract` REFUSED THIS ARC'S OWN TEARDOWN LINE, and it was right.** The
+close-out emitted `WATCHDOG TEARDOWN: confirmed dead (pid <N> / arc_heartbeat)` followed, ON THE
+SAME LINE, by a sentence explaining that `[watchdogd]` is the kernel thread and was not killed.
+`KERNEL_WD` is line-scoped, so the gate read the whole line as being about the kernel thread and
+reported `teardowns=0` → FAIL. The mandated wording in CLAUDE.md's STATUS EMIT block is the bare
+form and nothing else; the first draft added prose to it. Fixed at the emission, not at the gate:
+the note moved to its own line and the teardown line is now exactly the contracted string. This is
+`VERIFY-AND-CHECKS.md` B.5's `size-authority` lesson — *it correctly refused its own author's first
+draft* — happening on the first log this gate ever read.
+
+**2. With the log closed and correct, the gate PASSES and the light blue goes away.** `[PASS]
+arc_status_contract arc=041T pulses=9 teardowns=1 wd_pid=4110049`, through the CLI and through the
+registered engine arm both. So the sweep's cannot-measure count returns to 2:
+
+| | passed | failed | cannot | skipped | guarded |
+|---|---|---|---|---|---|
+| ARC 041 banked (`41299aa`) | 89 | 2 | 2 | 0 | 1 |
+| this arc's baseline, same commit, clean tree | 86 | 5 | 2 | 0 | 1 |
+| post-write-back, arc log still OPEN | 89 | 3 | 3 | 0 | 1 |
+| **final, arc log CLOSED (`1abcfd0`)** | **90** | **3** | **2** | **0** | **1** |
+
+**Baseline → final: +4 passed, −2 failed, cannot-measure UNCHANGED at 2.** The +1 cannot-measure
+the brief predicted is real and was measured twice — it is what the gate costs while an arc log is
+absent or still open — and it is not a standing cost. Corrected against the brief: the honest
+summary is *the status gate costs a light blue exactly when there is nothing to audit*, not *the
+status gate adds a light blue*.
+
+**THE LIMITATION THIS EXPOSES, stated because a green invites the opposite reading.** The log the
+gate audits is written by the agent the gate is judging. It can prove a run said the right things in
+the right order; it cannot prove the run did them. That is on top of the duty-cycle hole already
+recorded as D3.433, and it is the honest ceiling of the whole status-contract mechanism.

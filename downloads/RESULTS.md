@@ -227,3 +227,32 @@ this arc's baseline, at the commit ARC 041 banked green** — now D3.431.
 
 The emitter's STALL arm fired for real during this run, unplanted: three pulses against a frozen
 progress file produced `STALL WARNING: no motion in 3 intervals`.
+
+---
+
+## 13. FINAL MEASUREMENT — `90 | 3 | 2 | 0 | 1`, and the gate refused its author first
+
+**`check_arc_status_contract` FAILED this arc's own close-out.** The first teardown line carried the
+contracted wording *plus* a sentence naming `[watchdogd]`; `KERNEL_WD` is line-scoped, so the gate
+read the line as being about the kernel thread and reported `teardowns=0`. Fixed at the emission,
+never at the gate — the note moved to its own line and the teardown line is now exactly the string
+CLAUDE.md's STATUS EMIT block mandates. `VERIFY-AND-CHECKS.md` B.5's `size-authority` lesson, on the
+first log this gate ever read.
+
+With the log closed and correct: `[PASS] arc_status_contract arc=041T pulses=9 teardowns=1
+wd_pid=4110049`, via the CLI and via the registered engine arm.
+
+| | passed | failed | cannot | skipped | guarded |
+|---|---|---|---|---|---|
+| ARC 041 banked (`41299aa`) | 89 | 2 | 2 | 0 | 1 |
+| this arc's baseline, same commit, clean tree | 86 | 5 | 2 | 0 | 1 |
+| post-write-back, arc log still OPEN | 89 | 3 | 3 | 0 | 1 |
+| **FINAL, arc log CLOSED (`1abcfd0`)** | **90** | **3** | **2** | **0** | **1** |
+
+**Baseline → final: +4 passed, −2 failed, cannot-measure UNCHANGED.** The predicted +1
+cannot-measure is real and was measured twice; it is what the gate costs while an arc log is absent
+or still open, and it is not a standing cost.
+
+**The limitation a green invites you to miss:** the log the gate audits is written by the agent the
+gate is judging. It proves a run SAID the right things in the right order; it cannot prove the run
+DID them. On top of the duty-cycle hole already recorded as D3.433.
