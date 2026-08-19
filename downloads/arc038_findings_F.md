@@ -248,6 +248,26 @@ All `§` citations are to `docs/nics_risk_subsystem_spec_v1.3.md` (FROZEN). v1.4
 
 No `checks/check_*.py` was ADDED: `check_limiter_gate` already owns the pass and `check_plane1_hot_path` already owns §11 item 6, so a second gate re-asserting either is the duplicate instrument doctrine C.9 forbids. Both gaps are closed by pytest suites and by pointing an existing gate's `site` at the truth.
 
+## SUITE NUMBERS, on the committed tree
+
+| run | result |
+|---|---|
+| `.venv/bin/python -m pytest scripts/tests -q` (FULL — required, a frozen file moved) | **3273 passed, 3 skipped, 2 xfailed, 0 failed** in 2191 s |
+| the contract's Limiter `-k` subset (`risk or limiter or gate or reservation or flatten or picture or plane1 or halt or blackout or survival or fill or execution`) | **1200 passed, 1 skipped, 2077 deselected** in 309 s |
+| my two new suites alone | **15 passed** in 1.7 s |
+| the commit's own runtime gate (`pytest --testmon`, the pre-commit Stage 3) | **Passed** — `SELECTED=1258`, 0 failures |
+| the seven audited gates, after every plant was restored | `check_plane1_hot_path` pass · `check_orphan_recovery` pass · `check_limiter_gate` pass · `check_supervision` pass · `check_staleness` pass · `check_mirror_liveness` pass · `check_allocator_lifecycle` pass |
+| tree hygiene | `check_name_coherence` pass · `check_derived_claims` pass (13/13) · `check_canonical_tree` pass · `check_artifact_gate_coverage` **guarded** (unchanged — my new files are under `scripts/tests/` and `downloads/`, both excluded prefixes) |
+
+Interpreter: `/home/bbt/nix-wt-arc-038-f/.venv/bin/python`, CPython 3.14.4, throughout.
+
+**Frozen-set census, `git hash-object` against `scratchpad/arc038/frozen_limiter_shas.txt`:
+exactly ONE of the 30 files moved — `scripts/nixrisk/recovery.py`, for FF2.** The other 29
+are byte-identical, and every plant used during the gate audit was restored and proven so
+by `cmp` and by `sha256sum` before and after.
+
 ## COMMITS
 
-See `git log --oneline arc-038-f` — listed in the report back to the integrator.
+| sha | subject |
+|---|---|
+| `c71bf2f` | ARC 038 (F) I5: §14's one-in-flight lock — a real SIGKILL wedges it forever, and its DENY branch had no control |
