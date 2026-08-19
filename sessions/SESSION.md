@@ -5378,3 +5378,38 @@ Full ~3400-test pytest and the full binding census **DEFERRED to the greening sl
 **I7 discharged** (both halves: one already fixed at 038 and re-measured here, one fixed and gated
 here). **clean = {I5, I6, I7, I10} = 4/12, open = 8.**
 Next: **ARC 042 = I8 (sole-writer enforcement) + D3.425 (the Plane-1 `go_timeout` row)**.
+
+---
+
+### POST-WRITE-BACK RE-MEASURE — the prediction held on every term
+
+The D3.40/D3.144 guard-owner transition fires the moment `SESSION.md` names the arc complete, so the
+re-measure is ORDERED after the write-back, not waived. **The brief predicted `90 | 2 | 2 | 0 | 1`.
+That prediction was CORRECTED BEFORE the run, not after it**: the brief assumed a new check file, and
+Part C.9 meant no new check exists.
+
+| term | predicted (corrected) | MEASURED at `e033f98` | |
+|---|---|---|---|
+| verify.py | `89 \| 2 \| 2 \| 0 \| 1`, exit 1 — **unchanged from 040's close** | `89 passed \| 2 failed \| 2 cannot measure \| 0 skipped \| 1 guarded`, exit 1 | **HELD** |
+| the two FAILs | the standing pair only | `check_ibgateway_service` (tap) + `check_uncalled_entry_points` | **HELD** |
+| new uncalled entry points | zero — the fix added no helper | 0 rows naming `picture.py::` | **HELD** |
+| the extended gate | `check_picture_atomicity` still `[ok]`, two arms stronger | `[ok] check_picture_atomicity` | **HELD** |
+| the guard | GUARDED at owner **ARC 042** (re-pointed BEFORE write-back) | `[GRD] ... EXCLUDED -> ARC 042` | **HELD** |
+
+**A slice that discharges an invariant by strengthening an existing instrument moves NO count**, and
+that is the honest signature of this one: the population did not grow, the property did. An arc that
+had reported `90` here would have been reporting a second instrument over a property that already had
+one.
+
+### The commit gate did NOT escalate — the kickoff coverage report was right
+
+ARC 040 overran ~2.5x because `scripts/limiterd.py` sits on the runtime gate's own `uncovered` list,
+so any change to it forces a full ~3252-test pass. This arc checked that list BEFORE editing, found
+`picture.py` covered by 12 test modules, and stated in the kickoff banner that the commit should
+select real tests. It did: `Stage 3 — runtime pass ... Passed` with no escalation. The pre-flight cost
+the price of one `grep`.
+
+### Interpreter and path, stated
+
+Every measurement: `/home/bbt/nix/.venv/bin/python` → `/usr/bin/python3.14` (Python 3.14.4).
+Canonical path `/home/bbt/nix`, absolute.
