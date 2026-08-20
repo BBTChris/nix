@@ -1,243 +1,280 @@
-## ARC 046 — I1 SPIKE: the daemon dispatches a cancel completion to §3, and the I1 capstone is now a measured number instead of a guess (INTERIOR)
+# ARC 047 — I1 slice 2: the FILL completion dispatch (the hard path) + THE I1 ESTIMATE
 
-**Tip DERIVED, not taken from the brief.** `git rev-parse HEAD` at kickoff gave `7671847` (045's
-final banked commit). Everything below is diffed against that tip. Banked at **`0ff3dd7`**, across
-two sessions — the spike (S1–S5) in one, the commit itself and its own diagnostic tail in another.
+**TIER = INTERIOR. Limiter badge STAYS RED. Invariant count STAYS 7/12.**
+Clean `{I2, I5, I6, I7, I8, I10, I11}` = 7/12, open = 5.
+**I1 is a multi-arc capstone. This is path 2 of ~6 (cancel = 046, fill = 047). It does NOT flip the
+count.** No board redraw for the count; the payload is S4's number.
 
-### S1 — the gap, reproduced on the live loop, non-vacuously
+**Predecessor tip DERIVED, not taken from the brief.** The brief said `≈ 6f20d38 (approximate)`;
+`git rev-parse HEAD` returned **`1d241e2`** (ARC 046's final-measurement commit). Every freeze
+assertion and every diff below is against `1d241e2`.
 
-A reservation really taken (Σ 0 → 2000), a cancel exec report really DRAINED by the loop, and
-`on_cancel` never called — plus a real `limiterd` (pid) answering an `on_cancel` command with
-`"unknown verb 'on_cancel'; this build serves ['register','go','status','resolve']"`. The
-measurement the brief did not predict: the loop did not merely fail to dispatch completions, it
-had none. The string `completion` appeared exactly ONCE in the whole Limiter surface — inside
-§5:322's own quote in a docstring — and in zero of the 96 checks that existed at kickoff.
+---
 
-### S2 — the mechanism, built once, on cancel
+## S1 — THE GAP, REPRODUCED ON THE LIVE LOOP (three layers deep, only one of them routing)
 
-`nixrisk/completions.py` (new) is the parse, §4:214's `(order_id, exec_id)` dedup, and the
-dispatch. `limiterd.py` gains the completion ingress, a `LoopHandler` that routes one drained item
-to the collaborator that owns it, the §11.3 ledger and §3's handlers as PROCESS state, and a
-`reserve` verb — a daemon holding no reservations has nothing for a cancel to release.
-`outcomes.py` and `reservations.py` are BYTE-IDENTICAL: `on_cancel` was callable as-is, which
-answers D3.442's open half.
+A real `limiterd`, a real reservation, a stub broker pushing a §2A `on_fill` into the completions
+directory.
 
-### S3 — proved out-of-process, against a real pid
+**NON-VACUITY, asserted before any verdict:**
+* N1 — the reservation was really TAKEN in the running process: `committed 0.0 -> 2000.0`,
+  `outstanding = 1`.
+* N2 — the STOP INTENT reached the process: the `reserve` command carried `stop_ticks=8`,
+  `stop_mode=fixed`, and the daemon ACCEPTED it, so it parsed a valid §4 stop intent into a
+  `ProposedOrder`. A stop was convertible from what the process was handed.
+* N3 — the fill report reached the LOOP: `consumed = 1`, `last_source` = the file the driver wrote.
 
-committed 2000 → 0, `dispatched=1`, `released_margin=2000`, `last_source` equal to the file the
-stub broker wrote, the report unlinked, and re-delivery of the IDENTICAL exec report leaving
-`dispatched=1 duplicates=1` and committed unchanged — with the ledger booking **zero** refusals,
-which is what proves the guard was the daemon's, not `reservations.py`'s dedup underneath it.
+**MEASURED:**
 
-### S4 — the measurement (the spike's primary deliverable)
+| layer | the gap |
+|---|---|
+| 1 — routing | `on_fill` -> `Disposition.UNWIRED`. `dispatched=0`, `unwired=1`, `last_reason` naming itself. |
+| 2 — handler port | **`OrderOutcomes` has NO `on_fill`.** Its own `HANDLES` map books `{CANCEL, REJECT, PENDING_TIMEOUT}`. `TerminalPath.FILL` exists and `outcomes.py` deliberately does not serve it — because §3 says a fill *converts to open-margin*, which is a cascade, not a release. **The `OutcomesPort` the 046 dispatcher holds is structurally incapable of serving a fill.** |
+| 3 — collaborators | `limiterd.py` mentioned **ZERO** of `ApprovedOrderBook`, `StopBook`, `IocRemainder`, `PositionOriginWriter`, `EntryOrderOrigins`, `production_origins`, `FillHandler`, `LimiterFillSink`, `ExecutionLedger`, `FinancialPictureBook`. And the `ProposedOrder` built at `reserve` — carrying `stop_ticks` — was **DISCARDED** after `take()`. §4's whole conversion input was thrown away at the approval that created it. |
 
-1. **Wiring cost:** `nixrisk/completions.py` new (~500 lines: parse, dedup, dispatch,
-   `DispatchLedger`), `limiterd.py` +~430 lines (ingress, `LoopHandler`, ledger, `reserve` verb).
-   `on_cancel` needed **no adaptation** — callable as-is, closing D3.442's open half.
-2. **Reusability:** proven, not hoped — the dispatch/dedup mechanism is now generic over
-   `CompletionDispatcher`; wiring a new §2A event is "parse THIS type → route to THIS handler,"
-   no new mechanism per path.
-3. **Remaining completion→handler paths, enumerated:** fill → open-margin conversion + release
-   (central, likely-harder: trade_id mint, §4 two-phase), reject → release, pending-timeout →
-   `resolve`, onset-cancel dispatch (I11's `_classify_for_onset`), protective-flatten completions.
-   GO-timeout already wired (ARC 042). D3.443's enumeration source (`pending_entries()`) has **no
-   production implementation** — blocks a clean count of the onset path specifically.
-4. **`limiterd.py` coverage — S4.4, answered YES and APPLIED** (see below): brought under testmon,
-   killing the per-arc ~43-minute full-escalated tax this file's `uncovered` status forced on
-   every commit that touched it, including all four attempts before this one.
-5. **The I1 estimate: NOT stated as a number in the banked record.** The brief asked for an
-   explicit arc count; the banked commit message names five remaining paths and flags fill as the
-   likely-hardest (trade_id mint, §4 two-phase) without committing to a count. Recorded here as an
-   open gap rather than invented: **do not treat this arc as having produced an I1 arc-count
-   estimate** — S4 point 5 is unanswered and should be the first thing the next I1-facing arc
-   states explicitly, from the actual per-path cost once one more path (fill) is built and its
-   real incremental cost is known, not projected from the cancel path alone.
+Consequence, measured: `committed` stayed **2000.0**, `outstanding` stayed **1** (no conversion), no
+`trade_id`, no OPEN row, **NO PROTECTIVE STOP** — and the daemon's published state had no key for a
+stop, a position or open margin at all, so there was nowhere for a stop to even be seen.
 
-### S5 — the gate: `check_limiter_daemon_dispatch` (new file, rule 8 — new property)
+---
 
-**DRIVEN arm:** a real `limiterd` loop consumes a cancel completion and the reservation releases,
-asserted via the completion path, never a direct call. **PLANT A** (dispatch call removed): exits
-1, names the loop site, `consumed=1 seen=0 dispatched=0`, committed still 2000.0 — the loop drained
-the completion and never told §3. **PLANT B** (§4:214 dedup defeated): exits 1, names the missing
-daemon guard AND the ledger refusal it fell through to (`reservations.py`'s own guard, I2's, still
-held — the plant proves the DAEMON-level guard is missing, not that nothing stopped the second
-release). Plants removed → exit 0. Non-vacuity: PLANT A itself broke the instrument before it
-caught the defect on the first pass — the counter lived *inside* the dispatch, so "never arrived"
-and "arrived and was dropped" collapsed to one reading; `consumed` was split from `seen`, and PLANT
-C keeps that split honest.
+## S2 — THE WIRING (and the answer to *is parse -> route enough?*)
 
-### CLOSE-OUT
+**NO. It is not.** Cancel was one call into an object the daemon already held. Fill needed:
 
-**(b)** By-detection backstop run per D3.444 (the AST import-graph closure is blind to
-Protocol-dispatched callers). **(c)** Gate BOUND from both plants, each naming its own site.
-**(d)** CHECK-DEBT reconciled: D3.442 SHRINKS (cancel is now daemon-invoked; `on_reject`,
-`resolve_pending_timeouts`, fill, pending-timeout, onset, protective-flatten remain uncalled by any
-daemon path), D3.446/447/448 filed. The eight CHECK-A8/A9 exclusions in
-`checks/gate_coverage_baseline.json` are **already re-owned 046 → 047** in the committed tree
-(verified directly: all eight rows read `"owner": "ARC 047"`) — the arc-boundary re-point the brief
-asked to be named in advance is done, not merely promised.
+* **A SECOND PORT.** `completions.py::FillSinkPort` beside `OutcomesPort` — two verbs, `on_fill` and
+  `outcomes()`. The second is not decoration: `on_fill` returns `None` (that shape is
+  `broker_seam.OrderEventSink`'s and may not be widened), so a dispatcher holding only `on_fill`
+  could count a dispatch and know nothing about what the cascade did. `outcomes()` is §7.12 guard 2
+  applied to a verb that cannot return one.
+* **NINE process-held collaborators** — `limiterd.py::FillPath`: `FinancialPictureBook`,
+  `ExecutionLedger`, `StopBook`, `production_origins()`, `ApprovedOrderBook`, `RecordedCancels`,
+  `PositionOriginWriter`, `IocRemainder`, `FillHandler` + `LimiterFillSink`.
+* **The approval completed.** `reserve` now HOLDS the order and MINTS the join (the trade<->order
+  association, through `production_origins()` which REFUSES `identity_trade_id` — D3.177), and seeds
+  §4:198's margin field set plus §3's Σ reservations onto the SAME snapshot.
+* **A tick-size map**, boot-loaded and restart-only (`--tick-size ES=0.25`). There is no instrument
+  table in `risks/` — `allocator_caps.config.json` holds `tick_value_usd`, the DOLLAR value of a
+  tick, not its price increment — and `nixalloc/sizing.py` forbids a hardcoded `tick_size` by name.
+* **A published-state surface.** The `status` reply and the runtime/stop record now carry `fills`
+  (every armed stop and every §3 row, **enumerated, not counted**) and `picture` (§3's snapshot).
+* **§4:203-206's outcome push** (`OpenFeedback`): a `<trade_id>.feedback.json` in the outbox, and
+  §4:208's one-in-flight lock RELEASED with outcome `open`.
 
-The first commit attempt (escalated pass, 43m47s, `mode=full-escalated
-(SCOPE-BLIND:changed-but-uncovered:scripts/limiterd.py)`) blocked with 9 failures, four causes, all
-real: the gate's §5:322 citation resolved against the wrong doc by default (attribution line
-added); a parametrize comprehension made `check_derived_claims`' AST test count unmeasurable (now a
-literal, guarded by an equality assertion); the ARC-TOTAL series row was missing (395 derived vs
-392 stated); and, found rather than caused, `test_check_order_path_bans`' module-count tripwire was
-two arcs stale — `scripts/nixrisk/outcomes.py` landed in ARC 044 without bumping it, and ARC 044
-and ARC 045 both committed on the testmon-SELECTED path that never ran the test
-(`runtime_gate.py`'s own hazard #4, verbatim). Re-banked 36 → 38 with both bumps named.
+**THE STOP PLACEMENT WAS ALREADY IN THE HANDLER — this is NOT a blocking finding.** `fills.py`
+arms FIRST (`FillStep.ARM_STOP`), releases second, publishes third, and RAISES rather than returning
+a partial outcome. `_dispatch_fill` nevertheless re-asserts at the daemon boundary that the outcome
+carries an armed `StopState` and an OPEN row, because the cost of the redundancy is one comparison
+and the cost of being wrong is a live position nothing protects.
 
-### THE COMMIT THAT WOULD NOT LAND — diagnosed, not guessed at
+**Nix stops are SYNTHETIC (§12.1).** "The protective stop is placed" means `StopBook` holds a live
+`StopState` at `fill -/+ distance x tick_size`. There is no broker-side stop and there must not be.
 
-Four subsequent attempts (all still full-escalated, ~44 min each, since S4.4 had not yet landed)
-were reported as dying with no visible cause. Diagnosed from first principles, cheapest checks
-first, before touching anything: `df -h`/`-i` on **both** `/tmp` and the filesystem that actually
-holds `.git` (root fs, 728G free / 99% inodes free — never the cause); no stale `index.lock`, clean
-`git fsck --connectivity-only`; no timeout wrapper around the commit in any script; no live
-pytest/testmon process; a healthy `ulimit -n`. All clean. **The mystery dissolved on reading the
-FOURTH attempt's own already-captured output** (`scratchpad/arc046/commit{1,2,3,4}.out`, never
-previously read past the expensive pytest section): `ruff-check`, `ruff-format`, `pylint`, and
-`bandit (tests)` failed **identically across all four attempts** on real, static, reproducible
-findings that were simply never fixed between launches — 20× `ISC004` unparenthesized string
-concatenation, unformatted files, missing docstrings / `too-many-lines` / `too-few-public-methods`
-/ `too-many-instance-attributes`, and four Medium `B108` (hardcoded-tmp-directory) findings on test
-provenance labels that are never actually written to disk. Every attempt failed loudly, with a
-named reason, on disk the whole time. Never inode exhaustion, never OOM, never a timeout SIGKILL,
-never object-store corruption. Fixed in place — parens, inline `# pylint: disable=...` matching
-this tree's own established precedent (`capture.py`, `sentinel_kill_drill.py`,
-`test_allocator_mirror.py`), `# nosec B108` on labels — with zero semantic change, re-verified by
-running each hook with its **exact** configured args (`--fail-on=E,F`, `--skip B101,B404,B603`)
-rather than bare defaults, and by running the affected pytest files directly (33 tests, all
-passing) before re-running the hooks.
+**FAIL CLOSED, and it is the safe minimum this arc guarantees:** a symbol with no tick size is
+NOT-TRADABLE (§4:198), `StopBook.arm` raises BEFORE the remainder is released, and the cascade
+refuses whole — **no reservation converts and no position opens.** This process cannot open a
+position it has no stop for. Measured (S3 scenario 3).
 
-**S4.4 applied in the same pass:** `scripts/tests/test_limiterd_cli.py` (new) imports `limiterd`
-in-process and exercises `_parser()` — the out-of-process gate's own documented "FIXED CONTRACT" —
-and `pending_ack_timeout_from_config()`, non-vacuously. Verified by direct query of
-`.testmondata`'s `file_fp` table (not inferred): `scripts/limiterd.py` now carries a real
-fingerprint row, the exact table `runtime_gate.py`'s `read_db()` builds its `uncovered=` report
-from. Noted forward in `scratchpad/arc046_freeze_baseline.txt`.
+---
 
-**A repo-wide `ruff check --fix . && ruff format .`, run once per the closing brief's own
-instruction, caused real collateral damage** and was caught before staging: it reformatted
-`scripts/{harness,monitor,pty_test}.py` (deliberately excluded from these hooks since ARC 035) and
-— unexpectedly — reformatted Python code fenced *inside* `databases/schema/nix_db_schema_spec.md`
-(the DB schema source-of-truth, byte-identity enforced by `validate_schemas.sh`) and a downloads
-brief. All five reverted via `git checkout --` before staging; the final `git add -A` was scoped by
-hand afterward, and a stale, already-landed draft (`downloads/CLAUDE_md_STATUS_EMIT_block.md` — its
-content is already inside this very file's STATUS EMIT section) was excluded rather than
-double-committed. A stale `.git/index.lock` from one of the four earlier dead attempts was also
-found and removed, only after confirming via `pgrep`/`lsof` that no live git process held it.
+## S3 — THE DAEMON DOES IT, END TO END (every assertion through the completion path)
 
-**The real commit: `0ff3dd7`, exit 0, 15 files changed.** All 8 hooks passed — ruff-check,
-ruff-format, pylint, mypy, bandit×2, complexipy, and **Stage 3** — in roughly 20 seconds total,
-against 43m47s for the first (pre-S4.4) attempt. S4.4's fix is not theoretical; this commit is the
-proof.
+**Scenario 1 — full fill, then re-delivery.** All PASS:
+`committed 0.0 -> 2000.0` (non-vacuity) · fill dispatched from the pushed file (provenance) ·
+one §3 row, `state=open`, `trade_id='TRD-00000003-s3-fill'` (**distinct from `client_order_id`**),
+`size=2`, `stop_distance=8` · **exactly ONE protective stop, `level=4998.0 = 5000.0 - 8x0.25`,
+`anchor=5000.0`** · `unstopped=[]` · ledger Σ reservations `2000 -> 0`, picture Σ reservations
+`2000 -> 0`, **picture Σ open margin `0 -> 2000`**, **picture `committed` UNCHANGED at 2000.0 —
+same capital, different bucket, which IS the conversion** · OPEN feedback written to the outbox,
+tagged `trade_id`, carrying the armed stop level.
+Idempotency: re-delivered identical exec report -> still ONE dispatch, ONE stop, ONE row, Σ open
+margin unchanged, `handled=1`, and the stop record shows **`reservations.refused = 0`** — the guard
+that stopped it was the DAEMON's dedup, not `reservations.py`'s (I2's, which still stands).
 
-**Unresolved, reported rather than guessed at:** attempt 4's `pre-commit` line
-`- files were modified by this hook` (a genuine tracked-file diff-before/after mismatch, confirmed
-from `pre_commit/commands/run.py`'s own source — never mtime-based, never printed as a diff by
-pre-commit itself) could not be pinned to a specific file from static evidence. The four tracked
-files whose mtimes fell inside that attempt's Stage 3 window (`broker_order_config.py`,
-`broker_order_ibkr.py`, `seam_simulate.py`, `capture.py`) were traced to every test that writes to
-them and all write into isolated `tmp_path`/`shutil.copytree` fixtures, never the real tracked
-file — ruling them out rather than confirming them. Did not recur in the real commit.
+**Scenario 2 — partial fills (successive `on_fill`, §4).** All PASS: one stop armed on the FIRST
+partial; the WHOLE reservation released on it (§3: converts to open-margin); Σ open margin = the
+filled portion only; the IOC remainder cancel issued for the unfilled 3; the SECOND partial
+`re_arms_declined=1` and **the stop stays at the FIRST fill's anchor** (no silent re-anchor at a
+higher price); one row, size accumulated 2 -> 5; Σ open margin accumulated; exactly one terminal
+release; no contained faults.
 
-### RESIDUAL — explicitly NOT claimed
+**Scenario 3 — fail closed.** A symbol with no tick size: reservation taken (non-vacuity), fill
+REFUSED naming `UntradableSymbol`/§4:198, **no stop, NO POSITION OPENED, reservation UNTOUCHED**,
+tick not killed.
 
-* **I1 is NOT discharged.** One completion path (cancel) is wired; fill, reject, pending-timeout,
-  onset, and protective-flatten are not. The count stays 7/12.
-* **D3.442 shrinks, it does not close** — the cancel handler is daemon-invoked now; the other five
-  handlers remain uncalled by any production daemon path.
-* **S4 point 5 (the I1 arc-count estimate) is unanswered** — see S4 above. Do not restate a number
-  for it that this arc did not produce.
-* D3.443 (enumeration source, no production `pending_entries()`), D3.446, D3.447, D3.448 (all newly
-  filed this arc), D3.428, D3.434, D3.438–D3.441, D3.359/360/361/363 — standing named debt, not
-  this slice.
+**Scenario 3b — §4:208's lock.** With a real `go` holding the lock: the fill RELEASED it with
+outcome `open`, the feedback named the originating strategy, `in flight []` afterwards, and
+**§4:210-212's breaker did NOT fire** — a filled order no longer wedges to the GO timeout.
 
-### BADGE
+---
 
-**Limiter STAYS RED. Count STAYS 7/12** — clean = `{I2, I5, I6, I7, I8, I10, I11}`, open = `{I1
-(daemon-wiring capstone, this arc's own subject, partially wired), I3, I4, I9, I12}`. This spike
-wires one path and (partially) sizes I1; it does not flip an invariant. No board redraw.
+## S4 — THE MEASUREMENT, AND THE I1 ARC-COUNT AS A NUMBER
 
-### POST-WRITE-BACK RE-MEASURE — predict, then measure, and one self-caught defect before either
+### 1. Fill wiring cost, and daemon-readiness
 
-**Predicted `91 | 3 | 2 | 0 | 1`** (S5 created `check_limiter_daemon_dispatch` as a genuinely new
-gate file, not an extension — the brief's `passed+1` branch). Three standing fails unchanged:
-`check_ibgateway_service`, `check_monitor_tui`, `check_uncalled_entry_points` (its row count
-shrinks by the now-called cancel-handler symbols, confirmed below). Two cannot-measure, the §17
-ECONNREFUSED chain: `check_ibgateway_config`, `check_observed_resource_claims`.
+**ZERO ADAPTATION of the §4 cascade.** Byte-identical across this arc by `git hash-object` against
+`1d241e2`: `fills.py`, `stops.py`, `positions.py`, `picture.py`, `execution.py`, `join.py`,
+`fill_seam.py`, `outcomes.py`, `reservations.py`, `flatten.py`, `blackout.py`, `loop.py`, `seam.py`,
+`recovery.py`, `wal.py`, `plane1_sink.py`.
 
-**A diagnostic pass taken BEFORE the formal write-back sequence (not the official post-write-back
-measurement, but worth banking as evidence)** read `89 | 4 | 3 | 0 | 1`, exit 1 — short of the
-prediction by exactly the two things this arc's own write-back process caught and fixed:
+**So the fill handler AND its stop placement were daemon-ready, exactly as `on_cancel` was. The
+DAEMON was not.** The cost is entirely in the process:
 
-* **A fourth, unpredicted FAIL: `check_untracked_attribution`**, naming
-  `downloads/CLAUDE_md_STATUS_EMIT_block.md` — *"work exists in the canonical tree that no commit
-  on any branch contains ... if a dispatched agent wrote this, worktree isolation was requested and
-  not enforced. Rule on provenance before adopting it."* This file was left over from earlier
-  session housekeeping (excluded from `git add -A` as a suspected stale duplicate) and never
-  resolved one way or the other. Diffed directly against `CLAUDE.md`'s live STATUS EMIT section:
-  same core content, and `CLAUDE.md`'s version is the *more* complete one (it carries the later
-  "ARC 041-T" section this draft predates) — confirmed stale, not unique. **Deleted**, not
-  committed; the check's own message names the correct fix (don't adopt provenance-less content),
-  and this arc does not want a second, decaying copy of already-landed prose in the tree.
-* **`check_arc_status_contract` read cannot-measure** — *"no ARC-completed marker in log: run did
-  not reach close-out"* — because this session had never once called `scripts/arc_heartbeat.sh`
-  before this write-back stage, so the arc's own run log carried no fresh self-verify / teardown /
-  marker evidence for THIS session's work (only the earlier session's pre-commit pulses). Not an
-  instrument bug and not the ARC 045 ordering artifact exactly — a genuine process gap: this
-  session ran the standing heartbeat protocol zero times before now. Closed properly, not
-  papered over: `arc_heartbeat.sh selfcheck`, `banner`, and `pulse` run for real into
-  `scratchpad/arc_logs/arc_046.log`; a live-watchdog check (`pgrep -af arc_heartbeat`, 0 matches)
-  before writing an honest `WATCHDOG TEARDOWN: confirmed dead` line (no watchdog was spawned this
-  session — nothing to tear down, stated as such rather than fabricating a pid); **then** the
-  log-file completion marker, only once pulses + self-verify + teardown all preceded it.
+| | ARC 046 (cancel) | ARC 047 (fill) |
+|---|---|---|
+| handler adaptation | zero | **zero** |
+| port | reused `OutcomesPort` | **a SECOND port (`FillSinkPort`)** |
+| collaborators the daemon had to hold | 1 (`OrderOutcomes`) | **9** |
+| approval-time change | none | order HELD + join MINTED + margin field set + Σ seeded |
+| boot-time input | none | tick-size map, account balance |
+| published-state surface | counters | counters + enumerated stops + enumerated §3 rows + §3 snapshot |
+| new code (top-level objects) | — | **~313 code lines / ~217 docstring** across 2 files |
+| diff | +953 / 2 files | **+1013 / 2 files** |
 
-Corrected in place, not re-fitted after the fact — the miss stands here. Per the fixed order
-(write back and commit → re-measure the merged tree → record that re-measurement forward-only into
-both files and commit it), this write-back commit records the prediction and the diagnostic pass
-above; the official post-write-back measurement — taken against THIS commit, with the log-file
-marker now correctly in place before it runs — is recorded in the very next commit, appended below
-this line rather than replacing it, and the durability obligations are shown against that final
-commit, not this one.
+### 2. Did the generic mechanism hold?
 
-**FINAL — banked forward-only in the next commit.**
+**Half.** The 046 machinery held completely for *parse, dedup, contain, count, record provenance* —
+`ExecReportDedup`, `DispatchLedger`, `CompletionHandler`, `CompletionInbox` and the §4:214 key are
+all unchanged in shape and now serve two paths. What did NOT generalise is the **handler port**: one
+port cannot cover a release and a conversion, because §3's terminal set is not one kind of event.
+The dispatcher is now `route -> {OutcomesPort, FillSinkPort}` and a third kind would add a third.
 
-`check_uncalled_entry_points`, measured directly rather than restated: **55 uncalled-type findings
-measured, 25 rendered** (the check truncates its own evidence and says so —
-`checks/uncalled_entry_points_baseline.json:regression:truncated: 30 further finding(s) NOT
-SHOWN`), of which `scripts/nixrisk/outcomes.py` contributes **4** rows this arc
-(`OrderOutcomes.history`, `OrderOutcomes.on_reject`, `OrderOutcomes.resolve_pending_timeouts`,
-`OutcomeRecord.released_margin`) — **`on_cancel` is no longer among them**, exactly the shrink the
-brief predicted watching for, now confirmed by name rather than by count alone. A new, unrelated
-drift is also named on this same check: `scripts/nixrisk/gate.py::GatePass.manifest` is recorded
-`uncalled` in the baseline but measures `gate_only` now — standing debt, not this arc's own defect,
-noted forward rather than silently absorbed.
+### 3. THE I1 ARC-COUNT
 
-**No count moved beyond the +1 predicted**: 97 registered checks (96 at kickoff + 1 for the new
-gate), matching the `passed+1` branch exactly.
+Remaining paths, classified against the two measured costs:
 
-### ARC 046 — the FINAL measurement, banked forward-only at `6f20d38`
+| path | mechanism | cost |
+|---|---|---|
+| **reject -> release** | `OrderOutcomes.on_reject` EXISTS, same shape as `on_cancel`, on the port the dispatcher already holds. One tuple member, one branch, one gate arm. | **CHEAPER than cancel** |
+| **pending-timeout -> `resolve_pending_timeouts`** | **NOT a completion.** It is a POLL: `due_for_status_query(now)` then resolve. Needs a per-tick ingress hook (the `Plane1Booker.before` shape) and a `StatusQueryPort` the daemon does not have. §12A:830's deadline is already loaded. | new mechanism, moderate |
+| **onset-cancel dispatch** | **BLOCKED on D3.443's missing `pending_entries()`** — the daemon cannot enumerate what to cancel. Prerequisite build, then a dispatch. | one arc incl. the prerequisite |
+| **protective-flatten completions** | The whole EXIT half: `StopBook.breached` (needs §5:322's price poll, which nothing has wired — D3.451), `forget`, CLOSING fills (`LimiterFillSink` explicitly does not serve them), §12.10 `closed` rows, `flatten.py` (1396 lines). | **the biggest, 2 arcs** |
 
-`verify.py --mode verify --privilege all` over the merged tree: **`91 passed | 3 failed | 2 cannot
-measure | 0 skipped | 1 guarded`, exit 1 — exactly the prediction**, reached on the FIRST
-post-write-back pass (the earlier `89|4|3|0|1` diagnostic reading was taken before the marker
-existed and before the two self-inflicted defects above were fixed; it is not re-fitted, it stands
-one section up). `check_arc_status_contract` now reads **PASS** — the marker, self-verify, and
-teardown line all landed correctly ahead of it this time.
+**THE NUMBER: 4 more arcs after 047. I1 is a 6-arc capstone in total (046, 047, + 4).**
+Range 4–5; the whole variance sits in protective-flatten.
 
-**Three FAILs, all standing, none of them this arc's:** `check_ibgateway_service` (127.0.0.1:4002
-ConnectionRefusedError — the Gateway is down), `check_monitor_tui` (ARM3 stale pin — recorded
-known-red arms that no longer fail), and `check_uncalled_entry_points`. **Two cannot-measure, both
-the §17 ECONNREFUSED chain:** `check_ibgateway_config` and `check_observed_resource_claims` (240s
-observation budget exhausted waiting on the same unreachable Gateway). **One guarded:**
-`check_artifact_gate_coverage`, all eight exclusions already re-owned to **ARC 047**.
+* **ARC A** — reject + pending-timeout (both, one arc: reject is ~1/5 of a fill arc).
+* **ARC B** — build `pending_entries()` (D3.443), then wire blackout/HALT onset cancellation.
+* **ARC C** — §5:322's FIRST loop input: the price poll + `StopBook.maintain` + `breached`. The
+  prerequisite for protective-flatten and the discharge of D3.451.
+* **ARC D** — protective-flatten completions + the I1 convergence gate covering all six paths.
+  **This is the arc that flips 7/12 -> 8/12, in one step.**
 
-**No count moved beyond the predicted +1**: 97 registered checks, matching the `passed+1` branch —
-adding `check_limiter_daemon_dispatch` as a genuinely new gate file was rule 8 answered honestly,
-not a second instrument over an existing one.
+### THE SWARM QUESTION: BATCH, not swarm — 2 workers maximum
 
-**Badge on bank — Limiter STAYS RED.** clean = `{I2, I5, I6, I7, I8, I10, I11}` = **7/12**,
-open = **5**: **I1** (daemon-wiring capstone, partially wired this arc), **I3**, **I4**, **I9**,
-**I12**.
+The tail does **not** decompose into four independent per-path workers, and the reason is
+mechanical rather than aesthetic:
+
+* **`check_limiter_daemon_dispatch.py` is ONE file every remaining path must extend** (check
+  contract rule 8 / doctrine C.9: the gate that owns daemon-dispatch already exists, so no path may
+  open a new one). Four workers = four concurrent edits to one gate. **ARC 036 / D3.272 lost fifteen
+  ledger rows to exactly this shape**, and stayed green while doing it.
+* **`WIRED_EVENTS` and `dispatch`'s branch ladder** are single lines that reject, onset and flatten
+  all move.
+* **ARC C is genuinely independent** — a different loop input, different modules, no completion
+  route.
+
+**Recommendation: run the completion ladder SERIALLY (A -> B -> D) with ARC C in PARALLEL against
+one of them. Two workers, not four.**
+
+**Point-fixes BEFORE the tail.** The I1 tail is ~4 serialised arcs behind one gate file; I3/I4/I9/I12
+are independent and each moves the count on its own. Running them first converts wall-clock that
+would otherwise be blocked on a merge point into board movement, and gives ARC D more measured
+ground to converge over.
+
+### 4. Named cascades this slice touched and does NOT own
+
+* **The Plane-1 `filled` row — D3.434.** `seam.EventKind` has no member for it (*a member lands here
+  ONLY when the machinery that emits it exists*), and adding one is a frozen-seam edit.
+* **Stop trailing / maintenance (§4:190-196)** — armed here, never ratcheted. **New: D3.451.**
+* **The event-driven balance refresh (§6.4b)** — **new: D3.452.**
+* **D3.443's `pending_entries()`** — the onset path's prerequisite, unchanged and still owed.
+
+---
+
+## S5 — THE GATE: `check_limiter_daemon_dispatch` EXTENDED (rule 8 — no new file, no count move)
+
+New arms: `_arm_fill`, `_arm_fill_feedback`, `_arm_fill_idempotent`. `SUBJECTS` grew to include
+`scripts/nixrisk/fills.py` — the arm that PLACES the stop lives there, and a plant in it must be
+able to redden this gate.
+
+**THE SAFETY ARM fires on the PAIR, not either half:** *the capital moved* and *no stop exists* are
+each ordinary alone; only together are they the defect. It is evaluated BEFORE every other fill
+assertion.
+
+**DEMONSTRATED FAIL — three plants, each applied to real source, each reverted byte-identical:**
+
+| plant | site | exit | the REASON it named |
+|---|---|---|---|
+| **A** — fill route removed | `scripts/limiterd.py` | **1** | `THE DAEMON DID NOT CONVERT` — drained by the loop (`consumed=2`), `committed still 2100.0`, `Σ open margin 0`, `fills_dispatched=0`; plus `released=1, not 2` and `outstanding=1` at the process boundary |
+| **B — THE SAFETY PLANT** — stop placement removed, conversion still runs | **`scripts/nixrisk/fills.py`** | **1** | **`UNPROTECTED POSITION. The daemon RELEASED 2100.0 ... and its stop book holds NO STOP for that order (stops=[], unstopped=[{...}])`** + §12.1's synthetic-stop reasoning |
+| **C** — §4:214 dedup defeated | `scripts/nixrisk/completions.py` | **1** | `DOUBLE FILL DISPATCH ... fills_dispatched=2, not 1`; `duplicates=0 — the dedup did not see it`; `handled=2`; `the LEDGER booked 1 refusal` (I2's guard covered, and that is the tell) |
+
+**Plants removed -> exit 0**, with non-vacuous evidence naming the drive, the pid, the source file,
+the stop level and both Σ figures.
+
+**A finding the plant produced by accident, now D3.450:** under PLANT B the LEDGER released
+(`2100 -> 0`) while §3's picture never advanced — the release runs at step 2 and the commit lives
+inside step 3, which raised. The reachable unplanted case is a fill whose venue symbol disagrees
+with the approval. Recorded, not repaired: the fix belongs inside `fills.py`'s step order and
+`fills.py` is byte-identical across this arc by assertion.
+
+---
+
+## FREEZE
+
+**Diff scope against `1d241e2`:** `scripts/limiterd.py`, `scripts/nixrisk/completions.py`,
+`checks/check_limiter_daemon_dispatch.py`, `scripts/tests/test_check_limiter_daemon_dispatch.py`,
+`scripts/tests/test_completions.py`, `docs/CHECK-DEBT.md`, **plus two the brief's freeze list did
+not name and which are EXPLAINED rather than reverted:**
+`checks/uncalled_entry_points_baseline.json` and `scripts/tests/test_check_uncalled_entry_points.py`
+— the brief itself required *"watch `check_uncalled_entry_points` shrink ... name which"*, and that
+baseline is a ONE-WAY RATCHET whose test FAILS on a silent shrink. Recording the shrink is
+mandatory, not optional. **Which rows moved, named:**
+`positions.py::PositionOriginWriter.unstopped` and `stops.py::StopBook.stops` LEFT the baseline
+(the daemon's published state enumerates both), and `join.py::production_origins` LEFT
+`_ARC034_CARRIED` (the daemon's approval calls it, so every minted `trade_id` comes from the
+PRODUCTION join). Each `reason` string was rewritten to say what left and why.
+
+**BYTE-IDENTICAL, proven with `git hash-object` vs `1d241e2`:** `outcomes.py`, `reservations.py`
+(I2) · `fills.py`, `stops.py`, `positions.py`, `picture.py`, `execution.py`, `join.py`,
+`fill_seam.py` (the §4 cascade) · `flatten.py`, `blackout.py` (I11) · `loop.py`, `seam.py`,
+`recovery.py`, `wal.py`, `plane1_sink.py` (the sole-writer seam and the mirror). **The cancel path
+inside `completions.py` is unchanged line-for-line** — the diff there is additive.
+
+## CLOSE-OUT
+
+* **(b) DERIVED reverse-dependency closure + the D3.444 by-detection backstop** (the import graph is
+  blind to subprocess and Protocol callers, so the closure was taken by detection over the changed
+  modules): **209 passed, 0 failed** across 12 modules. RED-before / GREEN-after on this arc's own
+  defect is PLANT B specifically: the missing stop.
+  *Pre-existing and NOT caused by this arc:* `test_arc038_c_open_is_confirmed_fill.py` and
+  `test_arc038_f_inflight_lock.py` cannot be collected under `.venv-dev` — `import zmq` in
+  `nixbus/statebus.py`, which this arc did not touch (`git diff --stat 1d241e2 -- scripts/nixbus/`
+  is empty). `zmq 27.1.0` is present in `.venv` and absent from `.venv-dev`.
+* **(c) THE GATE IS BOUND** from all three plants above, each naming its site.
+* **TRIPWIRE GUARD (the 044/045 finding):** `test_check_order_path_bans.py` and
+  `test_check_uncalled_entry_points.py` were run EXPLICITLY, not left to a testmon selection.
+* **(d)** Four CHECK-DEBT rows opened (**D3.449, D3.450, D3.451, D3.452**) and the **ARC 047 series
+  row written**: `399`, derived by `check_derived_claims`'s `ledger_rows` over the merged tree, not
+  typed and not `395 + 4`. `check_derived_claims` passes **13/13** with
+  `check_debt_open_items=399 [derived:ledger_rows=399, stated:series_table_latest_row=399]`.
+
+## RESIDUAL — explicitly NOT claimed
+
+* **I1 is NOT discharged. The count STAYS 7/12.** Two of ~6 paths wired (cancel, fill); reject,
+  pending-timeout, onset and protective-flatten remain.
+* **D3.442 shrinks:** daemon-invoked now — `OrderOutcomes.on_cancel`, `LimiterFillSink.on_fill`,
+  `FillHandler.on_fill`, `StopBook.arm`, `IocRemainder.release_remainder`,
+  `PositionOriginWriter.on_fill`, `EntryOrderOrigins.record`, `ApprovedOrderBook.record`,
+  `ExecutionLedger.ingest`, `FinancialPictureBook.commit`. Still owed — `OrderOutcomes.on_reject`,
+  `resolve_pending_timeouts`, `due_for_status_query`, `StopBook.maintain`/`breached`/`forget`,
+  everything in `flatten.py`.
+* **No order was placed and nothing was sent.** The IOC remainder cancel is RECORDED (D3.449).
+* The Plane-1 `filled` row (D3.434), stop trailing (D3.451), the balance refresh (D3.452),
+  D3.443's `pending_entries()`, and D3.428/D3.438-D3.441/D3.446-D3.448/D3.359/360/361/363 stand.
+
+## BADGE
+
+**Limiter STAYS RED. Count STAYS 7/12. I1 path-progress: 2 of ~6 wired.**
+When I1 fully lands it flips to 8/12 in one step — **ARC D of the four above.**

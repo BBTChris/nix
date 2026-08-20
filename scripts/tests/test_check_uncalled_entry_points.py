@@ -797,7 +797,11 @@ _ARC034_CARRIED = (
     "scripts/nixrisk/fills.py::FillHandler.armed_orders",
     "scripts/nixrisk/fills.py::FillHandler.disagreements",
     "scripts/nixrisk/fills.py::IocRemainder.history",
-    "scripts/nixrisk/join.py::production_origins",
+    # `production_origins` STOOD HERE AND IS NOW WIRED. ARC 047 gave the running
+    # `limiterd` a fill path, and its approval calls this factory — so every
+    # `trade_id` the daemon mints comes from the PRODUCTION join, which refuses
+    # `positions.identity_trade_id` outright (D3.177's architect ruling). The
+    # tuple shrinks with a visible diff, which is what this constant is for.
     "scripts/nixrisk/recovery.py::HeartbeatMonitor.beat",
     "scripts/nixrisk/recovery.py::HeartbeatMonitor.grace_cycles",
     "scripts/nixrisk/recovery.py::HeartbeatMonitor.interval_s",

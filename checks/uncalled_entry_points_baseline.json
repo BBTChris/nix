@@ -698,17 +698,13 @@
   },
   "scripts/nixrisk/positions.py": {
    "owner": "unassigned",
-   "reason": "PositionOriginWriter.on_fill is the ARC 033 origin write \u2014 built, gated, reddening on a wrong distance, and called by checks/check_origin_write.py and by nothing else. CHECK-DEBT D3.150 and D3.178 are this row.",
+   "reason": "PositionOriginWriter.on_fill is the ARC 033 origin write. ARC 047: `PositionOriginWriter.unstopped` LEFT this baseline \u2014 scripts/limiterd.py's FillPath.record() publishes it in the daemon's own status reply and stop record, so the unprotected-position escalation surface \u00a714 names is now read by the process that can create one. `on_fill` itself has had a production caller since ARC 047 wired the \u00a72A:75 fill completion into limiterd. CHECK-DEBT D3.150 and D3.178 are this row.",
    "symbols": {
     "EntryOrderOrigins.origin_for_trade": {
      "bucket": "uncalled",
      "admitted": "ARC 034"
     },
     "EntryOrderOrigins.record": {
-     "bucket": "gate_only",
-     "admitted": "ARC 034"
-    },
-    "PositionOriginWriter.unstopped": {
      "bucket": "gate_only",
      "admitted": "ARC 034"
     }
@@ -836,13 +832,9 @@
   },
   "scripts/nixrisk/stops.py": {
    "owner": "unassigned",
-   "reason": "StopBook.arm is \u00a74's distance-to-price conversion, ARC 029, and its only non-test caller is checks/check_origin_write.py. Production never arms a stop, which is the other half of CHECK-DEBT D3.150.",
+   "reason": "StopBook.arm is \u00a74's distance-to-price conversion, ARC 029. ARC 047: `StopBook.stops` LEFT this baseline \u2014 scripts/limiterd.py's FillPath.record() enumerates every live synthetic stop in the daemon's published state, because check_limiter_daemon_dispatch has to answer *does a stop exist for this open position* and two totals that happen to match cannot answer it. A RUNNING limiterd now arms stops through the \u00a72A:75 fill completion, so the D3.150 half that said production never arms one is discharged for the ENTRY path. `StopBook.forget` remains uncalled: it belongs to the protective-flatten path, which the daemon does not dispatch yet.",
    "symbols": {
     "StopBook.forget": {
-     "bucket": "uncalled",
-     "admitted": "ARC 034"
-    },
-    "StopBook.stops": {
      "bucket": "uncalled",
      "admitted": "ARC 034"
     }

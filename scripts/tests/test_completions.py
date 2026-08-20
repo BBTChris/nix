@@ -204,7 +204,6 @@ def test_a_REDELIVERY_is_a_DUPLICATE_and_the_HANDLER_IS_NEVER_CALLED_TWICE():
     "event",
     [
         "on_ack",
-        "on_fill",
         "on_reject",
         "on_balance",
         "on_margin",
@@ -214,9 +213,11 @@ def test_a_REDELIVERY_is_a_DUPLICATE_and_the_HANDLER_IS_NEVER_CALLED_TWICE():
 )
 def test_every_UNWIRED_2A_event_is_RECORDED_as_unwired_and_NAMES_ITSELF(event: str):
     """An unwired path that is silently dropped reads exactly like one that works."""
+    # ARC 047 wired `on_fill`, so it LEFT this set. The literal moving is the
+    # mechanism working: the assertion below named the drift the moment
+    # WIRED_EVENTS grew, which is exactly what a literal list is kept for.
     assert set(SPEC_EVENTS) - set(WIRED_EVENTS) == {
         "on_ack",
-        "on_fill",
         "on_reject",
         "on_balance",
         "on_margin",
@@ -287,3 +288,190 @@ def test_the_RECORD_carries_the_PROVENANCE_a_reader_outside_the_process_needs():
         "if the dispatcher moved it, removing the dispatch would also remove "
         "the evidence that a completion ever arrived"
     )
+
+
+# ===========================================================================
+# ARC 047 — THE FILL PATH. Wired as a SECOND port, because §3's *converts to
+# open-margin* is a cascade and `OrderOutcomes` has no `on_fill` to reuse.
+# ===========================================================================
+def _fill(**over: object) -> bytes:
+    base: dict[str, object] = {
+        "event": "on_fill",
+        "client_order_id": "COID-F",
+        "exec_id": "EXEC-F",
+        "done_qty": 3,
+        "symbol": "ES",
+        "price": 5000.0,
+        "cumulative_qty": 3,
+    }
+    base.update(over)
+    return _blob(**base)
+
+
+class _Sink:
+    """A stand-in for `LimiterFillSink`, recording what the dispatcher asked it.
+
+    Returns a `FillOutcome`-shaped object rather than a real one: the subject
+    here is the DISPATCHER's routing and its safety re-assertion, and a real
+    cascade would make every assertion below a statement about `fills.py`.
+    `checks/check_limiter_daemon_dispatch.py` drives the real one, in a real
+    daemon, which is the measurement this cannot make and must not imitate.
+    """
+
+    def __init__(self, *, arm_level: float = 4998.0, open_margin: float = 2100.0):
+        self.calls: list[tuple[object, ...]] = []
+        self._arm_level = arm_level
+        self._open_margin = open_margin
+        self._outcomes: list[object] = []
+
+    # R0913/R0917: the six positional fields ARE §2A:75's `on_fill` signature,
+    # transcribed. A stand-in that took a struct would not satisfy the port it
+    # exists to stand in for.
+    def on_fill(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+        self, coid, exec_id, symbol, filled_qty, price, cumulative_qty
+    ):
+        """Record the six §2A fields and produce one outcome."""
+        self.calls.append((coid, exec_id, symbol, filled_qty, price, cumulative_qty))
+        armed = (
+            None
+            if self._arm_level <= 0.0
+            else type(
+                "S",
+                (),
+                {
+                    "level": self._arm_level,
+                    "initial_distance_ticks": 8,
+                    "mode": type("M", (), {"value": "fixed"})(),
+                },
+            )()
+        )
+        row = type("R", (), {"size": filled_qty})()
+        origin = type("O", (), {"trade_id": "TRD-1"})()
+        picture = type("P", (), {"sum_open_margin": self._open_margin})()
+        write = type("W", (), {"row": row, "origin": origin, "picture": picture})()
+        self._outcomes.append(
+            type("FO", (), {"armed": armed, "write": write, "sum_reservations": 0.0})()
+        )
+
+    def outcomes(self):
+        """Every outcome produced, in arrival order."""
+        return tuple(self._outcomes)
+
+
+def test_on_fill_is_WIRED_and_is_ROUTED_TO_THE_FILL_SINK_not_to_outcomes():
+    """`on_fill` reaches the fill sink; §3's cancel handler is never called.
+
+    The two ports are not interchangeable: one releases, one CONVERTS.
+    """
+    outcomes, sink = _Outcomes(), _Sink()
+    d = CompletionDispatcher(outcomes, fills=sink)
+    result = d.dispatch(parse_completion(_fill(), source="s"))
+    assert result.disposition == Disposition.DISPATCHED, result.reason
+    assert sink.calls == [("COID-F", "EXEC-F", "ES", 3, 5000.0, 3)]
+    assert not outcomes.calls, "a fill reached §3's CANCEL handler"
+    assert d.ledger.fills_dispatched == 1
+    assert d.ledger.cancels_dispatched == 0
+    assert result.trade_id == "TRD-1"
+    assert result.stop_level == 4998.0
+    assert result.converted_margin == 2100.0
+    assert result.opened_size == 3
+
+
+def test_a_fill_that_CONVERTED_WITHOUT_AN_ARMED_STOP_is_REFUSED_and_NAMES_IT():
+    """§7.12 guard 6 — the daemon-boundary safety re-assertion.
+
+    `fills.py` already makes this unreachable by arming first and raising on
+    refusal. It is asserted a SECOND time here because the cost of the
+    redundancy is one comparison and the cost of being wrong is a live position
+    nothing protects.
+    """
+    d = CompletionDispatcher(_Outcomes(), fills=_Sink(arm_level=0.0))
+    result = d.dispatch(parse_completion(_fill(), source="s"))
+    assert result.disposition == Disposition.REFUSED, result.reason
+    assert "UNPROTECTED POSITION" in result.reason
+    assert "§14 resolves that toward FLAT" in result.reason
+    assert d.ledger.fills_dispatched == 0
+    assert d.ledger.opened == 0
+
+
+def test_a_fill_whose_CASCADE_RAISES_is_CONTAINED_as_a_REFUSAL_carrying_the_reason():
+    """A raising cascade must not kill the tick, and must not be absorbed either."""
+
+    class _Raises:
+        """A sink whose cascade refuses — `UntradableSymbol`'s shape."""
+
+        def on_fill(self, *args):  # pylint: disable=unused-argument
+            """Raise the way `fills.py` does: loudly, naming the condition."""
+            raise RuntimeError("symbol 'NQ' has no positive tick size")
+
+        def outcomes(self):
+            """No outcome was produced."""
+            return ()
+
+    d = CompletionDispatcher(_Outcomes(), fills=_Raises())
+    result = d.dispatch(parse_completion(_fill(), source="s"))
+    assert result.disposition == Disposition.REFUSED
+    assert "fill cascade REFUSED" in result.reason
+    assert "no positive tick size" in result.reason, (
+        "the REASON is the assertion (check contract v2 rule 11); a refusal "
+        "that dropped the cascade's own sentence would leave an operator with "
+        "a disposition and no condition"
+    )
+
+
+def test_a_fill_with_NO_SINK_is_a_NAMED_REFUSAL_not_an_unwired_event():
+    """*This build has no fill sink* and *this build does not wire fill* are two
+    readings, and `WIRED_EVENTS` already claims the second is false."""
+    d = CompletionDispatcher(_Outcomes())
+    result = d.dispatch(parse_completion(_fill(), source="s"))
+    assert result.disposition == Disposition.REFUSED
+    assert "constructed with no fill sink" in result.reason
+    assert d.ledger.unwired == 0
+    assert d.record()["fill_sink"] is False
+
+
+def test_a_REDELIVERED_fill_is_DEDUPED_at_the_daemon_boundary_and_never_reaches_the_cascade():
+    """§4:214: one exec report delivered twice runs the cascade ONCE.
+
+    The fill is where a defeated dedup costs most — a second dispatch re-runs an
+    arm, a release AND a published row.
+    """
+    sink = _Sink()
+    d = CompletionDispatcher(_Outcomes(), fills=sink)
+    first = d.dispatch(parse_completion(_fill(), source="s"))
+    second = d.dispatch(parse_completion(_fill(), source="s"))
+    assert first.disposition == Disposition.DISPATCHED
+    assert second.disposition == Disposition.DUPLICATE
+    assert len(sink.calls) == 1, "§4's cascade ran twice for one exec report"
+    assert d.ledger.fills_dispatched == 1
+    assert d.ledger.duplicates == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "needle"),
+    [
+        ("symbol", "", "names no symbol"),
+        ("price", "not-a-number", "non-numeric price"),
+        ("price", 0.0, "not a positive finite number"),
+        ("done_qty", 0, "is not a confirmation"),
+        ("cumulative_qty", 1, "BELOW this execution's done_qty"),
+    ],
+)
+def test_a_FILL_MISSING_A_FIELD_4_NEEDS_is_REFUSED_AT_THE_PARSE_and_says_which(
+    field: str, value: object, needle: str
+):
+    """Fail closed at the parse, BEFORE §4:214's key is claimed.
+
+    A fill that reached the cascade missing one of these would fail deep — after
+    the dedup key was claimed, which is the one place a refusal cannot be
+    retried (§4:240-241 forbids the resend).
+    """
+    with pytest.raises(MalformedCompletion) as exc:
+        parse_completion(_fill(**{field: value}), source="s")
+    assert needle in str(exc.value)
+
+
+def test_a_NON_FILL_event_carries_NO_price_and_that_is_not_a_missing_value():
+    """§2A's `on_cancel` genuinely has no symbol, price or running total."""
+    c = parse_completion(_cancel(), source="s")
+    assert (c.symbol, c.price, c.cumulative_qty) == ("", 0.0, 0)

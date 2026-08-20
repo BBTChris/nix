@@ -6669,3 +6669,84 @@ not a second instrument over an existing one.
 **Badge on bank — Limiter STAYS RED.** clean = `{I2, I5, I6, I7, I8, I10, I11}` = **7/12**,
 open = **5**: **I1** (daemon-wiring capstone, partially wired this arc), **I3**, **I4**, **I9**,
 **I12**.
+
+## 2026-08-20 — ARC 047: I1 slice 2 — the FILL completion dispatch, and the I1 arc-count as a number
+
+**TIER = INTERIOR. Limiter STAYS RED. Count STAYS 7/12** (`{I2, I5, I6, I7, I8, I10, I11}`, open 5).
+I1 is a multi-arc capstone; this is **path 2 of ~6** (cancel = 046, fill = 047) and it does not flip
+the count. Predecessor tip DERIVED as **`1d241e2`**, not the brief's approximate `6f20d38`.
+
+**S1 — the gap, reproduced on a running `limiterd`, and it was three layers deep.** Non-vacuity
+first: reservation TAKEN (`committed 0.0 -> 2000.0`), stop intent ACCEPTED (`stop_ticks=8, fixed`),
+fill report DRAINED BY THE LOOP (`consumed=1`, `last_source` = the pushed file). Then: (1) `on_fill`
+routed to `UNWIRED`; (2) **`OrderOutcomes` has no `on_fill` at all** — its `HANDLES` map books
+`{CANCEL, REJECT, PENDING_TIMEOUT}`, so the port the 046 dispatcher holds is structurally incapable
+of serving a fill, because §3's *converts to open-margin* is a cascade and not a release; (3)
+`limiterd.py` mentioned ZERO of the nine fill collaborators and **DISCARDED the `ProposedOrder` it
+built at `reserve`** — throwing §4's whole conversion input away at the approval that created it.
+Result: committed unchanged at 2000.0, no `trade_id`, no OPEN, **no protective stop**, and no key in
+the daemon's published state where a stop could even be seen.
+
+**S2 — the wiring, and the answer to *is parse -> route enough?* is NO.** Fill needed a SECOND port
+(`FillSinkPort`, two verbs — `on_fill` returns `None` so `outcomes()` is how the handler's own answer
+is read back), NINE process-held collaborators (`FillPath`), the approval completed (the order HELD,
+the join MINTED through `production_origins()` which refuses `identity_trade_id` per D3.177, §4:198's
+margin field set and §3's Σ reservations seeded on one snapshot), a boot-loaded tick-size map
+(`--tick-size`; `risks/` has no instrument table and `nixalloc/sizing.py` forbids a hardcoded one),
+a published-state surface enumerating every armed stop and every §3 row, and §4:203-206's outcome
+push. **The stop placement was NOT a blocking finding: it was already inside the handler** —
+`fills.py` arms first and raises rather than returning a partial outcome — and `_dispatch_fill`
+re-asserts it at the daemon boundary anyway.
+
+**S3 — proven end to end through the completion path.** Full fill: OPEN row, `trade_id` distinct from
+`client_order_id`, **one protective stop at `4998.0 = 5000.0 - 8 x 0.25`, anchored at the confirmed
+fill**, ledger and picture Σ reservations both `2000 -> 0`, **picture Σ open margin `0 -> 2000`, and
+picture `committed` UNCHANGED — same capital, different bucket, which is what the conversion IS** —
+plus OPEN feedback in the outbox tagged `trade_id`. Idempotency: one dispatch, one stop, one row,
+and `reservations.refused = 0` proving the DAEMON's dedup stopped it rather than I2's ledger guard.
+Partial fills: one stop on the first partial, `re_arms_declined=1` on the second so the stop does not
+re-anchor at a higher price, size 2 -> 5 in one row, IOC remainder cancel issued. Fail closed: a
+symbol with no tick size REFUSES before anything is released — **no unprotected position, ever**.
+With a real `go` held, the fill releases §4:208's lock with outcome `open` and §4:210-212's breaker
+does not fire.
+
+**S4 — ZERO ADAPTATION of the §4 cascade.** `fills.py`, `stops.py`, `positions.py`, `picture.py`,
+`execution.py`, `join.py`, `fill_seam.py`, `outcomes.py`, `reservations.py`, `loop.py`, `seam.py`,
+`flatten.py`, `blackout.py` all byte-identical by `git hash-object`. The handler and its stop
+placement were daemon-ready exactly as `on_cancel` was; **the DAEMON was not.** Cost: 1 collaborator
+(046) -> 9 (047); one port -> two; +1013 lines over two files, ~313 of them code.
+**THE I1 ARC-COUNT: 4 more arcs after this one — I1 is a 6-arc capstone total.** A: reject +
+pending-timeout. B: `pending_entries()` (D3.443) then onset-cancel. C: §5:322's price poll + stop
+maintenance. D: protective-flatten completions + the convergence gate — **that is the arc that flips
+7/12 -> 8/12 in one step.** **BATCH, NOT SWARM — two workers maximum:** every remaining path must
+extend the ONE gate file `check_limiter_daemon_dispatch.py` (rule 8), and `WIRED_EVENTS` plus the
+dispatch ladder are single lines three of the four paths move; ARC 036 / D3.272 lost fifteen ledger
+rows to exactly that shape while staying green. Only ARC C is genuinely parallel.
+**Point-fixes (I3/I4/I9/I12) BEFORE the tail**, because the tail is serialised behind a merge point
+and each point-fix moves the count on its own.
+
+**S5 — `check_limiter_daemon_dispatch` EXTENDED** (rule 8: no new file, no count move), with
+`scripts/nixrisk/fills.py` added to `SUBJECTS` because the arm that places the stop lives there.
+The safety arm fires on the PAIR — *capital moved* AND *no stop* — and is evaluated first.
+**BOUND from three plants, each reverted byte-identical: A** (fill route removed) exit 1
+`THE DAEMON DID NOT CONVERT`; **B, the safety plant** (stop placement removed, conversion still
+running) exit 1 **`UNPROTECTED POSITION`** sited at `fills.py`; **C** (dedup defeated) exit 1
+`DOUBLE FILL DISPATCH`. Unperturbed: exit 0.
+
+**Close-out.** (b) derived closure by detection (the import graph is blind to subprocess/Protocol
+callers, D3.444): **209 passed, 0 failed** over 12 modules; two ARC-038 modules are uncollectable
+under `.venv-dev` for a PRE-EXISTING reason this arc did not cause (`import zmq`, absent from
+`.venv-dev`, present in `.venv`; `scripts/nixbus/` untouched). Tripwire guard honoured —
+`test_check_order_path_bans` and `test_check_uncalled_entry_points` run EXPLICITLY. (c) gate bound
+from all three plants. (d) **D3.449** (the IOC remainder cancel is recorded, never sent), **D3.450**
+(ledger/picture divergence when the cascade raises between steps 2 and 3 — found BY plant B),
+**D3.451** (a trailing stop is armed and never ratcheted: no price feed), **D3.452** (nothing
+refreshes the picture's balance); **ARC 047 series row = 399**, derived by `check_derived_claims`,
+which passes 13/13 with `derived:ledger_rows=399 == stated:series_table_latest_row=399`.
+**The predicted `check_uncalled_entry_points` shrink landed and is named:**
+`PositionOriginWriter.unstopped` and `StopBook.stops` LEFT the baseline, `production_origins` LEFT
+`_ARC034_CARRIED`.
+
+**Residual, explicitly not claimed:** I1 is NOT discharged; no order was placed and nothing was sent;
+the Plane-1 `filled` row (D3.434), stop trailing (D3.451), the balance refresh (D3.452) and
+D3.443's `pending_entries()` all stand. **Badge: RED. Count: 7/12. I1 path-progress 2 of ~6.**

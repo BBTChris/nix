@@ -139,9 +139,19 @@ from typing import Any, Final
 import risk_config
 from nixrisk.completions import (
     CompletionDispatcher,
+    DispatchResult,
+    Disposition,
     MalformedCompletion,
     parse_completion,
 )
+from nixrisk.execution import ExecutionLedger
+from nixrisk.fills import (
+    ApprovedOrderBook,
+    FillHandler,
+    IocRemainder,
+    LimiterFillSink,
+)
+from nixrisk.join import production_origins
 from nixrisk.loop import (
     CONFIG_MODULE,
     GoTimeout,
@@ -152,9 +162,12 @@ from nixrisk.loop import (
     tick_interval_for,
 )
 from nixrisk.outcomes import OrderOutcomes
+from nixrisk.picture import FinancialPictureBook
+from nixrisk.positions import PositionOriginWriter
 from nixrisk.recovery import RecoveryError
 from nixrisk.reservations import ReservationLedger
 from nixrisk.seam import EventKind, EventRow, ProposedOrder, Side, StopMode
+from nixrisk.stops import StopBook
 from nixrisk.wal import Plane1Wal, WalError
 from nixsentinel.heartbeat import DEFAULT_HEARTBEAT_NAME, HeartbeatPublisher
 
@@ -185,6 +198,29 @@ PLANE1_WAL_NAME: Final[str] = "plane1.wal"
 RUNTIME_SCHEMA: Final[int] = 1
 COMMAND_SCHEMA: Final[int] = 1
 REPLY_SCHEMA: Final[int] = 1
+#: ARC 047. §4:203-206's OUTCOME PUSH, as a file. Its own namespace for the same
+#: reason the three above have theirs: a feedback record is read by the
+#: originating strategy FSM, not by the client that sent a command.
+FEEDBACK_SCHEMA: Final[int] = 1
+
+#: ARC 047. §12A:811 `DEPLOYABLE_PCT`, by the key it has in its one physical
+#: home. Read through `risk_config` rather than off the raw JSON for the reason
+#: `pending_ack_timeout_from_config` records: the file carries cross-knob boot
+#: rules over this value and reading around the validator would leave them
+#: validating a number this process then ignored.
+DEPLOYABLE_PCT_KEY: Final[str] = "deployable_pct"
+
+
+def deployable_fraction_from_config(root: Path | None = None) -> float:
+    """§3:131 / §12A:811's deployable fraction. No default (directive 4).
+
+    `FinancialPictureBook` refuses construction outside (0, 1] and takes no
+    default of its own — *"§12A owns the value and this class takes no default"*
+    — so this raises rather than substituting one here.
+    """
+    configs = risk_config.load_risk_configs(root)
+    return risk_config.knob(configs.modules[CONFIG_MODULE], DEPLOYABLE_PCT_KEY)
+
 
 #: Command files read per tick. §11:581's bound applied to the ingress read for
 #: the same reason `nixrisk/loop.py` bounds the drain: a directory somebody
@@ -395,6 +431,413 @@ class CompletionInbox:
         return taken
 
 
+# R0903 (too-few-public-methods): ONE public verb IS the whole port. `fills.py`
+# declares `CancelPort` with exactly `cancel_order` and states why: a
+# reservation-release path that could also PLACE would be a second
+# order-placement site (§12.1 keeps stops synthetic; §14 makes flatten execution
+# Limiter-only). A second verb here to clear a threshold would widen precisely
+# that surface.
+# pylint: disable=too-few-public-methods
+class RecordedCancels:
+    """ARC 047. §4's IOC remainder cancel — RECORDED, NEVER SENT.
+
+    Satisfies `nixrisk.fills.CancelPort`. It is a STUB and it says so, for the
+    same reason `nixrisk/loop.py`'s sender is *"a stub that records and never
+    sends"*: there is no vendor integration in this tree (`CLAUDE.md`'s spec
+    table lists it under *not yet authored*), so there is no socket to put a
+    cancel on.
+
+    WHAT THIS DOES NOT CLAIM, STATED FIRST: that the unfilled remainder of a
+    partial fill was cancelled AT THE VENUE. It was not. §4's remainder rule has
+    two halves — cancel the remainder, release its reservation — and this process
+    performs the SECOND half for real (the reservation genuinely releases in the
+    live §11.3 ledger) while the first is an entry in `issued`. The asymmetry is
+    named here rather than left to be discovered, and it is recorded as CHECK-DEBT.
+    The direction of error is the safe one: §4 says outright *"the reservation
+    covered full size, so no cap breach either way"*, and an uncancelled remainder
+    that later fills is the OVER-FILL case `IocRemainder` already counts.
+    """
+
+    def __init__(self) -> None:
+        #: Every cancel this process WOULD have sent, in order. An observable for
+        #: the reason every counter in this file is one: a component that cannot
+        #: say what it did can only be believed, not measured.
+        self.issued: list[str] = []
+
+    def cancel_order(self, client_order_id: str) -> None:
+        """Record the IOC cancel §4 requires. Sends nothing."""
+        self.issued.append(str(client_order_id))
+
+
+class FillPath:  # pylint: disable=too-many-instance-attributes
+    # NINE collaborators, and that count IS this arc's central measurement:
+    # ARC 046 wired `on_cancel` by handing the dispatcher ONE object it already
+    # held. Fill needed nine, because §3's *converts to open-margin* is a
+    # cascade and not a release. Collapsing them behind a facade would hide the
+    # cost this class exists to report, and every one of them is read by
+    # `record()` below out of a real drive.
+    """ARC 047. Everything the PROCESS must hold for §2A:75's `on_fill` to work.
+
+    Assembled here and nowhere else. Not one line of `nixrisk/fills.py`,
+    `stops.py`, `positions.py`, `picture.py`, `execution.py` or `join.py` was
+    edited to make this possible — they are byte-identical across this arc and
+    that is asserted with `git hash-object`, not claimed. **The whole change is
+    that something with a pid now owns them.** That sentence is ARC 046's about
+    the ledger and the outcome handlers, and it is the shape of I1: the
+    mechanisms were built and gated arcs ago and no running process ever called
+    one (ARC 038's deepest finding; D3.178's *zero production callers*).
+
+    THE ORDER OF THE CASCADE IS `fills.py`'s AND IS NOT RESTATED HERE
+    ----------------------------------------------------------------
+    `FillHandler.on_fill` arms the stop (§4's distance->price conversion at the
+    CONFIRMED fill), then IOC-cancels and releases the remainder (§4's
+    partial-fill rule), then publishes §3's row — and it RAISES rather than
+    returning a partial outcome. This class composes; it does not sequence.
+
+    WHAT IT IS NOT
+    --------------
+    * **It is not a broker.** `RecordedCancels` above records the one venue
+      message this path produces and sends nothing. §12.1's synthetic-stop
+      prohibition is kept structural: `StopBook` reaches no broker at all, so
+      "the protective stop is placed" means a live `StopState` in this
+      process's memory at `fill -/+ distance x tick_size`, and §12.1:604 has the
+      Sentinel cover the process-death gap. A killed Risk Engine is still an
+      unprotected position and no green here denies it.
+    * **It writes no Plane-1 `filled` row.** `seam.EventKind` has no member for
+      it — *"a member lands here ONLY when the machinery that emits it exists"* —
+      and adding one is a frozen-seam edit outside this arc's authority.
+      CHECK-DEBT D3.434, named rather than skipped.
+    * **It does not maintain the stop.** §4's trailing ratchet is
+      `StopBook.maintain`, driven by the price tick, and this daemon has no price
+      feed. A FIXED stop is static forever and is therefore fully served; a
+      TRAILING stop is ARMED here and never ratcheted, which is named debt.
+    * **It refreshes no balance.** §6.4b's event-driven balance refresh is not
+      wired; see `--account-balance`.
+
+    THE TICK-SIZE MAP IS BOOT-LOADED, AND ITS ABSENCE FAILS CLOSED
+    -------------------------------------------------------------
+    `StopBook` takes a per-symbol tick size and COPIES it, deliberately (*"so a
+    later mutation of the caller's mapping cannot silently re-scale a live
+    stop"*). Tick size is an instrument constant on §12.11's boot-loaded,
+    restart-only lifecycle, so it arrives on the command line and never changes
+    afterwards. There is no instrument table in `risks/` to read it from —
+    `allocator_caps.config.json` carries `tick_value_usd`, which is the DOLLAR
+    value of a tick and not its PRICE increment — so inventing one here would be
+    the hardcoded `tick_size` constant `nixalloc/sizing.py` forbids by name.
+
+    A symbol absent from the map is NOT-TRADABLE (§4:198): `StopBook.arm` raises
+    `UntradableSymbol` BEFORE the remainder is released, so the cascade refuses
+    whole and **no reservation converts and no position opens**. That is the
+    fail-closed direction and it is the safe minimum this arc guarantees: this
+    process cannot open a position it has no stop for.
+    """
+
+    def __init__(
+        self,
+        *,
+        reservations: ReservationLedger,
+        balance: float,
+        deployable_fraction: float,
+        tick_size: dict[str, float],
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self.picture = FinancialPictureBook(
+            balance=balance, deployable_fraction=deployable_fraction
+        )
+        self.execution = ExecutionLedger()
+        self.stops = StopBook(tick_size)
+        self.tick_size = dict(tick_size)
+        # THE PRODUCTION JOIN, not the degenerate one. `production_origins`
+        # REFUSES `positions.identity_trade_id` — D3.177's architect ruling —
+        # so every `trade_id` this daemon mints is genuinely distinct from its
+        # `client_order_id` and the two keys can be observed to disagree.
+        self.origins = production_origins()
+        self.approvals = ApprovedOrderBook()
+        self.cancels = RecordedCancels()
+        self.writer = PositionOriginWriter(
+            picture=self.picture,
+            ledger=self.execution,
+            stops=self.stops,
+            origins=self.origins,
+        )
+        self._reservations = reservations
+        self.remainder = IocRemainder(
+            reservations=reservations, cancels=self.cancels, clock=clock
+        )
+        self.handler = FillHandler(
+            orders=self.approvals,
+            stops=self.stops,
+            remainder=self.remainder,
+            writer=self.writer,
+        )
+        self.sink = LimiterFillSink(
+            handler=self.handler, orders=self.approvals, clock=clock
+        )
+        #: Approvals this process refused to hold after taking the reservation.
+        #: Counted because such an order can NEVER fill (the sink refuses an
+        #: unapproved fill) while its capital is committed — a state an operator
+        #: must be able to read rather than infer.
+        self.approval_failures: list[str] = []
+
+    def approve(self, order: ProposedOrder) -> None:
+        """§3's *taken at approval*, completed: HOLD the order and MINT the join.
+
+        Called at `reserve`, which is this build's approval moment, and it is the
+        only moment at which the approval's three facts exist together. Both
+        registries below refuse a duplicate loudly and neither is optional:
+
+        * `ApprovedOrderBook` holds `stop_ticks` — *the sizer's own distance*
+          (§7:476) — which is the WHOLE INPUT to §4's distance->price conversion
+          and which an execution report does not carry. Before this arc the
+          daemon built a `ProposedOrder` at `reserve` and DISCARDED it, so a fill
+          arriving later had no distance to convert and no requested size to
+          measure §4's remainder against. Measured at ARC 047 S1.
+        * `EntryOrderOrigins` mints the `trade_id` §3:159 keys the position table
+          by, and records the trade<->order join. §4 mints at OPEN; the JOIN is
+          recorded at approval because that is when it exists, and the row does
+          not become `PositionState.OPEN` until the confirmed fill publishes it.
+
+        Raises. The caller refuses the whole command rather than replying
+        accepted over a half-approved order — see `CommandHandler._reserve`.
+        """
+        self.approvals.record(order)
+        self.origins.record(order)
+        # §4:198's instrument field set, seeded from the approval that named it.
+        # §6.4 makes per-symbol margin LIVE venue state rather than config, and
+        # this process has no margin feed, so the approval is the only authority
+        # in the room. `PositionOriginWriter` refuses a fill in a symbol absent
+        # from this set rather than defaulting one, so seeding it here is what
+        # makes the published row's `margin` have a scale at all.
+        current = dict(self.picture.current().margin_per_contract)
+        current[order.symbol] = order.margin_per_contract
+        # §3's Σ reservations, onto the SAME snapshot, in the SAME commit. Before
+        # this arc the daemon's ledger and its picture were two numbers for one
+        # fact and only the ledger moved; §3's atomicity rule is that balance and
+        # the position table publish TOGETHER, and a Σ that lagged its own ledger
+        # would make the conversion invisible in the one snapshot every consumer
+        # reads. Taken from the ledger rather than added up here — one authority.
+        self.picture.commit(
+            margin_per_contract=current,
+            sum_reservations=self._reservations.total_reserved(),
+        )
+
+    def record(self) -> dict[str, Any]:
+        """The out-of-process evidence block. Counters AND the state itself.
+
+        The stops and the rows are enumerated, not counted, because the safety
+        question an outside reader must be able to answer is *does a stop exist
+        for this open position* — and two totals that happen to match cannot
+        answer it. `check_limiter_daemon_dispatch` reads exactly this.
+        """
+        picture = self.picture.current()
+        return {
+            "delivered": self.sink.delivered,
+            "handled": self.handler.handled,
+            "conversions": self.handler.conversions,
+            "re_arms_declined": self.handler.re_arms_declined,
+            "approvals": self.approvals.recorded,
+            "origins": self.origins.recorded,
+            "approval_failures": list(self.approval_failures),
+            "cancels_recorded": list(self.cancels.issued),
+            "cancels_issued": self.remainder.cancels_issued,
+            "releases": self.remainder.releases,
+            "refused_releases": self.remainder.refused_releases,
+            "over_fills": self.remainder.over_fills,
+            "writes": self.writer.writes,
+            "write_duplicates": self.writer.duplicates,
+            "write_refusals": self.writer.refusals,
+            # THE SAFETY EVIDENCE. Every live synthetic stop, by the order it
+            # protects, with the absolute level §4's conversion produced.
+            "stops": [
+                {
+                    "client_order_id": st.client_order_id,
+                    "symbol": st.symbol,
+                    "side": st.side.value,
+                    "mode": st.mode.value,
+                    "initial_distance_ticks": st.initial_distance_ticks,
+                    "anchor": st.anchor,
+                    "level": st.level,
+                    "activated": st.activated,
+                }
+                for st in self.stops.stops()
+            ],
+            # THE §3 POSITION TABLE, as published. `state` is here so an OPEN row
+            # is distinguishable from any other, and `stop_distance` so a reader
+            # can join a row to the stop above WITHOUT trusting either count.
+            "positions": [
+                {
+                    "trade_id": row.trade_id,
+                    "symbol": row.symbol,
+                    "strategy_id": row.strategy_id,
+                    "size": row.size,
+                    "margin": row.margin,
+                    "state": row.state.value,
+                    "stop_distance": row.stop_distance,
+                }
+                for row in picture.positions
+            ],
+            # Fills refused for want of an armed stop. §14 resolves an
+            # unprotected position toward FLAT and nothing in this process fires
+            # that flatten yet — the residual `positions.py` names and this
+            # daemon inherits. A NON-EMPTY list here is the unprotected-position
+            # condition, published where an outside reader can act on it.
+            "unstopped": [
+                {
+                    "client_order_id": rec.client_order_id,
+                    "trade_id": rec.trade_id,
+                    "symbol": rec.symbol,
+                    "filled_qty": rec.filled_qty,
+                }
+                for rec in self.writer.unstopped()
+            ],
+            "tick_size": dict(self.tick_size),
+        }
+
+    def picture_record(self) -> dict[str, Any]:
+        """§3's ONE snapshot, as fields. The conversion's other half.
+
+        `committed` in a `status` reply is §11.3's Σ over TAKEN reservations and
+        is the ledger's; `committed` here is §3's `sum_open_margin +
+        sum_reservations` and is the picture's. They are different figures with
+        one name in two documents, so both are published under names that say
+        which — a fill that converted is the pair moving in OPPOSITE directions
+        under ONE version stamp, and a reader given only one number cannot see it.
+        """
+        picture = self.picture.current()
+        return {
+            "version": picture.version,
+            "balance": picture.balance,
+            "sum_open_margin": picture.sum_open_margin,
+            "sum_reservations": picture.sum_reservations,
+            "committed": picture.committed,
+            "deployable": picture.deployable,
+            "rows": len(picture.positions),
+            "margin_symbols": sorted(picture.margin_per_contract),
+            "commits": self.picture.commits,
+            "refusals": self.picture.refusals,
+        }
+
+
+# R0903 (too-few-public-methods): ONE public verb — the push itself.
+# pylint: disable=too-few-public-methods
+class OpenFeedback:
+    """ARC 047. §4:203-206's OUTCOME PUSH for a confirmed fill, tagged `trade_id`.
+
+    §4:203-206, quoted by `nixrisk/loop.py::resolve_in_flight`: *"every outcome
+    (sized / denied / pending / open / closed / rejected / protective-flatten) is
+    pushed to the originating strategy FSM"*. `open` is one of them and this is
+    the half that had no sender.
+
+    TWO ACTIONS, AND WHY BOTH
+    -------------------------
+    1. **A feedback record in the outbox**, `<trade_id>.feedback.json`, written
+       atomically for the reason every reply here is. Files rather than ZMQ by
+       the same argument the module docstring makes for the inbox: there is no
+       bus in this tree, and a feedback path that needed one could not be driven
+       by the out-of-process gate that must prove the DAEMON pushed it.
+    2. **The §4:208 one-in-flight lock comes OFF.** A confirmed fill is a
+       TERMINAL outcome, and `loop.resolve_in_flight(..., "open")` is the Limiter
+       side of §4:203-206. Without it a filled order would hold the lock until
+       §4:210-212's deadlock breaker fired and booked a §12.10 `go_timeout` row
+       for an order that had actually FILLED — the breaker firing on the healthy
+       path, which is exactly what ARC 040 landed the `resolve` verb to make
+       falsifiable.
+
+    NEITHER IS A STRATEGY FSM. Nothing in this tree consumes the record: the
+    strategy side is `nix_strategy_contract_v1.1.md`'s and there is no bus. This
+    is the Limiter's half, written where a consumer can read it. The record is
+    tagged by `trade_id` because §4 tags feedback BY trade id precisely so it
+    cannot be applied to the wrong position.
+
+    Runs INSIDE the tick, on the loop's thread — `resolve_in_flight` refuses any
+    other thread — so it is serial with everything else §5:322 processes.
+    """
+
+    def __init__(self, loop: LimiterLoop, outbox: Path) -> None:
+        self._loop = loop
+        self._outbox = outbox
+        #: Every push, in order. An observable, and the gate's evidence that the
+        #: feedback carried THIS trade's id rather than a count of pushes.
+        self.pushed: list[dict[str, Any]] = []
+        self.failures: list[str] = []
+
+    def push(self, result: DispatchResult) -> None:
+        """Push OPEN feedback for one dispatched fill. NEVER RAISES.
+
+        Contained for the reason every handler in this file is: this runs inside
+        the tick and an exception escaping here would kill the process §12.1:604
+        has the Sentinel watching — turning a feedback fault into a trading
+        outage, and leaving every synthetic stop this process holds unwatched.
+        """
+        completion = result.completion
+        origin = None
+        try:
+            record = {
+                "schema": FEEDBACK_SCHEMA,
+                "outcome": "open",
+                "trade_id": result.trade_id,
+                "client_order_id": completion.client_order_id,
+                "exec_id": completion.exec_id,
+                "symbol": completion.symbol,
+                "fill_price": completion.price,
+                "size": result.opened_size,
+                "stop_level": result.stop_level,
+                "stop_distance_ticks": result.stop_distance_ticks,
+                "open_margin": result.converted_margin,
+                "ts": time.time(),
+                "tick": self._loop.tick_count,
+                "reason": (
+                    f"{SITE}: §4:203-206 terminal outcome 'open' — the venue "
+                    f"confirmed a fill, §4 minted trade {result.trade_id!r}, the "
+                    f"protective stop is ARMED at {result.stop_level} and §3's "
+                    "reservation converted to open margin"
+                ),
+            }
+            origin = self._loop_origin(completion.client_order_id)
+            if origin is not None:
+                record["strategy_id"] = origin
+                held, why = self._loop.resolve_in_flight(
+                    origin, completion.client_order_id, "open"
+                )
+                record["in_flight_released"] = held
+                record["in_flight_reason"] = why
+            else:
+                record["strategy_id"] = ""
+                record["in_flight_released"] = False
+                record["in_flight_reason"] = (
+                    f"{SITE}: no strategy_id is known for "
+                    f"{completion.client_order_id!r}, so §4:208's lock could not "
+                    "be addressed"
+                )
+            safe = "".join(
+                ch if ch.isalnum() or ch in "-_." else "_"
+                for ch in (result.trade_id or completion.client_order_id)
+            )
+            _write_json_atomically(self._outbox / f"{safe}.feedback.json", record)
+            self.pushed.append(record)
+        except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
+            self.failures.append(
+                f"{SITE}: §4:203-206 OPEN feedback for trade "
+                f"{result.trade_id!r} (order {completion.client_order_id!r}) was "
+                f"NOT pushed: {type(exc).__name__}: {exc}. The position IS open "
+                "and its stop IS armed; the strategy was not told"
+            )
+
+    def _loop_origin(self, client_order_id: str) -> str | None:
+        """The strategy holding §4:208's lock for this order, or `None`.
+
+        Read off the LOOP rather than off the approval registry deliberately: the
+        question this answers is *whose in-flight lock does this fill resolve*,
+        and only the loop knows which locks are held. An approval's `strategy_id`
+        would answer a different question and could name a strategy whose lock
+        was already released.
+        """
+        for strategy_id, held in self._loop.in_flight_holders():
+            if held == client_order_id:
+                return strategy_id
+        return None
+
+
 # R0903 (too-few-public-methods): ONE public verb, the loop's per-item callback.
 # pylint: disable=too-few-public-methods
 class CompletionHandler:
@@ -411,8 +854,17 @@ class CompletionHandler:
     process holding every synthetic stop (§12.1:604).
     """
 
-    def __init__(self, dispatcher: CompletionDispatcher) -> None:
+    def __init__(
+        self,
+        dispatcher: CompletionDispatcher,
+        feedback: OpenFeedback | None = None,
+    ) -> None:
         self._dispatcher = dispatcher
+        #: ARC 047. Optional so every reader written against the ARC 046
+        #: constructor still builds this handler; a build without it dispatches
+        #: the fill and pushes no §4:203-206 outcome, which `record()` below
+        #: reports as `feedback: null` rather than as zero pushes.
+        self._feedback = feedback
         #: Refusals that never reached the dispatcher — unreadable file, bad
         #: JSON, no exec_id. Counted here rather than in the dispatcher's ledger
         #: because "never parsed" and "parsed and refused" are two readings and
@@ -435,7 +887,18 @@ class CompletionHandler:
         except MalformedCompletion as exc:
             self._refuse(item, str(exc))
             return
-        self._dispatcher.dispatch(completion)
+        result = self._dispatcher.dispatch(completion)
+        # ARC 047. §4:203-206's outcome push, AFTER the cascade and only on a
+        # real dispatch. Ordered that way because the feedback asserts a trade is
+        # OPEN with a stop armed, and a push that ran before the cascade — or on
+        # a refusal — would tell the strategy about a position that does not
+        # exist. §14: *"Open" = confirmed fill only. Never optimistic.*
+        if (
+            self._feedback is not None
+            and result.disposition == Disposition.DISPATCHED
+            and result.trade_id
+        ):
+            self._feedback.push(result)
         self._unlink(item)
 
     def _refuse(self, item: RawCompletion, why: str) -> None:
@@ -512,6 +975,7 @@ class CommandHandler:
         outbox: Path,
         reservations: ReservationLedger | None = None,
         dispatcher: CompletionDispatcher | None = None,
+        fills: FillPath | None = None,
     ) -> None:
         self._loop = loop
         self._outbox = outbox
@@ -521,6 +985,12 @@ class CommandHandler:
         #: build has no ledger" and "no such verb exists" are two readings.
         self._reservations = reservations
         self._dispatcher = dispatcher
+        #: ARC 047. Optional on the same argument. A build without it takes the
+        #: reservation and holds no approved order, which is precisely the ARC
+        #: 046 state — and `_picture()` reports `fills: null` for it rather than
+        #: an empty stop book, because *no fill path* and *a fill path holding
+        #: nothing* are two readings (check contract rule 10).
+        self._fills = fills
 
     def handle(self, item: object) -> None:
         """The loop's per-item callback. Writes the reply, then unlinks the command."""
@@ -716,6 +1186,41 @@ class CommandHandler:
                 VERB_RESERVE,
                 f"§11.3's ledger refused the reservation: {type(exc).__name__}: {exc}",
             )
+        # ARC 047. §3's approval is not finished when the capital is taken: the
+        # ORDER must be held (it carries §4's stop distance, the whole input to
+        # the conversion a later fill performs) and the trade<->order join must
+        # be minted. Ordered AFTER the take so the take's own refusals — the
+        # duplicate `client_order_id`, the sub-minimum margin — keep answering
+        # first and unchanged, which is what makes ARC 046's cancel drive
+        # byte-for-byte the same drive it was.
+        approved = ""
+        if self._fills is not None:
+            try:
+                self._fills.approve(order)
+            except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
+                # FAIL CLOSED AND LOUD. The reservation is TAKEN and the order is
+                # NOT held, so a fill for it can never be handled — the sink
+                # refuses an unapproved fill because §2A's `on_fill` carries no
+                # side. Reported as a REFUSAL naming that exact state rather than
+                # as an acceptance, because an `accepted: true` over an order this
+                # process cannot ever open is the silent half of a fail-open.
+                self._fills.approval_failures.append(client_order_id)
+                return self._refuse(
+                    command_id,
+                    VERB_RESERVE,
+                    f"§3 reservation {reservation.reservation_id} IS TAKEN "
+                    f"({reservation.margin} committed) but the approval could "
+                    f"not be completed: {type(exc).__name__}: {exc}. This order "
+                    "holds capital and can NEVER be filled by this process — §4 "
+                    "converts the SIZER's stop distance and there is no held "
+                    "order to convert from. Resolve or cancel it",
+                )
+            approved = (
+                f"; the order is HELD (stop_ticks={order.stop_ticks}, "
+                f"{order.stop_mode.value}) and trade "
+                f"{self._trade_id_for(client_order_id)!r} is minted, so a §2A "
+                "on_fill for it can arm a stop and open a position"
+            )
         reply = self._reply(
             command_id,
             VERB_RESERVE,
@@ -724,11 +1229,18 @@ class CommandHandler:
                 f"{SITE}: §3 reservation {reservation.reservation_id} taken at "
                 f"approval for {client_order_id!r} — "
                 f"{reservation.margin} of margin COMMITTED in this process's "
-                "live ledger; nothing was placed and nothing was sent"
+                f"live ledger; nothing was placed and nothing was sent{approved}"
             ),
         )
         reply.update(self._picture())
         return reply
+
+    def _trade_id_for(self, client_order_id: str) -> str:
+        """The `trade_id` minted for this order, or `""`. Evidence, never a hot path."""
+        if self._fills is None:
+            return ""
+        origin = self._fills.origins.origin_for_order(client_order_id)
+        return "" if origin is None else origin.trade_id
 
     def _picture(self) -> dict[str, Any]:
         """The live §11.3 aggregate + §5:322 dispatch counters. DERIVED, never cached.
@@ -753,6 +1265,15 @@ class CommandHandler:
             "completions": (
                 None if self._dispatcher is None else self._dispatcher.record()
             ),
+            # ARC 047. The §4/§3 fill state — every armed stop and every
+            # published §3 row, ENUMERATED. `None` where the collaborator is
+            # absent, so a build with no fill path reads as *cannot say* rather
+            # than as *no positions and no stops* (check contract rule 10: a
+            # safety property certified over an unavailable subject is not
+            # proven, and "there is no unprotected position" is exactly such a
+            # property).
+            "fills": None if self._fills is None else self._fills.record(),
+            "picture": (None if self._fills is None else self._fills.picture_record()),
         }
 
     # -- reply plumbing -----------------------------------------------------
@@ -1015,6 +1536,8 @@ def _runtime_record(  # pylint: disable=too-many-arguments,too-many-positional-a
     booker: Plane1Booker | None = None,
     reservations: ReservationLedger | None = None,
     dispatcher: CompletionDispatcher | None = None,
+    fills: FillPath | None = None,
+    feedback: OpenFeedback | None = None,
 ) -> dict[str, Any]:
     """`limiter.runtime.json`'s content, at boot and again at clean stop.
 
@@ -1058,6 +1581,21 @@ def _runtime_record(  # pylint: disable=too-many-arguments,too-many-positional-a
             }
         ),
         "completions": None if dispatcher is None else dispatcher.record(),
+        #: ARC 047. §4/§3's fill state and §3's ONE snapshot, in the record an
+        #: out-of-process reader opens. `None` rather than an empty book where
+        #: the collaborator is absent, for the reason `reservations` is `None`
+        #: rather than 0.0: check contract rule 10 — an empty stop list published
+        #: by a process that has no stop book would certify "no unprotected
+        #: position" over a subject that does not exist.
+        "fills": None if fills is None else fills.record(),
+        "picture": None if fills is None else fills.picture_record(),
+        #: §4:203-206's outcome pushes. The records themselves, not a count: the
+        #: question is whether the feedback carried THIS trade's id.
+        "feedback": (
+            None
+            if feedback is None
+            else {"pushed": list(feedback.pushed), "failures": list(feedback.failures)}
+        ),
         "stopped_ts": stopped_ts,
     }
 
@@ -1071,6 +1609,8 @@ def _stop_record(  # pylint: disable=too-many-arguments,too-many-positional-argu
     booker: Plane1Booker | None = None,
     reservations: ReservationLedger | None = None,
     dispatcher: CompletionDispatcher | None = None,
+    fills: FillPath | None = None,
+    feedback: OpenFeedback | None = None,
     malformed: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """The clean-stop record: the boot shape plus what the run actually did."""
@@ -1081,6 +1621,8 @@ def _stop_record(  # pylint: disable=too-many-arguments,too-many-positional-argu
         booker=booker,
         reservations=reservations,
         dispatcher=dispatcher,
+        fills=fills,
+        feedback=feedback,
     )
     # ARC 046. The completions the ingress read and the PARSE refused, so
     # "no exec report arrived" and "an exec report arrived unreadable" are two
@@ -1200,6 +1742,39 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--tick-size",
+        action="append",
+        default=None,
+        metavar="SYMBOL=SIZE",
+        help=(
+            "The PRICE value of one tick for a symbol, e.g. --tick-size ES=0.25. "
+            "Repeatable. §4 converts the GO's stop DISTANCE (in ticks) to an "
+            "absolute price at the confirmed fill, and that conversion has no "
+            "scale without this. It is an instrument constant on §12.11's "
+            "boot-loaded, restart-only lifecycle, and it arrives here because "
+            "risks/ carries no instrument table (allocator_caps.config.json holds "
+            "tick_value_usd, the DOLLAR value of a tick, which is a different "
+            "number). A symbol absent from the map is NOT-TRADABLE (§4:198): a "
+            "fill in it is REFUSED before anything is released, so no position "
+            "opens without a stop."
+        ),
+    )
+    parser.add_argument(
+        "--account-balance",
+        type=float,
+        default=0.0,
+        help=(
+            "The account balance §3's picture is built on. There is NO balance "
+            "feed in this process — §6.4b's event-driven refresh is not wired — "
+            "so this is a declared opening figure and nothing refreshes it. The "
+            "default 0.0 means NO BALANCE WAS DECLARED, which makes deployable "
+            "0.0; that is the fail-closed direction, because a §3 Phase-B rule "
+            "evaluated against it denies rather than admits. Σ open margin and Σ "
+            "reservations are real either way, and they are what the fill "
+            "conversion moves."
+        ),
+    )
+    parser.add_argument(
         "--max-ticks",
         type=int,
         default=0,
@@ -1209,6 +1784,35 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     return parser
+
+
+def _tick_sizes(pairs: list[str] | None) -> dict[str, float]:
+    """`["ES=0.25", ...]` -> `{"ES": 0.25}`. Refuses anything unusable, loudly.
+
+    Raises, and the raise is caught by `main`'s boot guard into an exit 2: a tick
+    size read wrong is a stop armed at the wrong price, and §12A:801-802 rejects
+    an invalid tunable set at boot rather than absorbing it at run time.
+    """
+    out: dict[str, float] = {}
+    for pair in pairs or ():
+        symbol, sep, raw = str(pair).partition("=")
+        if not sep or not symbol.strip():
+            raise ValueError(
+                f"--tick-size {pair!r} is not SYMBOL=SIZE — §4's distance->price "
+                "conversion needs both halves and neither can be guessed"
+            )
+        try:
+            size = float(raw)
+        except ValueError as exc:
+            raise ValueError(f"--tick-size {pair!r}: {raw!r} is not a number") from exc
+        if size <= 0.0:
+            raise ValueError(
+                f"--tick-size {pair!r}: a tick size must be positive. A zero "
+                "scale puts every stop ON the entry, where it fires on the first "
+                "adverse tick (§15 C3)"
+            )
+        out[symbol.strip()] = size
+    return out
 
 
 def _install_signal_handlers(loop: LimiterLoop) -> None:
@@ -1304,7 +1908,20 @@ def main(argv: list[str] | None = None) -> int:
             clock=time.time,
             pending_ack_timeout_s=pending_ack_timeout_from_config(),
         )
-        dispatcher = CompletionDispatcher(outcomes)
+        # ARC 047. §2A:75's fill path, held by the PROCESS. Nine collaborators,
+        # every one of them shipped and gated arcs ago and none of them edited
+        # here — see `FillPath`. It shares the ONE `ReservationLedger` above
+        # rather than constructing a second: §3's Σ is one number and a fill that
+        # converted a reservation in a private book would leave the number every
+        # capital rule reads untouched.
+        fills = FillPath(
+            reservations=reservations,
+            balance=float(args.account_balance),
+            deployable_fraction=deployable_fraction_from_config(),
+            tick_size=_tick_sizes(args.tick_size),
+            clock=time.time,
+        )
+        dispatcher = CompletionDispatcher(outcomes, fills=fills.sink)
     except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
         print(
             f"{SITE}: refusing to boot the Limiter: {type(exc).__name__}: {exc}",
@@ -1332,7 +1949,10 @@ def main(argv: list[str] | None = None) -> int:
         completion_ingress(tick)
         return taken
 
-    completion_handler = CompletionHandler(dispatcher)
+    # ARC 047. The §4:203-206 outcome push needs the loop (for §4:208's lock and
+    # the tick number) and the outbox, so it is built here, after both exist.
+    feedback = OpenFeedback(loop, outbox_dir)
+    completion_handler = CompletionHandler(dispatcher, feedback)
     loop.attach(
         # ARC 042: the booking runs FIRST inside the tick, then the inbox read.
         # `Plane1Booker.before` composes the two rather than folding the write
@@ -1340,7 +1960,7 @@ def main(argv: list[str] | None = None) -> int:
         # firing and why nothing is lost to that.
         ingress=booker.before(_read_both),
         handler=LoopHandler(
-            CommandHandler(loop, outbox_dir, reservations, dispatcher),
+            CommandHandler(loop, outbox_dir, reservations, dispatcher, fills),
             completion_handler,
         ).handle,
     )
@@ -1356,6 +1976,8 @@ def main(argv: list[str] | None = None) -> int:
             booker=booker,
             reservations=reservations,
             dispatcher=dispatcher,
+            fills=fills,
+            feedback=feedback,
         ),
     )
     _install_signal_handlers(loop)
@@ -1379,6 +2001,8 @@ def main(argv: list[str] | None = None) -> int:
             booker=booker,
             reservations=reservations,
             dispatcher=dispatcher,
+            fills=fills,
+            feedback=feedback,
             malformed=tuple(completion_handler.malformed),
         ),
     )

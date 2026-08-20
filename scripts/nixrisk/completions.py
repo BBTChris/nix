@@ -30,13 +30,48 @@ release is `nixrisk/outcomes.py`'s, called, never reimplemented. `outcomes.py`
 and `reservations.py` are BYTE-IDENTICAL across this arc and that is asserted by
 `git hash-object`, not by intent.
 
-**ONLY THE CANCEL PATH IS WIRED.** `on_fill`, `on_reject`, `on_ack`,
-`on_position`, `on_balance`, `on_margin` and `on_session` (§2A:74-84) all parse
-and all reach `dispatch`, and every one of them returns `UNWIRED` naming itself.
-That is the deliberate shape of a spike: an unwired event must be READABLE as
-unwired rather than absorbed as handled, because "the daemon processed it" and
-"the daemon dropped it" are the two readings ARC 046 exists to keep apart. A
-silent drop here would let a future arc believe the fill path works.
+**ARC 047 wires the SECOND path: `on_fill`.** `on_reject`, `on_ack`,
+`on_position`, `on_balance`, `on_margin` and `on_session` (§2A:74-84) all still
+parse and all still reach `dispatch`, and every one of them returns `UNWIRED`
+naming itself. That is the deliberate shape of a spike: an unwired event must be
+READABLE as unwired rather than absorbed as handled, because "the daemon
+processed it" and "the daemon dropped it" are the two readings ARC 046 exists to
+keep apart. A silent drop here would let a future arc believe a path works.
+
+------------------------------------------------------------------------------
+ARC 047 — WHY FILL NEEDED A SECOND PORT, MEASURED RATHER THAN ASSUMED
+------------------------------------------------------------------------------
+ARC 046 wired cancel through `OutcomesPort` — structurally
+`nixrisk.outcomes.OrderOutcomes` — and the wiring cost was a single call. Fill
+could not reuse it, and the reason is a measurement, not a preference:
+`OrderOutcomes` **has no `on_fill`**, and its own `HANDLES` map declares the
+three §3 paths it books as `{CANCEL, REJECT, PENDING_TIMEOUT}`. `TerminalPath`
+has a `FILL` member and `outcomes.py` deliberately does not serve it, because
+**fill is not a release — §3 says the reservation *converts to open-margin***,
+which is an arm, a cancel of the remainder, a release, a published position row
+and a minted `trade_id`, in a fixed order. That cascade already exists whole in
+`nixrisk/fills.py` (`FillHandler` / `LimiterFillSink`, ARC 034), and it satisfies
+a different surface.
+
+So this module gained a SECOND port (`FillSinkPort`) rather than a second verb
+on the first. The two are not interchangeable and collapsing them would put a
+release and a conversion behind one name.
+
+**THE ORDER IS THE SAFETY PROPERTY AND IT IS NOT THIS MODULE'S.** `fills.py`
+arms the stop FIRST (§4's distance->price conversion at the confirmed fill),
+releases the remainder second, and publishes third — and it RAISES rather than
+returning a partial outcome. This module therefore never sees a half-handled
+fill: either the whole cascade ran or the handler raised and nothing was
+published. `_dispatch_fill` nevertheless re-asserts, at the daemon boundary,
+that the dispatched fill produced an ARMED STOP and an OPEN row, because a
+conversion without a stop is an UNPROTECTED POSITION (§4, §12.1) and the
+daemon must not be able to create one silently.
+
+**NO order is placed and nothing is sent.** Nix stops are SYNTHETIC (§12.1:
+*"This is our software, not a broker-side stop"*), so "the protective stop is
+placed" means `nixrisk.stops.StopBook` holds a live `StopState` at
+`fill -/+ distance x tick_size` for that order. There is no broker-side stop
+order and there must not be one.
 
 ------------------------------------------------------------------------------
 WHY THE DEDUP IS HERE AND NOT LEFT TO THE LEDGER
@@ -93,11 +128,25 @@ proving nothing?
     `scripts/limiterd.py` contains it into a counter, because a Limiter that
     died of one bad exec report would be a remote kill switch on the process
     holding every synthetic stop (§12.1:604).
+ 6. **ARC 047. A fill "dispatched" and the position opened with NO STOP** —
+    the one reading that would be worse than not wiring fill at all, because an
+    unprotected position is the hazard I11 exists to guard. GUARDED TWICE:
+    `fills.py` arms BEFORE it releases and raises rather than returning a
+    partial outcome, and `_dispatch_fill` then re-asserts at the daemon
+    boundary that the outcome carries an armed `StopState` and an OPEN row —
+    a fill that converted margin without a stop is `REFUSED`, never
+    `DISPATCHED`, and the reason names the unprotected position.
+ 7. **ARC 047. A fill dispatch was credited without the reservation actually
+    converting.** GUARDED: `DispatchResult.converted_margin` is read off the
+    `FillOutcome` the handler RETURNED (its published picture's Σ open margin),
+    not from a counter this module increments, so a cascade that armed and
+    published nothing reports zero rather than success — guard 2 for fill.
 """
 
 from __future__ import annotations
 
 import json
+import math
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Final, Protocol
@@ -127,10 +176,13 @@ SPEC_EVENTS: Final[tuple[str, ...]] = (
     EVENT_SESSION,
 )
 
-#: The ONE event ARC 046 wired. Spelled as a tuple so the next arc adds a
-#: member rather than editing a condition, and so a census can read which
-#: paths this build actually serves without executing it.
-WIRED_EVENTS: Final[tuple[str, ...]] = (EVENT_CANCEL,)
+#: The §2A events this build DISPATCHES. Spelled as a tuple so an arc adds a
+#: member rather than editing a condition, and so a census can read which paths
+#: this build actually serves without executing it. ARC 046 put `on_cancel`
+#: here; ARC 047 added `on_fill`. `checks/check_limiter_daemon_dispatch.py`
+#: READS this tuple, so the gate's UNWIRED arm narrows as the tuple grows
+#: instead of going quietly stale.
+WIRED_EVENTS: Final[tuple[str, ...]] = (EVENT_CANCEL, EVENT_FILL)
 
 #: §4:214's dedup ceiling. Bounded for §11:581; see the module docstring on why
 #: eviction is counted rather than assumed away.
@@ -162,8 +214,51 @@ class OutcomesPort(Protocol):  # pylint: disable=too-few-public-methods
         """§3's cancel release. ARC 044 / I2 proved it; ARC 046 CALLS it."""
 
 
+class FillSinkPort(Protocol):  # pylint: disable=too-few-public-methods
+    """ARC 047. §2A:75's `on_fill` broker event surface, as this module CALLS it.
+
+    Structurally `nixrisk.fills.LimiterFillSink`. Declared as a Protocol for the
+    reason `OutcomesPort` is: the dependency points one way, and `fills.py` is
+    byte-identical across this arc because nothing here reached into it.
+
+    **TWO verbs, and the second is not decoration.** `on_fill` returns `None` —
+    that shape is `broker_seam.OrderEventSink`'s and this module may not widen
+    it — so a dispatcher holding only `on_fill` could count a dispatch and know
+    nothing about what the cascade did. `outcomes()` is how the handler's OWN
+    answer is read back, which is §7.12 guard 2 (*the dispatch ran but the
+    handler did nothing*) applied to a verb that cannot return one.
+
+    NARROWER than `LimiterFillSink` deliberately: no reader for the approval
+    book, no stop book, no picture. A dispatcher that could arm a stop would be a
+    second conversion site and §4 converts ONCE, at the confirmed fill.
+    """
+
+    # The six positional fields are §2A's own `on_fill` signature, transcribed.
+    def on_fill(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+        self,
+        client_order_id: str,
+        exec_id: str,
+        symbol: str,
+        filled_qty: int,
+        price: float,
+        cumulative_qty: int,
+    ) -> None:
+        """One §2A confirmed fill. Arms the stop, releases, publishes (§4, §3)."""
+
+    def outcomes(self) -> tuple[Any, ...]:
+        """Every `FillOutcome` this sink produced, in arrival order."""
+
+
+# R0902 refused with a reason: NINE fields, and SIX of them are §2A:74-84's own
+# `on_fill` signature transcribed (`client_order_id`, `exec_id`, `symbol`,
+# `done_qty`, `price`, `cumulative_qty`). Collapsing any of them into `raw`
+# would move a field the dispatch passes into a FROZEN six-argument seam back
+# into an untyped dict, and reading it out at call time is a second parse —
+# outside the tick's one parse, and unguarded. `event`, `source` and `raw` are
+# the observation's own identity. The threshold is about behavioural classes
+# accreting state; this carries no behaviour at all.
 @dataclass(frozen=True)
-class SenderCompletion:
+class SenderCompletion:  # pylint: disable=too-many-instance-attributes
     """ONE §5:322 sender completion, parsed. AN OBSERVATION, not a decision.
 
     `source` is not decoration. ARC 038's deepest finding was that every Limiter
@@ -177,6 +272,20 @@ class SenderCompletion:
     exec_id: str
     done_qty: int
     source: str
+    #: ARC 047. §2A:75's `on_fill` carries three fields no other §2A event does:
+    #: the instrument, the execution price and the venue's running total. They
+    #: are members here rather than left in `raw` because `_dispatch_fill` passes
+    #: them into a FROZEN six-argument seam (`OrderEventSink.on_fill`), and a
+    #: dispatch reading them back out of an untyped dict at call time would be a
+    #: second parse — outside the tick's one parse, and unguarded.
+    #:
+    #: Zero/empty on every NON-fill event and that is not a default standing in
+    #: for a missing value: §2A's `on_cancel` genuinely carries no price. The
+    #: parse below REFUSES a fill that omits any of them, so an empty symbol on a
+    #: fill is impossible by construction rather than by convention.
+    symbol: str = ""
+    price: float = 0.0
+    cumulative_qty: int = 0
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
     @property
@@ -195,14 +304,35 @@ class Disposition:  # pylint: disable=too-few-public-methods
     REFUSED: Final[str] = "refused"
 
 
+# R0902 refused with a reason: NINE fields, and FIVE of them are the FILL
+# observables — every one read off the `FillOutcome` the handler RETURNED, never
+# counted here. Dropping one to satisfy the counter would remove a measurement
+# from a gate's verdict: `stop_level` is what makes an unprotected position
+# detectable at this boundary, and `converted_margin` is §7.12 guard 7 applied
+# to a sink verb that returns `None`.
 @dataclass(frozen=True)
-class DispatchResult:
+class DispatchResult:  # pylint: disable=too-many-instance-attributes
     """One dispatch decision, with the handler's own answer folded in."""
 
     disposition: str
     completion: SenderCompletion
     reason: str
     released_margin: float = 0.0
+    #: ARC 047, the FILL observables. Every one is read off the `FillOutcome` the
+    #: handler RETURNED — never counted here — for the reason `released_margin`
+    #: is (§7.12 guard 2): a cascade that armed nothing and published nothing
+    #: must report zeros, not a dispatch.
+    trade_id: str = ""
+    #: The absolute price §4's distance->price conversion produced at the
+    #: confirmed fill. 0.0 means NO STOP, which is never a `DISPATCHED` fill.
+    stop_level: float = 0.0
+    stop_distance_ticks: int = 0
+    #: Signed §3 position size on the published row. §14: *"Open" = confirmed
+    #: fill only.*
+    opened_size: int = 0
+    #: Σ open margin on the picture this fill published — the *converts to
+    #: open-margin* half of §3's lifecycle, as the writer itself reported it.
+    converted_margin: float = 0.0
     # NO `dispatched` convenience property. `disposition` is the answer and it
     # has five values; a boolean beside it would be a second, lossier spelling
     # of the same fact that a reader could take for the whole one — and
@@ -266,14 +396,94 @@ def parse_completion(blob: bytes | str, *, source: str) -> SenderCompletion:
             f"{SITE}: {event} for {client_order_id!r} has non-integer "
             f"done_qty={raw.get('done_qty')!r}"
         ) from exc
+    symbol, price, cumulative = _fill_fields(raw, event, client_order_id, done_qty)
     return SenderCompletion(
         event=event,
         client_order_id=client_order_id,
         exec_id=exec_id,
         done_qty=done_qty,
         source=source,
+        symbol=symbol,
+        price=price,
+        cumulative_qty=cumulative,
         raw=raw,
     )
+
+
+# R0911 (too-many-return-statements) is not reached, but the ladder below is the
+# same fail-closed shape `limiterd.CommandHandler._reply_for` records: five
+# distinguishable refusals, each naming which field of §2A:75 was unusable and
+# what it would have decided. One reason string over all five would make the
+# gate's REASON assertion (check contract v2 rule 11) unable to tell them apart.
+def _fill_fields(
+    raw: dict[str, Any], event: str, client_order_id: str, done_qty: int
+) -> tuple[str, float, int]:
+    """ARC 047. §2A:75's three fill-only fields, or a named refusal.
+
+    Returns `("", 0.0, 0)` for every NON-fill event: §2A's other pushed events
+    genuinely do not carry an instrument, a price or a running total, so reading
+    them there would invent values rather than parse them.
+
+    For a fill, every one of the three is REQUIRED and the refusals are separate.
+    Fail closed, and the reason is the whole point of doing it here rather than
+    letting the cascade discover it: `StopBook.arm` needs a positive finite price
+    to anchor against and a symbol to scale by (§4, §4:198), `ExecutionReport`
+    needs a signed cumulative to derive position state from (§4), and a fill that
+    reached the handler missing any of them would fail DEEP — after the §4:214
+    dedup key was already claimed, which is the one place a refusal cannot be
+    retried.
+    """
+    if event != EVENT_FILL:
+        return "", 0.0, 0
+    symbol = str(raw.get("symbol") or "")
+    if not symbol:
+        raise MalformedCompletion(
+            f"{SITE}: {event} for {client_order_id!r} names no symbol. §4:198 "
+            "makes a symbol with no instrument scale NOT-TRADABLE, and the "
+            "distance->price stop conversion has no tick size to multiply by — "
+            "refusing rather than opening a position this Limiter cannot protect"
+        )
+    try:
+        price = float(raw.get("price"))  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise MalformedCompletion(
+            f"{SITE}: {event} for {client_order_id!r} in {symbol!r} has "
+            f"non-numeric price={raw.get('price')!r} — §4 anchors the synthetic "
+            "stop against the CONFIRMED fill price and there is nothing to anchor"
+        ) from exc
+    if not math.isfinite(price) or price <= 0.0:
+        raise MalformedCompletion(
+            f"{SITE}: {event} for {client_order_id!r} in {symbol!r} has "
+            f"price={price!r}, which is not a positive finite number. §4's stop "
+            "is anchored at fill -/+ distance x tick_size; a non-finite anchor "
+            "produces a stop level nothing can compare a price against"
+        )
+    if done_qty <= 0:
+        raise MalformedCompletion(
+            f"{SITE}: {event} for {client_order_id!r} in {symbol!r} has "
+            f"done_qty={done_qty!r}. §14 makes OPEN a CONFIRMED FILL and nothing "
+            "else; a fill of zero contracts is not a confirmation, and §4's "
+            "remainder arithmetic (requested minus filled) is a statement about "
+            "nothing when filled is non-positive"
+        )
+    try:
+        cumulative = int(raw.get("cumulative_qty") or 0)
+    except (TypeError, ValueError) as exc:
+        raise MalformedCompletion(
+            f"{SITE}: {event} for {client_order_id!r} has non-integer "
+            f"cumulative_qty={raw.get('cumulative_qty')!r} — §4 derives position "
+            "state from CUMULATIVE fills, so an unreadable running total makes "
+            "every partial fill's published size a guess"
+        ) from exc
+    if cumulative < done_qty:
+        raise MalformedCompletion(
+            f"{SITE}: {event} for {client_order_id!r} reports cumulative_qty="
+            f"{cumulative} BELOW this execution's done_qty={done_qty}. The "
+            "venue's running total cannot be smaller than the execution it "
+            "includes; §4 makes the fill a fact the system reports, and a total "
+            "that contradicts its own part is not one"
+        )
+    return symbol, price, cumulative
 
 
 class ExecReportDedup:
@@ -343,6 +553,17 @@ class DispatchLedger:  # pylint: disable=too-many-instance-attributes
     refused: int = 0
     malformed: int = 0
     released_margin: float = 0.0
+    #: ARC 047. PER-PATH dispatch counts. `dispatched` alone cannot answer *which
+    #: path ran*, and with two wired events that question is the whole subject:
+    #: a gate asserting `dispatched == 1` after pushing a fill would be equally
+    #: satisfied by a cancel. Two counters, two readings.
+    cancels_dispatched: int = 0
+    fills_dispatched: int = 0
+    #: Σ open margin the last dispatched fill's published picture reported, and
+    #: how many §3 rows this daemon has opened. Both come off the handler's own
+    #: `FillOutcome` (§7.12 guard 7).
+    converted_margin: float = 0.0
+    opened: int = 0
 
     def record(self) -> dict[str, Any]:
         """The out-of-process evidence block, for `limiter.runtime.json`."""
@@ -350,12 +571,16 @@ class DispatchLedger:  # pylint: disable=too-many-instance-attributes
             "consumed": self.consumed,
             "seen": self.seen,
             "dispatched": self.dispatched,
+            "cancels_dispatched": self.cancels_dispatched,
+            "fills_dispatched": self.fills_dispatched,
             "duplicates": self.duplicates,
             "unwired": self.unwired,
             "unknown": self.unknown,
             "refused": self.refused,
             "malformed": self.malformed,
             "released_margin": self.released_margin,
+            "converted_margin": self.converted_margin,
+            "opened": self.opened,
             "wired_events": list(WIRED_EVENTS),
         }
 
@@ -374,9 +599,16 @@ class CompletionDispatcher:
         self,
         outcomes: OutcomesPort,
         *,
+        fills: FillSinkPort | None = None,
         dedup: ExecReportDedup | None = None,
     ) -> None:
         self._outcomes = outcomes
+        #: ARC 047. OPTIONAL for the reason `limiterd.CommandHandler`'s ledger
+        #: is: a build constructed without a fill path must serve `on_fill` as a
+        #: NAMED REFUSAL rather than as an unwired event, because *this build has
+        #: no fill sink* and *this build does not wire fill* are two readings and
+        #: `WIRED_EVENTS` above already claims the second is false.
+        self._fills = fills
         self.dedup = ExecReportDedup() if dedup is None else dedup
         self.ledger = DispatchLedger()
         #: Every result, oldest first, bounded. The gate reads it to prove a
@@ -403,6 +635,13 @@ class CompletionDispatcher:
                 "last_reason": None if last is None else last.reason,
                 "dedup_keys": len(self.dedup),
                 "dedup_evicted": self.dedup.evicted,
+                #: ARC 047. What this DISPATCHER was actually constructed with,
+                #: beside what the MODULE declares in `wired_events`. The two can
+                #: disagree — a build that wires fill in the tuple and hands in
+                #: no sink serves a named refusal — and check contract rule 10
+                #: makes that difference the difference between *cannot measure*
+                #: and *fail*.
+                "fill_sink": self._fills is not None,
             }
         )
         return block
@@ -443,6 +682,8 @@ class CompletionDispatcher:
                     "release §14 forbids, reached at the daemon boundary",
                 )
             )
+        if completion.event == EVENT_FILL:
+            return self._finish(self._dispatch_fill(completion))
         return self._finish(self._dispatch_cancel(completion))
 
     def _dispatch_cancel(self, completion: SenderCompletion) -> DispatchResult:
@@ -480,11 +721,156 @@ class CompletionDispatcher:
             released_margin=released,
         )
 
+    def _dispatch_fill(self, completion: SenderCompletion) -> DispatchResult:
+        """ARC 047. §2A:75's fill -> `fills.py`'s cascade. CALLS, never reimplements.
+
+        The whole §4/§3 order — arm the stop, IOC-cancel and release the
+        remainder, publish §3's OPEN row under one version stamp — is
+        `nixrisk.fills.FillHandler`'s and is not restated here. This method does
+        three things and no fourth: it calls the sink, it CONTAINS the cascade's
+        refusals, and it re-asserts the safety property at the daemon boundary.
+
+        **CONTAINMENT IS NOT ABSORPTION.** `FillHandler.on_fill` raises rather
+        than returning a partial outcome, and every one of its refusals
+        (`UnapprovedFill`, `UnstoppedFill`, `UntradableSymbol`, `DuplicateStop`,
+        `InvalidRemainder`, the ledger's own) is a real condition an operator
+        must see. They are turned into a `REFUSED` result carrying the
+        exception's own sentence, never swallowed — a Limiter that died of one
+        bad exec report would be a remote kill switch on the process holding
+        every synthetic stop (§12.1:604), and one that silently absorbed the
+        refusal would be worse.
+
+        **THE §4:214 KEY IS ALREADY CLAIMED WHEN THIS RUNS**, deliberately, and
+        the consequence is stated rather than discovered: a fill whose cascade
+        raised is NOT retried on a re-delivery. §4:240-241 forbids the resend and
+        the alternative — releasing the key on failure — is how one intended
+        conversion becomes two on the next duplicate.
+        """
+        if self._fills is None:
+            return DispatchResult(
+                Disposition.REFUSED,
+                completion,
+                f"{SITE}: {completion.event} is declared wired "
+                f"({list(WIRED_EVENTS)}) but this dispatcher was constructed "
+                "with no fill sink, so §4's arm/release/publish cascade has "
+                f"nothing to run. The reservation for "
+                f"{completion.client_order_id!r} is UNCHANGED and no position "
+                "was opened",
+            )
+        before = len(self._fills.outcomes())
+        try:
+            self._fills.on_fill(
+                completion.client_order_id,
+                completion.exec_id,
+                completion.symbol,
+                completion.done_qty,
+                completion.price,
+                completion.cumulative_qty,
+            )
+        except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
+            return DispatchResult(
+                Disposition.REFUSED,
+                completion,
+                f"{SITE}: §4's fill cascade REFUSED "
+                f"{completion.client_order_id}/{completion.exec_id} in "
+                f"{completion.symbol!r}: {type(exc).__name__}: {exc}",
+            )
+        outcomes = self._fills.outcomes()
+        if len(outcomes) <= before:
+            # §7.12 guard 7. The sink returned normally and produced no outcome:
+            # the cascade did nothing and a bare "dispatched" would credit it.
+            return DispatchResult(
+                Disposition.REFUSED,
+                completion,
+                f"{SITE}: the fill sink accepted "
+                f"{completion.client_order_id}/{completion.exec_id} and recorded "
+                f"NO outcome (outcomes {before} -> {len(outcomes)}) — §4's "
+                "cascade did not run, so nothing was armed, released or published",
+            )
+        return self._read_fill_outcome(completion, outcomes[-1])
+
+    def _read_fill_outcome(
+        self, completion: SenderCompletion, outcome: Any
+    ) -> DispatchResult:
+        """The handler's OWN answer, read back — and the safety re-assertion.
+
+        Every figure below comes off the `FillOutcome` the cascade returned. None
+        is recomputed here: §4 converts the stop distance ONCE and §3 publishes
+        the row once, and a dispatcher deriving either a second time would be the
+        system choosing the same number twice (`positions.py`'s own argument).
+
+        **THE SAFETY RE-ASSERTION.** A fill that converted a reservation to open
+        margin without an armed stop is an UNPROTECTED POSITION (§4, §12.1) —
+        the hazard §14 resolves toward FLAT and the one I11 guards. `fills.py`
+        already makes it unreachable by arming first and raising on refusal; this
+        states it a SECOND time, at the boundary the daemon owns, because the
+        cost of the redundancy is one comparison and the cost of being wrong is
+        a live position nothing protects. A fill reaching here with no stop is
+        `REFUSED` and the reason names the unprotected position.
+        """
+        armed = getattr(outcome, "armed", None)
+        write = getattr(outcome, "write", None)
+        row = getattr(write, "row", None)
+        origin = getattr(write, "origin", None)
+        picture = getattr(write, "picture", None)
+        level = float(getattr(armed, "level", 0.0) or 0.0)
+        trade_id = str(getattr(origin, "trade_id", "") or "")
+        if armed is None or not math.isfinite(level) or level <= 0.0:
+            return DispatchResult(
+                Disposition.REFUSED,
+                completion,
+                f"{SITE}: UNPROTECTED POSITION. §4's cascade returned an outcome "
+                f"for {completion.client_order_id!r} (trade {trade_id!r}) with NO "
+                f"ARMED STOP (armed={armed!r}, level={level!r}). §12.1 makes the "
+                "stop synthetic and Limiter-held, so a converted reservation with "
+                "no StopState is a live position nothing protects; §14 resolves "
+                "that toward FLAT. Refusing to record this as a dispatch",
+            )
+        if row is None or origin is None or picture is None:
+            return DispatchResult(
+                Disposition.REFUSED,
+                completion,
+                f"{SITE}: §4's cascade returned an outcome for "
+                f"{completion.client_order_id!r} carrying no published §3 row "
+                f"(row={row!r} origin={origin!r} picture={picture!r}) — the stop "
+                "was armed and the position was never published, so §7:501's "
+                "correlation bucket cannot see the exposure it must price",
+            )
+        converted = float(getattr(picture, "sum_open_margin", 0.0) or 0.0)
+        size = int(getattr(row, "size", 0) or 0)
+        return DispatchResult(
+            Disposition.DISPATCHED,
+            completion,
+            f"{SITE}: §5:322's loop dispatched a §2A on_fill to §4's cascade — "
+            f"trade {trade_id!r} OPEN at {completion.price} for {size} "
+            f"{completion.symbol}, protective stop ARMED at {level} "
+            f"({getattr(armed, 'initial_distance_ticks', 0)} ticks, "
+            f"{getattr(getattr(armed, 'mode', None), 'value', '?')}), the §3 "
+            f"reservation CONVERTED to open margin (Σ open margin {converted}, "
+            f"Σ reservations {getattr(outcome, 'sum_reservations', None)}) from "
+            f"{completion.source!r}",
+            trade_id=trade_id,
+            stop_level=level,
+            stop_distance_ticks=int(getattr(armed, "initial_distance_ticks", 0) or 0),
+            opened_size=size,
+            converted_margin=converted,
+        )
+
     def _finish(self, result: DispatchResult) -> DispatchResult:
         """Count it, remember it, return it. The ONE place the ledger moves."""
         if result.disposition == Disposition.DISPATCHED:
             self.ledger.dispatched += 1
             self.ledger.released_margin += result.released_margin
+            if result.completion.event == EVENT_FILL:
+                self.ledger.fills_dispatched += 1
+                self.ledger.opened += 1
+                # ASSIGNED, not accumulated: it is the Σ open margin of the ONE
+                # picture the last fill published, and a running sum over
+                # successive partial fills of one order would double-count the
+                # same position's margin on every event.
+                self.ledger.converted_margin = result.converted_margin
+            else:
+                self.ledger.cancels_dispatched += 1
         elif result.disposition == Disposition.DUPLICATE:
             self.ledger.duplicates += 1
         elif result.disposition == Disposition.UNWIRED:

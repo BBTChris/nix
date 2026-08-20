@@ -58,6 +58,10 @@ from nixverify.contract import (  # pylint: disable=wrong-import-position
 
 LIMITERD = "scripts/limiterd.py"
 COMPLETIONS = "scripts/nixrisk/completions.py"
+#: ARC 047. The §4 cascade the daemon now dispatches INTO. It is a subject of
+#: the gate although this arc edited none of it — the arm that places the
+#: protective stop lives here, and a plant in it must redden the gate.
+FILLS = "scripts/nixrisk/fills.py"
 
 
 def _ctx(home: Path) -> Context:
@@ -105,7 +109,17 @@ def test_NON_VACUITY_the_SHIPPED_daemon_PASSES_and_the_evidence_names_the_drive(
     assert "committed 0.0 -> 2000.0" in result.evidence
     assert "dispatched=1" in result.evidence
     assert "duplicates=1" in result.evidence
-    assert "released=1" in result.evidence
+    # ARC 047. TWO reservations now reach a terminal release in one drive — one
+    # RELEASED by the cancel arm, one CONVERTED by the fill arm — and §3 makes
+    # a fill a terminal release too (*"released on: fill (converts to
+    # open-margin)"*). The literal moved because the drive did.
+    assert "released=2" in result.evidence
+    # And the FILL arm's own evidence: the conversion AND the placed stop.
+    assert "FILL ARM:" in result.evidence
+    assert "PROTECTIVE STOP is armed at 4998.0" in result.evidence
+    assert "Σ open margin 2100.0" in result.evidence
+    assert "committed 2100.0 unchanged" in result.evidence
+    assert "unstopped=[]" in result.evidence
 
 
 def test_NON_VACUITY_the_gate_reads_the_WIRED_PATH_DECLARATION_not_a_literal():
@@ -114,6 +128,11 @@ def test_NON_VACUITY_the_gate_reads_the_WIRED_PATH_DECLARATION_not_a_literal():
 
     assert gate.WIRED == tuple(completions.WIRED_EVENTS)
     assert "on_cancel" in gate.WIRED
+    # ARC 047. The fill arm runs only when the build declares the path, and the
+    # gate reads that declaration rather than assuming it — so this asserts the
+    # DERIVATION, not the literal.
+    assert gate.HAS_CANCEL is ("on_cancel" in completions.WIRED_EVENTS)
+    assert gate.HAS_FILL is ("on_fill" in completions.WIRED_EVENTS)
     # And every §2A event the build does NOT wire is derived, never listed here.
     assert set(gate.UNWIRED_CANDIDATES) == set(completions.SPEC_EVENTS) - set(
         gate.WIRED
@@ -139,8 +158,10 @@ def test_PLANT_A_a_daemon_that_DRAINS_the_cancel_and_never_dispatches_FAILS(
     _perturb(
         home,
         LIMITERD,
-        "        self._dispatcher.dispatch(completion)\n        self._unlink(item)",
-        "        # PLANT A: the dispatch removed.\n        self._unlink(item)",
+        "        result = self._dispatcher.dispatch(completion)",
+        "        result = DispatchResult(  # PLANT A: the dispatch removed.\n"
+        '            Disposition.UNWIRED, completion, "PLANT A"\n'
+        "        )",
     )
     result = gate.run(Mode.VERIFY, _ctx(home))
     assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
@@ -210,6 +231,78 @@ def test_PLANT_C_a_daemon_that_never_READS_a_completion_FAILS_as_NEVER_ARRIVED(
 
 
 # ---------------------------------------------------------------------------
+# PLANT D (ARC 047) — the FILL DISPATCH removed. The loop drains a §2A:75 fill
+# and nothing converts: the reservation stays taken against an order that has
+# already filled, and the position it opened is in no published table.
+# ---------------------------------------------------------------------------
+def test_PLANT_D_a_daemon_that_DRAINS_the_FILL_and_never_CONVERTS_FAILS(
+    tmp_path: Path,
+):
+    """PLANT D: the fill route removed — the loop drains the exec report, §3's
+    reservation never converts to open-margin, and the gate must name it."""
+    home = _population(tmp_path)
+    _perturb(
+        home,
+        COMPLETIONS,
+        "        if completion.event == EVENT_FILL:\n"
+        "            return self._finish(self._dispatch_fill(completion))",
+        "        if completion.event == EVENT_FILL:  # PLANT D\n"
+        "            return self._finish(\n"
+        "                DispatchResult(\n"
+        '                    Disposition.UNWIRED, completion, "PLANT D"\n'
+        "                )\n"
+        "            )",
+    )
+    result = gate.run(Mode.VERIFY, _ctx(home))
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
+    assert LIMITERD in result.site
+    # THE REASON: drained, not converted — and both halves of §3's lifecycle.
+    assert "THE DAEMON DID NOT CONVERT" in result.detail
+    assert "DRAINED BY THE LOOP" in result.detail
+    assert "fills_dispatched=0" in result.detail
+    assert "still 2100.0" in result.detail
+    assert "converts to open-margin" in result.detail
+    # And it must NOT claim an unprotected position: no capital moved, so
+    # nothing is unprotected. The two readings stay apart.
+    assert "UNPROTECTED POSITION" not in result.detail
+
+
+# ---------------------------------------------------------------------------
+# PLANT E (ARC 047) — THE SAFETY PLANT. The protective stop is NOT placed and
+# the conversion runs anyway. This is the one condition that is worse than not
+# wiring fill at all: a live position nothing protects (§4, §12.1; §14 -> FLAT),
+# inside the hazard I11 guards. It is the point of this slice.
+# ---------------------------------------------------------------------------
+def test_PLANT_E_a_daemon_that_CONVERTS_WITHOUT_PLACING_THE_STOP_FAILS(
+    tmp_path: Path,
+):
+    """PLANT E: §4's distance->price arm removed. The remainder release still
+    runs, so the capital moves; nothing protects the filled position."""
+    home = _population(tmp_path)
+    _perturb(
+        home,
+        FILLS,
+        "        state = self._stops.arm(report.price, order)",
+        "        state = None  # PLANT E: the protective stop is NOT placed",
+    )
+    result = gate.run(Mode.VERIFY, _ctx(home))
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
+    # The SITE is where the stop should have been placed, not where the money
+    # was counted — an operator handed `limiterd.py` here would look in the
+    # wrong file.
+    assert FILLS in result.site
+    # THE REASON, by name. Not "a stop is missing" — the PAIR: capital moved
+    # and nothing protects the position.
+    assert "UNPROTECTED POSITION" in result.detail
+    assert "RELEASED 2100.0" in result.detail
+    assert "NO STOP for that order" in result.detail
+    assert "stops=[]" in result.detail
+    # §12.1's synthetic-stop reasoning is carried into the refusal, so the
+    # operator reading it is told WHY a missing StopState is a live hazard.
+    assert "§12.1 makes the stop SYNTHETIC" in result.detail
+
+
+# ---------------------------------------------------------------------------
 # RULE 10 — a property proven while its subject is unavailable is not proven.
 # ---------------------------------------------------------------------------
 def test_a_population_with_NO_limiterd_is_CANNOT_MEASURE_and_never_PASS(
@@ -262,7 +355,7 @@ def test_the_gate_DECLARES_the_subprocess_and_the_temp_write_it_actually_makes()
     assert gate.CORRECTABLE is False
     assert gate.NON_CORRECTABLE_REASON
     assert not gate.DEPENDS_ON
-    assert set(gate.SUBJECTS) == {LIMITERD, COMPLETIONS}
+    assert set(gate.SUBJECTS) == {LIMITERD, COMPLETIONS, FILLS}
 
 
 # ---------------------------------------------------------------------------
