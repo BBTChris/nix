@@ -6100,3 +6100,126 @@ thread `watchdogd` (pid 165) present, never killed, and correctly not treated as
 **What the miss is worth saying out loud:** the prediction was right about the arc's own work and
 wrong about the arc's own bookkeeping. Both deltas were self-inflicted by the close-out, neither was
 in the enforcement, and both were caught by gates rather than by reading.
+
+---
+
+## ARC 044 — ULTRAREVIEW: Limiter, slice 6 — I2, exactly one terminal release (INTERIOR)
+
+**Predecessor tip DERIVED, not cited:** the brief said `≈ b7476a6`; `git rev-parse HEAD` returned
+**`3c73002`** and every freeze and diff in this arc is against that.
+
+**TIER = INTERIOR. Badge: Limiter STAYS RED.** Clean set `{I5, I6, I7, I8, I10} = 5/12` → **`{I2, I5,
+I6, I7, I8, I10} = 6/12`, open = 6.** Remaining open: I1 (daemon — capstone), I3, I4, I9, I11, I12.
+
+### What I2's charter actually named, and what was found
+
+The 038 register (`downloads/arc038_findings_B.md`, sub-agent B) holds seven findings under I2. The
+at-most-one half was already **RESISTED**: 4,000 real-thread iterations of a fill racing a
+blackout-onset cancel produced zero arithmetic violations, and `check_reservation_lifecycle` was
+already bound by four plants. The blocking half was **F-B3 / CHECK-DEBT D3.358** — the AT-LEAST-ONE
+half failing at the WIRING, not in the ledger: an AST census of every production `resolve`/`release`
+call found `FILL` at `fills.py:391`, `BLACKOUT_ONSET`/`HALT_ONSET` at `blackout.py`/`flatten.py`, and
+**`CANCEL`, `REJECT` and `PENDING_TIMEOUT` booked NOWHERE.**
+
+Re-measured live at `3c73002` before anything was touched (S1b) — the census still returned three
+wired paths, and each unwired path was driven with non-vacuity asserted first (Σ observed to RISE by
+the exact proposed margin before any statement about a release):
+
+```
+CANCEL / PENDING_TIMEOUT / REJECT: taken RSV-00000001  Σ 0.0 -> 6172.5 (+6172.5)
+  production release sites: NONE
+  after the terminal event: outstanding=1  Σ=6172.5  released=0  drift=0.0  material=False
+5 leaked reservations: Σ=30862.5 scanned=30862.5 drift=0.0 material=False released=0 taken=5
+```
+
+`drift=0.0` over a real leak is the point: a leaked reservation sums into the incremental aggregate
+and the full scan identically, so §11.7's reconcile is **structurally blind** to it and the failure
+looks like a market that stopped giving signals.
+
+### The fix — `scripts/nixrisk/outcomes.py` (NEW), and why NOT in the ledger
+
+`OrderOutcomes` is the Limiter's non-fill terminal-event handler: `on_cancel` (IOC full-cancel and
+plain venue cancel), `on_reject`, and `resolve_pending_timeouts`. **`scripts/nixrisk/reservations.py`
+is byte-identical to `3c73002`** — deliberately. The census that measures the wiring scans every
+production module for a `resolve`/`release` call, so a ledger booking its own paths could satisfy it
+with six one-line methods; a measurement its own subject can satisfy alone is exactly the
+circularity `seam.TerminalPath`'s docstring forbids. It is not `fills.py`'s either: a cancel that
+filled nothing, a reject and a timeout carry no quantity and no price, and `IocRemainder._guard`
+refuses `filled_qty <= 0` precisely because a remainder over a zero fill is a statement about nothing.
+
+Two decisions worth reading:
+
+* **The timer is not the event.** §2A:71 / §4:241 / §12A:830 are unanimous that a pending-order
+  timeout resolves by `query_order_status` and NEVER by a resend. The release therefore hangs off the
+  RESOLUTION: `cancelled`/`rejected` release under `PENDING_TIMEOUT`; `working`, `indeterminate`,
+  `unknown`, `filled` and any state outside the seam's declared set are **HELD**, counted, and named.
+  Releasing at the deadline would free margin for an order still working at the venue — an
+  under-count of committed and the §15 C1 cap breach.
+* **Three literal release sites, not one shared helper.** The census reads the `via` argument
+  statically; a single `_terminal(via=...)` helper made all three paths `<unresolved>` on the first
+  build and the gate correctly refused to credit them. Three literal calls are also three
+  independently plantable ones.
+
+### Proofs (S3)
+
+`scripts/tests/test_arc044_exactly_one_terminal_release.py`, **22 controls, all green.** The
+exhaustive drive runs over the set DERIVED from the tree (the gate's AST census), not a list;
+`test_the_DRIVEN_SET_equals_the_DERIVED_SET` reads the parametrise rosters back out of the file's own
+AST and requires each to EQUAL the derived set, so the roster cannot silently shrink. All six paths
+are driven through their real production surfaces — `IocRemainder`, `ProtectiveFlatten` (both onset
+causes), `OrderOutcomes` (the three new ones) — each releasing exactly once with Σ back to baseline,
+one RELEASED record, the store empty and `material=False`. The three races the slice owed are driven
+on real objects: partial-fill remainder arriving after the cancel (refused, `refused_releases == 1`),
+pending-timeout against terminal feedback **in both orders**, and blackout onset during a pending
+order (the later sweep issues no query at all, because the ledger's own TAKEN set no longer holds it).
+The two independent censuses in the tree (this gate's arm and ARC 038's ratchet) are cross-checked
+against each other rather than one being deleted.
+
+### The gate (S4) — extended, never duplicated
+
+`checks/check_reservation_lifecycle.py` gained **ARM WIRING** (rule 8 / doctrine C.9 — the V23 owner
+was extended, no second instrument built). Three halves: a STRUCTURAL census by shape that FAILS
+naming any §3 path with no production site; a LIVENESS half that answers **CANNOT_MEASURE naming the
+site** when a terminal-transition call's cause cannot be read statically; and a DRIVEN half that
+runs the handler's own published verbs against the real ledger. **Not one release path is named in
+the gate's source** — its own test greps for that — so the expected side comes from the frozen spec,
+the observed side from the tree, and the driven side from the intersection of the census with the
+handler module's `HANDLES` map, cross-checked so a subject cannot shrink its own drive. The stale
+`UNBOUND (D3.51) ... handlers do not exist yet` sentence (F-B6/D3.362's class) is gone: the coverage
+sentence is now regenerated from the census every run.
+
+**Bound from four real plants on a staged tree, shipped tree sha256 unchanged throughout:**
+
+| plant | exit | what it named |
+|---|---|---|
+| A1 — a terminal path's release SITE deleted | **1** | `outcomes.py:wiring[CANCEL]`: §3 names CANCEL and no module books it; committed permanently INFLATED |
+| A2 — site present, release ineffective | **1** | `outcomes.py:OrderOutcomes[CANCEL]`: Σ 6172.5 -> 6172.5 against a 0.0 baseline — did NOT return the 6172.5 reserved. A LEAK |
+| B — absorbed double release in `_settle`'s refusal path | **1** | `outcomes.py:OrderOutcomes[CANCEL]`: a SECOND event moved Σ 0.0 -> **-6172.5** — committed UNDER-counts (§15 C1) |
+| C — a new terminal site whose cause cannot be read | **2** | `cannot_measure: late_reject.py:13 ... the enumeration is INCOMPLETE and the verdict is unmeasured rather than green` |
+| plants removed | **0** | pass |
+
+### Freeze, against the DERIVED tip `3c73002`
+
+`scripts/nixrisk/outcomes.py` (new) · `checks/check_reservation_lifecycle.py` ·
+`scripts/tests/test_arc038_b_reservation_terminality.py` (the D3.358 ratchet baseline, which D3.358's
+own discharge criterion names) · `scripts/tests/test_arc044_exactly_one_terminal_release.py` (new) ·
+`docs/CHECK-DEBT.md` · `checks/gate_coverage_baseline.json` (exclusion owner re-pointed 044 → 045).
+**Nothing** in the sole-writer seam, `picture.py`/mirror, the 042 booking, `reservations.py`,
+`fills.py`, `blackout.py`, `flatten.py` or `limiterd.py`. `limiterd.py` untouched ⇒ the commit took
+the incremental path.
+
+### Close-out
+
+**(b) Derived reverse-dependency closure**, non-vacuity proven by the ratchet reddening first: 16
+test suites (14 derived + this arc's 2) — **269 passed**; 16 gates that construct the ledger — **16/16
+exit 0**. **(c)** the gate BOUND from all four plants above. **(d)** CHECK-DEBT reconciled:
+**D3.358 DISCHARGED**, **D3.441** opened (`unknown` venue state is HELD, never guessed — the
+over-count direction, and nothing re-asks) and **D3.442** opened (no production constructor for the
+handler; the same status the three pre-existing handlers have — the I1 capstone). Arc-total series
+row written; `check_derived_claims` reads `check_debt_open_items=389 [derived:ledger_rows=389,
+stated:series_table_latest_row=389]`, exit 0. No rule-3 row was owed for the new module: it ships in
+the same arc as its gate and is a declared SUBJECT of it.
+
+**Not claimed:** the value of a reservation vs actual margin (§6.4, not I2). D3.428, D3.434, D3.438,
+D3.439, D3.430–D3.433, D3.440 all stand untouched. D3.359 / D3.360 / D3.361 / D3.363 stay open — they
+are I2-adjacent and none of them is the exactly-one-release property.

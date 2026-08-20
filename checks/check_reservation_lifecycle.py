@@ -97,6 +97,7 @@ from __future__ import annotations
 import ast
 import dataclasses
 import importlib
+import inspect
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -113,6 +114,11 @@ import check_limiter_seam as seam_gate  # pylint: disable=wrong-import-order
 from nixverify.contract import CheckResult, Context, Mode, Status
 
 # pylint: disable=duplicate-code
+# The wiring census adds three small value classes and one wide drive to a
+# module that was already at the house line ceiling. Split-for-the-linter
+# would put the census and the drive it feeds in two files that must be read
+# together, which is the cost this file's own docstring argues against.
+# pylint: disable=too-many-lines,too-few-public-methods
 PRIVILEGE = "user"
 INTERACTIVE = False
 DISRUPTIVE = False
@@ -140,7 +146,16 @@ NON_CORRECTABLE_REASON = (
 #: Genuinely MEASURED here: the ledger is imported and driven, and its source is
 #: parsed. The seam is READ (its types are constructed to drive the ledger) and
 #: is declared by check_limiter_seam, which is where its own gate lives.
-SUBJECTS: tuple[str, ...] = ("scripts/nixrisk/reservations.py",)
+SUBJECTS: tuple[str, ...] = (
+    "scripts/nixrisk/reservations.py",
+    #: ARC 044. ARM WIRING drives the real `OrderOutcomes` — the production
+    #: release site for §3's non-fill terminal paths — so this file is measured
+    #: here, not merely read. Which paths those are is DERIVED (see ARM WIRING);
+    #: naming them here would put the expected set in this gate's own source,
+    #: which is the circularity B2 names and which this gate's own test greps
+    #: for.
+    "scripts/nixrisk/outcomes.py",
+)
 
 NAME = "check_reservation_lifecycle"
 
@@ -148,6 +163,11 @@ LEDGER = "scripts/nixrisk/reservations.py"
 PACKAGE = "nixrisk"
 MODULE = "nixrisk.reservations"
 SEAM_MODULE = "nixrisk.seam"
+OUTCOMES = "scripts/nixrisk/outcomes.py"
+OUTCOMES_MODULE = "nixrisk.outcomes"
+#: Where ARM WIRING censuses production release sites. Every non-test module in
+#: the Limiter's package, by SHAPE — never a hand-list of filenames.
+NIXRISK_DIR = ("scripts", "nixrisk")
 
 #: Non-vacuity floor on the SPEC side (`debug.md` §7.12 answer 1). A floor, never
 #: today's count — a threshold equal to the current number reddens the moment the
@@ -159,6 +179,25 @@ MIN_TERMINAL_PATHS = 3
 #: the rest must drain — a single-reservation drive cannot tell "the ledger
 #: released the right one" from "the ledger emptied itself".
 _ORDERS: tuple[tuple[int, float], ...] = ((3, 1234.5), (1, 2345.75), (2, 987.25))
+
+#: The bucket an unreadable `via` lands in. Its non-emptiness is CANNOT_MEASURE:
+#: an enumeration with a hole in it has not enumerated anything.
+UNREADABLE = "<unresolved>"
+
+#: The marker `_wiring_structure` returns instead of a census when the tree under
+#: test is not a whole package. Not a release-path member, so it can never be
+#: confused with one.
+ABSTAINED = "<abstained>"
+
+#: Non-vacuity floor on ARM WIRING's own subject. The wiring census is a
+#: statement about a WHOLE Limiter package; a plant harness stages a handful of
+#: files on a `tmp_path` (doctrine C.8), and over such a tree "no module books
+#: this path" is true and means nothing. Below this floor the arm ABSTAINS and
+#: says so — it neither reports a leak it cannot have observed, nor turns
+#: another arm's real finding into CANNOT_MEASURE. A FLOOR, never today's count:
+#: the shipped package holds far more, so it reddens nothing real, and an
+#: equality against the current number would move every time a module lands.
+MIN_CENSUS_MODULES = 8
 
 #: §11.7's drift floor, owned HERE so the subject cannot widen its way to green.
 GATE_TOLERANCE = 1e-9
@@ -176,10 +215,16 @@ class Finding(NamedTuple):
 
 
 class Loaded(NamedTuple):
-    """The ledger and the seam, imported out of the tree under test."""
+    """The ledger, the seam, and the non-fill outcome handlers, from the tree."""
 
     reservations: ModuleType
     seam: ModuleType
+    #: `nixrisk.outcomes` — the production release site for §3's three non-fill
+    #: paths (ARC 044). OPTIONAL because a tree that does not have it must be
+    #: CANNOT_MEASURE over ARM WIRING's driven half rather than crash, and never
+    #: a PASS (§17). Its ABSENCE is separately a FAIL on the structural half,
+    #: because §3's paths then have no production release site at all.
+    outcomes: ModuleType | None = None
 
 
 @dataclasses.dataclass
@@ -268,9 +313,17 @@ def load(home: Path) -> tuple[Loaded | None, str]:
     # there. Required, not defensive: every plant lives in a fresh tmp_path.
     importlib.invalidate_caches()
     try:
+        try:
+            outcomes: ModuleType | None = importlib.import_module(OUTCOMES_MODULE)
+        except Exception:  # pylint: disable=broad-except  # noqa: BLE001
+            # Absence is a MEASUREMENT, not an error: ARM WIRING's structural
+            # half reports the missing release sites and its driven half says
+            # it could not run. Swallowing it here would hide the finding.
+            outcomes = None
         loaded = Loaded(
             reservations=importlib.import_module(MODULE),
             seam=importlib.import_module(SEAM_MODULE),
+            outcomes=outcomes,
         )
         return loaded, ""
     except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
@@ -706,11 +759,556 @@ def _arm_floors(module: ModuleType) -> list[Finding]:
 
 
 # --------------------------------------------------------------------------
+# ARM WIRING — §14 needs a release on every path §3 names, IN PRODUCTION
+# --------------------------------------------------------------------------
+#
+# The arms above drive the LEDGER, which has always been able to release on
+# every path §3 names — so they are green over a tree in which NOTHING CALLS IT.
+# ARC 038 (F-B3, CHECK-DEBT D3.358) measured that exact state: three of the six
+# paths had a production release site and three had none, so a rejected,
+# timed-out or fully-cancelled entry held its whole reservation for the life of
+# the process while §11.7's reconcile reported `drift=0.0` over it — a leak
+# breaks no arithmetic identity and the full-scan reconcile is structurally
+# blind to one.
+#
+# NOT ONE RELEASE PATH IS NAMED IN THIS FILE, and that is mechanical, not
+# stylistic: `test_the_PATH_SET_is_PARSED_FROM_THE_SPEC_and_appears_NOWHERE_in_
+# the_gate` greps this source for every member the spec parse yields. An
+# expected set the gate typed would make the gate prove the ledger covers a set
+# the gate chose. So the EXPECTED side comes from the frozen spec, the OBSERVED
+# side from an AST census of the tree, and the DRIVEN side from the intersection
+# of the census with the handler module's own published verb map — three
+# derivations, no list.
+#
+# Three halves, failing three different ways:
+#
+#   STRUCTURAL — census every production release site BY SHAPE (an AST walk for
+#   a `resolve`/`release` call, plus a STATIC read of its `via` argument) and
+#   require one for every path the FROZEN SPEC names. A spec path with no site
+#   is a FAIL naming that path and the leak it implies. Derivation, not a list:
+#   a seventh path added to §3 arrives already measured, and a new module that
+#   books one is credited the moment it lands.
+#
+#   LIVENESS / COMPLETENESS — a release call whose `via` cannot be read
+#   statically is reported by the census as unreadable, and this arm then
+#   answers CANNOT_MEASURE (exit 2) NAMING THE SITE. That is the whole
+#   anti-blindness argument (`debug.md` §7.12; the D3.440 drill-vs-daemon
+#   lesson): a terminal-transition site the enumeration cannot name might be a
+#   path that leaks, and a gate that cannot enumerate its subject has not
+#   measured it. A hand-list would have ignored the same site in silence.
+#
+#   DRIVEN — the paths the handler module books are then driven through its REAL
+#   public verbs against the REAL ledger. Σ must return to its pre-reservation
+#   value, exactly once per reservation (a leak leaves it INFLATED), and a
+#   SECOND terminal event for the same order must leave Σ BIT-identical (an
+#   absorbed double release leaves it UNDER-counted, which is §15 C1's
+#   cap-breach direction). The paths booked by the fill and flatten modules are
+#   proven WIRED here and driven by `check_fill_handler` and `check_flatten`,
+#   which declare those files as their own SUBJECTS — a second drive here would
+#   be the duplicate instrument doctrine C.9 forbids.
+
+
+def _via_argument(node: ast.Call) -> ast.expr | None:
+    """The `via` argument of a `resolve`/`release` call, or `None` if not one."""
+    func = node.func
+    if not isinstance(func, ast.Attribute):
+        return None
+    if func.attr not in ("resolve", "release") or len(node.args) < 2:
+        return None
+    return node.args[1]
+
+
+def _literal_member(via: ast.expr) -> str | None:
+    """A `TerminalPath` member spelled literally at the call site, or `None`."""
+    if (
+        isinstance(via, ast.Attribute)
+        and isinstance(via.value, ast.Name)
+        and via.value.id == PATH_ENUM
+    ):
+        return via.attr
+    return None
+
+
+def _guarded_members(tree: ast.Module) -> list[str]:
+    """Members a NON-literal `via` can carry, when a frozenset constrains it.
+
+    A module may take its cause as a parameter and REFUSE anything outside a
+    module-level frozenset of enum members before calling `resolve`. That call
+    is readable even though its argument is a name, so those members — and only
+    those — are credited to it. The rule is written over the SHAPE, never over a
+    filename, so any module adopting the same guard is read the same way, and a
+    module with no such guard gets nothing from here: its non-literal call lands
+    in the unreadable bucket, which is the conservative direction.
+    """
+    guarded: set[str] = set()
+    # MODULE LEVEL ONLY. A frozenset built inside a function is not a guard the
+    # census can rely on — it may be rebound, and a call site credited by a
+    # local literal would be crediting the reader's optimism. `tree.body`,
+    # rather than `ast.walk`, is what makes that constraint mechanical.
+    for node in tree.body:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        guarded.update(_frozenset_members(node.value))
+    return sorted(guarded)
+
+
+def _frozenset_members(value: ast.expr | None) -> list[str]:
+    """The enum members of a `frozenset({A, B})` literal, or nothing."""
+    if not isinstance(value, ast.Call):
+        return []
+    if not (isinstance(value.func, ast.Name) and value.func.id == "frozenset"):
+        return []
+    found: list[str] = []
+    for arg in value.args:
+        if not isinstance(arg, (ast.Set, ast.List, ast.Tuple)):
+            continue
+        members = [_literal_member(element) for element in arg.elts]
+        if members and all(member is not None for member in members):
+            found.extend(member for member in members if member is not None)
+    return found
+
+
+def _sites_in(path: Path, found: dict[str, list[str]]) -> None:
+    """Add one module's release call sites to `found`, in place."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+    guarded = _guarded_members(tree)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        via = _via_argument(node)
+        if via is None:
+            continue
+        site = f"{path.name}:{node.lineno}"
+        member = _literal_member(via)
+        if member is not None:
+            found.setdefault(member, []).append(site)
+        elif guarded:
+            for cause in guarded:
+                found.setdefault(cause, []).append(site)
+        else:
+            found.setdefault(UNREADABLE, []).append(site)
+
+
+def release_sites(home: Path) -> dict[str, list[str]]:
+    """Release path -> production `resolve`/`release` call sites, by SHAPE.
+
+    Derived over every module in the Limiter's package. Tests live outside that
+    package and so cannot inflate the census; nothing is filtered by name, so
+    nothing has to be maintained when a module is added.
+    """
+    root = home.joinpath(*NIXRISK_DIR)
+    found: dict[str, list[str]] = {}
+    for path in sorted(root.glob("*.py")):
+        _sites_in(path, found)
+    return found
+
+
+def _wiring_structure(
+    home: Path, paths: tuple[str, ...]
+) -> tuple[list[Finding], str, dict[str, list[str]]]:
+    """Census + the structural verdicts. Returns (findings, blind, sites)."""
+    population = len(list(home.joinpath(*NIXRISK_DIR).glob("*.py")))
+    if population < MIN_CENSUS_MODULES:
+        return (
+            [],
+            "",
+            {ABSTAINED: [f"{population} module(s) < floor {MIN_CENSUS_MODULES}"]},
+        )
+    try:
+        sites = release_sites(home)
+    except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
+        return (
+            [],
+            (
+                f"{OUTCOMES}: the production release-site census could not be "
+                f"taken — {type(exc).__name__}: {exc}. Nothing was measured "
+                "about which §3 paths production books (§17: never a PASS)"
+            ),
+            {},
+        )
+    unreadable = sites.get(UNREADABLE, [])
+    if unreadable:
+        return (
+            [],
+            (
+                f"a terminal-transition site this gate cannot name: "
+                f"{', '.join(sorted(unreadable))} — its `via` argument is "
+                f"neither a literal {PATH_ENUM} member nor constrained by a "
+                "module-level frozenset of them, so the census cannot say WHICH "
+                "release path it books. It may be a path that leaks and this "
+                "gate would not see it, so the enumeration is INCOMPLETE and "
+                "the verdict is unmeasured rather than green "
+                "(nix_check_contract.md §17; debug.md §7.12)"
+            ),
+            sites,
+        )
+    findings: list[Finding] = []
+    for member in paths:
+        if not sites.get(member):
+            findings.append(
+                Finding(
+                    f"{OUTCOMES}:wiring[{member}]",
+                    f"§3 names {member} as a release path and NO module in "
+                    f"{'/'.join(NIXRISK_DIR)} books it — an order reaching that "
+                    f"terminal state holds its whole reservation forever, Σ "
+                    f"reservations never falls, committed margin is permanently "
+                    f"INFLATED, and §11.7 reports drift 0.0 over it because a "
+                    f"leak breaks no arithmetic identity. Production books "
+                    f"{dict(sorted(sites.items()))}",
+                )
+            )
+    return findings, "", sites
+
+
+@dataclasses.dataclass
+class WiringTally:
+    """What the PRODUCTION drive did. Kept apart from the ledger drive's tally.
+
+    Separate on purpose: the ledger tally's figures are asserted against the
+    roster size by this gate's own test (three reservations per spec path), and
+    folding a second, differently-shaped drive into it would make that relation
+    a coincidence.
+    """
+
+    reservations: int = 0
+    releases: int = 0
+    refusals: int = 0
+    margin: float = 0.0
+    paths: list[str] = dataclasses.field(default_factory=list)
+
+
+class _WiringClock:
+    """A monotone clock the drive advances itself. Never `time.time`."""
+
+    def __init__(self, start: float) -> None:
+        self._now = float(start)
+
+    def __call__(self) -> float:
+        self._now += 1.0
+        return self._now
+
+
+class _WiringStatus:
+    """What a §4 status query answered. Structural, not imported (§2A inv. 2)."""
+
+    def __init__(self, state: str) -> None:
+        self.state = state
+        self.terminal = True
+        self.client_order_id = ""
+        self.cumulative_qty = 0
+
+    def query_order_status(self, client_order_id: str) -> _WiringStatus:
+        """§4's status query, answered with the state the drive chose."""
+        self.client_order_id = client_order_id
+        return self
+
+
+#: What a status query must answer for a pending order to be DEAD. Read off the
+#: handler module's own declared set rather than typed here — see `_fire`.
+DEAD_STATE_ATTR = "DEAD_STATES"
+#: The handler module's published map of release path -> public verb.
+HANDLES_ATTR = "HANDLES"
+#: The name the release-path enumeration is bound to at a call site.
+PATH_ENUM = "TerminalPath"
+
+
+def _fire(handler: Any, verb: str, client_order_id: str, module: Any) -> Any:
+    """Drive ONE public verb, choosing its call shape from its own signature.
+
+    Two shapes exist and the signature tells them apart without this gate
+    knowing which path is which: a PUSH verb takes the order's identifier, and
+    the PULL verb (§4's timeout resolution, which resolves by QUERYING and never
+    by resending) takes a status-query port. Anything else is unknown to this
+    gate and is reported as such rather than guessed at.
+    """
+    method = getattr(handler, verb)
+    params = list(inspect.signature(method).parameters)
+    if params and params[0] == "client_order_id":
+        return method(client_order_id)
+    if params and params[0] == "query":
+        dead = sorted(getattr(module, DEAD_STATE_ATTR))
+        if not dead:
+            raise RuntimeError(f"{OUTCOMES}: {DEAD_STATE_ATTR} is empty")
+        return method(_WiringStatus(dead[0]))
+    raise RuntimeError(
+        f"{OUTCOMES}: {verb}{tuple(params)} is a call shape this gate does not "
+        "know how to drive"
+    )
+
+
+def _drive_one_path(  # pylint: disable=too-many-locals
+    loaded: Loaded, member: str, verb: str, index: int, tally: WiringTally
+) -> tuple[list[Finding], str]:
+    """One path: take a real reservation, end it once, then end it again.
+
+    Split out of the loop below because a single function holding both the
+    per-path arithmetic and the enumeration around it was over this tree's
+    cognitive-complexity ceiling — and because the three verdicts here (leak,
+    double release, record mismatch) each want to read as one thought.
+    """
+    module = loaded.outcomes
+    if module is None:  # pragma: no cover - the caller refuses this first
+        return [], (
+            f"{OUTCOMES}: the non-fill outcome handler is not importable, so "
+            f"{member} could not be driven (§17: never a PASS)"
+        )
+    seam = loaded.seam
+    path = getattr(seam.TerminalPath, member, None)
+    if path is None:
+        return [], (
+            f"{OUTCOMES}: the seam declares no {PATH_ENUM}.{member}, so the "
+            "production drive for that path cannot be performed"
+        )
+    recorder = Recorder()
+    ledger = loaded.reservations.ReservationLedger(recorder)
+    clock = _WiringClock(2000.0 + 100.0 * index)
+    handler = module.OrderOutcomes(ledger, clock=clock, pending_ack_timeout_s=2.0)
+    order = seam.ProposedOrder(
+        client_order_id=f"wire-{index}",
+        strategy_id="strat-wiring",
+        symbol="ESZ6",
+        side=seam.Side.LONG,
+        qty=2,
+        margin_per_contract=3086.25 + index,
+        stop_ticks=20,
+        stop_mode=seam.StopMode.FIXED,
+        signal_ts=1000.0,
+    )
+    site = f"{OUTCOMES}:OrderOutcomes[{member}]"
+    baseline = ledger.total_reserved()
+    ledger.take(order, clock())
+    taken = ledger.total_reserved()
+    # NON-VACUITY, on every path and before any release: a release measured over
+    # a reservation that was never taken proves nothing.
+    if abs(taken - baseline - order.proposed_margin) > GATE_TOLERANCE:
+        return [
+            Finding(
+                site,
+                f"Σ went {baseline!r} -> {taken!r} on a take of "
+                f"{order.proposed_margin!r} — no reservation was taken, so every "
+                "release reading below would be about nothing",
+            )
+        ], ""
+    tally.reservations += 1
+    tally.margin += order.proposed_margin
+    # The PULL verb resolves on a deadline, so the clock must cross it.
+    for _ in range(4):
+        clock()
+    first = _fire(handler, verb, order.client_order_id, module)
+    after = ledger.total_reserved()
+    if after != baseline:
+        return [
+            Finding(
+                site,
+                f"the {member} terminal event moved Σ {taken!r} -> {after!r} "
+                f"against a baseline of {baseline!r}: it did NOT return the "
+                f"{order.proposed_margin!r} this order reserved. A LEAK — §14 "
+                f"gives every reservation exactly one terminal release, "
+                f"committed margin stays INFLATED by {after - baseline!r}, and "
+                f"§3 Phase B denies against that inflation forever. The handler "
+                f"returned {first!r}",
+            )
+        ], ""
+    tally.releases += 1
+    tally.paths.append(member)
+    # AT MOST ONE: a second terminal event must be a RECORDED no-op, and Σ must
+    # be BIT-identical afterwards — not merely close.
+    second = _fire(handler, verb, order.client_order_id, module)
+    again = ledger.total_reserved()
+    if again != after:
+        return [
+            Finding(
+                site,
+                f"a SECOND {member} event for {order.client_order_id!r} moved Σ "
+                f"{after!r} -> {again!r} — a DOUBLE RELEASE. Committed margin "
+                f"now UNDER-counts by {after - again!r}, so §3 Phase B approves "
+                f"against headroom that is already spent (§15 C1, the "
+                f"double-spend race this invariant closed). The handler returned "
+                f"{second!r}",
+            )
+        ], ""
+    tally.refusals += 1
+    findings: list[Finding] = []
+    if len(ledger.released()) != 1:
+        findings.append(
+            Finding(
+                site,
+                f"{len(ledger.released())} RELEASED record(s) after one terminal "
+                "event and one duplicate — §14 gives exactly one",
+            )
+        )
+    if ledger.outstanding():
+        findings.append(
+            Finding(
+                site,
+                f"{len(ledger.outstanding())} reservation(s) still TAKEN after "
+                f"the {member} release drained Σ to baseline — the aggregate and "
+                "the store disagree about the same event",
+            )
+        )
+    return findings, ""
+
+
+def _wiring_verbs(
+    loaded: Loaded, sites: dict[str, list[str]]
+) -> tuple[dict[str, str], str]:
+    """The module's published verb map, CROSS-CHECKED against the AST census."""
+    handled = getattr(loaded.outcomes, HANDLES_ATTR, None)
+    if not handled:
+        return {}, (
+            f"{OUTCOMES}: no {HANDLES_ATTR} map, so this gate cannot reach the "
+            "module's release paths without naming one itself — which is the "
+            "circularity its own test forbids"
+        )
+    verbs = {path.name: verb for path, verb in handled.items()}
+    #: DERIVED, not declared: the paths this module is OBSERVED to book, taken
+    #: from the AST census. Cross-checking the module's own map against it is
+    #: what stops a subject shrinking its own drive.
+    owner = Path(OUTCOMES).name
+    observed = {
+        member
+        for member, found in sites.items()
+        if member != UNREADABLE and any(site.startswith(f"{owner}:") for site in found)
+    }
+    if set(verbs) != observed:
+        return {}, (
+            f"{OUTCOMES}: the module publishes verbs for {sorted(verbs)} while "
+            f"the AST census observes it booking {sorted(observed)}. A path it "
+            "books but does not publish would go undriven, so the drive is "
+            "unmeasured rather than smaller (§17)"
+        )
+    return verbs, ""
+
+
+def _wiring_drive(
+    loaded: Loaded, sites: dict[str, list[str]], tally: WiringTally
+) -> tuple[list[Finding], str]:
+    """Drive every path the handler module books, through its own public verbs."""
+    if loaded.outcomes is None:
+        return [], (
+            f"{OUTCOMES}: the non-fill outcome handler is not importable from "
+            "this tree, so the paths it books could not be driven through any "
+            "production surface (§17: never a PASS)"
+        )
+    verbs, cannot = _wiring_verbs(loaded, sites)
+    if cannot:
+        return [], cannot
+    findings: list[Finding] = []
+    for index, member in enumerate(sorted(verbs)):
+        found, blind = _drive_one_path(loaded, member, verbs[member], index, tally)
+        if blind:
+            return [], blind
+        findings += found
+    if not tally.paths and not findings:
+        return [], (
+            f"{OUTCOMES}: no production release path completed a drive, so a "
+            "clean sheet here would be about an empty run"
+        )
+    return findings, ""
+
+
+def _resolve_blind(
+    findings: list[Finding], blind: str
+) -> tuple[list[Finding], CheckResult | None]:
+    """How an unmeasured half and an observed defect settle against each other.
+
+    A blind spot never BURIES a defect that was actually observed — doctrine B.2
+    cuts the other way here, because the other arms did measure their subjects.
+    So: blind with nothing observed is CANNOT_MEASURE; blind WITH an observed
+    defect is the FAIL, carrying the unmeasured half on the detail so the green
+    half is not read as whole.
+    """
+    if not blind:
+        return findings, None
+    if not findings:
+        return findings, _cannot_measure(blind)
+    return findings + [Finding(f"{OUTCOMES}:wiring[enumeration]", blind)], None
+
+
+def _wiring(
+    home: Path, paths: tuple[str, ...], loaded: Loaded
+) -> tuple[list[Finding], str, str]:
+    """ARM WIRING plus the evidence sentence it derives. Lifted out of `run`."""
+    tally = WiringTally()
+    findings, blind = arm_wiring(home, paths, loaded, tally)
+    try:
+        if len(list(home.joinpath(*NIXRISK_DIR).glob("*.py"))) < MIN_CENSUS_MODULES:
+            census = {ABSTAINED: ["below the census population floor"]}
+        else:
+            census = release_sites(home)
+        evidence = _wiring_evidence(paths, census, tally)
+    except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
+        evidence = f"ARM WIRING census unavailable ({type(exc).__name__}: {exc})"
+    return findings, blind, evidence
+
+
+def arm_wiring(
+    home: Path, paths: tuple[str, ...], loaded: Loaded, tally: WiringTally
+) -> tuple[list[Finding], str]:
+    """§14 in production: every §3 path booked somewhere, each releasing once."""
+    findings, blind, sites = _wiring_structure(home, paths)
+    if ABSTAINED in sites:
+        return [], ""
+    if blind:
+        return [], blind
+    driven, cannot = _wiring_drive(loaded, sites, tally)
+    if cannot:
+        return findings, cannot
+    return findings + driven, ""
+
+
+# --------------------------------------------------------------------------
 # VERDICT
 # --------------------------------------------------------------------------
 
 
-def _evidence(paths: tuple[str, ...], tally: Tally) -> str:
+def _wiring_evidence(
+    paths: tuple[str, ...], sites: dict[str, list[str]], tally: WiringTally
+) -> str:
+    """The coverage sentence, DERIVED from the census taken this run.
+
+    Never a literal. ARC 038 / F-B6 (CHECK-DEBT D3.362) measured this gate
+    printing *"the Limiter's event handlers ... do not exist yet"* on every run
+    while three of them existed and called this ledger — a stale UNBOUND running
+    in the direction that EXCUSES coverage, which is the claim nobody re-checks.
+    Regenerating the sentence from `release_sites()` at run time is what stops it
+    going stale again: if a path loses its production caller the evidence says so
+    on the next run, with nobody editing a string.
+    """
+    if ABSTAINED in sites:
+        return (
+            f"ARM WIRING ABSTAINED: {sites[ABSTAINED][0]} — the tree under test "
+            "is not a whole Limiter package, so which §3 paths PRODUCTION books "
+            "was not measured here, and is not claimed either"
+        )
+    wired = [member for member in paths if sites.get(member)]
+    unwired = [member for member in paths if not sites.get(member)]
+    booked = ", ".join(
+        f"{member}={'+'.join(sorted(set(sites[member])))}" for member in wired
+    )
+    tail = (
+        f"NO production release site: {', '.join(unwired)} — those paths LEAK "
+        "(CHECK-DEBT D3.358)"
+        if unwired
+        else "every §3 release path has at least one production release site"
+    )
+    return (
+        f"ARM WIRING, derived by AST census over {'/'.join(NIXRISK_DIR)}/*.py on "
+        f"this run and not from any list: {len(wired)}/{len(paths)} path(s) "
+        f"booked in production [{booked}]; {tail}. Of those, "
+        f"{len(tally.paths)} path(s) [{', '.join(tally.paths)}] were also DRIVEN "
+        f"end-to-end through the handler module's own public verbs against the "
+        f"real ledger — {tally.reservations} reservation(s) over "
+        f"{tally.margin!r} of margin, {tally.releases} released with Σ back to "
+        f"baseline, {tally.refusals} duplicate terminal event(s) leaving Σ "
+        f"bit-identical. The remainder are proven WIRED here and DRIVEN by the "
+        f"gates that declare their files as SUBJECTS (check_fill_handler, "
+        f"check_flatten); a second drive here would be the duplicate instrument "
+        f"doctrine C.9 forbids"
+    )
+
+
+def _evidence(paths: tuple[str, ...], tally: Tally, wiring: str) -> str:
     return (
         f"§3 release paths {len(paths)} parsed at run time from the frozen spec "
         f"unioned with docs/SPEC-AMENDMENTS.md "
@@ -719,16 +1317,7 @@ def _evidence(paths: tuple[str, ...], tally: Tally) -> str:
         f"{tally.refusals} duplicate terminal event(s) refused, "
         f"{tally.plane1_rows} Plane-1 row(s) booked; every figure read back from "
         f"the ledger's own total_reserved/outstanding/audit, none of it asserted "
-        f"by this gate. UNBOUND (D3.51): drives the LEDGER, never the Limiter's "
-        f"event handlers. THREE of those handlers now exist and call this ledger "
-        f"(nixrisk/fills.py, nixrisk/blackout.py, and nixrisk/flatten.py driven "
-        f"by nixrisk/halt.py), and THREE of the release paths above have NO "
-        f"production release site at all — so an entry that is rejected, times "
-        f"out, or fills nothing leaks its whole reservation while this reconcile "
-        f"reports drift 0.0. CHECK-DEBT D3.358 enumerates which three and "
-        f"scripts/tests/test_arc038_b_reservation_terminality.py is the ratchet "
-        f"in both directions (measured ARC 038/B). D3.51's own wording says "
-        f"those handlers do not exist; that stopped being true"
+        f"by this gate. {wiring}"
     )
 
 
@@ -766,13 +1355,24 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
         tally = Tally()
         findings = drive(loaded, members, tally)
         findings += arm_sigma(ctx.nix_home, loaded.reservations)
+        # ARM WIRING runs LAST because it is the only arm that can turn a
+        # measured FAIL into CANNOT_MEASURE: an unreadable terminal-transition
+        # site means the enumeration is incomplete, and a gate that cannot
+        # enumerate its own subject has not measured it (§17). The findings the
+        # other arms already produced are still reported in that detail, so a
+        # blind spot never buries a defect that WAS observed.
+        wiring_findings, blind, wiring = _wiring(ctx.nix_home, paths, loaded)
+        findings += wiring_findings
+        findings, refused = _resolve_blind(findings, blind)
+        if refused is not None:
+            return refused
         if len(tally.paths) < MIN_TERMINAL_PATHS and not findings:
             return _cannot_measure(
                 f"{LEDGER}: only {len(tally.paths)} path(s) completed a drive, "
                 f"below the floor of {MIN_TERMINAL_PATHS} — a clean sheet here "
                 "would be about an empty run"
             )
-        evidence = _evidence(paths, tally)
+        evidence = _evidence(paths, tally, wiring)
         if findings:
             return CheckResult(
                 name=NAME,

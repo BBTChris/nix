@@ -329,18 +329,38 @@ def test_the_REAL_PLANE1_WAL_under_a_REAL_KERNEL_REFUSAL_takes_nothing(
 # ==========================================================================
 
 #: The RECORDED baseline of §3 release paths a PRODUCTION module actually books,
-#: measured by AST over `scripts/nixrisk/*.py` in ARC 038 / B. NOT derived from
-#: `TerminalPath` — deriving it from the code and then proving the code covers it
-#: is circular. A one-way ratchet: a path that gains a production release site is
-#: a FAIL telling you to move it here, and a path that LOSES one is the leak.
-#: CHECK-DEBT **D3.358**.
-WIRED_PATHS: frozenset[str] = frozenset({"FILL", "BLACKOUT_ONSET", "HALT_ONSET"})
+#: measured by AST over `scripts/nixrisk/*.py`. NOT derived from `TerminalPath` —
+#: deriving it from the code and then proving the code covers it is circular. A
+#: one-way ratchet: a path that gains a production release site is a FAIL telling
+#: you to move it here, and a path that LOSES one is the leak.
+#:
+#: **MOVED IN ARC 044, in the progress direction, and this is the second half of
+#: the ratchet doing its job.** ARC 038 / B recorded three wired paths and three
+#: with no production caller at all (CHECK-DEBT D3.358). ARC 044 landed
+#: `scripts/nixrisk/outcomes.py` — the Limiter's non-fill terminal-event handler
+#: — and the ratchet FAILED first, naming the three paths that had gained a
+#: caller and refusing to pass until this line moved. It is recorded here, not
+#: computed, for exactly the reason above: a baseline that derives itself from
+#: the tree agrees with any tree.
+WIRED_PATHS: frozenset[str] = frozenset(
+    {
+        "FILL",
+        "BLACKOUT_ONSET",
+        "HALT_ONSET",
+        # ARC 044: outcomes.py::OrderOutcomes.
+        "CANCEL",
+        "REJECT",
+        "PENDING_TIMEOUT",
+    }
+)
 
-#: §3:151 names these release paths and NO production module books any of them.
-#: An entry that is rejected, times out, or is cancelled other than at a
-#: blackout/HALT onset holds its reservation forever, and `audit()` reports
-#: drift 0.0 over it. CHECK-DEBT **D3.358**; owner ARC 039.
-UNWIRED_PATHS: frozenset[str] = frozenset({"CANCEL", "REJECT", "PENDING_TIMEOUT"})
+#: EMPTY since ARC 044: every release path §3:151 names now has at least one
+#: production release site. It stays as a NAMED, ASSERTED set rather than being
+#: deleted, because the assertion `declared - wired == UNWIRED_PATHS` is what
+#: turns a path that LOSES its caller back into a loud failure — deleting the
+#: empty set would delete the leak detector with it. D3.358 is discharged; a
+#: non-empty set here again is a regression on §14's at-least-one half.
+UNWIRED_PATHS: frozenset[str] = frozenset()
 
 
 def _via_argument(node: ast.Call) -> ast.expr | None:

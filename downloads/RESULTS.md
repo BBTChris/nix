@@ -1,233 +1,140 @@
-# ARC 043 — RESULTS
+# ARC 044 — ULTRAREVIEW: Limiter, slice 6 — I2: exactly one terminal release
 
-**ULTRAREVIEW · Limiter slice 5 · I8 sole-writer ENFORCEMENT · TIER INTERIOR**
+**TIER = INTERIOR.** Predecessor tip **DERIVED** with `git rev-parse HEAD` = **`3c73002`** (the
+brief's `≈ b7476a6` was approximate; every freeze and diff here is against `3c73002`).
 
-**BADGE: Limiter STAYS RED.** Clean set `{I5, I6, I7, I8, I10} = 5/12`, open = 7.
-First invariant flip since ARC 041.
+## VERDICT
 
-**Predecessor DERIVED:** brief said `≈ 382cbd4`; `git rev-parse HEAD` said **`2417e2a`**.
-Everything below is frozen and diffed against `2417e2a`.
+**I2 DISCHARGED. Limiter STAYS RED.**
+Clean set `{I5, I6, I7, I8, I10} = 5/12` → **`{I2, I5, I6, I7, I8, I10} = 6/12`, open = 6.**
+Remaining open: **I1** (instrument the daemon — capstone), **I3, I4, I9, I11, I12**.
 
-**Commit escalation: NO.** `scripts/limiterd.py` is on the runtime gate's uncovered list and was
-NOT touched — it owns §9's first arrow only (enqueue → WAL); the INSERT-capable connection lives in
-`scripts/nixrisk/plane1_sink.Plane1PostgresSink`. Every changed `.py` is known to `.testmondata`,
-so the commit takes the incremental path rather than the ~43-minute full pass.
+## THE DEFECT I2's CHARTER NAMED — and it was NOT the half this brief led with
 
----
+The 038 register holds seven findings under I2. The **at-most-one** half was already RESISTED (4,000
+real-thread iterations, zero arithmetic violations; the gate already bound by four plants). The
+blocking half was **F-B3 / D3.358**: the **at-least-one** half failing at the **WIRING**, not in the
+ledger. Three of §3:151's six release paths had **no production release site at all**.
 
-## ARC 043 — ULTRAREVIEW, Limiter slice 5: I8 sole-writer ENFORCEMENT
+Re-measured live at `3c73002` before touching code, non-vacuity asserted first (Σ observed to RISE
+by the exact proposed margin):
 
-**Tier INTERIOR. Predecessor DERIVED, not cited: the brief said `≈ 382cbd4`; `git rev-parse HEAD`
-said `2417e2a`.** Same one-commit lag 042 recorded — the post-write-back re-measure commits after
-the RESULTS HEAD — and every freeze and diff in this arc is against `2417e2a`.
+```
+CANCEL / PENDING_TIMEOUT / REJECT   taken RSV-00000001  Σ 0.0 -> 6172.5 (+6172.5)
+  production release sites: NONE
+  after the terminal event: outstanding=1 Σ=6172.5 released=0 drift=0.0 material=False
+5 leaked reservations: Σ=30862.5 scanned=30862.5 drift=0.0 material=False
+```
 
-**Badge: Limiter STAYS RED. Clean set `{I5, I6, I7, I8, I10} = 5/12`, open = 7.** First invariant
-flip since ARC 041.
+`drift=0.0` over a real leak: a leaked reservation sums into the incremental aggregate and the full
+scan identically, so §11.7's reconcile is **structurally blind** to it. The failure mode is a slow
+strangle — committed never falls, §3 Phase B eventually denies everything, and it looks like a
+market that stopped giving signals.
 
-### The owed sequencing ruling, answered at kickoff from the 038 register itself
+## THE FIX — `scripts/nixrisk/outcomes.py` (NEW). `reservations.py` NOT touched
 
-**NO invariant of I1–I12 requires full §9 event-booking coverage, so D3.434 is NOT
-Limiter-greening-blocking — it is Plane-1-module debt and the Limiter can green on its twelve
-invariants without it.** Read off all twelve rows and 038's sub-agent charters A–F: I1/I10/I11 are
-gate-wall ordering and cancellation, I2 is the in-process reservation ledger, I3/I4 are exit-path
-independence and fill-vs-ack, I6/I7 are the cash/net-liq split and snapshot atomicity, I5/I9 are
-wedge-freedom and hot-path purity, I12 is input freshness. **I8's own text is *"a second writer, or
-a write that skips the WAL"*** — an identity-and-route property. Sub-agent E's charter says the same
-and counts no event types. **The consequence is stated so it cannot be misread later: a green
-Limiter badge with D3.434 open means the invariants hold, NOT that the money record is complete.**
+`OrderOutcomes`: `on_cancel`, `on_reject`, `resolve_pending_timeouts`. Three **literal** `resolve`
+sites, one per path.
 
-### S1 — the defect reproduced on the live cluster, before a line changed
+* **Why not in the ledger.** The census that measures the wiring scans production modules for a
+  `resolve`/`release` call. A ledger booking its own paths would satisfy it with six one-line
+  methods — a measurement its own subject can satisfy alone, which is the circularity
+  `seam.TerminalPath`'s docstring forbids. `reservations.py` is **byte-identical to `3c73002`**.
+* **Why not in `fills.py`.** A cancel that filled nothing, a reject and a timeout carry no quantity
+  and no price. `IocRemainder._guard` refuses `filled_qty <= 0` for exactly that reason.
+* **The timer is not the event.** §2A:71 / §4:241 / §12A:830 — a pending-order timeout resolves by
+  `query_order_status`, **never** a resend. Release hangs off the RESOLUTION: `cancelled`/`rejected`
+  release; `working`, `indeterminate`, `unknown`, `filled` and any undeclared state are **HELD**,
+  counted and named. Releasing at the deadline would free margin for a live order — the §15 C1 cap
+  breach. **NO retry, NO auto-resend**, asserted over the module's call graph.
+* **Three literal sites, not one helper.** The first build centralised the call and the census
+  correctly refused to credit any of the three (`<unresolved>`). Three literals are also three
+  independently plantable sites.
 
-A plain script importing nothing from `nixrisk` (pids 57646/57708), ordinary connection, against the
-real `nix_plane1`:
+Census after the fix — six paths, empty unreadable bucket:
 
-| surface | result |
-|---|---|
-| ambient `INSERT`, no `-U`, no `SET ROLE` | **LANDED** — `event_id 1445`, `event_type 'filled'`, SELECTed back, shape-identical to a real row |
-| ambient `UPDATE` of the append-only log | **SUCCEEDED** — `reason` read back as `'rewritten by a rogue'` |
-| ambient `TRUNCATE` | **SUCCEEDED** (rolled back after proving) |
-| the same write DECLARING `nix_reader` | **REFUSED, SQLSTATE 42501**, `permission denied for table plane1_event_log` |
+```
+BLACKOUT_ONSET  blackout.py:1062 + flatten.py:805      CANCEL           outcomes.py:305
+FILL            fills.py:391                            REJECT           outcomes.py:320
+HALT_ONSET      flatten.py:805                          PENDING_TIMEOUT  outcomes.py:400
+<unresolved>    none
+```
 
-**The grants were never wrong — the last row proves they bite. They bite only a writer polite enough
-to DECLARE a non-writer identity.** `Plane1PostgresSink` connected as ambient superuser `bbt` and
-then voluntarily `SET LOCAL ROLE nix_limiter`; a rogue omits that line and inherits superuser. That
-is ARC 038's "convention, not enforcement" in one sentence. Forged rows deleted; record restored to
-its single pre-existing row.
+The ARC 038 ratchet **FAILED FIRST in the progress direction** (`production wires [six] and this file
+records [three]`) before `WIRED_PATHS` was moved; `UNWIRED_PATHS` is now the empty set and is kept,
+not deleted — the assertion over it is what turns a path LOSING its caller back into a loud failure.
 
-### S2 — the enforcement, in two layers, because one was not available
+## PROOFS — `test_arc044_exactly_one_terminal_release.py`, 22 controls, all green
 
-A **SUPERUSER bypasses every privilege check in the executor**, and the OS user this tree runs as is
-one. No REVOKE, GRANT, ownership change or RLS policy binds a superuser. **`pg_hba.conf` is the one
-mechanism that does** — the postmaster evaluates it before a role's privileges exist.
+* **Exhaustive single-release** over the set DERIVED from the tree, not a list. The parametrise
+  rosters are read back out of the file's own AST and each must EQUAL the derived set, so the roster
+  cannot silently shrink. All six paths driven through their real production surfaces
+  (`IocRemainder`, `ProtectiveFlatten` both onset causes, `OrderOutcomes` the three new ones): each
+  releases **exactly once**, Σ back to baseline, one RELEASED record with the right cause, store
+  empty, `material=False`.
+* **No double release under race**, on real objects: partial-fill remainder arriving after the
+  cancel (`refused_releases == 1`); pending-timeout vs terminal feedback **in both orders**;
+  blackout onset during a pending order (the later sweep issues no query at all — the ledger's TAKEN
+  set no longer holds it). Σ compared **bit-identically**, not approximately.
+* The two independent censuses in this tree (gate arm, ARC 038 ratchet) are cross-checked against
+  each other rather than one being deleted.
 
-* `databases/schema/plane1_hba.conf` (new) — the source of truth for the connection layer.
-  `local nix_plane1 all reject`, `host nix_plane1 all 0.0.0.0/0 reject`, with `nix_limiter` and
-  `nix_reader` admitted by `peer` + ident map and `postgres` kept over its own socket so DDL and
-  `pg_dump` remain possible as a deliberate `sudo -u postgres` operator action. Installed ABOVE the
-  distribution's general rules, because pg_hba is first-match and a block appended below `local all
-  all peer` is unreachable while looking installed.
-* `databases/schema/plane1_enforcement.sql` (new) — the privilege layer. Both roles become LOGIN
-  and NOSUPERUSER, cross-membership is REVOKEd so neither can `SET ROLE` into the other, and the log
-  keeps INSERT exclusive to `nix_limiter` with UPDATE/DELETE/TRUNCATE held by nobody.
-* `scripts/provision_plane1.py --enforce` installs both idempotently and then **re-measures in fresh
-  processes** (rule 2): ambient refused, both roles connect, reader's INSERT refused. It refuses to
-  report success on any of those.
-* `scripts/nixrisk/plane1_sink.py` — one seam: `psql -U <role>`. **The role is now the connection
-  identity, not an assumed one.** `SET LOCAL ROLE` is kept as a self-set for a future pooled driver.
+## THE GATE — `check_reservation_lifecycle` EXTENDED (rule 8 / doctrine C.9), no second instrument
 
-**A password for the writer was CONSIDERED AND REFUSED, and the reason is in the DDL:** a secret
-stored 0600 under the same OS user a rogue would run as is readable by the process it defends
-against. It converts a one-flag bypass into a two-line one while costing a credential no fresh
-checkout has, and calling that enforcement is precisely the "weaker mechanism looking like the
-guarantee" `plane1.sql` already refuses for triggers. **No trigger was added either, for
-`plane1.sql`'s own recorded reason**, although the brief permitted one.
+**ARM WIRING**, three halves: STRUCTURAL (census by shape; a §3 path with no site is a FAIL naming
+it), LIVENESS/COMPLETENESS (**CANNOT_MEASURE naming the site** when a terminal-transition call's
+cause cannot be read statically), DRIVEN (the handler's own published verbs against the real ledger,
+Σ to baseline, a second event leaving Σ bit-identical).
 
-### S3 — both directions, on the real cluster
+**Not one release path is named in the gate's source** — its own test greps for that. Expected side
+from the frozen spec, observed side from the tree, driven side from the census ∩ the module's
+`HANDLES` map, cross-checked so a subject cannot shrink its own drive. The stale
+`UNBOUND (D3.51) … handlers do not exist yet` sentence (F-B6 / D3.362's class) is gone: the coverage
+sentence is regenerated from the census every run.
 
-**(a) every surface S1 opened is refused.** Ambient INSERT/UPDATE/DELETE/TRUNCATE all die at the
-postmaster: `FATAL: pg_hba.conf rejects connection for host "[local]", user "bbt", database
-"nix_plane1"`. TCP `127.0.0.1` refused both SSL and non-SSL. Declared `nix_reader` refused with
-42501 at the table. `SELECT` confirms **0 forged rows**. *Non-vacuity:* the identical rogue script
-and statement against a scratch database carrying the same DDL but no hba block **landed the row,
-rc=0** — the instrument works; the enforcement is what refuses.
+**BOUND — four real plants on a staged tree, shipped tree sha256 unchanged throughout:**
 
-**(b) nothing sanctioned broke.** `nix_limiter` INSERTs the live record successfully (rolled back,
-explicit `event_id` so the sequence is unconsumed). `check_go_timeout` **exit 0** — a real limiterd,
-258 ticks, one firing, `plane1={"booked":1,"refused":0,"wal_durable":1}`. `check_sentinel_deadman`
-**exit 0** — SIGKILL, marker `['before','after']`, **replay booked 2 rows**. `check_halt` **exit 0**
-— retroactive booking across a genuine SIGKILL, 14 Plane-1 rows. `check_coldstart` **exit 0**. The
-Sentinel is confirmed NOT a Postgres writer and was not touched.
+| plant | exit | named |
+|---|---|---|
+| **A1** leak — release SITE deleted | **1** | `outcomes.py:wiring[CANCEL]` — no module books CANCEL; committed permanently INFLATED |
+| **A2** leak — site present, release ineffective | **1** | `outcomes.py:OrderOutcomes[CANCEL]` — Σ 6172.5 → 6172.5 against a 0.0 baseline; the 6172.5 reserved was not returned |
+| **B** absorbed double release | **1** | `outcomes.py:OrderOutcomes[CANCEL]` — a SECOND event moved Σ 0.0 → **−6172.5**; committed UNDER-counts (§15 C1) |
+| **C** new terminal site, cause unreadable | **2** | `cannot_measure: late_reject.py:13 … the enumeration is INCOMPLETE and the verdict is unmeasured rather than green` |
+| plants removed | **0** | pass |
 
-### S4 — the gate: ARM D, and what the plants taught it
+## FREEZE — against the derived tip `3c73002`
 
-`check_plane1_sole_writer` was EXTENDED, never duplicated (rule 8 / C.9). **ARM A has always passed
-and the invariant was still unenforced, because ARM A's probe is COOPERATIVE — it drives the sink as
-a role that announces itself a non-writer. A rogue announces nothing.** ARM D measures the identity
-ARM A assumes away, against the live record, with every attempt inside `BEGIN … ROLLBACK` and an
-explicit `event_id` so nothing durable is written and no sequence moves: a gate that forges a money
-row to prove money rows cannot be forged has already done the damage.
+`scripts/nixrisk/outcomes.py` (new) · `checks/check_reservation_lifecycle.py` ·
+`scripts/tests/test_arc038_b_reservation_terminality.py` (the ratchet baseline D3.358's own discharge
+criterion names) · `scripts/tests/test_arc044_exactly_one_terminal_release.py` (new) ·
+`docs/CHECK-DEBT.md` · `checks/gate_coverage_baseline.json` (exclusion owner re-pointed **044 → 045**,
+named in advance as the brief required). **Nothing** in the sole-writer seam, `picture.py`/mirror, the
+042 booking, `reservations.py`, `fills.py`, `blackout.py`, `flatten.py` or `limiterd.py`.
+`limiterd.py` untouched ⇒ incremental commit path.
 
-**PLANT A** — `GRANT INSERT ON plane1_event_log TO nix_reader` (038's exact state): **exit 1**,
-*"nix_reader — a NON-WRITER — wrote nix_plane1.plane1_event_log, returning event_id -1."*
-**PLANT A′** — the pg_hba block removed, which is I8's actual defect: **exit 1**, *"the AMBIENT
-identity wrote nix_plane1.plane1_event_log with no role declared at all … a forged §9 row
-indistinguishable from a real one."* **PLANT B** — the writer's grant dropped: **exit 1**, *"the
-SANCTIONED WRITER 'nix_limiter' could not write … Enforcement that also refuses the sole writer is a
-regression, not a fix."* Each restored by re-running the tracked migration, not by hand; gate exit 0
-after each.
+## CLOSE-OUT (INTERIOR)
 
-**PLANT A′ FOUND A REAL DEFECT IN THIS ARC'S OWN WIRING, and that is the most useful thing it did.**
-With ARM A first, the gate returned **CANNOT_MEASURE (exit 2)** on a live ambient write: the same
-hba block carries the scratch-database login line, so ARM A's control could not connect and raised
-before ARM D looked at the record. A positively-observed second writer shipped as "nothing was
-measured", which under rule 4's `Fail > Cannot-measure` is strictly weaker than the truth. **This is
-D3.409 recurring one arm along, so it took D3.409's repair:** ARM D now runs first, its defects join
-`observed`, and the shape control accepts whichever identity can read the catalog — if the ambient
-one can, that belongs in the evidence, not in an exception. Re-measured under the same plant:
-**exit 1**, naming the forged row.
+* **(b) Derived reverse-dependency closure** — 16 test suites (14 derived + this arc's 2): **269
+  passed**; 16 gates constructing the ledger: **16/16 exit 0**. RED-before/GREEN-after proven on this
+  arc's own defect by the ratchet failing first.
+* **(c)** gate bound from all four plants (A1/A2/B exit 1, C exit 2, sites named).
+* **(d)** CHECK-DEBT reconciled: **D3.358 DISCHARGED**; **D3.441** opened (`unknown` venue state is
+  HELD, never guessed — over-count direction, nothing re-asks) and **D3.442** opened (no production
+  constructor for the handler — the same status the three pre-existing handlers have; the I1
+  capstone). **ARC-TOTAL series row written** — `check_derived_claims`:
+  `check_debt_open_items=389 [derived:ledger_rows=389, stated:series_table_latest_row=389]`, exit 0.
+  No rule-3 row was owed for the new module: it ships in the same arc as its gate and is a declared
+  SUBJECT of it.
 
-Six new tests in `test_check_plane1_sole_writer.py`, all passing, including one that drives ARM D
-against an unenforced scratch database (the pre-043 world in miniature, needing no privileged edit
-to arm) and one that proves ARM D leaves the row count and the sequence unmoved **on a database
-where the write genuinely succeeds** — a rollback nobody reached would prove nothing.
+## RESIDUAL — explicitly NOT claimed
 
-`RESOURCES` gains `postgres:nix_plane1`, and the addition **reverses an earlier refusal rather than
-forgetting it**: the token was previously rejected as unfalsifiable (D3.152's class) because nothing
-in the gate dialled the live record. ARM D does, three times, every run. The claim is falsifiable
-now, so it is declared.
+The *value* of a reservation vs actual margin (§6.4) is not I2 and was not touched. D3.359 (the
+`AUDIT_TOLERANCE` random walk), D3.360 (the bare `KeyError` under real threads), D3.361 (no Plane-1
+`taken`/`released` pairing) and D3.363 (the blank `client_order_id`) stay open — I2-adjacent, none of
+them the exactly-one-release property. D3.428, D3.434, D3.438, D3.439, D3.430–D3.433 and D3.440 stand
+untouched. **I2's discharge is an invariant flip, not a debt row.**
 
-### D3.435(b) folded in — and the word "shape" is not claimed
+## BADGE
 
-The brief asked for the `*_drill.py` filename-SUFFIX match to become a SHAPE match. **Three
-candidate shapes were measured on this tree and each misclassified:** constant-literal §9 fields
-(the drills use f-strings over a loop index — separates nothing); creates-its-own-Postgres-substrate
-(clean on three drills, but MISSES `wal_kill_drill.py`, re-creating exactly one free green); and
-spawned-by-a-check (true of every drill AND of `scripts/limiterd.py`, the one module §9 authorises
-to be a producer). **A drill and a daemon are syntactically alike, and that is the finding.**
-`DRILL_SUFFIX` is replaced by `GATE_DRIVERS`, a path→reason enumeration in the form this tree
-already uses for the same problem, plus `gate_driver_liveness`, which makes the census
-CANNOT_MEASURE if any named path stops existing — closing both halves of the suffix defect (no
-accidental capture, no silent loss on rename), driven non-vacuously in both directions.
-`signal`/`accepted`/`denied` read TRANSPORT-ONLY, the honest state. The residual is D3.440.
-
-### FREEZE, and the wider paths explained rather than waved through
-
-Diff against `2417e2a`: 8 modified, 2 new, +849/-17. Allowed by the brief: the two new DDL/config
-files, the writer-role connection (`plane1_sink.py`, plus `projection.py`'s one `Psql.user` field
-and `provision_plane1.py`'s installer), the extended gate and its test, `CHECK-DEBT.md`. **Three
-paths are wider and each is a direct consequence, not a widening:** `check_plane1_schema.py` and
-`check_plane1_projection.py` read the live record and the ambient identity can no longer reach it,
-so they connect as `nix_reader` (and ARM 9 connects AS each role rather than assuming it — strictly
-stronger); `check_plane1_event_coverage.py` is the D3.435 fold-in the brief ordered. **Nothing** in
-the risk-gate seams, `picture.py`/mirror, the 042 booking, or WAL internals. **`limiterd.py` was not
-touched and did not need to be** — it owns §9's first arrow only, so the commit gate does not
-escalate.
-
-### Close-out
-
-**(b)** DERIVED reverse-dependency closure by AST import-graph inversion over the eight changed
-`.py` files, never a hand list: **28 files, 15 of them tests**. Non-vacuity asserted before it was
-believed — it contains `check_plane1_sole_writer.py`, `plane1_sink.py`, their tests, and the
-writer-process dependents `check_realized_pnl` and `check_plane1_hot_path`. **241 passed in 91 s**
-(closure + the WAL suite, added by detection: `GATE_DRIVERS` names `wal_kill_drill.py` by filename
-rather than by path, so no import edge exists and the closure could not see it — a stated blind
-spot, paid for rather than argued about). No cost-aware exclusion was needed. RED-before /
-GREEN-after on this arc's own defect is PLANT A′: exit 1 armed, exit 0 restored.
-**(c)** The gate is BOUND from three real FAIL plants, each exit 1 naming its site.
-**(d)** CHECK-DEBT reconciled. **I8's discharge is an invariant flip, not a debt row.** D3.435
-half (b) discharged with its search recorded; **D3.438** (enforcement stops at the OS user —
-impersonation needs a service account, provisioning scope), **D3.439** (the WAL is a second surface,
-latent only because no daemon runs the group-commit writer) and **D3.440** (`GATE_DRIVERS` is an
-enumeration) opened. The eight CHECK-A8/A9 exclusions re-owned **043 → 044 before the write-back**,
-named at kickoff from the file's own `owner` field rather than discovered at the close.
-
-### Ops
-
-`/tmp` inodes 13% → **5%** (six stale basetemps, 1.5 GB). **This arc added ZERO orphan scratch
-databases** — `nixp1t_*` still 60 and `p1a_sink_c760218413` predates the arc, both measured at
-kickoff and at teardown, neither swept (D3.437 is an operator `dropdb`).
-
-### The prediction, stated before the tree is measured
-
-`verify.py` **`90 | 3 | 2 | 0 | 1`, exit 1 — unchanged from 042's final.** S4 extended the existing
-owner rather than adding a gate, so rule 8 / Part C.9 says no count moves; the brief's conditional
-`passed+1` does not apply because no new gate file was created. The three standing fails
-(`check_ibgateway_service`, `check_uncalled_entry_points`, `check_monitor_tui`) unchanged, and
-`guarded` holds at 1 because the exclusions were re-pointed before this arc named itself complete.
-
-### The post-write-back re-measure — and it MISSED on the first pass
-
-**First run on the merged tree at `b7476a6`: `88 | 4 | 3 | 0 | 1`, against a predicted
-`90 | 3 | 2 | 0 | 1`.** The prediction is recorded above, before the tree was measured, and it is
-left standing rather than edited. Two deltas, both diagnosed rather than absorbed:
-
-* **`check_derived_claims` FAIL — a real omission, and mine.**
-  `derived:ledger_rows=388, stated:series_table_latest_row=385`. The close-out had opened three
-  CHECK-DEBT rows and skipped the ARC-TOTAL series row that re-derives the count. **The gate caught
-  the close-out skipping its own arithmetic**, which is exactly what it is for. Fixed by adding the
-  ARC 043 series row at the derived figure (388, from the probe, not typed) — `pass`, 13/13 claims.
-* **`check_arc_status_contract` CANNOT_MEASURE — an ordering artifact of the arc contract itself.**
-  *"no ARC-completed marker in log: run did not reach close-out."* The gate defaults to the newest
-  arc log, and this arc's log could not yet carry the marker because the marker is the last token
-  printed. Resolved the way §16.4 permits — the rule governs **the order of tokens in a report**,
-  written to no file — so the teardown line and the marker were written into the run's own log
-  before the final measurement, and the marker is still the last thing printed to the operator.
-  While fixing it the gate found a second real gap: **no `HEARTBEAT SELF-VERIFY` line in the log.**
-  The kickoff selfcheck DID run and returned exit 0, but it was emitted to the terminal before tee
-  began. It was NOT back-dated. A note saying so, and a genuine fresh run of the same emitter, were
-  appended at the time they were captured — the record says when it was written, not when it would
-  have looked tidiest.
-
-**Second run, same tree plus those two repairs: `90 | 3 | 2 | 0 | 1`, exit 1 — the predicted
-figure.** `passed` unmoved at 90: S4 extended the existing owner instead of adding a gate, so rule 8
-/ Part C.9 predicted no count move and the brief's conditional `passed+1` correctly did not apply.
-The three fails are the three standing ones — `check_ibgateway_service` (endpoint unreachable),
-`check_monitor_tui` (D3.431), `check_uncalled_entry_points` — **and not one row in the uncalled-entry
-gate's finding is in anything this arc touched.** `guarded` held at 1 because the exclusion owners
-were re-pointed 043 → 044 before this arc named itself complete. `check_arc_status_contract` passes
-against this arc's own log: `arc=043 pulses=14 teardowns=1 wd_pid=73120`, with the root-owned kernel
-thread `watchdogd` (pid 165) present, never killed, and correctly not treated as a leak.
-
-**What the miss is worth saying out loud:** the prediction was right about the arc's own work and
-wrong about the arc's own bookkeeping. Both deltas were self-inflicted by the close-out, neither was
-in the enforcement, and both were caught by gates rather than by reading.
+**Limiter RED.** `{I2, I5, I6, I7, I8, I10} = 6/12` clean, **6 open**: I1 (capstone), I3, I4, I9,
+I11, I12.
