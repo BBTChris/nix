@@ -6223,3 +6223,34 @@ the same arc as its gate and is a declared SUBJECT of it.
 **Not claimed:** the value of a reservation vs actual margin (§6.4, not I2). D3.428, D3.434, D3.438,
 D3.439, D3.430–D3.433, D3.440 all stand untouched. D3.359 / D3.360 / D3.361 / D3.363 stay open — they
 are I2-adjacent and none of them is the exactly-one-release property.
+
+### POST-WRITE-BACK RE-MEASURE — predicted, then measured at the merged tip `4d04bfd`
+
+**Predicted `90 | 3 | 2 | 0 | 1`, exit 1 — unchanged from 043's final. Measured `90 | 3 | 2 | 0 | 1`,
+exit 1.** S4 EXTENDED the existing V23 owner (rule 8 / doctrine C.9) and created no new gate file, so
+`registered_check_count` stays 96 and no count moved.
+
+| measurement | pass | fail | cannot-measure | skip | guarded | exit |
+|---|---|---|---|---|---|---|
+| 043 final (`3c73002`) | 90 | 3 | 2 | 0 | 1 | 1 |
+| **044 final (`4d04bfd`)** | **90** | **3** | **2** | **0** | **1** | **1** |
+
+Three standing fails, same three: `check_ibgateway_service` (API endpoint unreachable — the gateway
+is not running on this box), `check_monitor_tui` (ARM3 stale pin), `check_uncalled_entry_points`.
+Cannot-measure: `check_observed_resource_claims` (downstream of the same ECONNREFUSED) and its pair.
+Guarded: `check_artifact_gate_coverage`, whose exclusion owner was re-pointed **044 → 045** in this
+arc, named in advance.
+
+**`check_uncalled_entry_points` NAMED THIS ARC'S OWN NEW MODULE, and the red is CARRIED rather than
+absorbed.** Five rows — `outcomes.py::OrderOutcomes.on_cancel`, `::on_reject`,
+`::resolve_pending_timeouts`, `::history`, `::OutcomeRecord.released_margin` — are reported UNCALLED,
+because no shipped `scripts/` code constructs the handler yet. They were **not** added to
+`checks/uncalled_entry_points_baseline.json`: the three pre-existing handlers' equivalents
+(`fills.py::FillHandler.armed_orders`, `::IocRemainder.history`, `::ApprovedOrderBook.approved`) are
+not in that baseline either, so admitting only this arc's rows would make the baseline say something
+about ARC 044 that is not true of its siblings. This is exactly D3.442 and exactly the ARC 034 /
+D3.203 precedent. The check was one of the three standing fails before this arc and is one after it;
+the count did not move.
+
+`check_arc_status_contract` reads this run's own log and passes:
+`pass: arc_044.log: arc=044 pulses=9 teardowns=1 wd_pid=None`.

@@ -134,6 +134,30 @@ The *value* of a reservation vs actual margin (§6.4) is not I2 and was not touc
 them the exactly-one-release property. D3.428, D3.434, D3.438, D3.439, D3.430–D3.433 and D3.440 stand
 untouched. **I2's discharge is an invariant flip, not a debt row.**
 
+## POST-WRITE-BACK RE-MEASURE — predicted, then measured at `4d04bfd`
+
+**Predicted `90 | 3 | 2 | 0 | 1`, exit 1. Measured `90 | 3 | 2 | 0 | 1`, exit 1.** S4 extended the
+existing V23 owner (rule 8 / C.9) and created no new gate file, so no count moved.
+
+| measurement | pass | fail | cannot-measure | skip | guarded | exit |
+|---|---|---|---|---|---|---|
+| 043 final (`3c73002`) | 90 | 3 | 2 | 0 | 1 | 1 |
+| **044 final (`4d04bfd`)** | **90** | **3** | **2** | **0** | **1** | **1** |
+
+Three standing fails, same three: `check_ibgateway_service`, `check_monitor_tui`,
+`check_uncalled_entry_points`. Guarded: `check_artifact_gate_coverage` (exclusion owner re-pointed
+**044 → 045**, named in advance).
+
+**The built-but-uncalled detector named this arc's own new module and the red is CARRIED, not
+absorbed.** `outcomes.py::OrderOutcomes.on_cancel / ::on_reject / ::resolve_pending_timeouts /
+::history / ::OutcomeRecord.released_margin` are reported UNCALLED because no shipped `scripts/` code
+constructs the handler yet. They were **not** added to the accepted baseline: the three pre-existing
+handlers' equivalents are not in it either, and admitting only this arc's rows would make the
+baseline say something about ARC 044 that is untrue of its siblings. That is D3.442, and it is the
+ARC 034 / D3.203 precedent. The check was a standing fail before this arc and is one after it.
+
+`check_arc_status_contract`: `pass: arc_044.log: arc=044 pulses=9 teardowns=1 wd_pid=None`.
+
 ## BADGE
 
 **Limiter RED.** `{I2, I5, I6, I7, I8, I10} = 6/12` clean, **6 open**: I1 (capstone), I3, I4, I9,
