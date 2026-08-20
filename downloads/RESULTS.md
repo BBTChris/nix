@@ -1,164 +1,146 @@
-# ARC 044 — ULTRAREVIEW: Limiter, slice 6 — I2: exactly one terminal release
 
-**TIER = INTERIOR.** Predecessor tip **DERIVED** with `git rev-parse HEAD` = **`3c73002`** (the
-brief's `≈ b7476a6` was approximate; every freeze and diff here is against `3c73002`).
+---
 
-## VERDICT
+## ARC 045 — ULTRAREVIEW: Limiter, slice 7 — I11 onset cancellation (INTERIOR)
 
-**I2 DISCHARGED. Limiter STAYS RED.**
-Clean set `{I5, I6, I7, I8, I10} = 5/12` → **`{I2, I5, I6, I7, I8, I10} = 6/12`, open = 6.**
-Remaining open: **I1** (instrument the daemon — capstone), **I3, I4, I9, I11, I12**.
+**Tip DERIVED, not taken from the brief.** The brief cited `≈4d04bfd`; `git rev-parse HEAD` gave
+`e3bef1a` — 044's post-write-back close-out, one commit past its own I2 discharge. Everything below
+is frozen and diffed against `e3bef1a`. Banked at **`70a9a31`**.
 
-## THE DEFECT I2's CHARTER NAMED — and it was NOT the half this brief led with
+### S1 — the defect, reproduced before a line moved
 
-The 038 register holds seven findings under I2. The **at-most-one** half was already RESISTED (4,000
-real-thread iterations, zero arithmetic violations; the gate already bound by four plants). The
-blocking half was **F-B3 / D3.358**: the **at-least-one** half failing at the **WIRING**, not in the
-ledger. Three of §3:151's six release paths had **no production release site at all**.
+`ProtectiveFlatten.cancel_entries_on_onset` **cancelled exactly what it was handed and asserted
+nothing about it.** `PendingEntry` carried `client_order_id / strategy_id / symbol` and **no role**;
+both `PendingEntriesPort` declarations are `Sequence[object]` / `Sequence[Any]`; neither has a
+production implementation (D3.349). So *"every element is a pending ENTRY"* was a promise living in a
+docstring, checkable by nothing — and the tree has **no order-role vocabulary at all**: `ProposedOrder`,
+`PendingEntry` and `NeutralOrder` all carry `side` (LONG/SHORT, BUY/SELL) and none carries a role.
 
-Re-measured live at `3c73002` before touching code, non-vacuity asserted first (Σ observed to RISE
-by the exact proposed margin):
+Driven against a real `ReservationLedger`, a real executor and `StubBrokerOrder`'s real working book,
+with 2 symbols, 2 strategies, an open position and its guards staged (non-vacuity asserted first):
 
-```
-CANCEL / PENDING_TIMEOUT / REJECT   taken RSV-00000001  Σ 0.0 -> 6172.5 (+6172.5)
-  production release sites: NONE
-  after the terminal event: outstanding=1 Σ=6172.5 released=0 drift=0.0 material=False
-5 leaked reservations: Σ=30862.5 scanned=30862.5 drift=0.0 material=False
-```
+* **SELECTIVE — the safety-critical half.** A HALT onset cancelled `c-stop` and `c-exit` **at the
+  venue** and reported both on `OnsetCancellation.cancelled` as entries. A real **2-lot MESU6
+  position was left OPEN AND UNPROTECTED inside the HALT** — §3:173 is *"exits untouched"* and §14
+  gives the protective path zero delivery dependency.
+* **COMPLETE.** `blackout.py:1045`'s filter was `getattr(entry, "symbol", None) == symbol`: an entry
+  object carrying no `symbol` compared `None != symbol` and was **silently dropped** — never
+  cancelled, never named, still working inside the §6.1 window it was not approved for (§3:174).
+* **SCOPE.** The executor had **no notion of scope**. Handed an MNQU6 entry under a MESU6
+  `BLACKOUT_ONSET` it cancelled the MNQU6 order without complaint; scope lived only in the caller's
+  list comprehension.
 
-`drift=0.0` over a real leak: a leaked reservation sums into the incremental aggregate and the full
-scan identically, so §11.7's reconcile is **structurally blind** to it. The failure mode is a slow
-strangle — committed never falls, §3 Phase B eventually denies everything, and it looks like a
-market that stopped giving signals.
+### S2 — the fix, and the point is that it is not new knowledge
 
-## THE FIX — `scripts/nixrisk/outcomes.py` (NEW). `reservations.py` NOT touched
+**`reservations.resolve` ALREADY knew.** It answers `_refuse_unknown` for a coid it never took. The
+sweep just asked at `resolve` time — **one line after `cancel_order` had already reached the venue** —
+and dropped the answer onto `refusals`, where nothing read it.
 
-`OrderOutcomes`: `on_cancel`, `on_reject`, `resolve_pending_timeouts`. Three **literal** `resolve`
-sites, one per path.
+`ProtectiveFlatten._classify_for_onset` (new, one call site) asks **first**, and derives admission
+from `ReservationLedgerPort.outstanding()`. §3's pipeline is *"approve ⇒ TAKE RESERVATION"* and
+§3:174 is *"no order may fill inside a window it was not APPROVED for"*, so the cancellable set **is**
+the outstanding set. **No broker verb was added** — `BrokerFlattenPort` withholds `query_order_status`
+on purpose so §14's zero-wire claim stays legible, and this derivation needs no wire at all.
 
-* **Why not in the ledger.** The census that measures the wiring scans production modules for a
-  `resolve`/`release` call. A ledger booking its own paths would satisfy it with six one-line
-  methods — a measurement its own subject can satisfy alone, which is the circularity
-  `seam.TerminalPath`'s docstring forbids. `reservations.py` is **byte-identical to `3c73002`**.
-* **Why not in `fills.py`.** A cancel that filled nothing, a reject and a timeout carry no quantity
-  and no price. `IocRemainder._guard` refuses `filled_qty <= 0` for exactly that reason.
-* **The timer is not the event.** §2A:71 / §4:241 / §12A:830 — a pending-order timeout resolves by
-  `query_order_status`, **never** a resend. Release hangs off the RESOLUTION: `cancelled`/`rejected`
-  release; `working`, `indeterminate`, `unknown`, `filled` and any undeclared state are **HELD**,
-  counted and named. Releasing at the deadline would free margin for a live order — the §15 C1 cap
-  breach. **NO retry, NO auto-resend**, asserted over the module's call graph.
-* **Three literal sites, not one helper.** The first build centralised the call and the census
-  correctly refused to credit any of the three (`<unresolved>`). Three literals are also three
-  independently plantable sites.
+* **Selective by construction:** `_CANCELLABLE_ROLES = frozenset({OrderRole.ENTRY})` — one named
+  site to audit, plant and read. A declared `EXIT`/`PROTECTIVE` is excluded **without consulting the
+  ledger**, because refusing to cancel something that says it is a stop is the safe direction
+  whatever the money record says. A declared `ENTRY` is **not** trusted; it is still corroborated.
+* **Scope is an argument:** `scope=None` = global (HALT), a symbol = that window (§6.1/§6.2/§6.3 are
+  per-symbol off the live calendar), read off `Reservation.symbol` — the record that always carries
+  one — which is what closes the silent drop at its root.
+* **Unclassifiable fails closed AND loud:** never cancelled, NAMED on `OnsetCancellation.unclassified`,
+  and `complete` goes False so §12.10:753's HALT row books `onset_sweep=partial` instead of claiming
+  a clean sweep. `protected` and `out_of_scope` are correct exclusions and do not count against it.
 
-Census after the fix — six paths, empty unreadable bucket:
+### S3 — both directions, both onset types, real processes: 18/18
 
-```
-BLACKOUT_ONSET  blackout.py:1062 + flatten.py:805      CANCEL           outcomes.py:305
-FILL            fills.py:391                            REJECT           outcomes.py:320
-HALT_ONSET      flatten.py:805                          PENDING_TIMEOUT  outcomes.py:400
-<unresolved>    none
-```
+Every in-scope pending entry cancelled and **none survives**; a blackout on ES **does not** cancel
+NQ's entry; **not one** exit or protective order touched; and a protective exit **re-driven after a
+live HALT still flattens** (§14 — the onset did not disarm it). **The race:** a venue fill between
+onset and cancel-landing is **not orphaned** — the cancel is dispatched on onset (the order leaves
+the working book inside `HaltFlag.set`), and the §6.1b session-close flatten picks the resulting
+3-lot position up, driven end to end. Non-vacuity asserted before every verdict.
 
-The ARC 038 ratchet **FAILED FIRST in the progress direction** (`production wires [six] and this file
-records [three]`) before `WIRED_PATHS` was moved; `UNWIRED_PATHS` is now the empty set and is kept,
-not deleted — the assertion over it is what turns a path LOSING its caller back into a loud failure.
+### S4 — the gate, EXTENDED not duplicated
 
-## PROOFS — `test_arc044_exactly_one_terminal_release.py`, 22 controls, all green
+`check_flatten` **ARM 3b**. ARM 3 owns the onset **cause**; 3b owns the **selection**; the split is
+stated in both, per doctrine C.9. `check_halt` ARM 4 owns the HALT *transition's* use of the sweep and
+was left byte-identical. **ARM 3 was green over all of S1's findings** — it asserted
+`broker.flatten_calls == []` and that an open *position* survived, and both stay true while every
+exit *order* is cancelled, because cancelling an order is not calling `flatten`. That is §0a's shape,
+in the half that unprotects a live position.
 
-* **Exhaustive single-release** over the set DERIVED from the tree, not a list. The parametrise
-  rosters are read back out of the file's own AST and each must EQUAL the derived set, so the roster
-  cannot silently shrink. All six paths driven through their real production surfaces
-  (`IocRemainder`, `ProtectiveFlatten` both onset causes, `OrderOutcomes` the three new ones): each
-  releases **exactly once**, Σ back to baseline, one RELEASED record with the right cause, store
-  empty, `material=False`.
-* **No double release under race**, on real objects: partial-fill remainder arriving after the
-  cancel (`refused_releases == 1`); pending-timeout vs terminal feedback **in both orders**;
-  blackout onset during a pending order (the later sweep issues no query at all — the ledger's TAKEN
-  set no longer holds it). Σ compared **bit-identically**, not approximately.
-* The two independent censuses in this tree (gate arm, ARC 038 ratchet) are cross-checked against
-  each other rather than one being deleted.
+Completeness is **by derivation over the subject's own `OrderRole`**, never a transcribed list: a
+member with no disposition is CANNOT_MEASURE naming it, never PASS (the D3.440 lesson). **BOUND on the
+real CLI:** clean **exit 0**; **PLANT A** (an in-scope entry survives) **exit 1** naming `c-a2`/`c-b1`
+and the window they can fill in; **PLANT B** (the predicate cancels an exit) **exit 1** naming `c-stop`
+and the position left UNPROTECTED; **PLANT C** (an unclassifiable kind) **exit 2** naming `'iceberg'`.
 
-## THE GATE — `check_reservation_lifecycle` EXTENDED (rule 8 / doctrine C.9), no second instrument
+**A fourth control caught the gate's own defect.** PLANT C's early `return` short-circuited the arm, so
+a tree carrying *both* a new role member and a real incompleteness reported CANNOT_MEASURE and the
+violation went unnamed — contract rule 4 (Fail > Cannot-measure) inverted. Found by
+`test_PLANT_C_and_a_REAL_FAIL_TOGETHER_report_the_FAIL`, not by reasoning, and fixed.
 
-**ARM WIRING**, three halves: STRUCTURAL (census by shape; a §3 path with no site is a FAIL naming
-it), LIVENESS/COMPLETENESS (**CANNOT_MEASURE naming the site** when a terminal-transition call's
-cause cannot be read statically), DRIVEN (the handler's own published verbs against the real ledger,
-Σ to baseline, a second event leaving Σ bit-identical).
+### FREEZE
 
-**Not one release path is named in the gate's source** — its own test greps for that. Expected side
-from the frozen spec, observed side from the tree, driven side from the census ∩ the module's
-`HANDLES` map, cross-checked so a subject cannot shrink its own drive. The stale
-`UNBOUND (D3.51) … handlers do not exist yet` sentence (F-B6 / D3.362's class) is gone: the coverage
-sentence is regenerated from the census every run.
+Diff vs `e3bef1a` is six paths: `flatten.py`, `blackout.py`, `check_flatten.py`,
+`test_check_flatten.py`, `CHECK-DEBT.md`, and `gate_coverage_baseline.json` (the arc-boundary
+exclusion re-point the brief mandated). **Byte-identical to `e3bef1a`:** `reservations.py`,
+`picture.py`, `halt.py`, `fills.py`, `outcomes.py`, `seam.py`, `session.py`, `limiterd.py`,
+`check_halt.py`, `check_blackout_windows.py`, `check_reservation_lifecycle.py` — proven by
+`git hash-object` against `git rev-parse e3bef1a:<path>`, not asserted.
 
-**BOUND — four real plants on a staged tree, shipped tree sha256 unchanged throughout:**
+### Close-out
 
-| plant | exit | named |
-|---|---|---|
-| **A1** leak — release SITE deleted | **1** | `outcomes.py:wiring[CANCEL]` — no module books CANCEL; committed permanently INFLATED |
-| **A2** leak — site present, release ineffective | **1** | `outcomes.py:OrderOutcomes[CANCEL]` — Σ 6172.5 → 6172.5 against a 0.0 baseline; the 6172.5 reserved was not returned |
-| **B** absorbed double release | **1** | `outcomes.py:OrderOutcomes[CANCEL]` — a SECOND event moved Σ 0.0 → **−6172.5**; committed UNDER-counts (§15 C1) |
-| **C** new terminal site, cause unreadable | **2** | `cannot_measure: late_reject.py:13 … the enumeration is INCOMPLETE and the verdict is unmeasured rather than green` |
-| plants removed | **0** | pass |
+**(b)** DERIVED reverse-dependency closure by AST import-graph inversion over the four changed `.py`
+files: **16 files, 11 of them tests**. Non-vacuity: it contains `flatten.py`, `blackout.py`, the gate
+and its can-fail suite, plus `test_arc038_a_gate_wall`, `test_arc044_exactly_one_terminal_release`
+and `test_exit_integration`. **RED-before / GREEN-after** on this arc's own defect, both layers:
+behaviourally, S1 against `e3bef1a` cancelled the protective stop; instrumentally, the NEW gate
+driven against `e3bef1a`'s own `flatten.py` answers **CANNOT_MEASURE — *"the subject declares no
+`OrderRole`, so entry-vs-exit is not expressible in order state"*** — never a PASS. **362 passed** over
+the closure plus six suites added **by detection** (`test_halt`, `test_check_halt`,
+`test_check_blackout_windows`, `test_check_reservation_lifecycle`, `test_check_order_path_bans`,
+`test_arc038_b_reservation_terminality`), because `halt.py` calls the changed method and the closure
+cannot see it — D3.444. One failure, `test_check_order_path_bans::test_the_control_passes_and_its_
+evidence_names_what_it_read`, **proven PRE-EXISTING**: driven in a worktree at `e3bef1a` it fails
+identically (37 order-path modules against a pinned 36). No cost-aware exclusion was needed.
 
-## FREEZE — against the derived tip `3c73002`
+**(c)** The gate is BOUND from all three plants, each naming its site: A/B exit 1, C exit 2.
 
-`scripts/nixrisk/outcomes.py` (new) · `checks/check_reservation_lifecycle.py` ·
-`scripts/tests/test_arc038_b_reservation_terminality.py` (the ratchet baseline D3.358's own discharge
-criterion names) · `scripts/tests/test_arc044_exactly_one_terminal_release.py` (new) ·
-`docs/CHECK-DEBT.md` · `checks/gate_coverage_baseline.json` (exclusion owner re-pointed **044 → 045**,
-named in advance as the brief required). **Nothing** in the sole-writer seam, `picture.py`/mirror, the
-042 booking, `reservations.py`, `fills.py`, `blackout.py`, `flatten.py` or `limiterd.py`.
-`limiterd.py` untouched ⇒ incremental commit path.
+**(d)** CHECK-DEBT reconciled; **series row written, 389 → 392, derived**. **I11's discharge is an
+invariant flip, not a debt row.** Opened **D3.443** (admission is derived, ENUMERATION is still the
+book's, and no production `pending_entries()` exists), **D3.444** (the import-graph closure is blind
+to `halt.py` — a Protocol is not an import edge), **D3.445** (`CLAUDE.md` documents `arc_progress.txt`
+as one space-joined line; `arc_heartbeat.sh` parses one key=value per line, so the DOCUMENTED format
+renders `stage ?/?` and a confident **false** `STALL WARNING` over a run that is advancing — measured
+on two consecutive beats at this arc's own kickoff). **D3.354 neither re-opened nor discharged:** the
+raced-in fill still books `HALT_ONSET` where §3:150-152 says a fill converts to open margin; the
+release arithmetic was frozen on purpose, and what is added is the proof the position is not orphaned.
+The eight CHECK-A8/A9 exclusions re-owned **045 → 046 before this write-back**.
 
-## CLOSE-OUT (INTERIOR)
+### RESIDUAL — explicitly NOT claimed
 
-* **(b) Derived reverse-dependency closure** — 16 test suites (14 derived + this arc's 2): **269
-  passed**; 16 gates constructing the ledger: **16/16 exit 0**. RED-before/GREEN-after proven on this
-  arc's own defect by the ratchet failing first.
-* **(c)** gate bound from all four plants (A1/A2/B exit 1, C exit 2, sites named).
-* **(d)** CHECK-DEBT reconciled: **D3.358 DISCHARGED**; **D3.441** opened (`unknown` venue state is
-  HELD, never guessed — over-count direction, nothing re-asks) and **D3.442** opened (no production
-  constructor for the handler — the same status the three pre-existing handlers have; the I1
-  capstone). **ARC-TOTAL series row written** — `check_derived_claims`:
-  `check_debt_open_items=389 [derived:ledger_rows=389, stated:series_table_latest_row=389]`, exit 0.
-  No rule-3 row was owed for the new module: it ships in the same arc as its gate and is a declared
-  SUBJECT of it.
+The window backstops themselves are their own machinery: I11 proves a raced-in fill **reaches**
+§6.1b's session-close flatten, not that §6.1b or §6.3's margin hold/flatten is itself audited.
+D3.354 (the onset-cause booking on a filled entry) and D3.443 (book completeness) stand. Standing
+named debt untouched: D3.442 (daemon-wiring = I1 capstone), D3.441, D3.428, D3.434, D3.438, D3.439,
+D3.430–D3.433, D3.440, D3.359/360/361/363.
 
-## RESIDUAL — explicitly NOT claimed
+### Post-write-back re-measure — the prediction MISSED BY ONE, and the miss was this run's own ordering
 
-The *value* of a reservation vs actual margin (§6.4) is not I2 and was not touched. D3.359 (the
-`AUDIT_TOLERANCE` random walk), D3.360 (the bare `KeyError` under real threads), D3.361 (no Plane-1
-`taken`/`released` pairing) and D3.363 (the blank `client_order_id`) stay open — I2-adjacent, none of
-them the exactly-one-release property. D3.428, D3.434, D3.438, D3.439, D3.430–D3.433 and D3.440 stand
-untouched. **I2's discharge is an invariant flip, not a debt row.**
+Predicted `90 | 3 | 2 | 0 | 1`. **First measurement at `70a9a31`: `89 | 3 | 3 | 0 | 1`, exit 1.**
+The extra cannot-measure was **`check_arc_status_contract`** — *"no ARC-completed marker in log: run
+did not reach close-out"*. CLAUDE.md orders the teardown + marker into the run's own log **before** the
+final verify; this run measured first. Corrected in place, and the gate then passes
+(`pulses=11 teardowns=1 wd_pid=165`). **The prediction was right about the tree and wrong about the
+instrument reading this run's own log, and it is recorded as missed rather than re-fitted after the
+fact.** Three standing FAILs unchanged: `check_ibgateway_service`, `check_monitor_tui`,
+`check_uncalled_entry_points`. Extending the existing gate moved no registered-check count: 96, as
+predicted.
 
-## POST-WRITE-BACK RE-MEASURE — predicted, then measured at `4d04bfd`
+### BADGE
 
-**Predicted `90 | 3 | 2 | 0 | 1`, exit 1. Measured `90 | 3 | 2 | 0 | 1`, exit 1.** S4 extended the
-existing V23 owner (rule 8 / C.9) and created no new gate file, so no count moved.
-
-| measurement | pass | fail | cannot-measure | skip | guarded | exit |
-|---|---|---|---|---|---|---|
-| 043 final (`3c73002`) | 90 | 3 | 2 | 0 | 1 | 1 |
-| **044 final (`4d04bfd`)** | **90** | **3** | **2** | **0** | **1** | **1** |
-
-Three standing fails, same three: `check_ibgateway_service`, `check_monitor_tui`,
-`check_uncalled_entry_points`. Guarded: `check_artifact_gate_coverage` (exclusion owner re-pointed
-**044 → 045**, named in advance).
-
-**The built-but-uncalled detector named this arc's own new module and the red is CARRIED, not
-absorbed.** `outcomes.py::OrderOutcomes.on_cancel / ::on_reject / ::resolve_pending_timeouts /
-::history / ::OutcomeRecord.released_margin` are reported UNCALLED because no shipped `scripts/` code
-constructs the handler yet. They were **not** added to the accepted baseline: the three pre-existing
-handlers' equivalents are not in it either, and admitting only this arc's rows would make the
-baseline say something about ARC 044 that is untrue of its siblings. That is D3.442, and it is the
-ARC 034 / D3.203 precedent. The check was a standing fail before this arc and is one after it.
-
-`check_arc_status_contract`: `pass: arc_044.log: arc=044 pulses=9 teardowns=1 wd_pid=None`.
-
-## BADGE
-
-**Limiter RED.** `{I2, I5, I6, I7, I8, I10} = 6/12` clean, **6 open**: I1 (capstone), I3, I4, I9,
-I11, I12.
+**Limiter STAYS RED.** clean = `{I2, I5, I6, I7, I8, I10, I11}` = **7/12**, open = **5**:
+**I1** (daemon-wiring capstone), **I3**, **I4**, **I9**, **I12**.
