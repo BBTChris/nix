@@ -361,6 +361,51 @@ def test_the_enumeration_STOPS_at_its_own_sentence(
     assert _defects(tmp_path, monkeypatch, row) == []
 
 
+#: The LIVE shape that defeated the sentence stop, ARC 049. Its `Opened:`
+#: enumeration ends `…(late).**` — a period against BOLD MARKUP, with no space
+#: after it — which is how ARC 047's real row is written and why the `". "` stop
+#: never fired on it.
+_ROW_BOLD_SENTENCE_END = (
+    "| 2026-08-12 | ARC 099 | 50 | **{delta}** — {narration}. "
+    "**Opened: D3.41-D3.47 (A) · D3.51-D3.56 (B) · D3.99 (late).** Commentary "
+    "mentioning D3.12 and D3.13 after the fact. "
+    "**Discharged: D3.29, D3.30 and D3.39, each re-measured.**\n"
+)
+
+
+def test_the_enumeration_STOPS_at_a_BOLD_sentence_end_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`).**` ends the passage as surely as `). ` does. ARC 049, MEASURED LIVE.
+
+    The stop set knew one spelling of a sentence end. ARC 047's row closes its
+    enumeration `…balance).**`, so the segment ran on and counted `(D3.177)` —
+    cited two sentences later as the join that refuses `identity_trade_id` — as
+    a fifth opening. A correct row read as self-contradicting, which is the
+    false-positive direction and the one that erodes an instrument's standing.
+
+    This is the SAME failure mode `_segment`'s docstring already records for
+    ARC 020, recurring under a different spelling. The row below is the live
+    shape reduced: fourteen ids enumerated under a BOLD `Opened:` heading, two
+    more cited in the commentary after it.
+    """
+    row = _ROW_BOLD_SENTENCE_END.format(
+        delta="+11", narration="fourteen opened, three discharged"
+    )
+    assert _defects(tmp_path, monkeypatch, row) == []
+
+
+def test_the_BOLD_stop_still_REFUTES_a_wrong_total(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stop must narrow the passage, not blind the arm (doctrine C.2)."""
+    row = _ROW_BOLD_SENTENCE_END.format(
+        delta="+11", narration="thirteen opened, three discharged"
+    )
+    found = [d for d in _defects(tmp_path, monkeypatch, row) if d.kind == "opened"]
+    assert found and (found[0].stated, found[0].derived) == (13, 14), found
+
+
 def test_the_SUBSET_numerator_is_never_reconciled_as_a_total(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

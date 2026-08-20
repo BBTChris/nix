@@ -513,7 +513,20 @@ def _passage_defects(
     relative: str, number: int, line: str
 ) -> Iterator[EnumerationDefect]:
     """Both reconciliations for one passage, or nothing if it enumerates none."""
-    opened = enumerated_ids(_segment(line, "Opened:", ". ", "Discharged"))
+    # `".**"` beside `". "`, ARC 049. The stop set was SPELLING-BOUND: it ended
+    # the `Opened:` passage on a period FOLLOWED BY A SPACE, so a row whose
+    # enumeration closes `…balance).**` — a period against bold markup, no space
+    # — never stopped, ran on through the row's closing commentary and swept up
+    # every id cited there. Measured on the LIVE ledger: ARC 047's row states
+    # four openings, enumerates D3.449-D3.452, and read as FIVE because
+    # `(D3.177)` is cited two sentences later as the join that refuses
+    # `identity_trade_id`. That is this function's own documented failure mode
+    # (see `_segment`, ARC 020's three-read-as-seven) recurring under a
+    # different spelling of the sentence end, and it made a correct row look
+    # self-contradicting — the false-positive direction, which is the one that
+    # erodes an instrument's standing. `discharged_count` already stopped at
+    # `"**"`; the asymmetry was the defect.
+    opened = enumerated_ids(_segment(line, "Opened:", ". ", ".**", "Discharged"))
     if len(opened) < MIN_ENUMERATED_IDS:
         return
     yield from _opened_defects(relative, number, line, len(opened))

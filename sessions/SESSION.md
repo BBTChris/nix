@@ -6939,3 +6939,203 @@ exclusions now reading `-> ARC 049`, the re-point made BEFORE this file named AR
 
 **Badge: I3 DISCHARGED. Clean `{I2, I3, I5, I6, I7, I8, I10, I11} = 8/12`, open = 4
 (`I1`, `I4`, `I9`, `I12`). Limiter STAYS RED. Ledger 402, derived.**
+
+---
+
+## ARC 049 — ULTRAREVIEW: Limiter, slice 9 — I4, two-phase entry: OPEN only on confirmed fill
+
+**Tier: INTERIOR. Predecessor tip DERIVED as `e6835fb`**, not the brief's approximate `b462121`
+(which is 048's I3 commit, one before its final re-measure). Frozen and diffed against `e6835fb`.
+
+**MEASURED BASELINE at `e6835fb`: `89 | 4 | 3 | 0 | 1`, exit 1** — and the difference from ARC 048's
+closing `90 | 4 | 2 | 0 | 1` is **this arc's own kickoff, not a regression.** The D3.455 proximate
+fix creates `scratchpad/arc_logs/arc_049.log` before Stage 1, so `check_arc_status_contract` — which
+took the NEWEST log — read a run in flight, found no completion marker, and returned CANNOT_MEASURE.
+The tuple is recorded as measured. 048's `[ok]` over `arc_047.log` and this `[??]` over
+`arc_049.log` are the same defect from its two sides, and both are D3.455.
+
+### S1 — the OPEN-setter set, derived by shape, and the defect REPRODUCED
+
+**I4 is MET IN CODE. The defect is the PROOF, and it is the ARC 048 / I3 shape exactly.**
+
+The by-shape (AST) derivation over `scripts/` finds **five originators of `OPEN`**, all of them
+behind a confirmed fill: `positions.py::PositionOriginWriter._row` (reachable only from `on_fill`,
+after `ExecutionLedger.ingest`), and four in `projection.py` — `_on_fill` (bound in `_HANDLERS` to
+`EVENT_FILLED` alone), `_on_cancel` and `_on_reduce` (each refusing before touching state when
+`build.qty_filled == 0`), and `position_rows` (fed only from a fold that emits `qty_filled > 0`).
+Three further sites are TRANSPORT — `picture.py::_decode_row`'s `PositionState(raw["state"])`,
+`_Build.frozen()`, `drift_audit`'s row read — which reproduce a state an originator already decided
+and cannot mint one. Driven on real objects, the eight-surface reading is unchanged from ARC 038: an
+ack with a reservation and a working order opens nothing; a confirmed fill opens everything.
+
+**What was NOT true was the absence proof.** The standing control for I4 —
+`test_arc038_c_open_is_confirmed_fill.py::test_OPEN_is_WRITTEN_at_EXACTLY_TWO_SITES_and_PENDING_at_NONE`
+— derives its set by `grep -rn "state=PositionState.OPEN"` and asserts the set of **MODULES**. It is
+spelling-bound (D3.426) and module-granular, and it is a pytest control, so `verify.py` had no arm
+for I4 at all. **Reproduced on a throwaway copy of the tree** (doctrine C.8 — never the real one): a
+phantom path publishing §3's row with `state=_ENTRY_STATE`, where `_ENTRY_STATE = PositionState.OPEN`
+sits at module level, leaves the control GREEN — `sites == {positions.py, projection.py}` still holds
+— while the by-shape census goes from 5 originators to 6. `projection.py`'s three
+`build.state = STATE_OPEN` transitions were outside the control's match entirely.
+
+### S2 — EMPTY BY DESIGN, and proven so
+
+Nothing under `scripts/` was edited. `git hash-object` at the close-out matches the Stage-3 baseline
+byte-for-byte on all twelve frozen paths: `positions.py`, `projection.py`, `picture.py`, `seam.py`,
+`completions.py`, `fills.py`, `limiterd.py`, `flatten.py` (048's exit path), `outcomes.py`,
+`reservations.py` (I2), `nixalloc/mirror.py`, `execution.py`. `CORRECTABLE = False` on the new gate
+and the reason is written into `NON_CORRECTABLE_REASON`: the subject is *which sites may assert an
+open position*, and an instrument empowered to edit that would be manufacturing its own green over
+the code path that decides whether committed margin corresponds to size at the venue.
+
+### S3/S4 — `checks/check_two_phase_entry.py`, a NEW instrument, and why C.9 permits one
+
+**The brief's premise was false and is corrected here rather than worked around.** It asked me to
+find "the gate that owns the entry-state / two-phase discipline (a `check_state*` / `check_two_phase*`
+/ `check_open*` gate)" and EXTEND it. Censused over all 98 gates: **no such gate exists.**
+`check_execution_ledger` owns *position derives from the unique fill set* inside `execution.py` and
+says in its own text that nothing there proves the state model calls it; `check_fill_handler` owns
+the fill MOTION; `check_origin_write` owns the published `stop_distance`'s VALUE;
+`check_plane1_projection` owns the projection's rebuildability; `check_limiter_gate`'s "two-phase" is
+§3's gate-wall pass, a different thing under the same words. C.9 forbids a SECOND instrument for an
+OWNED property — this property was owned by nothing, and folding it into any of the four would have
+merged two properties in violation of §5.5. So: a new gate, registered by `--optimize --commit`
+(one line added to `registry.json`, the derived plan identical to it), and the `passed` count moves
+by one. **That is a departure from the brief's predicted delta, stated before the run, not after.**
+
+ONE gate, ONE property: *every site in the shipped tree that ORIGINATES `OPEN` is reachable only
+behind a confirmed execution report, and a confirmed fill DOES reach `OPEN`* — the two error
+directions of one equality, which is why they are not two gates.
+
+* **The value domain is DERIVED, not spelled.** The gate reads `PositionState`'s members and wire
+  values out of `seam.py`, identifies position-carrying classes by their `state` field's annotation
+  or default, and resolves aliases to a fixpoint per module, so `PositionState.OPEN`,
+  `PositionState("open")`, `STATE_OPEN`, `"open"`, a ternary with either branch open, and any local
+  or module-level name bound to one of those all resolve alike (D3.426).
+* **Three-way, fail-closed.** ORIGINATOR / TRANSPORT / **UNCLASSIFIABLE ⇒ CANNOT_MEASURE naming the
+  site**, never PASS. The scope is drawn at the position-state domain rather than at *anything named
+  `state`* because `broker_datafeed_ibkr.py` keeps subscription bookkeeping in a local called
+  `state`: judging those made the gate light-blue over 38 sites in code that cannot hold a position,
+  which is a gate that never reports. That boundary is D3.456, written where it is drawn.
+* **Each accepted originator carries a NAMED structural precondition re-derived from the AST every
+  run** — `_row` is called from `on_fill` and nowhere else and `on_fill` ingests first; `_on_fill` is
+  bound to `EVENT_FILLED` alone; the two projection handlers refuse before the OPEN transition, not
+  after (the gate checks the ORDER of the guard against the transition); `fold_events` still filters
+  `qty_filled > 0`. Keyed by `(module, function)`, never by line number.
+* **Driven, on real objects out of the tree under judgement**, with non-vacuity asserted BEFORE any
+  verdict: approval recorded, reservation genuinely outstanding, Σ reservations above a floor, join
+  genuinely minted → nothing OPEN, no row at all, Σ open margin 0, ledger flat. Then **past the tick**
+  (§0a) — a REJECT release, re-read every surface, still flat. Then a confirmed fill → OPEN, size 2,
+  Σ open margin moved; the SAME `(order_id, exec_id)` re-delivered → no double-open; the remainder
+  → one cumulative `c-fill-1:open:5` row. Then the §9 fold: an ack-only log → zero positions and
+  zero position events; a `filled` event → one `open`; an exit before any fill → an anomaly, never a
+  row.
+
+**A defect in the gate that the plant found, and the fix.** PLANT A made the ack arm RED *and* made
+the fill arm's precondition unmeasurable — and the first draft returned the refusal, discarding a
+measured phantom to report light-blue. Check-contract rule 4 orders the aggregate Fail >
+Cannot-measure for exactly this case. The gate now carries unmeasured arms alongside the FAIL
+instead of instead of it.
+
+**DEMONSTRATED FAIL — four plants, on copies, each asserted for its REASON and never for its exit
+code alone (rule 11), plus the clean-copy control that proves the copy is not what reddens:**
+
+| plant | verdict | exit | what the operator reads |
+|---|---|---|---|
+| A (driven) — the ack path publishes optimistically | FAIL | 1 | `PHANTOM POSITION: a placement ack with NO FILL left ['phantom-0'] reading OPEN` |
+| A (static) — the same defect through a module-level alias | FAIL | 1 | `UNDECLARED OPEN-SETTER in publish_on_ack … If it can run on a placement ack it is a PHANTOM POSITION` |
+| B — a confirmed fill no longer reaches OPEN | FAIL | 1 | `UNPROTECTED REAL POSITION: a CONFIRMED 2-lot fill left §3's table reading ['c-fill-1:pending:2']` + `ACCEPTED OPEN-SETTER HAS VANISHED` |
+| B (gate) — the projection's `qty_filled == 0` refusal removed | FAIL | 1 | `_on_cancel sets … STATE_OPEN … with no qty_filled == 0 refusal in front of it` — invisible to every drive, which is why it is derived |
+| C — a `state` slot filled from an unresolvable expression | CANNOT_MEASURE | 2 | `binds state to an expression this derivation cannot classify … (1 such site)` |
+| plants removed | PASS | 0 | 100 modules parsed, 5 originators, 3 drives |
+
+`test_PLANT_A_static_is_INVISIBLE_to_the_ARC_038_grep_control` is the finding kept falsifiable: it
+asserts the grep control does NOT move on the alias plant and that the by-shape census gains exactly
+`positions.py::publish_on_ack`. If the old control is ever fixed, that test reddens and this gate's
+docstring is required to be corrected.
+
+### D3.455 — DISCHARGED, by its own stated mechanism plus the half that makes the green legible
+
+The ledger row's own discharge condition was *"`arc_heartbeat.sh` writing its own log by default, so
+a beat cannot be emitted without being recorded"* — which is a better fix than the brief's proximate
+tee, because a tee lives in cc's memory of the brief and prose degrades (the D3.445/D3.447 class).
+**Done, twelve lines:** every `pulse`, `banner` and `selfcheck` is appended to
+`$NIX_SCRATCH/arc_logs/arc_<arc>.log`, named from the PROGRESS FILE's own `arc=` line so a beat can
+never be filed under another arc's name, and a log that cannot be opened never suppresses the
+operator's line. **And the durable half the brief asked for:** `check_arc_status_contract` now
+EXCLUDES the running arc's own log by name, audits the immediately-previous arc, and NAMES it —
+`AUDITED ARC 048 (arc_048.log): arc=048 pulses=9 teardowns=1 wd_pid=434005`. With nothing older
+inside the freshness window it is CANNOT_MEASURE naming what is missing, never a quiet fall-back onto
+a log old enough that a PASS off it is an assurance about a different week. Eight tests, including
+the demonstrated FAIL (the stale previous-arc log) and the ARC 048 situation itself (the running
+arc's log is the newest file, which is precisely what the old picker chose). `--selftest` still
+passes all seven arms. **D3.433's one-arc-late CADENCE is unchanged and still open** — this arc made
+it legible, not shorter.
+
+### What this arc does NOT claim
+
+**D3.372 stands, and it is why I4's discharge is narrower than I4's sentence.** A confirmed fill
+whose origin write is REFUSED (`UntradableSymbol`, §4:198's not-tradable symbol) leaves §3's table
+and §12.7's mirror reading FLAT over a real position and records only a counter — a real
+*confirmed fills ⊄ OPEN* case. It is MEASURED, it BLOCKS on an architect ruling about which surface
+carries the condition, and it is pinned by an existing test. The new gate drives the ACCEPTING path
+and **names this refusal path as out of scope in its evidence string on every run**, so no green
+there can be read as covering it. Its owner was re-pointed ARC 039 (ten arcs stale) → ARC 050+.
+Also not claimed: §4's pending-timeout resolution (`query_order_status`, never an auto-resend) is
+the POLL path and is I1 ARC A; D3.450 and D3.453 stand untouched (`fills.py` and the STALE_PRICE
+producer are both frozen here).
+
+### A pre-existing red the write-back walked into, and the instrument defect behind it
+
+The pre-commit runtime gate refused this arc's commit on
+`test_restated_figures.py::test_the_LIVE_LEDGER_no_longer_contradicts_itself`, selected because
+`docs/CHECK-DEBT.md` changed. **The test was ALREADY red on trunk** — verified by stashing this
+arc's three write-back files and re-running the derivation against the unmodified tree: the same two
+defects, at `docs/CHECK-DEBT.md:135`, ARC 047's series row. It is carried in the runtime gate's own
+db as `recorded_failures=1`.
+
+**ARC 047's row is CORRECT and the instrument was wrong.** The row states four openings and
+enumerates D3.449, D3.450, D3.451, D3.452. `restated_figures._passage_defects` ended the `Opened:`
+passage on `". "` — a period FOLLOWED BY A SPACE — and that row closes its enumeration
+`…balance).**`, a period against bold markup with no space. The segment never stopped, ran on
+through the row's closing commentary, and counted `(D3.177)` — cited two sentences later as the join
+that refuses `identity_trade_id` — as a fifth opening. **This is the same failure mode `_segment`'s
+own docstring already records** (*"ARC 020's three openings read as seven"*), recurring under a
+different spelling of a sentence end, and `discharged_count` already stopped at `"**"`: the
+asymmetry between the two was the defect.
+
+Fixed by adding `".**"` to the `Opened:` stop set. Measured over the LIVE ledger: **defects 2 → 0**,
+and no other row's reconciliation moved. Bound by two new tests — one proving the bold sentence end
+now stops the passage on the live shape reduced, and one proving the narrowed stop still REFUTES a
+wrong total, because a stop that only ever shortens is one edit from blinding the arm (doctrine C.2).
+`test_restated_figures.py` 41 → 43, all passing. **A correct row reading as self-contradicting is the
+false-positive direction, which is the one that erodes an instrument's standing** — so this was
+fixed rather than routed around with `--no-verify`, and ARC 047's banked row was not edited.
+
+**One more thing the gates caught on each other, worth keeping.** The new gate read `_HANDLERS` with
+`node.value.keys`, and `check_uncalled_entry_points` resolves a public entry point BY RECEIVER TYPE:
+a bare `.keys` on an expression it cannot type moved a real finding —
+`freshness.py::SourceMonotonicGuard.keys` — from `uncalled` to `cannot_resolve`, which its own
+baseline arm correctly reported as a stale row. **A new instrument was eroding an existing one's
+ratchet as a side effect of how it SPELLS an AST read.** Rewritten to `ast.iter_fields`, and the
+reason is in the code beside it. `check_uncalled_entry_points` is back to its byte-identical
+baseline, 54 measured / 25 rendered.
+
+### Ledger and freeze
+
+**+1 net: TWO OPENED (D3.456 the census boundary, D3.457 `position_rows`' unconditional OPEN), ONE
+DISCHARGED (D3.455).** Both new rows were opened BY the instrument this arc built. **ARC 049 series
+row = 403**, read off `check_derived_claims`'s `derived:ledger_rows`, never typed — the claim
+disagreed at 403 vs 402 until the row was written and now passes 13/13. The eight
+`gate_coverage_baseline.json` exclusions were re-pointed 049 → 050 BEFORE this file named ARC 049
+complete, and the justification records that this is the FOURTH consecutive arc of boundary
+maintenance on the same eight artifacts — D3.104's overdue-work case carried, not paid.
+
+Diff: the new gate + its test, `check_arc_status_contract` + its test, `registry.json` (one line,
+tool-derived), `gate_coverage_baseline.json` (owner + reason), `arc_heartbeat.sh` (the D3.455
+discharge), `docs/CHECK-DEBT.md`. **`scripts/arc_heartbeat.sh` is wider than the brief's freeze list
+and it is deliberate:** it is D3.455's own named discharge, and it is already inside
+`check_arc_status_contract`'s `SUBJECTS`, so the emitter/reader pairing stays gated.
+`check_uncalled_entry_points` did NOT move: 54 measured / 25 rendered, identical to baseline.
+Lint scoped to changed files only (ruff clean). Tripwires run explicitly:
+`test_check_order_path_bans` + `test_check_uncalled_entry_points` + the ARC 038 I4 suite — 78 passed.

@@ -1,199 +1,141 @@
-# ARC 048 — RESULTS
+# ARC 049 — RESULTS — Limiter slice 9: I4, two-phase entry (OPEN only on confirmed fill)
 
-**ULTRAREVIEW: Limiter, slice 8 — I3 exit-path zero-wire independence. TIER = INTERIOR.**
+**Tier: INTERIOR. Limiter STAYS RED. I4 DISCHARGED: 8/12 -> 9/12.**
+**Predecessor tip DERIVED: `e6835fb`** (the brief's ≈`b462121` is 048's I3 commit, not the tip).
 
-**I3 DISCHARGED. Clean set 7/12 → 8/12 — the first count flip since ARC 045. Limiter STAYS RED.**
+## Headline
 
----
+**I4 was MET IN CODE. The defect was the PROOF, and the proof is now a gate.** Five sites in the
+shipped tree originate `OPEN`, all five behind a confirmed fill, and the eight-surface drive is
+unchanged from ARC 038: an ack opens nothing, a fill opens everything. What was missing was an
+absence proof that could survive the next edit — and the standing one could not.
 
-## 0. The predecessor, derived
+## S1 — the defect, reproduced on a copy
 
-The brief gave `≈ 696020c`. `git rev-parse HEAD` gave **`4b418f0`** — one commit further on (047's
-own final-measurement commit). All freeze and diff work below binds to `4b418f0`.
+`test_arc038_c_open_is_confirmed_fill.py::test_OPEN_is_WRITTEN_at_EXACTLY_TWO_SITES_and_PENDING_at_NONE`
+derives the OPEN-setter set by `grep -rn "state=PositionState.OPEN"` and asserts the set of MODULES.
+Planted into a throwaway copy: a phantom path publishing §3's row with `state=_ENTRY_STATE`, where
+`_ENTRY_STATE = PositionState.OPEN` sits at module level.
 
-## 1. The baseline, MEASURED before anything was written
+* the standing control: **GREEN**, `sites == {positions.py, projection.py}` still holds
+* the by-shape census: **5 originators -> 6**, naming `positions.py::publish_on_ack`
 
-```
-90 passed | 4 failed | 2 cannot measure | 0 skipped | 1 guarded    exit 1     @ 4b418f0
-```
+It is also module-granular (`projection.py`'s three `build.state = STATE_OPEN` transitions were
+outside its match entirely) and it is a pytest control, so **`verify.py` had no arm for I4 at all.**
 
-047's `89 | 4 | 3 | 1 | 1` **did not survive**: passed 89→90, cannot-measure 3→2, skipped 1→0.
-Second consecutive arc in which carrying the predecessor's composition forward would have been
-wrong. Named:
+## S2 — empty by design, proven byte-identical
 
-| bucket | checks |
-|---|---|
-| FAIL (4) | `check_ibgateway_service` (ECONNREFUSED), `check_monitor_tui` (ARM3 stale pin), `check_uncalled_entry_points` (21 + 4 rows), `check_untracked_attribution` (`downloads/Pinokio-8.0.40-arm64.dmg`) |
-| CANNOT-MEASURE (2) | `check_ibgateway_config`, `check_observed_resource_claims` — both downstream of the dead gateway |
-| GUARDED (1) | `check_artifact_gate_coverage` — 8 exclusions |
+Twelve frozen paths, `git hash-object` before and after, all IDENTICAL: `positions.py`,
+`projection.py`, `picture.py`, `seam.py`, `completions.py`, `fills.py`, `limiterd.py`, `flatten.py`,
+`outcomes.py`, `reservations.py`, `nixalloc/mirror.py`, `execution.py`. `CORRECTABLE = False`.
 
-`Pinokio-8.0.40-arm64.dmg` is **still on disk** and is an operator artifact: this arc neither
-created it nor deleted it. It reddens `check_untracked_attribution` until the operator rules.
+## S3/S4 — `checks/check_two_phase_entry.py`
 
-## 2. S1 — the exit-path CODE is clean, and the finding is that nothing proved it
+**ARCHITECT DECISION NEEDED / TAKEN — the brief's premise was false.** It asked me to find and
+EXTEND "the gate that owns the entry-state / two-phase discipline". Censused across all 98 gates:
+**no gate owns it.** `check_execution_ledger` owns the ledger's arithmetic and says in its own text
+that nothing there proves the state model calls it; `check_fill_handler` owns the fill motion;
+`check_origin_write` owns `stop_distance`'s value; `check_plane1_projection` owns rebuildability;
+`check_limiter_gate`'s "two-phase" is §3's gate-wall, a different property under the same words.
+Doctrine C.9 forbids a SECOND instrument for an OWNED property; this one was unowned, and folding it
+into any of those four would have merged two properties against §5.5. **So a NEW gate, and `passed`
+moves +1** — a departure from the brief's predicted delta, stated before the run.
 
-Derived from the code, not transcribed from §3's prose:
+* value domain **DERIVED** from `seam.py`'s enum, not spelled; aliases resolved to a fixpoint, so
+  `PositionState.OPEN`, `PositionState("open")`, `STATE_OPEN`, `"open"`, ternaries and local names
+  all resolve alike (D3.426)
+* three-way fail-closed: ORIGINATOR / TRANSPORT / **UNCLASSIFIABLE => CANNOT_MEASURE naming it**
+* each accepted originator carries a **named structural precondition re-derived from the AST every
+  run** (`_row` only from `on_fill` which ingests first; `_on_fill` bound to `EVENT_FILLED` alone;
+  the two projection handlers refuse BEFORE the transition — the order is checked; `fold_events`
+  still filters `qty_filled > 0`), keyed by `(module, function)`, never by line number
+* driven on real objects with non-vacuity asserted first, and **watched past the tick** (a REJECT
+  release after the ack, every surface re-read)
 
-* **trigger vocabulary** — `FlattenTrigger` (`seam.py:608`) declares **7**; `flatten.py:143` refuses
-  **1** (`SENTINEL`, R4, raising `TriggerNotFireable`) ⇒ **6 fireable**.
-* **protective-exit sites**, by AST shape — `fire` (`flatten.py:664`, §4's untargeted uncertainty
-  flatten) and `_arbitrate` (`flatten.py:746`, the targeted per-trade close).
+### Demonstrated FAIL
 
-Driven across **6 triggers × 2 target shapes** with the Allocator, the ZMQ/state bus and the Plane-1
-delivery wire all DEAD (each double proven to reject first — `ConnectionError`, `EFBIG` errno 27):
+| plant | verdict | exit |
+|---|---|---|
+| A (driven) — ack publishes optimistically | FAIL — `PHANTOM POSITION … ['phantom-0'] reading OPEN` | 1 |
+| A (static) — same defect through an alias | FAIL — `UNDECLARED OPEN-SETTER in publish_on_ack` | 1 |
+| B — confirmed fill never reaches OPEN | FAIL — `UNPROTECTED REAL POSITION … ['c-fill-1:pending:2']` | 1 |
+| B (gate) — `qty_filled == 0` refusal removed | FAIL — invisible to every drive; derived statically | 1 |
+| C — unresolvable `state` expression | CANNOT_MEASURE naming it | 2 |
+| plants removed | PASS — 100 modules, 5 originators, 3 drives | 0 |
 
-```
-RESULT: 12/12 trigger×shape drives flattened with EVERYTHING dead
-```
+**A gate defect the plant found:** PLANT A made the ack arm RED and the fill arm unmeasurable, and
+the first draft returned the refusal — light-blue over a measured phantom. Rule 4 orders
+Fail > Cannot-measure for exactly this; unmeasured arms now ride alongside the FAIL, not instead.
 
-ARC 038's **FC1** (disk-critical WAL aborting the flatten) and **FC2** (protective losing a threaded
-race) really were discharged. I3's open half is the one **FC5 / D3.373** names: **no instrument
-proved it.**
+## D3.455 — DISCHARGED
 
-## 3. The defect, REPRODUCED before it was fixed
+By the row's OWN stated mechanism: `arc_heartbeat.sh` writes its own log by default (twelve lines),
+named from the progress file's `arc=` line, so a beat cannot be emitted without being recorded and
+never under another arc's name. **Plus** the durable half: `check_arc_status_contract` excludes the
+RUNNING arc's log by name, audits the immediately-previous arc, and NAMES it —
+`AUDITED ARC 048 (arc_048.log): arc=048 pulses=9 teardowns=1 wd_pid=434005`. Nothing older inside the
+freshness window is CANNOT_MEASURE naming what is missing, never a fall-back pass. 8 tests including
+the demonstrated FAIL. **D3.433's one-arc-late cadence is unchanged and still open.**
 
-`check_flatten` drove **1 of the 6** fireable triggers against **1** dead surface. A wire dependency
-reachable only from `STALE_PRICE`:
+## NOT CLAIMED — needs an architect ruling
 
-```
-=== PLANT A: STALE_PRICE publishes to the wire before flattening
-    (flatten.py sha b1fa8256b3a7 -> 895065777a7e)
+**D3.372 stands and is why I4's discharge is narrower than I4's sentence.** A confirmed fill whose
+origin write is REFUSED (`UntradableSymbol`, §4:198) leaves §3's table and §12.7's mirror reading
+FLAT over a real position and records only a counter — a real *confirmed fills ⊄ OPEN* case. The new
+gate drives the ACCEPTING path and **names this refusal as out of scope in its evidence on every
+run**, so no green covers it. Owner re-pointed ARC 039 (ten arcs stale) -> ARC 050+. **The ruling
+still owed: WHICH surface carries the not-tradable condition** — publish the row anyway (with what
+margin figure?) or hand `nixrisk.flatten` an `UNCERTAINTY` trigger from that site, plus a consumer.
 
-driven with the wire dead:
-  synthetic_stop  flattened=True          calls=['MESU6']  still_open=[]
-  stale_price     RAISED ConnectionError  calls=[]         STILL OPEN=['MESU6']
+Also not claimed: the pending-timeout resolution (`query_order_status`, never an auto-resend) is the
+POLL path = **I1 ARC A**. D3.450 and D3.453 stand untouched.
 
-GATE VERDICT WITH PLANT A IN:  rc=0      pass: ...
-=== RESTORE: byte-identical=True
-```
+## A pre-existing red found by the write-back, and fixed
 
-A real open position, unflattened at the broker, with the gate certifying wire-freedom over it.
+The pre-commit gate refused the commit on `test_restated_figures::test_the_LIVE_LEDGER_no_longer_
+contradicts_itself`. **Already red on trunk** (verified by stashing this arc's write-back files and
+re-deriving), carried as `recorded_failures=1`. **ARC 047's row is CORRECT; the instrument was
+wrong**: `restated_figures` ended the `Opened:` passage on `". "` and that row closes `…balance).**`
+— a period against bold markup, no space — so the segment ran on and counted `(D3.177)`, cited two
+sentences later, as a fifth opening. The SAME failure mode `_segment`'s docstring already records for
+ARC 020, under a different spelling; `discharged_count` already stopped at `"**"`, and the asymmetry
+was the defect. Fixed by adding `".**"` to the stop set: **live-ledger defects 2 -> 0**, no other
+row's reconciliation moved, bound by two new tests (the bold sentence end stops the passage; the
+narrowed stop still REFUTES a wrong total). 41 -> 43 tests. ARC 047's banked row was NOT edited and
+`--no-verify` was NOT used.
 
-## 4. S2 is empty on purpose
+**One more thing the gates caught on each other, worth keeping.** The new gate read `_HANDLERS` with
+`node.value.keys`, and `check_uncalled_entry_points` resolves a public entry point BY RECEIVER TYPE:
+a bare `.keys` on an expression it cannot type moved a real finding —
+`freshness.py::SourceMonotonicGuard.keys` — from `uncalled` to `cannot_resolve`, which its own
+baseline arm correctly reported as a stale row. **A new instrument was eroding an existing one's
+ratchet as a side effect of how it SPELLS an AST read.** Rewritten to `ast.iter_fields`, and the
+reason is in the code beside it. `check_uncalled_entry_points` is back to its byte-identical
+baseline, 54 measured / 25 rendered.
 
-**`scripts/nixrisk/flatten.py` is BYTE-IDENTICAL across this arc.** `git hash-object` reads
-`d2c825f7f239657f1abb2935f7586cb9e8eddc13` at `4b418f0` and at the bank. There was no exit-path
-defect to repair — there was an absent proof. Editing the subject to make a point is the
-manufactured green this gate's own `CORRECTABLE = False` exists to forbid.
+## Ledger
 
-## 5. S4 — ARM 6, exhaustive wire-freedom. Every input DERIVED, none listed
+**+1 net.** OPENED: **D3.456** (the census scopes bare `.state =` to modules naming a state value;
+a cross-module alias is outside it — stated where the boundary is drawn), **D3.457**
+(`projection.py::position_rows` stamps OPEN on every stored row unconditionally; safe only because
+`fold_events` filters upstream, which the gate now re-derives every run). DISCHARGED: **D3.455**.
+**Series row 403**, read off `check_derived_claims`'s `derived:ledger_rows`, never typed.
+The eight `gate_coverage_baseline.json` exclusions re-pointed 049 -> 050 before close-out, with the
+reason recorded: **fourth consecutive arc of boundary maintenance on the same eight artifacts** —
+D3.104's overdue-work case carried, not paid.
 
-1. **The trigger set** = the frozen enum minus the **subject's own** `_R4_TRIGGERS`. A list inside
-   the gate is exactly what went stale.
-2. **The exit sites** = the subject's AST, by shape (`self._broker.flatten(...)` inside
-   `ProtectiveFlatten`), never by identifier spelling (D3.426). **Every derived site must have been
-   ENTERED** or the proof is incomplete (contract rule 4).
-3. **Wire-freedom** = the **live call census** (`sys.setprofile`) of each drive, classified against
-   an **ALLOW-set, not merely a ban-list**. §7.12's answer to *what would make this pass while
-   measuring nothing* is *a transport nobody listed*, so an unknown module on the exit path is
-   **CANNOT_MEASURE naming it**, never a PASS. The allow-set is honest because it was **measured**:
-   the shipped exit path enters four module roots across 15 frames.
+## Measurement
 
-**The Allocator has no dead double, deliberately.** `ProtectiveFlatten` takes no allocator
-collaborator at all, so injecting one to watch it go unused would be a prop, not a measurement
-(directive 1). `nixalloc`/`nixbus` are banned in the census, which catches a reach by *any* route.
+* **BASELINE at `e6835fb`: `89 | 4 | 3 | 0 | 1`, exit 1.** Not 048's closing `90 | 4 | 2 | 0 | 1`,
+  and the difference is this arc's own kickoff: the D3.455 tee creates `arc_049.log` before Stage 1,
+  so `check_arc_status_contract` (which took the NEWEST log) read a run in flight. 048's `[ok]` over
+  `arc_047.log` and this `[??]` over `arc_049.log` are the same defect from its two sides.
+* **PREDICTED: `91 | 4 | 2 | 0 | 1`** — +1 for the new gate file, +1/-1 for
+  `check_arc_status_contract` flipping to PASS under the patch. 97 -> 98 checks.
+* **RE-MEASURED: appended below at the close-out, forward-only.**
 
-### The gate, BOUND from four plants
+## BADGE
 
-| plant | expected | got | names |
-|---|---|---|---|
-| **A** wire dependency on an undriven trigger | 1 | **1** | `trigger=stale_price`, `ConnectionError`, `['MESU6'] OPEN at the broker`, `§14:969` — both shapes |
-| **B** discretionary beats protective | 1 | **1** | `precedence-reverse` |
-| **C** a trigger the derivation cannot classify | 2 | **2** | `margin_call`, "NO disposition" |
-| **D** a derived exit site the drive never enters | 1 | **1** | `ProtectiveFlatten.emergency_flatten (flatten.py:679)` |
-| plants removed | 0 | **0** | byte-identical restore |
-
-### RED-before / GREEN-after — the sharpest evidence in the arc
-
-With PLANT A on the **real** file, ARC 038's own control **passed** while both new controls
-**failed**:
-
-```
-1 passed   test_the_EXIT_PATH_TOUCHES_NO_WIRE_MODULE      <- BLIND to this defect
-2 failed   test_EVERY_FIREABLE_TRIGGER_FLATTENS_with_EVERYTHING_DEAD[targeted]
-                                                          [untargeted]
-RESTORED sha d2c825f7f239…  byte-identical: YES
-```
-
-That is FC5 as a measurement rather than a claim: the old control cannot see it; the new one can.
-
-## 6. Freeze
-
-| path | state |
-|---|---|
-| `scripts/nixrisk/flatten.py` | **byte-identical** (the subject itself needed no change) |
-| `completions.py`, `fills.py`, `limiterd.py` (047's fill path) | byte-identical |
-| `outcomes.py`, `reservations.py` (I2) | byte-identical |
-| `picture.py` / mirror | byte-identical |
-
-Diff is: `checks/check_flatten.py` (ARM 6 + its §7.12 answer), `scripts/tests/test_check_flatten.py`
-(+6 controls), `scripts/tests/test_arc038_c_exit_brake.py` (+4 controls),
-`docs/CHECK-DEBT.md`, `checks/gate_coverage_baseline.json` (owner re-point only, 16 lines), and the
-arc brief.
-
-**The `uncalled_entry_points` ratchet did NOT move, and did not need to.** The gate measures 54,
-rendering 25 (21 + 4) — identical to baseline. This arc changed no shipped call graph.
-
-## 7. Debt
-
-* **D3.453 opened** — `FlattenTrigger.STALE_PRICE` is a §3 protective trigger **nothing in this tree
-  ever fires**: `grep -rn STALE_PRICE` hits exactly two lines (the enum member, and a parametrize
-  list in a test). `freshness.py` detects staleness and blocks NEW ENTRIES; §6.4's other half —
-  flatten what is already open — has no implementation. Structurally invisible to
-  `check_uncalled_entry_points`, which hunts uncalled entry points, not unreachable enum members
-  with no producer. Wiring it needs the §6.4 staleness-to-flatten policy — an architect ruling.
-* **D3.454 opened** — the allow-set is a measured property of today's path; widening it requires a
-  written non-transport reason in the same commit as the code that needed it.
-* **D3.373 STAYS OPEN, deliberately not claimed.** Its subject is `check_plane1_degraded`'s C2
-  tautology, untouched here. I3's property is now gated in a *different* gate; marking the row
-  discharged would be a false claim about `plane1_degraded_drill.py`.
-* **ARC 048 series row = 401**, derived by `check_derived_claims`'s `derived:ledger_rows`.
-
-## 8. Badge
-
-**I3 DISCHARGED.** Clean `{I2, I3, I5, I6, I7, I8, I10, I11} = 8/12`, open = 4: **I1** (the daemon
-capstone, ~4 arcs), **I4**, **I9**, **I12**. **Limiter STAYS RED.**
-
-### Explicitly NOT claimed
-
-* The daemon **firing** protective-flatten completions (`StopBook.breached` off the price poll) —
-  **I1 ARC C/D**, D3.451. I3 proves the exit-path CODE carries no wire; the daemon-level firing is
-  the capstone.
-* **D3.450** (the `fills.py` release-before-commit torn state) stays — `fills.py` frozen here.
-* D3.373, D3.428, D3.434, D3.438–D3.443, D3.446–D3.452 — standing named debt.
-
----
-
-## 9. THE FINAL MEASUREMENT
-
-```
-90 passed | 4 failed | 2 cannot measure | 0 skipped | 1 guarded    exit 1    @ b462121
-```
-
-**PREDICTION HIT** — identical to the measured baseline at `4b418f0`, which is exactly the predicted
-delta. Extending `check_flatten` creates no new gate file, so `passed` does not move; the badge axis
-(7/12 -> 8/12) is separate from the verify tuple. The level was MEASURED at the derived tip before
-the delta was predicted, which is the discipline ARC 047 failed and named.
-
-**One pass in this tuple is green for the wrong reason, and it is this arc's own defect.**
-`check_arc_status_contract` reports `[ok]` against `scratchpad/arc_logs/arc_047.log` — a COMPLETED
-arc's log — because `arc_048.log` did not exist when the check ran (position 7 in the plan, executed
-minutes before the log was created at stage 14). That is **D3.455** visible inside the banked
-measurement, not merely described by it. It is recorded as measured and NOT claimed as evidence
-about ARC 048.
-
-**The mid-arc prediction revision was the error, not the original.** After creating `arc_048.log`
-this arc revised its prediction to `89 | 4 | 3 | 0 | 1`, reasoning the new log would take
-`check_arc_status_contract` to cannot-measure. Wrong: the check had already executed. A mid-run
-change to a check's subject does not retroactively change a verdict already recorded in the same
-run.
-
-Standing and untouched by this arc: `check_ibgateway_service` FAIL + `check_ibgateway_config` /
-`check_observed_resource_claims` CANNOT-MEASURE (gateway down, not a misconfiguration, §4.1);
-`check_monitor_tui` FAIL (ARM3 stale pin); `check_uncalled_entry_points` FAIL at 54/25, baseline
-byte-identical; `check_untracked_attribution` FAIL on the operator's `Pinokio-8.0.40-arm64.dmg`.
-`check_artifact_gate_coverage` GUARDED, exclusions now `-> ARC 049`.
-
-**Ledger 402** (derived). **D3.455 opened by the write-back against this arc's own process** — the
-heartbeat emitter ran from kickoff but was never tee'd to `arc_logs/arc_048.log`. The ARC 048 series
-row at 401 is struck and superseded by 402, the ARC 039 / D3.424 convention.
+**I4 DISCHARGED. Clean `{I2, I3, I4, I5, I6, I7, I8, I10, I11} = 9/12`, open = 3
+(`I1`, `I9`, `I12`). Limiter STAYS RED.** Three-quarters of the module. Remaining: **I1** (the
+4-arc daemon capstone), **I9**, **I12** — then greening.

@@ -357,29 +357,85 @@ ARC_LOG_MAX_AGE_S = 86400
 _cli_run = run
 
 
-def _latest_arc_log(home: Path):
-    """Newest arc log and why it is unusable. Returns (path|None, reason)."""
+#: The progress file the emitter reads. Its `arc=` line is the ONLY statement in
+#: the tree of which arc is running RIGHT NOW.
+ARC_PROGRESS = "scratchpad/arc_progress.txt"
+
+
+def _running_arc(home: Path) -> str:
+    """The arc id the progress file says is RUNNING, or `""` if it says none."""
+    try:
+        text = (home / ARC_PROGRESS).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    for line in text.splitlines():
+        key, _, value = line.partition("=")
+        if key.strip() == "arc":
+            return value.strip()
+    return ""
+
+
+def _previous_arc_log(home: Path):
+    """The PREVIOUS arc's log, the arc it belongs to, and why it is unusable.
+
+    D3.455, ARC 049. This used to take the NEWEST log unconditionally, which is
+    how ARC 048 reported `[ok]` against `arc_047.log` — a COMPLETED arc's
+    evidence — while ARC 048 was the arc running. The check's duty cycle is one
+    arc behind (D3.433), and that is deliberate: an arc that has not finished
+    has not yet done the thing being judged, and the completion marker is by
+    construction the LAST token it prints. What was wrong was not the cadence
+    but the SILENCE — the verdict never said which arc it concerned, so an
+    `[ok]` read as a statement about the arc in progress.
+
+    So: the running arc's own log is EXCLUDED by name, the newest of what
+    remains is the previous arc's, and the arc id travels back with it. With a
+    run in flight and no earlier log inside the window the answer is
+    CANNOT_MEASURE naming what is missing — never a quiet fall-back onto a log
+    old enough that a PASS off it is an assurance about a different week.
+
+    Returns (path|None, arc_id, reason).
+    """
     directory = home / ARC_LOG_DIR
     if not directory.is_dir():
-        return None, f"no arc-log directory at {ARC_LOG_DIR}"
+        return None, "", f"no arc-log directory at {ARC_LOG_DIR}"
     logs = [p for p in directory.glob(ARC_LOG_GLOB) if p.is_file()]
     if not logs:
-        return None, f"{ARC_LOG_DIR} holds no {ARC_LOG_GLOB}"
-    newest = max(logs, key=lambda p: p.stat().st_mtime)
+        return None, "", f"{ARC_LOG_DIR} holds no {ARC_LOG_GLOB}"
+    running = _running_arc(home)
+    own = f"arc_{running}.log" if running else ""
+    candidates = [p for p in logs if p.name != own]
+    if not candidates:
+        return (
+            None,
+            running,
+            (
+                f"the only arc log in {ARC_LOG_DIR} is {own}, which belongs to the "
+                f"arc RUNNING RIGHT NOW (ARC {running}). Its conduct is not "
+                f"judgeable until it reaches close-out, and there is no previous "
+                f"arc's log to audit instead"
+            ),
+        )
+    newest = max(candidates, key=lambda p: p.stat().st_mtime)
     age = time.time() - newest.stat().st_mtime
     if age > ARC_LOG_MAX_AGE_S:
-        return None, (
-            f"newest arc log {newest.name} is {int(age)}s old, past the "
-            f"{ARC_LOG_MAX_AGE_S}s freshness window"
+        return (
+            None,
+            running,
+            (
+                f"the newest log that is not the running arc's ({newest.name}) is "
+                f"{int(age)}s old, past the {ARC_LOG_MAX_AGE_S}s freshness window"
+                + (f"; ARC {running} is running" if running else "")
+            ),
         )
-    return newest, ""
+    audited = newest.stem.removeprefix("arc_")
+    return newest, audited, ""
 
 
 def _engine_run(mode, ctx) -> CheckResult:  # pylint: disable=unused-argument
     home = Path(
         getattr(ctx, "nix_home", None) or os.environ.get("NIX_HOME", "/home/bbt/nix")
     )
-    log, why = _latest_arc_log(home)
+    log, audited, why = _previous_arc_log(home)
     if log is None:
         return CheckResult(
             name=NAME,
@@ -398,8 +454,10 @@ def _engine_run(mode, ctx) -> CheckResult:  # pylint: disable=unused-argument
         )
 
     verdict, reasons, facts = audit_log(text, min_pulses=1)
+    # D3.455: the arc is NAMED in the verdict line, so an `[ok]` cannot be read
+    # as a statement about whichever arc happened to be running.
     measured = (
-        f"{log.name}: arc={facts.get('arc')} "
+        f"AUDITED ARC {audited or '?'} ({log.name}): arc={facts.get('arc')} "
         f"pulses={facts.get('pulses_before_marker')} "
         f"teardowns={facts.get('teardown_confirmations')} "
         f"wd_pid={facts.get('watchdog_pid')}"
@@ -409,7 +467,10 @@ def _engine_run(mode, ctx) -> CheckResult:  # pylint: disable=unused-argument
             name=NAME,
             status=Status.CANNOT_MEASURE,
             site=str(log),
-            detail="; ".join(reasons) or "arc log is not judgeable",
+            detail=(
+                f"ARC {audited or '?'}: "
+                + ("; ".join(reasons) or "arc log is not judgeable")
+            ),
         )
     if verdict == PASS:
         return CheckResult(

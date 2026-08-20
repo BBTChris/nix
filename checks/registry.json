@@ -79,6 +79,7 @@
         "check_synthetic_stop_only",
         "check_tmpfs_inode_headroom",
         "check_trade_join",
+        "check_two_phase_entry",
         "check_uncalled_entry_points",
         "check_untracked_attribution",
         "check_venv_lock",

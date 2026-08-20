@@ -182,14 +182,29 @@ emit_banner() {
   printf '%s\n' "$rule"
 }
 
+# ---- D3.455: THE EMITTER WRITES ITS OWN LOG --------------------------------
+# ARC 048 ran the emitter from kickoff and never redirected it, so
+# `check_arc_status_contract` audited a COMPLETED arc's log while a different
+# arc was running -- green for the wrong subject. The tee lived in cc's memory
+# of the brief, and prose degrades (the D3.445/D3.447 class). It lives here now:
+# a beat cannot be emitted without being recorded. The log is named from the
+# progress file's OWN arc id, so a beat is never filed under another arc's name.
+# Failure to open the log NEVER suppresses the beat -- the operator's line is
+# the primary duty and the recording is the secondary one.
+ARC_LOG_DIR="${ARC_LOG_DIR:-$NIX_SCRATCH/arc_logs}"
+record() {  # stdin -> stdout, and append to this arc's own log if we can name it
+  if [ -z "$arc" ] || ! mkdir -p "$ARC_LOG_DIR" 2>/dev/null; then cat; return; fi
+  tee -a "$ARC_LOG_DIR/arc_${arc}.log" 2>/dev/null || cat
+}
+
 case "$CMD" in
-  pulse)  emit_pulse;;
-  banner) emit_banner;;
+  pulse)  emit_pulse | record;;
+  banner) emit_banner | record;;
   selfcheck)
     out="$(emit_pulse)"
     if [ -n "$out" ]; then
-      printf '%s\n' "$out"
-      printf 'HEARTBEAT SELF-VERIFY: ok (emitter produced a pulse)\n'
+      { printf '%s\n' "$out"
+        printf 'HEARTBEAT SELF-VERIFY: ok (emitter produced a pulse)\n'; } | record
       exit 0
     else
       printf 'HEARTBEAT SELF-VERIFY: FAILED (emitter produced nothing)\n' >&2
