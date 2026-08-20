@@ -200,7 +200,62 @@ NOT_PRODUCERS: Final[frozenset[str]] = frozenset({"seam.py", "plane1_sink.py"})
 #: that manufactures a row so a gate has something to measure is not a producer
 #: of that row in the running system; D3.200's shape here is a census reading
 #: its own fixtures back as coverage.
-DRILL_SUFFIX: Final[str] = "_drill.py"
+#: ARC 043 / D3.435(b) — THE SUFFIX IS GONE, AND WHAT REPLACED IT IS AN
+#: ENUMERATION, NOT A SHAPE. The distinction is stated because the brief asked
+#: for a shape and a shape was MEASURED AND REJECTED, three times, on this tree:
+#:
+#:   1. "constant-literal §9 fields" — the drills build their rows with
+#:      f-strings over a loop index, so all three read EMITTED alongside
+#:      `limiterd.py`. Separates nothing.
+#:   2. "creates its own Postgres substrate" (`initdb`/`pg_ctl`/`createdb`/
+#:      `provision`, docstrings excluded) — cleanly separates the three Plane-1
+#:      drills from `limiterd.py`, `projection.py` and `drift_audit.py`, and
+#:      then MISSES `wal_kill_drill.py`, which builds no cluster because its
+#:      substrate is a WAL file. That module emits `EventKind.ACCEPTED` and
+#:      nothing else, so the miss is exactly one free green — D3.435's own
+#:      defect, re-created by its own repair.
+#:   3. "spawned by a `checks/check_*.py`" — true of every drill AND of
+#:      `scripts/limiterd.py`, which `check_go_timeout` spawns as its subject.
+#:      Separates the instruments from the ONE module §9 authorises to be a
+#:      producer in precisely the wrong direction.
+#:
+#: A drill and a daemon are syntactically alike, and that is the finding rather
+#: than an obstacle to one. So this is the form the rest of this tree already
+#: uses for the same problem — `NOT_PRODUCERS` here, `SQL_AUTHOR_EXEMPT` and
+#: `SINK_IMPL_EXEMPT` in `check_plane1_sole_writer` — a path enumerated with the
+#: reason it is not a producer.
+#:
+#: WHAT THIS CLOSES that `DRILL_SUFFIX` did not:
+#:   * it cannot CAPTURE by accident. A future `scripts/foo_drill.py` that is a
+#:     real producer was silently excluded by the suffix and is counted here.
+#:   * it cannot LOSE by rename. `_gate_driver_defects` asserts every path below
+#:     still exists and the census is CANNOT_MEASURE if one does not, so a
+#:     renamed drill reddens instead of quietly rejoining the producer set.
+#: WHAT IT DOES NOT CLOSE, named rather than implied: a NEW instrument added
+#: under `scripts/` that emits an `EventKind` counts as a producer until someone
+#: enumerates it here, and that is a free green in the silent direction.
+#: CHECK-DEBT carries it; no shape measured on this tree closes it.
+GATE_DRIVERS: Final[dict[str, str]] = {
+    "plane1_crash_drill.py": (
+        "check_plane1_crash_gap's driver: stands up an EPHEMERAL PostgreSQL "
+        "cluster (initdb + pg_ctl on a private socket) and crashes it. Its rows "
+        "exist so the gate has a crash gap to find"
+    ),
+    "plane1_degraded_drill.py": (
+        "check_plane1_degraded's driver: the same ephemeral-cluster shape, "
+        "driving §12.4's outage / disk-critical / reconnect ladder"
+    ),
+    "plane1_hotpath_drill.py": (
+        "check_plane1_hot_path's driver for §11 item 6: builds a scratch "
+        "database through provision_plane1 and pushes load through the real sink"
+    ),
+    "wal_kill_drill.py": (
+        "check_plane1_wal's driver: fills a WAL in a scratch root and SIGKILLs "
+        "the producer to observe fsync. Emits EventKind.ACCEPTED and nothing "
+        "else — the one type the substrate shape above would have handed a free "
+        "green"
+    ),
+}
 
 
 class Unmeasurable(Exception):
@@ -221,6 +276,26 @@ def _psql(database: str, sql: str) -> str:
     if proc.returncode != 0:
         raise Unmeasurable(f"{database}: {proc.stderr.strip()[-300:]}")
     return proc.stdout.strip()
+
+
+def gate_driver_liveness(home: Path) -> list[str]:
+    """ARC 043 / D3.435(b). Every enumerated gate driver must still EXIST.
+
+    The half of the suffix defect an enumeration does not close on its own: a
+    renamed or deleted drill would silently drop out of the exclusion and
+    rejoin the producer set, which is a free green for whatever kinds it emits.
+    A missing path is reported and the caller makes the census CANNOT_MEASURE —
+    the enumeration has lost its subject, and §17 forbids certifying a property
+    whose subject is unavailable.
+    """
+    scripts = home / "scripts"
+    return [
+        f"GATE_DRIVERS names scripts/{name}, which does not exist — the "
+        f"exclusion has lost its subject and the census cannot be trusted "
+        f"either way (reason on record: {reason[:70]}...)"
+        for name, reason in sorted(GATE_DRIVERS.items())
+        if not (scripts / name).is_file()
+    ]
 
 
 def producer_census(home: Path) -> dict[str, set[str]]:
@@ -252,8 +327,11 @@ def producer_census(home: Path) -> dict[str, set[str]]:
     uses for its own reader census, and the population every "does any shipped
     module do X" question in this tree is actually asking about. `NOT_PRODUCERS`
     still excludes the two modules that NAME every member without emitting any,
-    and `DRILL_SUFFIX` excludes the gate drivers the wider glob swept in — see
-    its own comment for the three free greens that measured.
+    and `GATE_DRIVERS` (ARC 043 / D3.435(b), replacing ARC 042's `_drill.py`
+    suffix) excludes the gate drivers the wider glob swept in — see its own
+    comment for the three free greens that measured, for the three candidate
+    SHAPES that were measured and rejected, and for what an enumeration still
+    does not close.
     """
     census: dict[str, set[str]] = {}
     scripts = home / "scripts"
@@ -265,7 +343,7 @@ def producer_census(home: Path) -> dict[str, set[str]]:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         except OSError, SyntaxError, UnicodeDecodeError:
             continue
-        if path.name in NOT_PRODUCERS or path.name.endswith(DRILL_SUFFIX):
+        if path.name in NOT_PRODUCERS or path.name in GATE_DRIVERS:
             continue
         for node in ast.walk(tree):
             if (
@@ -546,6 +624,18 @@ def ratchet_defects(state: dict[str, str]) -> tuple[list[str], list[str]]:
 def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argument
     """Drive every §12.10 event type and classify it, one at a time."""
     try:
+        # ARC 043 / D3.435(b): the exclusion's own subjects come first. An
+        # enumeration that names a path which no longer exists is not a
+        # narrower census, it is a census whose exclusion silently stopped
+        # applying — §17, CANNOT_MEASURE rather than a PASS over it.
+        stale = gate_driver_liveness(ctx.nix_home)
+        if stale:
+            return CheckResult(
+                name=NAME,
+                status=Status.CANNOT_MEASURE,
+                site=ANCHOR,
+                detail="; ".join(stale),
+            )
         state, defects, notes = classify(ctx.nix_home)
         driven = sum(1 for s in state.values() if s in {"DRIVEN", "TRANSPORT-ONLY"})
         if driven < MIN_TYPES_DRIVEN:

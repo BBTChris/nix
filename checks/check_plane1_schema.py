@@ -226,18 +226,32 @@ class PsqlUnavailable(Exception):
 
 
 def _psql(
-    dbname: str, sql: str, *, verbose_errors: bool = False
+    dbname: str, sql: str, *, verbose_errors: bool = False, user: str | None = None
 ) -> tuple[int, str, str]:
     """Run one SQL string. Returns `(rc, stdout, stderr)`.
 
     `verbose_errors` turns on psql's VERBOSITY so the SQLSTATE appears in
     stderr — without it psql prints the message only, and a message is prose
     while a SQLSTATE is a contract.
+
+    ARC 043 / I8 — THE LIVE RECORD IS NO LONGER REACHABLE BY THE AMBIENT
+    IDENTITY, and that is deliberate. `databases/schema/plane1_hba.conf` makes
+    the postmaster reject any connection to `PLANE1_DB` that is not
+    `nix_limiter`, `nix_reader` or the cluster superuser's own socket, because
+    the ambient identity on this node is a Postgres SUPERUSER and a superuser
+    bypasses every grant this gate measures. So a read of the live record
+    defaults to `READER_ROLE`. Every other database — the scratch databases this
+    gate's own can-fail suite builds — is untouched and still connects as the
+    ambient user, which is what provisions them.
     """
+    if user is None and dbname == PLANE1_DB:
+        user = READER_ROLE
     binary = shutil.which("psql")
     if binary is None:
         raise PsqlUnavailable("psql is not on PATH")
     argv = [binary, "-d", dbname, "-qAt", "-v", "ON_ERROR_STOP=1"]
+    if user is not None:
+        argv += ["-U", user]
     if verbose_errors:
         argv += ["-v", "VERBOSITY=verbose"]
     argv += ["-c", sql]
@@ -505,7 +519,7 @@ def _arm9_by_attempt(dbname: str) -> list[str]:
     # permission that WORKS. Rolled back, so the gate writes nothing durable.
     rc, _out, err = _psql(
         dbname,
-        "BEGIN; SET ROLE nix_limiter; "
+        "BEGIN; "
         "INSERT INTO plane1_event_log "
         "(occurred_at, event_type, strategy_id, trade_id, reason, wal_seq, "
         " natural_key) VALUES "
@@ -513,6 +527,7 @@ def _arm9_by_attempt(dbname: str) -> list[str]:
         " 'check_plane1_schema ARM9 control', 0, "
         " 'check_plane1_schema-arm9-control'); ROLLBACK;",
         verbose_errors=True,
+        user=WRITER_ROLE,
     )
     if rc != 0:
         return [
@@ -566,11 +581,17 @@ def _arm9_by_attempt(dbname: str) -> list[str]:
             "a SECOND WRITER exists — §12.10's 'no new writers, ever'",
         ),
     )
+    # ARC 043 / I8: `-U role` rather than `SET ROLE role`. Assuming a role is a
+    # courtesy the executor cannot check, and a superuser's assumption of it is
+    # reversible with one RESET; connecting as one is a fact the postmaster
+    # establishes before a statement is parsed. It is also now the only form
+    # that works here — the ambient identity cannot reach this database at all.
     for role, statement, expected_object, consequence in attempts:
         rc, _out, err = _psql(
             dbname,
-            f"BEGIN; SET ROLE {role}; {statement}; ROLLBACK;",
+            f"BEGIN; {statement}; ROLLBACK;",
             verbose_errors=True,
+            user=role,
         )
         if rc == 0:
             defects.append(

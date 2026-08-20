@@ -107,6 +107,8 @@ PLANE1_DB = "nix_plane1"
 
 #: The role every write below runs as. §12.10's sole writer, by identity.
 WRITER_ROLE = "nix_limiter"
+#: ARC 043 / I8. The read-only Plane-1 login identity; see `Psql.user`.
+READER_ROLE = "nix_reader"
 
 #: Below this many POSITION-AFFECTING events, a rebuild comparison is a
 #: statement about an almost-empty set. The brief's §0a: *"an empty-log rebuild
@@ -206,12 +208,23 @@ class Psql:
     host: str | None = None
     port: int | None = None
     timeout_s: float = 120.0
+    #: ARC 043 / I8. The CONNECTION identity, `psql -U`. `None` means the
+    #: ambient OS identity, which is correct for a scratch database this tree
+    #: created and is now REFUSED outright for the live Plane-1 record —
+    #: `databases/schema/plane1_hba.conf` rejects any connection to it that does
+    #: not name `nix_limiter` or `nix_reader`, because the ambient identity here
+    #: is a superuser and a superuser bypasses every grant. Assuming a role with
+    #: `SET ROLE` is a courtesy; connecting as one is established by the
+    #: postmaster before a statement is parsed.
+    user: str | None = None
 
     def _argv(self, *extra: str) -> list[str]:
         binary = shutil.which("psql")
         if binary is None:
             raise ProjectionUnavailable("psql is not on PATH")
         argv = [binary, "-d", self.dbname, "-qAt", "-v", "ON_ERROR_STOP=1"]
+        if self.user is not None:
+            argv += ["-U", self.user]
         if self.host is not None:
             argv += ["-h", self.host]
         if self.port is not None:

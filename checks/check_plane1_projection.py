@@ -93,6 +93,7 @@ from nixrisk.projection import (
     CLASSIFIED,
     MIN_FOLDED_EVENTS,
     PLANE1_DB,
+    READER_ROLE,
     STATE_CLOSED,
     STATE_OPEN,
     STATE_PARTIAL,
@@ -376,7 +377,11 @@ def inspect(nix_home: Path, dbname: str = PLANE1_DB) -> tuple[list[str], list[st
     Parameterised by home and database so the can-fail suite can point the live
     arm at a broken scratch database and drive the SHIPPED code against it.
     """
-    live = Psql(dbname)
+    # ARC 043 / I8: the live record is reachable only as one of the two Plane-1
+    # roles now (plane1_hba.conf). This arm READS, so it reads as the reader; a
+    # scratch database handed in by the can-fail suite keeps the ambient
+    # identity, which is what provisioned it.
+    live = Psql(dbname, user=READER_ROLE if dbname == PLANE1_DB else None)
     defects = arm1_classification(live)
     rebuild_defects, rebuild_note = arm2_rebuild(nix_home / _SCHEMA_SQL)
     drift_defects, drift_note = arm3_live_drift(live)

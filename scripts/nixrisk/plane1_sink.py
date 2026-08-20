@@ -38,6 +38,20 @@ two-sided; §9's ordering only works because the group is atomic.
 `SET LOCAL ROLE` rather than `SET ROLE`: the role reverts at `COMMIT`, so a
 pooled connection cannot inherit the Limiter's identity from a previous batch.
 
+**ARC 043 / I8 — THE ROLE IS NOW THE CONNECTION IDENTITY, NOT AN ASSUMED ONE.**
+`psql` is invoked with `-U <role>`, so the statement above is a self-set and the
+identity is established by the postmaster before any SQL is parsed. Until this
+arc there was no `-U`: the sink connected as the ambient OS identity — a
+SUPERUSER on this node — and politely assumed `nix_limiter`. ARC 038 called that
+convention rather than enforcement and ARC 043 measured it: a plain script that
+omits the `SET LOCAL ROLE` line landed a forged `filled` row in the live
+`nix_plane1`, then UPDATEd it, then TRUNCATEd the log. The `SET LOCAL ROLE` line
+is KEPT rather than deleted because it costs nothing and still holds if this
+transport is ever replaced by a pooled driver where one connection outlives one
+batch. See `databases/schema/plane1_enforcement.sql` for the privilege layer and
+`databases/schema/plane1_hba.conf` for the connection layer that refuses
+everything else — §9 / §12.10.
+
 ## THE NATURAL KEY IS A CONTENT HASH, AND THAT IS THE WHOLE OF EXACTLY-ONCE
 
 `plane1_event_log` carries `UNIQUE (natural_key, occurred_at)`. §12.4's
@@ -349,12 +363,23 @@ def _sql_str(value: str) -> str:
 
 
 def _run_psql(
-    database: str, sql: str, *, timeout: float = 60.0
+    database: str, sql: str, *, user: str | None = None, timeout: float = 60.0
 ) -> subprocess.CompletedProcess[str]:
     """One psql invocation. VERBOSITY=verbose so the SQLSTATE reaches stderr.
 
     Without it psql prints the message only, and a message is prose while a
     SQLSTATE is a contract (check-contract rule 11).
+
+    ARC 043 / I8 — `user` IS THE ENFORCEMENT SEAM, and it is the whole change.
+    Until this arc there was no `-U` here: every connection was the ambient OS
+    identity, which on this node is a Postgres SUPERUSER, and the sink then
+    ASSUMED the writer role with `SET LOCAL ROLE`. Measured at S1: a second
+    process that simply omits that statement inherits superuser and lands a
+    forged row in the live record. Assuming an identity is a courtesy the
+    executor cannot check; CONNECTING as one is a fact the postmaster
+    establishes before a statement is parsed. `databases/schema/plane1_hba.conf`
+    is the other half — it rejects the ambient identity outright, so this
+    parameter is not merely tidier, it is now the only way in.
     """
     binary = shutil.which("psql")
     if binary is None:
@@ -362,6 +387,7 @@ def _run_psql(
     return subprocess.run(  # nosec B603 - fixed argv, no shell
         [
             binary,
+            *(("-U", user) if user else ()),
             "-d",
             database,
             "-qAt",
@@ -390,7 +416,7 @@ def _sqlstate(stderr: str) -> str:
     return ""
 
 
-def max_wal_seq(database: str) -> int:
+def max_wal_seq(database: str, *, user: str | None = None) -> int:
     """The highest `wal_seq` already banked, or -1 for an empty log.
 
     This is how a restarted writer resumes numbering without a persisted
@@ -400,6 +426,7 @@ def max_wal_seq(database: str) -> int:
     proc = _run_psql(
         database,
         f"SELECT coalesce(max(wal_seq), -1) FROM {LOG_TABLE}",  # nosec B608
+        user=user,
     )
     if proc.returncode != 0:
         raise SinkError(
@@ -459,7 +486,7 @@ class Plane1PostgresSink:  # pylint: disable=too-many-instance-attributes
     def next_wal_seq(self) -> int:
         """The seq the next row will carry. Resolved from the log on first ask."""
         if self._next_seq is None:
-            self._next_seq = max_wal_seq(self.database) + 1
+            self._next_seq = max_wal_seq(self.database, user=self.role) + 1
         return self._next_seq
 
     def _values_clause(self, rows: Sequence[EventRow], first_seq: int) -> str:
@@ -513,7 +540,9 @@ class Plane1PostgresSink:  # pylint: disable=too-many-instance-attributes
             "RETURNING event_id; "
             "COMMIT;"
         )
-        proc = _run_psql(self.database, statement, timeout=self.timeout_s)
+        proc = _run_psql(
+            self.database, statement, user=self.role, timeout=self.timeout_s
+        )
         if proc.returncode != 0:
             state = _sqlstate(proc.stderr)
             # The SQLSTATE is put in the MESSAGE, not only on the exception

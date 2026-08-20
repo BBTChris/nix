@@ -316,3 +316,106 @@ def test_control_ARM_C_is_clean_on_the_real_tree() -> None:
 def test_the_gate_declares_its_own_scan_roots() -> None:
     """The scope of a scan is part of its result (§7.12 answer 2)."""
     assert gate.SCAN_ROOTS == ("scripts", "checks")
+
+
+# --------------------------------------------------------------- ARM D (ARC 043)
+#
+# I8's half. ARM A drives the shipped sink as a role that DECLARES itself a
+# non-writer and observes 42501 — a cooperative probe, and it has always passed.
+# ARM D measures the identity ARM A assumes away: a process that declares
+# nothing. These tests drive the SHIPPED arm, never a reimplementation of it.
+
+
+@pytest.mark.skipif(not _HAS_PG, reason="no local PostgreSQL client")
+def test_control_ARM_D_is_clean_against_the_ENFORCED_live_record() -> None:
+    """The real `nix_plane1`, with the enforcement installed: no ARM D defect.
+
+    The control for every plant below. Without it a green ARM D would also be
+    true of a record nobody can reach.
+    """
+    try:
+        defects, evidence = gate.ambient_enforcement()
+    except gate.Unmeasurable as exc:
+        pytest.skip(f"the live Plane-1 record is not measurable here: {exc}")
+    assert not defects, defects
+    # NON-VACUITY: a clean ARM D must have actually attempted all three
+    # identities, or "no defects" is a statement about an arm that did nothing.
+    joined = " ".join(evidence)
+    assert "CONTROL:" in joined and "AMBIENT:" in joined and "NON-WRITER:" in joined, (
+        evidence
+    )
+
+
+@pytest.mark.skipif(not _HAS_PG, reason="no local PostgreSQL client")
+def test_an_UNENFORCED_database_reddens_ARM_D(database) -> None:
+    """THE PLANT, and it needs no privileged edit to arm.
+
+    A scratch database carries the shipped DDL — and therefore the shipped
+    GRANTS — but no `pg_hba.conf` block, because those are per-database and the
+    fragment names `nix_plane1` alone. So a scratch database IS the pre-ARC-043
+    world in miniature: correct grants, ambient superuser access, sole writer by
+    convention. Pointing the SHIPPED arm at one must produce the ambient defect,
+    naming the forged row it would have banked.
+
+    This is the plant `test_a_SECOND_WRITER_grant_reddens_the_gate` above cannot
+    reach: that one grants INSERT to a declared non-writer, which is the
+    cooperative surface. This one declares nothing at all.
+    """
+    defects, _evidence = gate.ambient_enforcement(database)
+    ambient = [d for d in defects if "AMBIENT identity wrote" in d]
+    assert ambient, f"ARM D did not fire on an unenforced database: {defects}"
+    assert "no role declared at all" in ambient[0], ambient
+    assert "CONVENTION here, not enforcement" in ambient[0], ambient
+
+
+@pytest.mark.skipif(not _HAS_PG, reason="no local PostgreSQL client")
+def test_ARM_D_writes_NOTHING_durable_to_the_database_it_probes(database) -> None:
+    """Every ARM D attempt is `BEGIN … ROLLBACK` with an explicit `event_id`.
+
+    Measured rather than read off the SQL: the arm is run against a database
+    where the ambient INSERT SUCCEEDS (so the write path is genuinely exercised
+    — a rollback nobody reached would prove nothing), and the table must be
+    empty afterwards and the sequence unmoved. A gate that forges a money row
+    to prove money rows cannot be forged has already done the damage.
+    """
+    before = _psql(
+        database,
+        "select count(*), last_value from plane1_event_log, plane1_event_id_seq",
+    ).stdout.strip()
+    defects, _evidence = gate.ambient_enforcement(database)
+    assert any("AMBIENT identity wrote" in d for d in defects), (
+        "the write path was not exercised, so the rollback proves nothing"
+    )
+    after = _psql(
+        database,
+        "select count(*), last_value from plane1_event_log, plane1_event_id_seq",
+    ).stdout.strip()
+    assert before == after, f"ARM D left durable state behind: {before!r} -> {after!r}"
+
+
+@pytest.mark.skipif(not _HAS_PG, reason="no local PostgreSQL client")
+def test_ARM_D_is_CANNOT_MEASURE_against_an_ABSENT_database() -> None:
+    """§17: an unreachable subject is never a PASS."""
+    absent = "p1a_definitely_absent_" + uuid.uuid4().hex[:8]
+    with pytest.raises(gate.Unmeasurable) as excinfo:
+        gate.ambient_enforcement(absent)
+    assert absent in str(excinfo.value)
+
+
+def test_the_gate_DECLARES_the_live_record_it_now_dials() -> None:
+    """Check-contract rule 12: a declared resource set is checked against the
+    observed one. ARM D dials `nix_plane1` on every run, so the token that was
+    previously refused as unfalsifiable is now owed."""
+    assert "postgres:nix_plane1" in gate.RESOURCES, gate.RESOURCES
+
+
+def test_the_gate_DECLARES_the_enforcement_artifacts_as_SUBJECTS() -> None:
+    """Both halves of the enforcement decide this gate's verdict, so both are
+    SUBJECTS — an artifact that decides a verdict and is declared by nothing is
+    what `check_artifact_gate_coverage` exists to catch."""
+    for path in (
+        "databases/schema/plane1_enforcement.sql",
+        "databases/schema/plane1_hba.conf",
+    ):
+        assert path in gate.SUBJECTS, gate.SUBJECTS
+        assert (REPO / path).is_file(), f"{path} is declared but absent"

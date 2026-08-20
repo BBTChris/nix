@@ -71,6 +71,31 @@ from typing import Final
 REPO: Final[Path] = Path(__file__).resolve().parents[1]
 SCHEMA_SQL: Final[Path] = REPO / "databases" / "schema" / "plane1.sql"
 
+#: ARC 043 / I8. The sole-writer ENFORCEMENT pair. `plane1.sql` builds the
+#: record and its grants; these two make a non-Limiter write structurally
+#: refused. Separate files because they install into separate places — one into
+#: the database, one into the cluster's own configuration, which lives outside
+#: `~/nix` (the system PostgreSQL cluster is the declared exception).
+ENFORCEMENT_SQL: Final[Path] = REPO / "databases" / "schema" / "plane1_enforcement.sql"
+HBA_FRAGMENT: Final[Path] = REPO / "databases" / "schema" / "plane1_hba.conf"
+
+#: The marker pairs the installer edits between. They are in the shipped
+#: fragment AND in the installed file, so an install is idempotent and a
+#: previous install is replaceable without a diff3.
+HBA_MARKERS: Final[tuple[str, str]] = (
+    "# --- BEGIN nix plane1 sole-writer enforcement (ARC 043) ",
+    "# --- END nix plane1 sole-writer enforcement (ARC 043) ",
+)
+IDENT_MARKERS: Final[tuple[str, str]] = (
+    "# --- BEGIN nix plane1 ident map (ARC 043) ",
+    "# --- END nix plane1 ident map (ARC 043) ",
+)
+
+#: The two Plane-1 login roles, named once. `nixrisk.projection` spells the same
+#: two strings for the privilege layer; these are the CONNECTION identities.
+WRITER_ROLE: Final[str] = "nix_limiter"
+READER_ROLE: Final[str] = "nix_reader"
+
 #: The live Plane-1 database. Same literal as `nixrisk.plane1_sink.PLANE1_DB`
 #: and `checks/check_plane1_schema.PLANE1_DB`.
 PLANE1_DB: Final[str] = "nix_plane1"
@@ -269,6 +294,251 @@ def provision(database: str, schema: Path, *, dry_run: bool = False) -> tuple[st
     return "created", f"{database} created from {schema} and verified COMPLETE"
 
 
+# ---------------------------------------------------------------------------
+# ARC 043 / I8 — SOLE-WRITER ENFORCEMENT INSTALL
+#
+# §9 / §12.10 make the Limiter the sole Plane-1 writer. ARC 038 found that
+# unenforced and ARC 043 measured why: the grants bite only a writer that
+# DECLARES a non-writer identity, and a superuser that declares nothing bypasses
+# them. The repair is two layers, and this installs both — the privilege layer
+# into the database, the connection layer into the cluster's `pg_hba.conf` and
+# `pg_ident.conf`.
+#
+# WHY `sudo`. Those two files are root-owned and live outside `~/nix`. The
+# architecture invariant makes the system PostgreSQL cluster the one declared
+# exception to the self-contained home, and this is that exception being used
+# rather than worked around. `sudo -n` throughout: a provisioning step that
+# blocks on a password prompt inside a gate is a hang, not a measurement.
+#
+# WHY THE SQL GOES THROUGH `postgres` AND NOT THE AMBIENT USER. After the
+# connection layer is installed, the ambient identity cannot reach `nix_plane1`
+# at all — that is the entire point — so a re-run would fail on its own success.
+# Routing the DDL through the cluster superuser's own socket makes the install
+# idempotent before and after itself.
+# ---------------------------------------------------------------------------
+
+
+def _sudo(
+    argv: list[str], stdin: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    """One non-interactive `sudo` call. Never prompts; a missing sudo is a
+    refusal with a reason, not a hang."""
+    return subprocess.run(  # nosec B603 - fixed argv, no shell
+        [_tool("sudo"), "-n", *argv],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+
+def _extract_block(text: str, markers: tuple[str, str]) -> str:
+    """The lines between (and including) `markers`, or "" if absent."""
+    begin, end = markers
+    lines = text.splitlines(keepends=True)
+    start = next((i for i, line in enumerate(lines) if line.startswith(begin)), None)
+    stop = next((i for i, line in enumerate(lines) if line.startswith(end)), None)
+    if start is None or stop is None or stop < start:
+        return ""
+    return "".join(lines[start : stop + 1])
+
+
+def _strip_block(text: str, markers: tuple[str, str]) -> str:
+    """`text` with any previously installed block removed."""
+    block = _extract_block(text, markers)
+    return text.replace(block, "") if block else text
+
+
+def _cluster_config_paths() -> tuple[str, str]:
+    """`(hba_file, ident_file)` as the RUNNING cluster reports them.
+
+    Asked of the server rather than guessed from a version-numbered path: a
+    guess that is wrong installs enforcement into a file nothing reads, which
+    is the most dangerous outcome this function has.
+    """
+    rc, out, err = _psql("postgres", "SHOW hba_file")
+    if rc != 0:
+        raise ProvisionError(f"cannot read hba_file from the cluster: {err[-200:]}")
+    hba = out.strip()
+    rc, out, err = _psql("postgres", "SHOW ident_file")
+    if rc != 0:
+        raise ProvisionError(f"cannot read ident_file from the cluster: {err[-200:]}")
+    return hba, out.strip()
+
+
+def _install_fragment(
+    path: str, block: str, markers: tuple[str, str], *, prepend: bool
+) -> bool:
+    """Put `block` into `path` between `markers`. Returns True if it changed.
+
+    `prepend` because `pg_hba.conf` is FIRST MATCH WINS: a block appended after
+    the distribution's `local all all peer` line is unreachable and would look
+    installed. `pg_ident.conf` has no ordering, so its block appends.
+    """
+    read = _sudo(["cat", path])
+    if read.returncode != 0:
+        raise ProvisionError(
+            f"cannot read {path} (sudo -n): {read.stderr.strip()[-200:]}"
+        )
+    current = read.stdout
+    if _extract_block(current, markers).strip() == block.strip():
+        return False
+    stripped = _strip_block(current, markers)
+    updated = (
+        block + "\n" + stripped if prepend else stripped.rstrip("\n") + "\n\n" + block
+    )
+    write = _sudo(["tee", path], stdin=updated)
+    if write.returncode != 0:
+        raise ProvisionError(
+            f"cannot write {path} (sudo -n tee): {write.stderr.strip()[-200:]}"
+        )
+    return True
+
+
+def _apply_enforcement_sql(database: str, sql_path: Path) -> None:
+    """Apply the privilege layer as the cluster superuser over its own socket."""
+    if not sql_path.is_file():
+        raise ProvisionError(f"{sql_path} is missing — nothing to apply")
+    # Piped on STDIN rather than `-f`: the file lives under `~/nix`, which the
+    # `postgres` OS user cannot read (mode 0750 on the home). Reading it HERE,
+    # as the user who owns it, and handing the bytes over is the difference
+    # between an install and a "Permission denied" that looks like a DDL error.
+    proc = _sudo(
+        [
+            "-u",
+            "postgres",
+            _tool("psql"),
+            "-d",
+            database,
+            "-qAt",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-v",
+            "VERBOSITY=verbose",
+            "-f",
+            "-",
+        ],
+        stdin=sql_path.read_text(encoding="utf-8"),
+    )
+    if proc.returncode != 0:
+        raise ProvisionError(
+            f"{sql_path.name} FAILED against {database}: {proc.stderr.strip()[-300:]}"
+        )
+
+
+def _reload_conf() -> None:
+    """Make the postmaster re-read pg_hba/pg_ident. A reload, never a restart:
+    a restart would drop live sessions to repair a permission model."""
+    rc, out, err = _psql("postgres", "SELECT pg_reload_conf()")
+    if rc != 0 or out.strip() not in {"t", "true"}:
+        raise ProvisionError(
+            f"pg_reload_conf() did not report success: {err[-200:] or out!r}"
+        )
+
+
+def measure_enforcement(database: str = PLANE1_DB) -> dict[str, str]:
+    """INDEPENDENT re-measurement of the EFFECTIVE state. Fresh processes.
+
+    Check-contract rule 2: the verdict after a mutation is the re-verify's, and
+    a return value from the correcting path is not a verification. Nothing here
+    reads a config file — every entry is a real connection attempt, because a
+    fragment on disk is a claim and a refused connection is a measurement.
+    """
+
+    def attempt(user: str | None, sql: str) -> str:
+        argv = [
+            _tool("psql"),
+            "-d",
+            database,
+            "-qAt",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-v",
+            "VERBOSITY=verbose",
+        ]
+        if user is not None:
+            argv += ["-U", user]
+        argv += ["-c", sql]
+        proc = subprocess.run(  # nosec B603 - fixed argv, no shell
+            argv, capture_output=True, text=True, timeout=60, check=False
+        )
+        if proc.returncode == 0:
+            return "OK"
+        tail = (proc.stderr.strip().splitlines() or [""])[-1]
+        return f"REFUSED: {tail[:160]}"
+
+    return {
+        "ambient_connect": attempt(None, "SELECT 1"),
+        "reader_connect": attempt(READER_ROLE, "SELECT 1"),
+        "writer_connect": attempt(WRITER_ROLE, "SELECT 1"),
+        # BEGIN … ROLLBACK, and `event_id` supplied explicitly so `nextval()` is
+        # never called. Two reasons, both measured elsewhere in this tree: a
+        # probe that CAN bank a row when the grant is broken forges the money
+        # record it is checking, and a sequence refusal carries the same
+        # SQLSTATE as a table refusal and would mask a reader that can really
+        # write (`check_plane1_schema` ARM 9's own finding).
+        "reader_insert": attempt(
+            READER_ROLE,
+            "BEGIN; INSERT INTO plane1_event_log (event_id, occurred_at,"
+            " event_type, strategy_id, trade_id, reason, wal_seq, natural_key)"
+            " VALUES (-1, now(), 'signal', 'probe', 'probe',"
+            " 'provision measure', 0, 'provision-measure'); ROLLBACK;",
+        ),
+    }
+
+
+def enforce(database: str = PLANE1_DB, *, dry_run: bool = False) -> tuple[str, str]:
+    """Install both enforcement layers, then RE-MEASURE independently."""
+    if not HBA_FRAGMENT.is_file():
+        raise ProvisionError(f"{HBA_FRAGMENT} is missing — nothing to install")
+    fragment = HBA_FRAGMENT.read_text(encoding="utf-8")
+    hba_block = _extract_block(fragment, HBA_MARKERS)
+    ident_block = _extract_block(fragment, IDENT_MARKERS)
+    if not hba_block or not ident_block:
+        raise ProvisionError(
+            f"{HBA_FRAGMENT.name} does not carry both marked blocks — refusing to "
+            f"install a half-fragment (hba={bool(hba_block)} ident={bool(ident_block)})"
+        )
+    if not database_exists(database):
+        raise ProvisionError(f"{database} does not exist; provision it first")
+    hba_path, ident_path = _cluster_config_paths()
+    if dry_run:
+        return "would-enforce", (
+            f"would apply {ENFORCEMENT_SQL.name} to {database} and install "
+            f"{len(hba_block.splitlines())} hba line(s) into {hba_path} and "
+            f"{len(ident_block.splitlines())} ident line(s) into {ident_path}"
+        )
+    _apply_enforcement_sql(database, ENFORCEMENT_SQL)
+    changed_ident = _install_fragment(
+        ident_path, ident_block, IDENT_MARKERS, prepend=False
+    )
+    changed_hba = _install_fragment(hba_path, hba_block, HBA_MARKERS, prepend=True)
+    _reload_conf()
+    measured = measure_enforcement(database)
+    if not measured["ambient_connect"].startswith("REFUSED"):
+        raise ProvisionError(
+            "install ran but the AMBIENT identity still reaches "
+            f"{database}: {measured['ambient_connect']} — enforcement is NOT in "
+            "effect; check that the block landed ABOVE the general rules"
+        )
+    if measured["writer_connect"] != "OK" or measured["reader_connect"] != "OK":
+        raise ProvisionError(
+            f"install ran but a sanctioned identity was locked out: {measured}"
+        )
+    if not measured["reader_insert"].startswith("REFUSED"):
+        raise ProvisionError(
+            f"install ran but {READER_ROLE} can still INSERT: {measured['reader_insert']}"
+        )
+    what = "installed" if (changed_hba or changed_ident) else "already-installed"
+    return what, (
+        f"{database}: ambient={measured['ambient_connect'][:60]} | "
+        f"{WRITER_ROLE}=connect OK | {READER_ROLE}=connect OK, INSERT refused | "
+        f"hba={hba_path} ident={ident_path} (hba changed={changed_hba}, "
+        f"ident changed={changed_ident})"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI. Exit 0 provisioned-or-already-there, 1 refused, 2 cannot-measure."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -279,9 +549,32 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="classify and report; write nothing",
     )
+    parser.add_argument(
+        "--enforce",
+        action="store_true",
+        help=(
+            "ARC 043 / I8: install the sole-writer ENFORCEMENT layers "
+            "(plane1_enforcement.sql + the pg_hba/pg_ident blocks of "
+            "plane1_hba.conf) and re-measure the effective state independently"
+        ),
+    )
+    parser.add_argument(
+        "--measure-enforcement",
+        action="store_true",
+        help="report the effective sole-writer state by real connection attempts; write nothing",
+    )
     args = parser.parse_args(argv)
+    if args.measure_enforcement:
+        for key, value in measure_enforcement(args.database).items():
+            print(f"{key}={value}")
+        return 0
     try:
-        outcome, detail = provision(args.database, args.schema, dry_run=args.dry_run)
+        if args.enforce:
+            outcome, detail = enforce(args.database, dry_run=args.dry_run)
+        else:
+            outcome, detail = provision(
+                args.database, args.schema, dry_run=args.dry_run
+            )
     except ProvisionError as exc:
         print(f"CANNOT-PROVISION: {exc}")
         return 2

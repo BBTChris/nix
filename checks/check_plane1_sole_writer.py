@@ -133,6 +133,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import os
 import shutil
 import sys
 import tempfile
@@ -146,6 +147,7 @@ from nixrisk.plane1_sink import (
     SQLSTATE_INSUFFICIENT_PRIVILEGE,
     Plane1PostgresSink,
 )
+from nixrisk.projection import READER_ROLE, WRITER_ROLE
 from nixrisk.seam import EventKind, EventRow
 from nixrisk.wal import GroupCommitWriter, Plane1Wal
 from nixverify.contract import CheckResult, Context, Mode, Status
@@ -158,15 +160,22 @@ EXPECTED_S = 12.0
 ON_FAIL = "continue"
 DEPENDS_ON: tuple[str, ...] = ("check_plane1_schema",)
 #: This process spawns `psql`, `createdb` and `dropdb` (its own scratch database,
-#: created and dropped inside the run) and writes a WAL under `/tmp`. Every token
-#: is FALSIFIABLE by observation — a `postgres:nix_plane1` token was refused for
-#: the reason `check_plane1_schema` records: no observation could contradict it
-#: (D3.152's 24-check unfalsifiable-token debt).
+#: created and dropped inside the run) and writes a WAL under `/tmp`.
+#:
+#: ARC 043 ADDS `postgres:nix_plane1`, and the addition REVERSES an earlier
+#: refusal rather than forgetting it. The token was previously refused for the
+#: reason `check_plane1_schema` records — no observation could contradict it,
+#: which is D3.152's unfalsifiable-token class. ARM D changed that: this gate now
+#: dials the LIVE record on every run, three times, and a run that did not would
+#: leave the arm's evidence lines absent. The claim is falsifiable now, so it is
+#: declared; declaring it while ARM A alone existed would have been the defect.
+#: Nothing durable is written there — every live probe is BEGIN … ROLLBACK.
 RESOURCES: tuple[str, ...] = (
     "subprocess:psql",
     "subprocess:createdb",
     "subprocess:dropdb",
     "file-write:/tmp",
+    "postgres:nix_plane1",
 )
 CORRECTABLE = False
 NON_CORRECTABLE_REASON = (
@@ -178,6 +187,12 @@ ANCHOR = "scripts/nixrisk/plane1_sink.py"
 SUBJECTS: tuple[str, ...] = (
     "scripts/nixrisk/plane1_sink.py",
     "scripts/provision_plane1.py",
+    # ARC 043 / I8. The two halves of the enforcement ARM D measures. Named as
+    # SUBJECTS because a change to either changes this gate's verdict, and an
+    # artifact that decides a verdict and is declared by nothing is the shape
+    # check_artifact_gate_coverage exists to catch.
+    "databases/schema/plane1_enforcement.sql",
+    "databases/schema/plane1_hba.conf",
 )
 
 NAME = "check_plane1_sole_writer"
@@ -269,6 +284,34 @@ SQL_AUTHOR_EXEMPT: Final[dict[str, str]] = {
     "scripts/plane1_degraded_drill.py": (
         "sub-agent C's §12.4 drill: same ephemeral-cluster shape, driving the "
         "outage / disk-critical / reconnect ladder"
+    ),
+    # -----------------------------------------------------------------------
+    # ARC 043 / I8 — TWO NEW ENTRIES, AND THE GATE FOUND BOTH BEFORE A HUMAN
+    # DID. Wiring ARM D turned this file and the provisioner into composers of
+    # `INSERT INTO plane1_event_log`, and ARM B1 reddened on the first run with
+    # the arm in place — including on THIS FILE. That is the detector working
+    # on its own author, which is the only version of this exemption worth
+    # having.
+    #
+    # Neither is a writer, on ONE property that both share and that is visible
+    # at each site: every statement is `BEGIN … ROLLBACK` and supplies
+    # `event_id` explicitly, so no row can be banked and `nextval()` is never
+    # called. That is the identical argument `check_plane1_schema.py` above
+    # carries for ARM 9, and it is exempted on the identical terms. A probe
+    # that could bank a row while proving rows cannot be forged would have
+    # forged one; the rollback is not tidiness, it is the property.
+    # -----------------------------------------------------------------------
+    "checks/check_plane1_sole_writer.py": (
+        "ARM D's live probe. Three attempts against the real record — ambient, "
+        "writer, reader — each inside BEGIN … ROLLBACK with an explicit "
+        "event_id. The writer's attempt is the CONTROL and is the only one "
+        "expected to reach the executor at all; none of the three can bank a row"
+    ),
+    "scripts/provision_plane1.py": (
+        "`measure_enforcement`'s independent re-verification (check-contract "
+        "rule 2): after installing the enforcement it attempts the reader's "
+        "INSERT and requires a refusal. Same BEGIN … ROLLBACK / explicit "
+        "event_id shape, for the same reason"
     ),
 }
 
@@ -754,6 +797,280 @@ def attempt_privilege(
             _drop_database(database)
 
 
+# --------------------------------------------------------------- ARM D (ambient)
+#
+# ARC 043 / I8. THE ARM THAT WAS MISSING, AND WHY ITS ABSENCE WAS INVISIBLE.
+#
+# ARM A above drives the shipped sink as `nix_reader` and observes SQLSTATE
+# 42501. That arm has always passed, and ARC 038 still found the sole-writer
+# invariant unenforced, because ARM A's probe is COOPERATIVE: it measures a
+# writer that DECLARES a non-writer identity. A rogue declares nothing.
+#
+# MEASURED, ARC 043 / S1, on the live `nix_plane1` from a plain script that
+# imports nothing from `nixrisk`: an INSERT with no `-U` and no `SET ROLE`
+# LANDED (event_id 1445, event_type 'filled'), an UPDATE of the append-only log
+# SUCCEEDED, and a TRUNCATE SUCCEEDED. The grants were never wrong. The ambient
+# identity on this node is a Postgres SUPERUSER, and a superuser bypasses every
+# grant in the executor — so the whole of the enforcement rested on the writer
+# choosing to announce itself.
+#
+# This arm measures the identity the previous arm assumed away. It attempts the
+# write as the AMBIENT identity — the one every process in this tree connects
+# with by default — against the REAL Plane-1 record, and requires a refusal.
+# `databases/schema/plane1_hba.conf` is what produces that refusal, at the
+# postmaster, before privileges exist, which is the one layer a superuser does
+# not escape.
+#
+# NOTHING DURABLE IS WRITTEN. Every attempt that reaches a backend runs inside
+# `BEGIN … ROLLBACK` and supplies `event_id` explicitly so `nextval()` is never
+# called: a gate that forges a money row to prove a money row cannot be forged
+# has already done the damage it was measuring. Privilege is checked when the
+# statement executes, so the rollback costs the measurement nothing.
+# ---------------------------------------------------------------------------
+
+#: What a pg_hba REFUSAL must say for it to be evidence about ENFORCEMENT rather
+#: than about an outage. Check-contract rule 11 one layer out: an unreachable
+#: server, a dropped database and a rejected identity all fail to connect, and
+#: only the third is the property. Both tokens are asserted.
+AMBIENT_REFUSAL_MARKERS: Final[tuple[str, ...]] = ("pg_hba.conf", PLANE1_DB)
+
+#: §9's four per-row fields. The live arm asserts the table it probed carries
+#: them before "refused" counts as anything: a refusal against a table that is
+#: not the record is not evidence about the record.
+REQUIRED_LOG_COLUMNS: Final[frozenset[str]] = frozenset(
+    {"occurred_at", "event_type", "strategy_id", "trade_id", "reason", "natural_key"}
+)
+
+#: The probe statement. `event_id` explicit (no `nextval`, so a SEQUENCE refusal
+#: cannot masquerade as a TABLE refusal — the mask `check_plane1_schema` measured
+#: one level down) and rolled back unconditionally.
+_LIVE_PROBE_SQL: Final[str] = (
+    "BEGIN; INSERT INTO plane1_event_log (event_id, occurred_at, event_type, "
+    "strategy_id, trade_id, reason, symbol, wal_seq, natural_key) VALUES "
+    "(-1, now(), 'go_timeout', 'sole-writer-gate', 'sole-writer-gate', "
+    "'check_plane1_sole_writer ARM D probe', 'ES', 0, "
+    "'check_plane1_sole_writer-armd-probe') RETURNING event_id; ROLLBACK;"
+)
+
+
+def _attempt(
+    database: str, sql: str, *, user: str | None = None
+) -> tuple[int, str, str]:
+    """One connection attempt. Returns `(rc, stdout, stderr)`; never raises on rc.
+
+    Deliberately NOT `Plane1PostgresSink`: ARM A already drives the shipped
+    object, and the subject here is what happens when a process does NOT use it.
+    A rogue is a bare `psql`, so the instrument is a bare `psql`.
+    """
+    import subprocess  # nosec B404  pylint: disable=import-outside-toplevel
+
+    binary = shutil.which("psql")
+    if binary is None:
+        raise Unmeasurable("psql is not on PATH")
+    argv = [
+        binary,
+        "-d",
+        database,
+        "-qAt",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-v",
+        "VERBOSITY=verbose",
+    ]
+    if user is not None:
+        argv += ["-U", user]
+    argv += ["-c", sql]
+    proc = subprocess.run(  # nosec B603 - fixed argv, no shell
+        argv,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+        env={**os.environ, "PGCONNECT_TIMEOUT": "10"},
+    )
+    return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+
+
+def _live_controls(database: str) -> list[str]:
+    """Non-vacuity, established BEFORE any refusal is read as evidence.
+
+    Three things a "refused" could otherwise mean: the cluster is down, the
+    database is gone, or the probe hit the wrong table. Each is excluded here,
+    and each exclusion is an OBSERVATION rather than an assumption.
+    """
+    rc, _out, err = _attempt("postgres", "SELECT 1")
+    if rc != 0:
+        raise Unmeasurable(
+            f"the AMBIENT identity cannot reach the cluster at all: {err[-200:]}. "
+            f"Every refusal below would then be an outage wearing enforcement's "
+            f"clothes (§17)"
+        )
+    rc, out, err = _attempt(
+        "postgres",
+        f"SELECT 1 FROM pg_database WHERE datname = '{database}'",  # nosec B608
+    )
+    if rc != 0 or out != "1":
+        raise Unmeasurable(
+            f"database {database!r} is not on this cluster, so there is no record "
+            f"to protect and nothing was measured (§17): {err[-200:]}"
+        )
+    # THE SHAPE CONTROL TAKES WHICHEVER IDENTITY CAN READ IT, and the fallback
+    # is not laxity — it is the finding. MEASURED, ARC 043 PLANT A': with the
+    # pg_hba block removed (I8's exact defect) the reader's own login line goes
+    # with it, this control raised, and the gate returned CANNOT_MEASURE over a
+    # live ambient write it was about to observe. A control exists to establish
+    # that the probe target IS the record; ANY identity that can read the
+    # catalog establishes that, and if the ambient one can, that fact belongs in
+    # the evidence rather than in an exception.
+    shape_sql = (
+        "SELECT string_agg(attname, ',' ORDER BY attname) FROM pg_attribute "
+        "WHERE attrelid = 'plane1_event_log'::regclass AND attnum > 0 "
+        "AND NOT attisdropped"
+    )
+    seen_by = READER_ROLE
+    rc, out, err = _attempt(database, shape_sql, user=READER_ROLE)
+    if rc != 0:
+        seen_by = "the AMBIENT identity"
+        rc, out, ambient_err = _attempt(database, shape_sql)
+        if rc != 0:
+            raise Unmeasurable(
+                f"neither {READER_ROLE} nor the ambient identity can read "
+                f"{database}.plane1_event_log's shape, so the arm cannot "
+                f"establish that it probed the real record. {READER_ROLE}: "
+                f"{err[-150:]} | ambient: {ambient_err[-150:]}"
+            )
+    missing = sorted(REQUIRED_LOG_COLUMNS - set(out.split(",")))
+    if missing:
+        raise Unmeasurable(
+            f"{database}.plane1_event_log is missing §9 column(s) {missing} — the "
+            f"probe target is not the Plane-1 record and a refusal against it "
+            f"would prove nothing (§17)"
+        )
+    return [
+        (
+            f"CONTROL: the ambient identity reaches the cluster, {database} "
+            f"exists, and its plane1_event_log carries every §9 per-row field "
+            f"({len(out.split(','))} columns, read by {seen_by}) — so a refusal "
+            f"below is about IDENTITY, not about an outage, an absent database "
+            f"or a wrong table"
+        )
+    ]
+
+
+def _identity_of(database: str, user: str) -> str:
+    """`session_user` as the backend sees it. The arm asserts this rather than
+    trusting `-U`: "attempted as a non-writer" is a claim about what the SERVER
+    believed, and psql's flag is only what the client asked for."""
+    rc, out, _err = _attempt(database, "SELECT session_user", user=user)
+    return out if rc == 0 else ""
+
+
+def ambient_enforcement(database: str = PLANE1_DB) -> tuple[list[str], list[str]]:
+    """ARM D. Returns `(defects, evidence)`. Raises `Unmeasurable` (§17).
+
+    `database` is a parameter ONLY so the can-fail suite can point the SHIPPED
+    arm at a database it has broken in exactly one declared way.
+    """
+    evidence = _live_controls(database)
+    defects: list[str] = []
+
+    # D3 — THE SANCTIONED WRITER, FIRST. A refusal is only evidence beside a
+    # permission that works, and PLANT B is the case where enforcement is real
+    # and the Limiter is locked out of its own record. That is also a FAIL.
+    writer_identity = _identity_of(database, WRITER_ROLE)
+    rc, out, err = _attempt(database, _LIVE_PROBE_SQL, user=WRITER_ROLE)
+    if rc != 0:
+        defects.append(
+            f"ARM D: the SANCTIONED WRITER {WRITER_ROLE!r} could not write "
+            f"{database}.plane1_event_log — the Limiter is locked out of its own "
+            f"record. Enforcement that also refuses the sole writer is a "
+            f"regression, not a fix. rc={rc}, stderr: {err[-260:]}"
+        )
+    elif writer_identity != WRITER_ROLE:
+        defects.append(
+            f"ARM D: the write that succeeded ran as session_user "
+            f"{writer_identity!r}, not {WRITER_ROLE!r} — the control did not "
+            f"establish that the SOLE WRITER'S identity is the one that works"
+        )
+    else:
+        evidence.append(
+            f"CONTROL: {WRITER_ROLE} connected to the live {database} as "
+            f"session_user {writer_identity!r} and its INSERT SUCCEEDED "
+            f"(returned event_id {out or '(none)'}), rolled back"
+        )
+
+    # D1 — THE AMBIENT IDENTITY. No `-U`, no `SET ROLE`: exactly what a poller,
+    # a stray script or a bug connects as. This is the surface ARC 038 found
+    # open and ARC 043 measured landing a forged row.
+    rc, out, err = _attempt(database, _LIVE_PROBE_SQL)
+    if rc == 0:
+        defects.append(
+            f"ARM D: the AMBIENT identity wrote {database}.plane1_event_log with "
+            f"no role declared at all — the INSERT returned event_id "
+            f"{out or '(none)'}, a forged §9 row indistinguishable from a real "
+            f"one (rolled back by this probe, NOT by the database). §9's sole "
+            f"writer and §12.10's 'no new writers, ever' are CONVENTION here, "
+            f"not enforcement: the grants bind only a writer that declares a "
+            f"non-writer identity, and this one declared nothing"
+        )
+    elif not all(marker in err for marker in AMBIENT_REFUSAL_MARKERS):
+        defects.append(
+            f"ARM D: the ambient identity was refused, but the refusal does not "
+            f"name {list(AMBIENT_REFUSAL_MARKERS)} — a dead server, a dropped "
+            f"database and a rejected identity all fail to connect, and only the "
+            f"third is enforcement. stderr: {err[-260:]}"
+        )
+    else:
+        evidence.append(
+            "AMBIENT: a bare psql with no -U and no SET ROLE was REFUSED at the "
+            f"postmaster before any privilege check — pg_hba.conf rejects the "
+            f"connection to {database}. A SUPERUSER does not bypass this layer, "
+            f"which is why it and not the grant is what makes the invariant an "
+            f"enforcement"
+        )
+
+    # D2 — A DECLARED NON-WRITER that CAN reach the record. The reader is the
+    # one identity besides the writer the connection layer admits, so it is the
+    # remaining way in and the grant is what has to stop it.
+    reader_identity = _identity_of(database, READER_ROLE)
+    rc, out, err = _attempt(database, _LIVE_PROBE_SQL, user=READER_ROLE)
+    if reader_identity != READER_ROLE:
+        defects.append(
+            f"ARM D: the non-writer probe ran as session_user {reader_identity!r}, "
+            f"not {READER_ROLE!r} — a 'refused' that was never attempted as a "
+            f"genuine non-writer identity proves nothing"
+        )
+    elif rc == 0:
+        defects.append(
+            f"ARM D: {READER_ROLE} — a NON-WRITER — wrote "
+            f"{database}.plane1_event_log, returning event_id {out or '(none)'}. "
+            f"A SECOND WRITER exists on the live record"
+        )
+    elif SQLSTATE_INSUFFICIENT_PRIVILEGE not in err:
+        defects.append(
+            f"ARM D: {READER_ROLE} was refused, but not with SQLSTATE "
+            f"{SQLSTATE_INSUFFICIENT_PRIVILEGE} (insufficient_privilege). A "
+            f"refusal for the wrong reason is not evidence about grants. "
+            f"stderr: {err[-260:]}"
+        )
+    elif "permission denied for table plane1_event_log" not in err:
+        defects.append(
+            f"ARM D: {READER_ROLE} was refused with the right SQLSTATE for the "
+            f"WRONG OBJECT — expected 'permission denied for table "
+            f"plane1_event_log'. A sequence, a schema and a table all refuse with "
+            f"{SQLSTATE_INSUFFICIENT_PRIVILEGE}, and only the table's refusal is "
+            f"evidence about the log. stderr: {err[-260:]}"
+        )
+    else:
+        evidence.append(
+            f"NON-WRITER: {READER_ROLE} (session_user {reader_identity!r}) reached "
+            f"{database} and its INSERT was REFUSED with SQLSTATE "
+            f"{SQLSTATE_INSUFFICIENT_PRIVILEGE}, 'permission denied for table "
+            f"plane1_event_log'"
+        )
+    return defects, evidence
+
+
 # ---------------------------------------------------------------------- ARM C
 
 
@@ -887,6 +1204,30 @@ def _load_module(path: Path, name: str):
     return module
 
 
+def _non_vacuity_floor(counts: dict[str, int]) -> str | None:
+    """The three floors, checked before any verdict. Returns the first breach.
+
+    Lifted out of `run` in ARC 043 when ARM D's wiring pushed that function past
+    pylint's local ceiling. It is a genuine unit and not a shape made to satisfy
+    a counter: these are the answers to §7.12 hazard 1 (*the scan could scan
+    nothing*), they are floors rather than today's numbers, and a breach is
+    CANNOT_MEASURE (§17) rather than a PASS over an empty population.
+    """
+    for label, seen, floor in (
+        ("files scanned", counts["files"], MIN_FILES_SCANNED),
+        ("EventRow constructions", counts["eventrow_sites"], MIN_EVENTROW_SITES),
+        ("enqueue call sites", counts["enqueue_sites"], MIN_ENQUEUE_SITES),
+    ):
+        if seen < floor:
+            return (
+                f"non-vacuity floor: {seen} {label} against a floor of {floor}. "
+                f"The authorship scan would report 'no unauthorised writer' over "
+                f"an empty population, which is the vacuous green this gate "
+                f"exists to avoid (§17)"
+            )
+    return None
+
+
 def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argument
     """Measure Plane-1 authorship: by attempt, and over the code."""
     home = ctx.nix_home
@@ -898,24 +1239,14 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
     try:
         defects, counts = scan_authorship(home)
         defects = list(defects) + _arm_b1b_conduit_proofs(home)
-        floors = (
-            ("files scanned", counts["files"], MIN_FILES_SCANNED),
-            ("EventRow constructions", counts["eventrow_sites"], MIN_EVENTROW_SITES),
-            ("enqueue call sites", counts["enqueue_sites"], MIN_ENQUEUE_SITES),
-        )
-        for label, seen, floor in floors:
-            if seen < floor:
-                return CheckResult(
-                    name=NAME,
-                    status=Status.CANNOT_MEASURE,
-                    site=", ".join(SCAN_ROOTS),
-                    detail=(
-                        f"non-vacuity floor: {seen} {label} against a floor of "
-                        f"{floor}. The authorship scan would report 'no "
-                        f"unauthorised writer' over an empty population, which is "
-                        f"the vacuous green this gate exists to avoid (§17)"
-                    ),
-                )
+        floor_defect = _non_vacuity_floor(counts)
+        if floor_defect is not None:
+            return CheckResult(
+                name=NAME,
+                status=Status.CANNOT_MEASURE,
+                site=", ".join(SCAN_ROOTS),
+                detail=floor_defect,
+            )
         defects += wiring_defects(home)
         # ARC 038 sub-agent G, finding FG2 (CHECK-DEBT D3.409). Everything above
         # is STATIC and is now MEASURED; everything below needs a reachable
@@ -923,6 +1254,24 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
         # wall so the handler at the bottom of this function cannot throw a
         # positively-observed second writer away as "nothing was measured".
         observed = list(defects)
+
+        # ARM D RUNS BEFORE ARM A, AND THE ORDER WAS MEASURED RATHER THAN
+        # CHOSEN. ARC 043's PLANT A' removed the pg_hba block — I8's exact
+        # defect, the ambient identity back on the live record — and with ARM A
+        # first the gate returned CANNOT_MEASURE (exit 2): the same block also
+        # carries the scratch-database login line, so ARM A's control could not
+        # connect and raised before ARM D ever looked at the record. A live
+        # second writer shipped as "nothing was measured", and under rule 4's
+        # `Fail > Cannot-measure` ordering that is strictly weaker than the
+        # truth. This is D3.409's finding recurring one arm along, so it takes
+        # D3.409's repair: ARM D observes first and its defects join `observed`,
+        # which the Unmeasurable handler below reports rather than discards.
+        # Rule 10: the attempt is the claim, and a positively-observed claim
+        # outranks masking.
+        ambient_defects, ambient_evidence = ambient_enforcement()
+        defects += ambient_defects
+        observed = list(defects)
+
         tmp = Path(tempfile.mkdtemp(prefix="nixp1sw-"))
         try:
             attempt_defects, evidence = attempt_privilege(tmp)
@@ -931,6 +1280,7 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
                 leftover.unlink(missing_ok=True)
             tmp.rmdir()
         defects += attempt_defects
+        evidence += ambient_evidence
         if defects:
             return CheckResult(
                 name=NAME,
