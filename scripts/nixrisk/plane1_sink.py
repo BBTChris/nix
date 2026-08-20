@@ -193,6 +193,10 @@ EVENT_KIND_TO_PLANE1: Final[dict[EventKind, str]] = {
     EventKind.DENIED: "denied",
     EventKind.RESERVATION_TAKEN: "reservation_taken",
     EventKind.RESERVATION_RELEASED: "reservation_released",
+    #: ARC 042 (slice 4) — the §12.10 order-path terminal. LEFT
+    #: `UNROUTABLE_PLANE1_EVENTS` in this arc because `scripts/limiterd.py` now
+    #: enqueues it when §4:210-212's breaker fires (CHECK-DEBT D3.425).
+    EventKind.GO_TIMEOUT: "go_timeout",
     EventKind.PROTECTIVE_EXIT: "protective_exit",
     EventKind.EXIT_INTENT: "exit_intent",
     EventKind.CLOSED: "closed",
@@ -246,6 +250,11 @@ UNMAPPED_EVENT_KINDS: Final[dict[EventKind, str]] = {
 #: them, so nothing in this tree can record them. Derived from the two frozen
 #: files and stated here once, with the reason each is still absent, so the
 #: coverage gate can report it PER TYPE rather than generalising one drive.
+#: ARC 042: `go_timeout` LEFT this map. Its entry said *"seam.py names it STILL
+#: OMITTED"*, and ARC 042 built the emitter — `scripts/limiterd.py` enqueues the
+#: row when §4:210-212's breaker fires — so the seam member landed and the type
+#: became routable. The census went 4 -> 3 for the same reason it went 5 -> 4,
+#: which is the one direction this map is supposed to move.
 #: ARC 035 STAGE 2: `drift_audit` LEFT this map, and its own entry said why it
 #: would. Sub-agent A wrote *"the audit itself is ARC 035 sub-agent D's mandate;
 #: no EventKind member exists for it yet"* — and sub-agent D, in a worktree A
@@ -257,10 +266,6 @@ UNROUTABLE_PLANE1_EVENTS: Final[dict[str, str]] = {
         "entry-fill confirmation. seam.py's EventKind docstring names it as "
         "STILL OMITTED for want of emitting code; scripts/nixrisk/fills.py "
         "handles fills but routes no Plane-1 row"
-    ),
-    "go_timeout": (
-        "the §12.10 order-path terminal. seam.py names it STILL OMITTED; "
-        "TerminalPath carries the concept, EventKind does not"
     ),
     "sentinel_flatten": (
         "§12.1, booked via marker replay at cold start. nixrisk/flatten.py "

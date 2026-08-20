@@ -161,7 +161,7 @@ def test_the_sink_and_the_schema_gate_name_the_SAME_database() -> None:
     assert PLANE1_DB == provision_plane1.PLANE1_DB
 
 
-def test_the_UNROUTABLE_five_are_absent_from_the_mapping() -> None:
+def test_the_UNROUTABLE_census_is_absent_from_the_mapping() -> None:
     """The declared gap and the mapping must not overlap or the census lies."""
     assert set(UNROUTABLE_PLANE1_EVENTS).isdisjoint(set(EVENT_KIND_TO_PLANE1.values()))
     # 5 -> 4 at ARC 035 Stage 2 integration: `drift_audit` became routable when
@@ -169,7 +169,16 @@ def test_the_UNROUTABLE_five_are_absent_from_the_mapping() -> None:
     # merged tree. The DISJOINTNESS assertion above is the one that matters and
     # it is what caught the overlap — a member cannot be both mapped and
     # declared-missing, and for one commit it was both.
-    assert len(UNROUTABLE_PLANE1_EVENTS) == 4
+    #
+    # 4 -> 3 at ARC 042 (slice 4): `go_timeout` became routable when
+    # `EventKind.GO_TIMEOUT` landed beside the emitter that needed it —
+    # `scripts/limiterd.py` enqueues the row when §4:210-212's breaker fires
+    # (CHECK-DEBT D3.425). This literal is DELIBERATELY a ratchet: it must be
+    # lowered by the arc that builds an emitter, so a member added to the seam
+    # with nothing enqueuing it cannot quietly shrink the declared gap.
+    assert len(UNROUTABLE_PLANE1_EVENTS) == 3
+    assert "go_timeout" not in UNROUTABLE_PLANE1_EVENTS
+    assert EVENT_KIND_TO_PLANE1[EventKind.GO_TIMEOUT] == "go_timeout"
 
 
 # ---------------------------------------------------------- the natural key

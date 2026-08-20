@@ -479,10 +479,21 @@ class EventKind(enum.Enum):
     tree emits a registration row, and §12.11:779's `quarantine-restore` is an
     operator verb whose authenticated transport does not exist.
 
+    **ARC 042 landed `GO_TIMEOUT`.** `scripts/nixrisk/loop.py`'s
+    `_break_go_deadlocks` is §4:210-212's breaker — ARC 040 built it — and ARC
+    042 wires `scripts/limiterd.py` to enqueue the row when it fires, so the
+    machinery that emits this kind now exists and the member lands WITH it,
+    which is the rule this docstring states. §12.10 puts *GO-timeout* on
+    **Plane 1 ✅** (it gates money: the GO is treated as DENIED and the strategy
+    is reset to flat-and-free), which is why it is here and not on the ops plane
+    only, and `plane1_event_enum` in `databases/schema/plane1.sql` has carried
+    the matching `go_timeout` value since it was written — the gap was seam-side
+    alone, exactly as it was for `drift_audit`.
+
     STILL OMITTED, and still for the same reason (no emitting code): `filled`
-    (entry-fill confirmation), `GO-timeout`, operator-control actions and the
-    `register` / `restore` halves of the strategy-lifecycle row. They land in
-    the arcs that build them.
+    (entry-fill confirmation), operator-control actions and the `register` /
+    `restore` halves of the strategy-lifecycle row. They land in the arcs that
+    build them.
     """
 
     SIGNAL = "signal"
@@ -518,6 +529,14 @@ class EventKind(enum.Enum):
     KILL = "kill"
     RELAUNCH = "relaunch"
     QUARANTINE = "quarantine"
+    #: ARC 042 (slice 4) — §12.10's `GO-timeout` order-path terminal, mechanism
+    #: now built: `nixrisk.loop._break_go_deadlocks` fires it and
+    #: `scripts/limiterd.py` enqueues the row. `TerminalPath` carried the
+    #: concept and `EventKind` did not, which is the gap CHECK-DEBT D3.425
+    #: named. One firing is one row: §4:240-241 forbids the auto-resend, so the
+    #: booking is not retried and a re-tick that sees the lock already broken
+    #: must not produce a second row.
+    GO_TIMEOUT = "go_timeout"
 
 
 @dataclass(frozen=True)

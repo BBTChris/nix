@@ -14,7 +14,10 @@ proven was a property of a library that a test constructed and then discarded
 WHAT THIS PROCESS IS NOT, STATED FIRST SO NOTHING READS IT AS MORE
 -------------------------------------------------------------------
 It places no orders. It holds no positions. It has no broker session, no gate
-pass, no reservations, no stops and no Plane-1 writer. It is the SUBSTRATE: a
+pass, no reservations and no stops. **ARC 042 gave it ONE Plane-1 write and no
+other** — §12.10's `go_timeout` row, enqueued when §4:210-212's breaker fires;
+every other §9 event type is still unwritten by this process (see
+`Plane1Booker`). It is the SUBSTRATE: a
 single-threaded loop that beats, a low-priority sender thread that records, and a
 live `StrategyRegistry` that outlives the commands it serves. Anything else a
 reader wants from a Limiter is in `nixrisk/` and is not wired to this process yet.
@@ -51,6 +54,12 @@ THE RUNTIME DIRECTORY IS A FIXED CONTRACT
                                     by the loop's own tick.
     DIR/outbox/                     `<id>.reply.json`, one per command, atomic.
     DIR/limiter.runtime.json        written ONCE at boot and again at clean stop.
+    DIR/plane1.wal                  ARC 042. §9's DURABLE LOCAL WAL, appended by
+                                    `Plane1Booker` when §4:210-212's breaker
+                                    fires. The `--plane1-wal` flag moves it; the
+                                    shared-pool writer that group-commits it into
+                                    Postgres is a DIFFERENT process and is not
+                                    started here (§9's own split).
 
 `limiter.runtime.json`'s boot record is the in-process half of §12.2:618 —
 *"Boot-flatten makes any single restart safe by design"* — made checkable: a
@@ -89,6 +98,13 @@ this program to look healthy while proving nothing?
   4. **The sender thread was never started, so the §5:323 two-task shape is a
      claim.** GUARDED: `SenderThread.start` waits on an `Event` the thread sets
      from inside itself, and refuses to boot if it never arrives.
+  5. **The GO-timeout row was never booked and the absence read as "the breaker
+     never fired"** (ARC 042 / CHECK-DEBT D3.425 — the state this process was in
+     until this arc: the breaker fired, the runtime record said so, and §9's
+     evidence plane held nothing). GUARDED: the stop record's `plane1` block
+     reports `firings_seen`, `booked`, `refused` and the WAL's own `enqueued` /
+     `durable` counters, so *fired and booked*, *fired and refused* and *never
+     fired* are three distinguishable readings rather than one absence.
 """
 
 from __future__ import annotations
@@ -100,12 +116,14 @@ import signal
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
 from typing import Any, Final
 
 from nixrisk.loop import (
+    GoTimeout,
     LimiterLoop,
     LoopStop,
     go_timeout_from_config,
@@ -113,6 +131,8 @@ from nixrisk.loop import (
     tick_interval_for,
 )
 from nixrisk.recovery import RecoveryError
+from nixrisk.seam import EventKind, EventRow
+from nixrisk.wal import Plane1Wal, WalError
 from nixsentinel.heartbeat import DEFAULT_HEARTBEAT_NAME, HeartbeatPublisher
 
 #: Named once so every refusal points at the same file (doctrine C.2).
@@ -125,6 +145,10 @@ HEARTBEAT_NAME: Final[str] = DEFAULT_HEARTBEAT_NAME
 INBOX_DIR: Final[str] = "inbox"
 OUTBOX_DIR: Final[str] = "outbox"
 RUNTIME_NAME: Final[str] = "limiter.runtime.json"
+#: ARC 042. §9's durable local WAL, inside the runtime directory by default so
+#: one directory is the whole contract and a drive can find the evidence beside
+#: the record that claims it. `--plane1-wal` moves it.
+PLANE1_WAL_NAME: Final[str] = "plane1.wal"
 
 #: Wire versions. Three DIFFERENT namespaces because the three records cross
 #: different boundaries and may be read by differently-built programs: the
@@ -407,6 +431,197 @@ class CommandHandler:
         _write_json_atomically(self._outbox / f"{safe}.reply.json", reply)
 
 
+# R0903 (too-few-public-methods): TWO public verbs and both are the contract —
+# the booking itself and the ingress wrapper that schedules it. A third added to
+# clear a threshold would widen the one surface in this process that can write to
+# §9's evidence plane.
+# pylint: disable=too-few-public-methods
+class Plane1Booker:
+    """ARC 042. §9's ENQUEUE for §12.10's `go_timeout` row, and nothing else.
+
+    CHECK-DEBT **D3.425**, and the finding it discharges stated exactly:
+    `_break_go_deadlocks` fires, releases the §4:208 lock and writes a RUNTIME
+    RECORD — and a runtime record is not §9's evidence plane. §12.10 puts
+    GO-timeout on **Plane 1** because the firing GATES MONEY (the GO is treated
+    as DENIED and the strategy reset to flat-and-free), so the transition owes a
+    row in the append-only log and had none.
+
+    WHAT THIS IS NOT, STATED FIRST
+    ------------------------------
+    It is not a second writer. §9 makes the **Limiter** the sole Plane-1 writer
+    and this process IS the Limiter (§2:42); wiring it to write is making the
+    first and only intended writer function. Proving that no OTHER process can
+    write is the sole-writer ENFORCEMENT property (I8) and is a different arc —
+    it could not be enforced against a writer that did not yet write.
+
+    It is not the shared-pool writer either. §9's path is *enqueue -> durable
+    local WAL -> shared-pool writer -> group-commit to Postgres*, and this
+    object owns the FIRST ARROW ONLY. `nixrisk.wal.GroupCommitWriter` and
+    `nixrisk.plane1_sink.Plane1PostgresSink` own the rest, out of this process,
+    and nothing here starts them. A row that reached the WAL and not Postgres is
+    §12.4's buffering working, not this object failing.
+
+    It books ONE event type. Every other §9 row this daemon could owe —
+    accepted, denied, filled, closed, reservation, cancel, HALT, operator action,
+    strategy lifecycle, cold start — is STILL UNWRITTEN by this process. That is
+    named debt, not a silent gap.
+
+    EXACTLY ONCE, WITHOUT A RETRY (§4:240-241)
+    ------------------------------------------
+    One firing is one enqueue is one row. The breaker is idempotent from the
+    loop's side — it pops the stamp after it fires, so a strategy fires once —
+    but this booker reads a LEDGER (`LimiterLoop.go_timeouts()`), and a ledger is
+    re-read every tick. So each firing is keyed by
+    `(strategy_id, client_order_id, fired_tick)` and the key is recorded
+    **BEFORE** the enqueue is attempted, never after. That order is the §4:240-241
+    rule expressed in code: a booking that raised is NOT retried on the next
+    tick, because a retry is how one intended row becomes two. The failure is
+    COUNTED and reported in the stop record instead, which is the loud half of
+    directive 4 — a refused booking that nothing recorded would be the same
+    silence D3.425 named, one layer down.
+
+    WHY THE INGRESS, AND WHY ONE TICK LATE
+    --------------------------------------
+    `nixrisk.loop.LimiterLoop.tick` runs `_run_ingress` -> `_drain` ->
+    `_break_go_deadlocks` -> `_beat_if_due`, and that ORDER is an invariant of
+    the loop (a breaker that ran before the drain would false-release a GO whose
+    terminal feedback was sitting in the same inbox). The ingress callback is the
+    one hook this process owns inside the tick, so booking there books the
+    PREVIOUS tick's firings. The lateness is bounded by one tick interval and is
+    stated rather than hidden; the alternative is a hook inside the loop, and
+    §4:210-212's breaker is risk-path source this arc deliberately did not touch.
+
+    Nothing is lost to the ledger's bound: `LimiterLoop._go_timeouts` is a deque
+    of `FAULT_LEDGER_MAX`, at most one firing per registered strategy can be
+    appended between two consecutive ingress calls (the breaker is keyed by
+    `strategy_id`), and `main` books ONCE MORE after `run()` returns so the last
+    tick's firing is not left behind by the stop.
+    """
+
+    def __init__(self, loop: LimiterLoop, wal: Plane1Wal) -> None:
+        self._loop = loop
+        self._wal = wal
+        self._booked: set[tuple[str, str, int]] = set()
+        self.firings_seen = 0
+        self.booked = 0
+        self.refused = 0
+        self.last_error = ""
+
+    def book_new_firings(self) -> int:
+        """Enqueue a §12.10 row for every firing not booked yet. NEVER RAISES.
+
+        Returns the number booked by THIS call. Contained for the reason
+        `CommandHandler.handle` is: this runs inside the tick, and an exception
+        escaping here would kill the process §12.1:604 has the Sentinel watching
+        — turning a persistence fault into a trading outage, which is precisely
+        the conflation §12.4 forbids (*"degraded persistence != degraded
+        trading"*).
+        """
+        booked = 0
+        for row in self._loop.go_timeouts():
+            key = (row.strategy_id, row.client_order_id, row.fired_tick)
+            if key in self._booked:
+                continue
+            # Recorded BEFORE the attempt. See the class docstring: this is
+            # §4:240-241's no-resend rule, and reversing the two lines would
+            # make a transient WAL error into a duplicate row.
+            self._booked.add(key)
+            self.firings_seen += 1
+            try:
+                self._wal.enqueue(self._row_for(row))
+                # §9's word is DURABLE. `enqueue` returns from an unbuffered
+                # `write(2)`, which survives a SIGKILL and not a power cut;
+                # `sync_to_disk` is the boundary that makes the row evidence.
+                # It costs one fsync PER FIRING, and a firing is by definition
+                # exceptional — §11.6 keeps GROUP-COMMIT off the hot path, and
+                # this is neither a group commit nor the entry pathway.
+                self._wal.sync_to_disk()
+                self.booked += 1
+                booked += 1
+            except (WalError, OSError) as exc:
+                self.refused += 1
+                self.last_error = (
+                    f"{SITE}: §12.10 go_timeout row for {row.strategy_id!r}/"
+                    f"{row.client_order_id!r} fired on tick {row.fired_tick} was "
+                    f"NOT booked to Plane 1: {type(exc).__name__}: {exc}. "
+                    "§4:240-241 forbids the retry, so this firing has no row and "
+                    "this counter is the only thing that says so"
+                )
+        return booked
+
+    def _row_for(self, firing: GoTimeout) -> EventRow:
+        """One `GoTimeout` observation -> one §9 `EventRow`.
+
+        §9 requires timestamp + strategy_id + trade_id + reason on every row.
+
+        * `ts` is the WALL CLOCK at booking, because `occurred_at` is a
+          timestamptz and `GoTimeout` deliberately carries no wall-clock reading
+          (its `elapsed_s` is the loop's own monotonic, which is the whole point
+          of that record). The loop-clock truth is not discarded: `fired_tick`,
+          `admitted_tick`, `elapsed_s` and `timeout_s` ride in `fields`, so a
+          reader can tell the two clocks apart instead of being handed one
+          number that silently mixes them.
+        * `trade_id` is ABSENT and that is a measurement, not an omission. The
+          Limiter mints a trade id at OPEN (§4); a GO that never received
+          terminal feedback never opened, so there is no trade. The seam types
+          it optional for exactly this case and the sink writes the schema's
+          documented `'-'` sentinel, which is a different fact from a lost id.
+        * `reason` is the breaker's OWN §4:210-212-citing sentence, not the
+          string `"go_timeout"` — the event TYPE already carries that, and check
+          contract v2 rule 11 makes the reason the assertion.
+        """
+        return EventRow(
+            kind=EventKind.GO_TIMEOUT,
+            ts=time.time(),
+            strategy_id=firing.strategy_id,
+            reason=firing.reason,
+            trade_id=None,
+            fields={
+                "client_order_id": str(firing.client_order_id),
+                "admitted_tick": str(firing.admitted_tick),
+                "fired_tick": str(firing.fired_tick),
+                "elapsed_s": f"{firing.elapsed_s:.6f}",
+                "timeout_s": f"{firing.timeout_s:.6f}",
+                "released": str(firing.released).lower(),
+                "resent": str(firing.resent).lower(),
+                "booked_by": SITE,
+            },
+        )
+
+    def before(self, inner: Callable[[int], object]) -> Callable[[int], object]:
+        """Wrap the loop's ingress so the booking runs first, inside the tick.
+
+        Composed rather than folded into `Inbox.drain`: the inbox reads commands
+        and this writes evidence, and one object doing both would be one place to
+        break two unrelated contracts.
+        """
+
+        def _ingress(tick: int) -> object:
+            self.book_new_firings()
+            return inner(tick)
+
+        return _ingress
+
+    def record(self) -> dict[str, Any]:
+        """The out-of-process evidence block. Read by `checks/check_go_timeout.py`.
+
+        Counters, not a boolean: *fired and booked*, *fired and refused* and
+        *never fired* must be three readings. `wal_enqueued` / `wal_durable` come
+        off the WAL OBJECT rather than being re-counted here, so a booker that
+        thought it wrote and a WAL that did not are visibly different.
+        """
+        return {
+            "wal_path": str(self._wal.path),
+            "firings_seen": self.firings_seen,
+            "booked": self.booked,
+            "refused": self.refused,
+            "wal_enqueued": self._wal.enqueued,
+            "wal_durable": self._wal.durable,
+            "wal_state": self._wal.state.value,
+            "last_error": self.last_error,
+        }
+
+
 def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
     """Serialise into a sibling temp file and `os.replace` it into place.
 
@@ -433,7 +648,11 @@ def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _runtime_record(
-    loop: LimiterLoop, *, boot_ts: float, stopped_ts: float | None
+    loop: LimiterLoop,
+    *,
+    boot_ts: float,
+    stopped_ts: float | None,
+    booker: Plane1Booker | None = None,
 ) -> dict[str, Any]:
     """`limiter.runtime.json`'s content, at boot and again at clean stop.
 
@@ -456,15 +675,27 @@ def _runtime_record(
         #: did not fire* from *the breaker was configured never to*.
         "go_timeout_s": loop.go_timeout_s,
         "go_armed": [[sid, cid, round(el, 3)] for sid, cid, el in loop.go_armed()],
+        #: ARC 042 / D3.425. §9's evidence-plane counters, so an out-of-process
+        #: reader can tell *fired and booked* from *fired and refused* from
+        #: *never fired*. `None` only if the booker could not be built, which
+        #: `main` refuses to boot on.
+        "plane1": None if booker is None else booker.record(),
         "stopped_ts": stopped_ts,
     }
 
 
 def _stop_record(
-    loop: LimiterLoop, stop: LoopStop, *, boot_ts: float, stopped_ts: float
+    loop: LimiterLoop,
+    stop: LoopStop,
+    *,
+    boot_ts: float,
+    stopped_ts: float,
+    booker: Plane1Booker | None = None,
 ) -> dict[str, Any]:
     """The clean-stop record: the boot shape plus what the run actually did."""
-    record = _runtime_record(loop, boot_ts=boot_ts, stopped_ts=stopped_ts)
+    record = _runtime_record(
+        loop, boot_ts=boot_ts, stopped_ts=stopped_ts, booker=booker
+    )
     record.update(
         {
             # `flat` comes from the STOP OBSERVATION here, not from the live
@@ -569,6 +800,16 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--plane1-wal",
+        default=None,
+        help=(
+            "Path to §9's durable local Plane-1 WAL this process appends the "
+            f"§12.10 go_timeout row to. Default: {PLANE1_WAL_NAME} inside the "
+            "runtime directory. The shared-pool writer that group-commits it "
+            "into Postgres is a different process and is not started here."
+        ),
+    )
+    parser.add_argument(
         "--max-ticks",
         type=int,
         default=0,
@@ -596,6 +837,15 @@ def _install_signal_handlers(loop: LimiterLoop) -> None:
     signal.signal(signal.SIGINT, _handler)
 
 
+# R0914 (too-many-locals): `main` is a BOOT SEQUENCE, and every local is one
+# thing the process must resolve before it may tick — the two intervals, the
+# three directories, the publisher, the knob, the loop, the WAL path, the booker,
+# the boot stamp, the record path. ARC 042 added two (`wal_path`, `booker`) and
+# crossed the threshold. Extracting a helper to satisfy the counter would split
+# the boot across two frames while leaving the same number of things resolved,
+# and the `except` below — which turns ANY boot failure into a loud exit 2 with
+# no runtime directory to write into — has to wrap all of them or it wraps a lie.
+# pylint: disable=too-many-locals
 def main(argv: list[str] | None = None) -> int:
     """Boot, run, and write the documented final state. Returns the exit code.
 
@@ -634,6 +884,18 @@ def main(argv: list[str] | None = None) -> int:
             go_timeout_s=go_timeout,
             max_ticks=max(0, int(args.max_ticks)),
         )
+        # ARC 042. Opened BEFORE the loop runs and a failure REFUSES THE BOOT:
+        # §12.10's go_timeout row gates money, and a Limiter that cannot write
+        # its evidence plane must not start rather than trade unrecorded. This
+        # is the boot half of §12.4 — the RUNNING half (a WAL that goes
+        # disk-critical mid-run) is the WAL's own policy and is contained in
+        # `Plane1Booker.book_new_firings`, which never kills the tick.
+        wal_path = (
+            runtime_dir / PLANE1_WAL_NAME
+            if args.plane1_wal is None
+            else Path(args.plane1_wal)
+        )
+        booker = Plane1Booker(loop, Plane1Wal(wal_path))
     except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
         print(
             f"{SITE}: refusing to boot the Limiter: {type(exc).__name__}: {exc}",
@@ -646,22 +908,36 @@ def main(argv: list[str] | None = None) -> int:
     # processing means the inbox read and the command handling happen INSIDE the
     # tick, not on either collaborator's own schedule.
     loop.attach(
-        ingress=Inbox(inbox_dir, loop).drain,
+        # ARC 042: the booking runs FIRST inside the tick, then the inbox read.
+        # `Plane1Booker.before` composes the two rather than folding the write
+        # into the reader — see its docstring for why it is one tick behind the
+        # firing and why nothing is lost to that.
+        ingress=booker.before(Inbox(inbox_dir, loop).drain),
         handler=CommandHandler(loop, outbox_dir).handle,
     )
 
     boot_ts = time.time()
     runtime_path = runtime_dir / RUNTIME_NAME
     _write_json_atomically(
-        runtime_path, _runtime_record(loop, boot_ts=boot_ts, stopped_ts=None)
+        runtime_path,
+        _runtime_record(loop, boot_ts=boot_ts, stopped_ts=None, booker=booker),
     )
     _install_signal_handlers(loop)
 
     stop = loop.run()
 
+    # The TAIL booking. The ingress books the previous tick's firings, so a
+    # breaker that fired on the LAST tick before the stop would otherwise leave
+    # a released lock with no §9 row — the exact D3.425 shape, surviving in the
+    # one tick this arc could not reach from inside the loop. Idempotent by the
+    # same key set, so a firing already booked in the tick is not booked twice.
+    booker.book_new_firings()
+
     _write_json_atomically(
         runtime_path,
-        _stop_record(loop, stop, boot_ts=boot_ts, stopped_ts=time.time()),
+        _stop_record(
+            loop, stop, boot_ts=boot_ts, stopped_ts=time.time(), booker=booker
+        ),
     )
     return 0
 

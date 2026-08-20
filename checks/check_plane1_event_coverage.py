@@ -30,10 +30,12 @@ manufactured coverage the brief forbids, one level up from the one it names.
 So each type carries TWO measured columns and the verdict prints both:
 
 * **TRANSPORT** — the drive above actually landed a conforming row.
-* **PRODUCER** — some module under `scripts/nixrisk/` references
-  `EventKind.<MEMBER>`, found by AST over the tree. DERIVED, never a
+* **PRODUCER** — some SHIPPED module (`scripts/**.py` minus `scripts/tests/`)
+  references `EventKind.<MEMBER>`, found by AST over the tree. DERIVED, never a
   hand-maintained list: sibling sub-agents B, C and D are landing emitters in
-  this same arc, and a literal would be stale before the arc closed.
+  this same arc, and a literal would be stale before the arc closed. ARC 042
+  widened this from `scripts/nixrisk/*.py`, which could not see §9's sole
+  writer — `scripts/limiterd.py` — at all; see `producer_census`.
 
 Three states result, and each is named PER TYPE in the evidence:
 
@@ -185,6 +187,21 @@ for _kind, _type in EVENT_KIND_TO_PLANE1.items():
 #:   * `plane1_sink.py` — MAPS it to `plane1_event_enum`.
 NOT_PRODUCERS: Final[frozenset[str]] = frozenset({"seam.py", "plane1_sink.py"})
 
+#: ARC 042. The same exclusion one directory up, and MEASURED the same way.
+#: Widening the census to the shipped population (see `producer_census`) swept in
+#: `scripts/*_drill.py` — the DRIVERS other gates spawn to create load
+#: (`plane1_degraded_drill.py`, `plane1_hotpath_drill.py` and `wal_kill_drill.py`
+#: are the subjects of `check_plane1_degraded`, `check_plane1_hot_path` and
+#: `check_plane1_wal`). They construct `EventKind.SIGNAL`, `.ACCEPTED` and
+#: `.DENIED` rows to have something to push down the path, and counting them
+#: flipped exactly those three types from TRANSPORT-ONLY to DRIVEN on the run
+#: that widened the glob — three free greens over `EXPECTED_UNPRODUCED`'s three
+#: declared gaps, none of which had gained a production emitter. An instrument
+#: that manufactures a row so a gate has something to measure is not a producer
+#: of that row in the running system; D3.200's shape here is a census reading
+#: its own fixtures back as coverage.
+DRILL_SUFFIX: Final[str] = "_drill.py"
+
 
 class Unmeasurable(Exception):
     """The subject could not be reached, so nothing was measured (§17)."""
@@ -207,22 +224,48 @@ def _psql(database: str, sql: str) -> str:
 
 
 def producer_census(home: Path) -> dict[str, set[str]]:
-    """`EventKind` member -> the `scripts/nixrisk/` modules that reference it.
+    """`EventKind` member -> the SHIPPED modules that reference it.
 
     DERIVED by AST, never listed. Sibling sub-agents are landing emitters in this
     same arc and a hand-maintained literal would be stale before the arc closed.
     A reference to `EventKind.X` is the strongest static evidence available that
     a module can emit that kind; it does not prove the line is reachable at
     runtime, and `check_uncalled_entry_points` owns reachability.
+
+    ## ARC 042 — THE POPULATION WAS WRONG, AND IT WAS WRONG IN THE ONE DIRECTION
+    ## THAT MATTERS
+
+    Until ARC 042 this scanned `scripts/nixrisk/*.py` ONLY. §9 makes **the
+    Limiter** the sole Plane-1 writer, and the Limiter as a running process is
+    `scripts/limiterd.py` (§2:42) — one directory ABOVE the glob. So the census
+    could not see a producer in the only module §9 authorises to be one, and the
+    state it reported for a daemon-emitted type was `TRANSPORT-ONLY`: *the path
+    works, nothing emits it*, over a tree in which something did.
+
+    MEASURED, not anticipated: ARC 042 wired `limiterd.py` to enqueue §12.10's
+    `go_timeout` row and this gate reddened with *"RATCHET: §12.10 type(s) LOST
+    their producer: go_timeout"* — a REGRESSION verdict over an arc that had just
+    built the emitter. The ratchet was reading its own blind spot as a loss.
+
+    The population is now the SHIPPED one — `scripts/**.py` minus
+    `scripts/tests/` — which is the same population `checks/check_go_timeout.py`
+    uses for its own reader census, and the population every "does any shipped
+    module do X" question in this tree is actually asking about. `NOT_PRODUCERS`
+    still excludes the two modules that NAME every member without emitting any,
+    and `DRILL_SUFFIX` excludes the gate drivers the wider glob swept in — see
+    its own comment for the three free greens that measured.
     """
     census: dict[str, set[str]] = {}
-    base = home / "scripts" / "nixrisk"
-    for path in sorted(base.glob("*.py")):
+    scripts = home / "scripts"
+    for path in sorted(scripts.rglob("*.py")):
+        rel = path.relative_to(scripts)
+        if "tests" in rel.parts or "__pycache__" in path.parts:
+            continue
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         except OSError, SyntaxError, UnicodeDecodeError:
             continue
-        if path.name in NOT_PRODUCERS:
+        if path.name in NOT_PRODUCERS or path.name.endswith(DRILL_SUFFIX):
             continue
         for node in ast.walk(tree):
             if (
