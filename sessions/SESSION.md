@@ -6400,3 +6400,28 @@ predicted.
 
 **Limiter STAYS RED.** clean = `{I2, I5, I6, I7, I8, I10, I11}` = **7/12**, open = **5**:
 **I1** (daemon-wiring capstone), **I3**, **I4**, **I9**, **I12**.
+
+### ARC 045 — the FINAL measurement, banked forward-only at `7671847`
+
+`verify.py` over the merged tree: **`90 passed | 3 failed | 2 cannot measure | 0 skipped |
+1 guarded`, exit 1** — **exactly the prediction**, reached on the **second** pass. The first pass
+read `89 | 3 | 3 | 0 | 1`, and the whole of the difference was `check_arc_status_contract` reading
+this run's own log before the run had written its close-out into it: CLAUDE.md orders the teardown +
+marker into the log **before** the final verify, and the first pass measured first. The tree never
+moved between the two passes; the instrument's subject did. **Recorded forward-only rather than
+replacing the missed prediction** — the miss stands one section up, because a prediction re-fitted
+after the measurement is not a prediction (directive 6).
+
+**Three standing FAILs, unchanged and none of them this arc's:** `check_ibgateway_service` (API
+127.0.0.1:4002 refused — the Gateway is down), `check_monitor_tui` (ARM3 stale pin), and
+`check_uncalled_entry_points` (23 rows, `outcomes.py`'s five among them, carried not absorbed by
+ARC 044). **Two cannot-measure, both the §17 ECONNREFUSED chain:** `check_ibgateway_config` and
+`check_observed_resource_claims`. **One guarded:** `check_artifact_gate_coverage`, owner **ARC 046**.
+
+**No count moved**, as predicted: 96 registered checks before and after. Extending `check_flatten`
+with ARM 3b created no new gate file, which is what rule 8 / doctrine C.9 asks for — the alternative
+would have been a second instrument over `cancel_entries_on_onset`, and the count moving would have
+been the symptom, not the achievement.
+
+**Badge on bank — Limiter STAYS RED.** clean = `{I2, I5, I6, I7, I8, I10, I11}` = **7/12**,
+open = **5**: **I1** (daemon-wiring capstone), **I3**, **I4**, **I9**, **I12**.
