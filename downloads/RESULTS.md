@@ -1,258 +1,243 @@
-# ARC 041-T — STATUS-EMIT TOOLING · RESULTS
+# ARC 042 — ULTRAREVIEW: Limiter, slice 4 — the Plane-1 GO-timeout row (D3.425)
 
-**Tier: TOOLING.** No Limiter slice, no invariant, no badge movement. `I8 / D3.425` remain ARC 042.
-**Predecessor derived live:** brief said `≈ e033f98`; `git rev-parse HEAD` said **`41299aa`**, and
-every figure below is measured against that tip.
+**TIER: INTERIOR. Limiter badge STAYS RED. Invariant count UNCHANGED at 4/12.**
+This slice discharged CHECK-DEBT **D3.425**, not an invariant. Clean =
+`{I5, I6, I7, I10}` = 4/12, open = 8 — derived from the 038 register as updated by 040 (I5) and
+041 (I7). Nothing here moved that set, and a clean slice must not read as an invariant flip.
 
----
+**Predecessor.** The brief cited ≈`1abcfd0`. The derived tip was **`d6dae6f`** (041-T's final
+measurement commit, which lands after the RESULTS HEAD). Everything below is frozen and diffed
+against `d6dae6f`.
 
-## 1. Installed (byte-verbatim, `cmp`-clean before anything else ran)
+## The ordering was inverted on purpose
 
-| path | note |
+ARC 040 banked D3.425 with the note *"blocked behind I8."* **You cannot enforce a sole writer that
+does not write.** So the writer was wired here and **I8 became ARC 043**. limiterd is §9's
+*designated* sole writer; making it function is not creating a second one.
+
+## S1 — D3.425 reproduced on a live daemon, before a line changed
+
+A real `limiterd`, a registered strategy, a GO admitted and abandoned:
+
+* the lock was observed **HELD** after the GO (non-vacuity of the drive itself);
+* the breaker **fired at 2.049 s** against `T = 2.0 s` and the §4:208 lock came off — ARC 040's
+  behaviour re-confirmed, not re-fixed;
+* `limiter.runtime.json` carried the firing: 1 row, `released=true`, `resent=false`;
+* `SELECT ... FROM nix_plane1.plane1_event_log WHERE event_type='go_timeout' AND strategy_id=…`
+  returned **0**;
+* the runtime directory contained **no WAL file at all** — the daemon booked *nothing*, of any
+  §9 type;
+* **non-vacuity of the absence:** a control row inserted in a transaction was seen by the *same*
+  SELECT (`IN-TXN count=1`) and gone after `ROLLBACK` (`0`). The query can find the row; there was
+  no row to find.
+
+## S2 — the wiring
+
+`scripts/limiterd.py` gained `Plane1Booker`, and nothing else in this tree gained a writer.
+
+* It **CALLS** the existing `nixrisk.wal.Plane1Wal`. The library was **not modified** and is
+  cleanly daemon-callable (`Plane1Wal(path)`), so there is **no not-daemon-ready finding**.
+* `EventKind.GO_TIMEOUT` landed in `scripts/nixrisk/seam.py` under that enum's own stated rule —
+  *a member lands ONLY when the machinery that emits it exists* — and `plane1_sink.py` maps it.
+  Its `UNROUTABLE_PLANE1_EVENTS` census went **4 → 3**, the one direction that map documents.
+  `projection.py` needed **no change**: it already classified `go_timeout` as POSITION_NEUTRAL.
+* **§4:240-241 expressed as code order:** the firing key is recorded **BEFORE** the enqueue is
+  attempted. A booking that raises is counted and reported, never retried — a retry is how one
+  intended row becomes two.
+* The booking runs from the loop's ingress hook (the only hook limiterd owns inside the tick), so
+  it books the previous tick's firings — bounded by one tick, provably lossless, and `main` books
+  once more after `run()` returns to catch a clean stop's last tick. `nixrisk/loop.py` was **not
+  touched**: §4:210-212's breaker is risk-path source.
+
+## S3 — both directions, real `limiterd` + real WAL + real Postgres. 26/26 assertions.
+
+**(a) breaker fires ⇒ exactly one row.**
+
+| assertion | measured |
 |---|---|
-| `scripts/arc_heartbeat.sh` | `chmod +x`, mode `755` |
-| `checks/check_arc_status_contract.py` | + verify.py contract adapter appended (see §5) |
-| `checks/check_tmpfs_inode_headroom.py` | + adapter, + ONE fixture change (see §6) |
-| `CLAUDE.md` `## STATUS EMIT` | appended verbatim, + `### The standing arc prompt, rewired` |
-| `CLAUDE-CHANGELOG.md` | instruction change recorded, per Change control |
+| WAL created at boot | `plane1.wal` in the runtime dir |
+| row reached the WAL **while the process was still running** | 1 row |
+| stop record | `firings_seen=1, booked=1, refused=0, wal_enqueued=1, wal_durable=1` |
+| durable, not merely written | `wal_durable=1` — an `fsync`, not a page-cache write |
+| **idempotence** | **1 row after 256 ticks**, WAL intact |
+| §9 `strategy_id` | matches THIS firing |
+| §9 `reason` | the breaker's own `§4:210-212 GO-timeout FIRED …` sentence |
+| §9 `ts` | inside `[boot_ts, stopped_ts]` of THIS process |
+| §9 `trade_id` | **ABSENT** — no open, so no trade was ever minted; the sink writes the schema's `'-'` |
+| the row is this firing's | `client_order_id`, `fired_tick`, `elapsed_s` all match the record |
+| §4:240-241 | `resent=false` in the row |
 
-## 2. Step 1 — BIND `check_arc_status_contract` from its own FAIL
+**§12.4 durability — proven END TO END, not deferred.** A Postgres-unavailable window left the
+group-commit refused, `backlog=1`, state **`sink_degraded`** (buffers and trades on — *not*
+`disk_critical`), and the WAL record intact on disk. When the database returned, **the same
+buffered row group-committed** (`committed=1`) and read back out of Postgres matching
+`event_type` / `strategy_id` / `trade_id='-'` / `occurred_at` / `client_order_id` / `reason`, at
+**exactly one row**. The read-back's own non-vacuity: the identical SELECT returns 0 for a strategy
+that never ran. *The outage-replay proof is not owed — it was taken.*
 
-```
-$ .venv/bin/python checks/check_arc_status_contract.py --selftest
-  [ok] clean -> PASS                                        (got=0, want=0)
-  [ok] non-vacuity: detector sees >=1 pulse in clean log     (got=2, want=>=1)
-  [ok] PLANT no-heartbeat -> FAIL                            (got=1, want=1)
-  [ok] PLANT leaked-watchdog -> FAIL                         (got=1, want=1)
-  [ok] kernel [watchdogd] after marker -> still PASS         (got=0, want=0)
-  [ok] no-marker -> CANNOT-MEASURE                           (got=2, want=2)
-  [ok] teardown only for kernel thread -> FAIL               (got=1, want=1)
-=== SELF-TEST PASS ===   exit=0
-```
+**(b) healthy GO ⇒ no row.** A GO resolved by §4:203-206 terminal feedback, watched **5 s past
+resolution** (256 ticks): zero firings, `booked=0`, `refused=0`, **zero rows in the WAL**.
 
-## 3. Step 2 — EMITTER↔READER PARITY (the second-implementation trap), GREEN
+## S4 — the gate: the owner was measured, not assumed
 
-The log below was **produced by the script**, not typed. `selfcheck` and `pulse` wrote their own
-lines into it; only the kickoff line, the `[watchdogd]` decoy, the teardown and the marker were added.
+The brief predicted a Plane-1 gate. **The measured owner of this property is
+`checks/check_go_timeout.py`** — the only gate that drives a real breaker firing. `check_plane1_*`
+owns transport, durability and authorship; none drives a firing, and the property *a FIRED
+GO-timeout produces exactly one Plane-1 row* cannot be measured without one. A new
+`check_plane1_go_timeout` would have to spawn a second `limiterd` and re-drive the breaker this
+gate already drives — the duplicate instrument **doctrine C.9 forbids**. So it was **extended**:
+**no new gate file, count unmoved.**
 
-```
-kickoff: ARC 041T STATUS-EMIT TOOLING, 12 stages
-watchdog started pid=4107773 (arc_heartbeat)
-[ARC 041T ###----- 40% stage 5/12 - emitter-reader parity - 22s - ~33s - HEAD 41299aa no motion]
-HEARTBEAT SELF-VERIFY: ok (emitter produced a pulse)
-[ARC 041T ####---- 50% stage 6/12 - parity second beat - 22s - ~22s - HEAD 41299aa ADVANCED]
-[watchdogd] kernel thread present pid=165 (must be ignored)
-WATCHDOG TEARDOWN: confirmed dead (pid 4107773 / arc_heartbeat)
-**** ARC completed ****
+* **ARM 3, STATIC, by shape.** A function that calls `.go_timeouts()` must also call `.enqueue(…)`,
+  and its class must build the row under the GO-timeout kind. **Not one Nix identifier is spelled**
+  (D3.426's lesson) — a test renames `Booker`/`book_new_firings`/`_row_for`/`_wal` and the arm still
+  passes.
+* **ARM 4, LIVE.** Reads the WAL the drive's own process left, at the path *the process reported*,
+  and refuses a WAL outside the drive's own directory as CANNOT_MEASURE.
 
-$ .venv/bin/python checks/check_arc_status_contract.py --log <that file>
-[PASS] arc_status_contract  arc=041T  pulses=2  teardowns=1  wd_pid=4107773   exit=0
-```
+**Demonstrated FAIL — two real plants in the real tree, driven against a real `limiterd`:**
 
-`RE_PULSE` accepts the script's real `#`/`-` bar; `arc` and `wd_pid` were both DERIVED from the log;
-the `[watchdogd]` line was correctly ignored. **They agree.** One honest gap found and kept: the
-STALE pulse renders `stage ?/?` and does not match `\d+/\d+` — correct, a stale beat is not evidence
-the operator was informed.
+* **PLANT A** (booking no-op'd — ARC 040's exact state): **exit 1**. The static arm named *both*
+  ledger readers (`_dispatch():343`, `book_new_firings():511`) and the live arm reported the gap:
+  *"the RUNTIME RECORD has the firing and the EVIDENCE PLANE does not"*, plus the counter lie the
+  plant exposed (`booked=1` against `wal_enqueued=0`).
+* **PLANT B** (idempotence guard removed): **exit 1**, *"1 firing(s) produced **156**
+  `go_timeout` row(s)"*.
+* **Plants removed: exit 0.**
 
-## 4. Step 3 — BIND `check_tmpfs_inode_headroom` + live node02
+**A defect the plants found in the gate itself:** the first PLANT A run named `_dispatch` — the
+*status verb*, which reads the ledger only to report a count — as "the fire path". The arm now
+names every ledger reader and says outright that a function which only REPORTS the ledger is not a
+booking; a regression test pins it.
 
-```
-$ .venv/bin/python checks/check_tmpfs_inode_headroom.py --selftest
-  [ok] healthy -> PASS · non-vacuity: parser extracts real usage (4%, 1008363 free)
-  [ok] EXHAUSTED (039R state) -> FAIL · at-ceiling 90% -> FAIL · just-under floor -> FAIL
-  [ok] no-inode-limit -> CANNOT · wrapped fs name -> PASS · malformed -> CANNOT
-=== SELF-TEST PASS ===   exit=0                       (8/8)
+**Binding made durable.** `check_go_timeout` had **no test at all**. Check contract v2 rule 9 makes
+a retrofitted check a new check whose can-fail binding must be re-established, and a binding that
+lives only in a transcript is gone next arc. `scripts/tests/test_check_go_timeout_plane1.py` —
+**11 tests, all passing** — re-drives both plants against the SHIPPED arms, each paired with its
+unplanted control so a matcher that fires on everything fails too.
 
-kickoff basetemp clean: /tmp/pytest-of-bbt removed — 888 inodes, 4 retained sessions
-  (pgrep -x pytest == 0 first; never pkill -f on cc's own patterns)
-
-$ .venv/bin/python checks/check_tmpfs_inode_headroom.py --mount /tmp
-[PASS] tmpfs_inode_headroom  mount=/tmp  iuse=5%  free=1003613  (ceiling 90% / floor 20000)  exit=0
-```
-
-## 5. The adapter, and why it needed its OWN can-fail
-
-`nixverify.loader` requires a module-level `run` and `engine._run_block` calls it as
-`run(mode, ctx) -> CheckResult`. Both drop-ins already define a `run`, with a different signature —
-registering them as shipped would have loaded cleanly and raised at call time, which is a gate that
-reports nothing. An **append-only** adapter block was added to each (nothing above it altered): it
-declares `DEPENDS_ON`/`RESOURCES`/`ON_FAIL`/`CORRECTABLE`/`SUBJECTS` for the AST reader and
-DISPATCHES on the first argument's type, so the CLI and the engine share ONE measurement
-implementation rather than acquiring a second (doctrine C.9).
-
-**Check-contract rule 9: a retrofitted check is a NEW check.** The adapter arm was therefore bound
-separately, against the real `load_check → run(Mode, Context) → validate_result` path:
+## FREEZE — asserted against the derived tip `d6dae6f`
 
 ```
-check_arc_status_contract   [1] no fresh log       -> cannot_measure
-                            [2] complete arc log   -> pass    (pulses=2 teardowns=1)
-                            [3] PLANT no-heartbeat -> fail_needs_operator, site named
-                            [4] plant removed      -> pass
-check_tmpfs_inode_headroom  [1] live /tmp healthy  -> pass    (5%, 1003613 free)
-                            [2] PLANT 039R state   -> fail_needs_operator, site=/tmp
-                            [3] PLANT no inode cap -> cannot_measure
-                            [4] plants removed     -> pass
+checks/check_go_timeout.py                    the extended owner (ARMs 3 + 4)
+checks/check_plane1_event_coverage.py         the census blind spot, repaired
+checks/gate_coverage_baseline.json            exclusion owners ARC 042 -> 043
+docs/CHECK-DEBT.md                            D3.425 discharged; D3.434-437 opened
+scripts/limiterd.py                           the enqueue on fire (Plane1Booker)
+scripts/nixrisk/plane1_sink.py                the GO_TIMEOUT mapping; unroutable 4 -> 3
+scripts/nixrisk/seam.py                       EventKind.GO_TIMEOUT
+scripts/tests/test_check_go_timeout_plane1.py the can-fail binding (new)
 ```
 
-## 6. The ONE departure from verbatim — found by a gate, not by taste
+**Three paths are WIDER than the brief predicted, and each is explained rather than waved
+through:**
 
-`check_price_ring` FAILED on `checks/check_tmpfs_inode_headroom.py:163`: the `_NOLIMIT` self-test
-fixture named `/dev/shm` in its "Mounted on" column, and risk spec §12.7 gives the price firehose
-the sole shared-memory exception. Adding the path to the gate's `ALLOWED` set would be closing a red
-by weakening the instrument — **doctrine B.4 forbids it and the gate is right**. Fixed at the
-subject: the column reads `/mnt/nolimit`. The fixture asserts that `df` printing `-` yields
-CANNOT-MEASURE; the mount's spelling is no part of it. `--selftest` 8/8 before and after.
+1. **`seam.py` + `plane1_sink.py`.** The brief anticipated *"a minimal booking helper if
+   `projection.py` owns the event name."* Measured: **`projection.py` does not own it and needed no
+   change.** The seam owns the *kind* (`EventKind` had **no `GO_TIMEOUT` member** — the enqueue had
+   nothing to enqueue) and `plane1_sink` owns the *mapping*. Both were the minimum required to make
+   `Plane1Port.enqueue` accept the row, and both moved in the direction their own docstrings say
+   they move.
+2. **`check_plane1_event_coverage.py`.** Not a second arm claiming the property — a **repair to a
+   gate this arc's change made red for a wrong reason** (see D3.435).
+3. **`gate_coverage_baseline.json`.** Arc-boundary maintenance, the same bump ARC 041 made: an
+   exclusion owned by a COMPLETED arc reads CANNOT_MEASURE, and ARC 042 completes at this
+   write-back. Stated as maintenance, not progress.
 
-### 6b. A SECOND departure — this tree's pre-commit chain refused the drop-ins as shipped
+**NOTHING** in `picture.py`, the mirror seam (I7), the I8 enforcement seam, `nixrisk/wal.py`,
+`nixrisk/loop.py`, `nixrisk/recovery.py`, `nixrisk/projection.py`, or any unrelated path.
 
-"Pre-validated in a real interpreter" is not the same as validated against this tree's gates, and
-four of them refused:
+## CHECK-DEBT
 
-| gate | finding | repair |
+* **D3.425 — DISCHARGED**, with the ruling written and the "blocked behind I8" note corrected.
+* **D3.434** *(the brief's named residual)* — limiterd books **one** §9 type and owes ten more.
+  Before this arc it booked none. Not silently widened; sized so a green `go_timeout` cannot read
+  as a booked event surface.
+* **D3.435** — the producer census could not see §9's sole writer **at all**, and its repair then
+  handed three types a free green off `*_drill.py` gate drivers. Both measured on this arc's own
+  instrument; the residual is that the drill exclusion matches a **filename suffix**, a spelling
+  and not a shape — D3.426's class, one layer out.
+* **D3.436** — a firing lost to `SIGKILL` between the breaker and the next booking has no row.
+  §9's crash gap; the reconciliation that heals it is not built.
+* **D3.437** — **60 orphaned `nixp1t_*` scratch databases** in the live cluster, measured at
+  pre-flight, older than this arc. Not swept: a bulk `dropdb` on a live cluster is an operator
+  action, not a slice's side effect. D3.423's class on a different resource.
+
+Ledger **382 → 385** (+4, −1), re-derived whole by
+`check_derived_claims._p_check_debt_open_count`, never by arithmetic on the previous figure.
+
+## Explicitly NOT claimed
+
+* **I8 (sole-writer enforcement) = ARC 043** — it now has a writer to enforce.
+* D3.428 (the `_current`-advanced-on-publish-failure ruling) — awaits the architect, untouched.
+* D3.430 / D3.431 / D3.432 / D3.433 — standing named debt, not this slice.
+
+## CLOSE-OUT — INTERIOR tier, with the commit escalation taken
+
+**(b) DERIVED reverse-dependency closure.** AST import-graph inversion over the five changed
+source files (never a hand list): closure = **209 files, 104 of them tests**. **15 excluded
+COST-AWARE BY DETECTION** — each found by a marker in its own source (`verify.py`, `--optimize`,
+`registry.json`, `check_artifact_gate_coverage`), never by name. **89 test files run.**
+
+*Non-vacuity of the closure*, asserted before it was believed — it contains the new gate's own
+can-fail test, the sink mapping's exhaustiveness test, the census gate's test, the `go_timeout`
+token census, and the loop test. All five present.
+
+*RED-before / GREEN-after*, on the very defect this arc fixed: with PLANT A re-installed the
+closure's control test **FAILED** (`test_the_STATIC_arm_PASSES_the_real_shipped_limiterd`); plant
+removed, **11/11 green**.
+
+First full closure pass: **1720 passed, 6 failed** — and all six were **this arc's own ratchets
+firing correctly**, not breakage:
+* `test_plane1_sink::test_the_UNROUTABLE_five_are_absent_from_the_mapping` — the census literal
+  pinned 4 and it is now 3. Lowered deliberately (that is what the ratchet is for), and the test
+  renamed off the count it kept re-pinning.
+* five in `test_check_debt_owning_module` — two new rows carried an owning-module token
+  (`environment`) outside the legal vocabulary. Re-pointed to `verify`, matching D3.423's and
+  D3.426's precedent for environment and instrument findings.
+
+Both files re-run green (21 + 10). The authoritative GREEN-after is the **commit gate's own full
+pass**, a strict superset of the closure — escalated because `scripts/limiterd.py` is on the
+uncovered list, which the INTERIOR tier does not defer.
+
+**(c) The gate is BOUND** from two observed real FAILs at exit 1, each naming its site, and the
+binding is now durable in an 11-test can-fail suite.
+
+## THE COMMIT GATE — escalated, and it found real work
+
+`scripts/limiterd.py` is on the runtime gate's uncovered list, so the commit escalated to a full
+pass. It ran **43 minutes** and **Passed** — but the first attempt was **rejected**, and by the
+static hooks rather than the tests:
+
+| hook | what it found | repair |
 |---|---|---|
-| `ruff check` | `EXE001`, `PLW1510`, `ISC004`, `RUF059`, 4x `BLE001` | `chmod +x`, `check=False`, parens, `_ok0`; the blind excepts are check-contract rule 1 and were KEPT with `# noqa` + the reason, never narrowed |
-| `ruff format --check` | both files | `ruff format` (the hook is a reporter, never a repairer — ARC 018) |
-| `bandit (production)` | `B404`, `B603`, `B607`, 2x `B108` | `# nosec` + stated reason. **`# nosec B603,B607` silenced B607 and NOT B603** — the space-separated form is the one that works |
-| `pylint --fail-on=E,F` / `mypy` | `E0102` / `no-redef` on the adapter's `run` | it IS a deliberate redefinition and is now declared as one |
+| ruff check / format | 3 auto-fixable + 3 files unformatted | applied |
+| pylint | `E0401` (pytest), wrong-import-position, SHOUTY names, protected-access in the new test | header rewritten to the **house convention** the sibling suites use (`import check_go_timeout as GATE`), replacing an `importlib` path-load |
+| pylint | `C0302` (gate 1054/1000 lines), `R0914` (`main` 17/15 locals) | disabled **with the reasoning beside the code**, following `check_plane1_sole_writer.py`'s B.7 precedent |
+| pylint | `C0325` parens after `not` | extracted `inside_life` |
+| complexipy | `_judge_plane1` = **16** against a ceiling of 15 | **split into `_judge_plane1` (9) + `_judge_plane1_fields` (7)** |
 
-**And one that was a real design fault, caught by a TEST rather than a linter.**
-`test_check_standalone_nonvacuity.py::test_every_real_check_standalone_block_calls_validate_result`
-named both files: every `checks/check_*.py` must route `__main__` through `validate_result` (or
-`standalone_main`, which applies it). The drop-ins could not — their `__main__` sat ABOVE the
-appended adapter, so the CLI exited before the engine entry point existed. Correct, and correct *by
-statement order*. The block moved to the END of each file and now splits two surfaces: the
-drop-in's own flags keep the drop-in's CLI (the brief's binding steps are spelled in them, and a
-`--selftest` has no `CheckResult` to validate); everything else goes through `standalone_main`.
-Both end at the same `run`.
+**The complexity counter was right and is worth recording as a finding, not a chore:**
+`_judge_plane1` was doing two jobs — owning the PRECONDITIONS (is there a firing, is there a WAL, is
+it this run's, how many rows) and READING one row field by field. The split is the same argument
+`_judge_record`/`_judge_rows` already make in that file. Re-verified after every reformat: pylint
+**10.00/10 exit 0**, ruff clean, 32 tests green, and the gate itself still **exit 0** on a fresh
+real drive.
 
-**Every self-test, the parity check, the live measurement and the four-arm adapter can-fail were
-re-run after each repair. None of them moved.**
+**Banked: `e286052`**, 10 files, +1243 −43, all eight hooks Passed.
 
-## 7. Step 4 — REGISTRATION, and both are PERIODIC
+## POST-WRITE-BACK RE-MEASURE — predicted BEFORE the run
 
-`VERIFY-AND-CHECKS.md` was read directly. Part B.1: *"`bank.sh` runs the registered gates at STEP 2
-of every arc bank"*, and B.6 names the only non-registry category (`prove_*` harnesses). **There is
-no close-out-invoked tier to wire into** — registry membership IS periodic. Both gates are in
-`checks/registry.json`, block `level-0`, `parallel: false`, `on_fail: continue`, and the plan was
-**derived** by `verify.py --optimize --commit`, never hand-written. Registered checks 94 → 96
-(`check_derived_claims`: `registered_check_count=96` from both `derived:checks_glob` and
-`derived:registry_json`, 0 restatements).
+**Prediction: `90 | 3 | 2 | 0 | 1`, exit 1 — UNCHANGED from 041-T's final.** Extending an existing
+gate moves no count (rule 8 / Part C.9), and **S4 created no new gate file**, so the brief's
+conditional `passed+1` does **not** apply. The three standing fails (`check_ibgateway_service`,
+`check_uncalled_entry_points`, `check_monitor_tui`) are predicted unchanged; the wiring adds a call
+site, so no new uncalled entry point.
 
-- `check_tmpfs_inode_headroom` — **PERIODIC, +1 PASS** on a healthy box, live node state each sweep.
-- `check_arc_status_contract` — **PERIODIC, +1 CANNOT-MEASURE** in the bare sweep. It defaults
-  `--log` to the newest `scratchpad/arc_logs/*.log` within a 24 h window; with no fresh log, and
-  with a log that has not yet reached its marker, it returns CANNOT-MEASURE and **never PASS**
-  (rule 10). It PASSED against a real completed log in §3. **What that costs is D3.433.**
+One dependency is named in advance rather than discovered: `check_artifact_gate_coverage`'s eight
+exclusions were owned by **ARC 042**, and an exclusion owned by a COMPLETED arc reads
+CANNOT_MEASURE. This arc names itself complete at this write-back, so the owners were re-pointed to
+**ARC 043** — without which the prediction would be `90 | 3 | 3 | 0 | 0`, guarded → cannot-measure.
+Stated as the arc-boundary maintenance it is, not as progress.
 
-Also caught by the re-derivation: the committed plan had silently drifted — `--optimize` proposed
-dropping `file-write:tmp` and `process:limiterd` from `level-0`'s claims, and no check declares
-either any more. **D3.432.**
-
-## 8. Step 5/6 — CLAUDE.md and the standing arc prompt
-
-The block was appended verbatim. The rewire subsection makes the wiring explicit — kickoff →
-`selfcheck`, every in-stage pulse and watchdog beat → `pulse`, every transition → `banner --name` —
-and states that where the WAYPOINT BANNERS prose and the script's output differ, **the script is the
-format**. **DOGFOODED:** every banner and pulse in this run came from the script; cc hand-formatted
-nothing after Stage 2.
-
-## 9. Close-out — `verify.py` on trunk, and the baseline is the interesting half
-
-| | passed | failed | cannot | skipped | guarded |
-|---|---|---|---|---|---|
-| ARC 041 banked, at `41299aa` | 89 | 2 | 2 | 0 | 1 |
-| **THIS ARC'S BASELINE, same commit, clean tree** | **86** | **5** | **2** | **0** | **1** |
-| **post-change on trunk** | **88** | **4** | **3** | **0** | **1** |
-
-**Three gates had moved before this arc wrote a line.** Two were its own untracked inbox
-(`check_untracked_attribution`, and `check_price_ring` reading the `/dev/shm` literal in the
-`downloads/` copy) and both cleared. The third is **D3.431** — `check_monitor_tui` ARM3 STALE PIN,
-arms whose subject is the operator's out-of-tree statusline. Skipping the baseline would have
-attributed all three to this arc; that is the incident `VERIFY-AND-CHECKS.md` B.6 records.
-
-**How it moved, baseline → post-change:** `+2 passed` = the inode gate's new PASS, plus
-`check_price_ring` recovering when the inbox copy was removed. `-1 failed` = the same recovery.
-`+1 cannot-measure` = the status gate, exactly as the brief predicted. `check_untracked_attribution`
-names precisely the three new uncommitted files and is a statement about the write-back.
-
-Both `--selftest`s green. Parity check green. **No full pytest, no census** — no trading-path code
-and no invariant touched.
-
-## 10. CHECK-DEBT reconciled — 379 → 382 (+4 opened, −1 DISCHARGED)
-
-Both figures are `check_derived_claims._p_check_debt_open_count`'s own, re-derived whole; neither
-was typed.
-
-- **D3.423 — DISCHARGED ARC 041-T.** The row ARC 039R opened when `/tmp` exhausted its inode table
-  with 16 GB free and the arc read as a code fault. The gate is registered, bound from that exact
-  state as its plant, and PASSES live on node02.
-- **D3.430** — the RESIDUAL, named rather than absorbed into the word DISCHARGED: D3.423 asked for
-  BOTH `f_bavail` and `f_favail` plus a basetemp reaper. Only the inode axis ships, and **D3.206 is
-  the byte axis stopping an arc too**.
-- **D3.431** — `check_monitor_tui` RED at the same commit ARC 041 banked green; verdict set by
-  out-of-tree state.
-- **D3.432** — the committed execution plan drifts from its own declarations and nothing compares
-  them at load.
-- **D3.433** — `check_arc_status_contract` audits the PREVIOUS arc by construction; its honest duty
-  cycle is one arc behind.
-
-## 11. Housekeeping
-
-`/tmp/pytest-of-bbt` removed at kickoff. The three drop-in duplicates and the CLAUDE.md block source
-removed from `downloads/` (the brief stays). Scratch under `scratchpad/` and the session scratchpad;
-both gitignored.
-
----
-
-## 12. POST-WRITE-BACK RE-MEASURE — banked at `1492beb`
-
-`verify.py` over the merged tree: **89 passed | 3 failed | 3 cannot measure | 0 skipped | 1 guarded,
-exit 1.**
-
-| | passed | failed | cannot | skipped | guarded |
-|---|---|---|---|---|---|
-| ARC 041 banked (`41299aa`) | 89 | 2 | 2 | 0 | 1 |
-| this arc's baseline (same commit, clean tree) | 86 | 5 | 2 | 0 | 1 |
-| pre-commit, on trunk | 88 | 4 | 3 | 0 | 1 |
-| **post-write-back (`1492beb`)** | **89** | **3** | **3** | **0** | **1** |
-
-`86 → 89 passed`: the inode gate's new PASS, plus `check_price_ring` and
-`check_untracked_attribution` recovering — the first when the `/dev/shm` literal left `downloads/`,
-the second when the three new files stopped being untracked. `5 → 3 failed`: the same two
-recoveries. `2 → 3 cannot-measure`: `check_arc_status_contract`, exactly as the brief predicted.
-
-Three standing reds, none of them this arc's: `check_ibgateway_service` (tap, ECONNREFUSED),
-`check_uncalled_entry_points` (standing since ARC 041), and `check_monitor_tui` — **already red at
-this arc's baseline, at the commit ARC 041 banked green** — now D3.431.
-
-The emitter's STALL arm fired for real during this run, unplanted: three pulses against a frozen
-progress file produced `STALL WARNING: no motion in 3 intervals`.
-
----
-
-## 13. FINAL MEASUREMENT — `90 | 3 | 2 | 0 | 1`, and the gate refused its author first
-
-**`check_arc_status_contract` FAILED this arc's own close-out.** The first teardown line carried the
-contracted wording *plus* a sentence naming `[watchdogd]`; `KERNEL_WD` is line-scoped, so the gate
-read the line as being about the kernel thread and reported `teardowns=0`. Fixed at the emission,
-never at the gate — the note moved to its own line and the teardown line is now exactly the string
-CLAUDE.md's STATUS EMIT block mandates. `VERIFY-AND-CHECKS.md` B.5's `size-authority` lesson, on the
-first log this gate ever read.
-
-With the log closed and correct: `[PASS] arc_status_contract arc=041T pulses=9 teardowns=1
-wd_pid=4110049`, via the CLI and via the registered engine arm.
-
-| | passed | failed | cannot | skipped | guarded |
-|---|---|---|---|---|---|
-| ARC 041 banked (`41299aa`) | 89 | 2 | 2 | 0 | 1 |
-| this arc's baseline, same commit, clean tree | 86 | 5 | 2 | 0 | 1 |
-| post-write-back, arc log still OPEN | 89 | 3 | 3 | 0 | 1 |
-| **FINAL, arc log CLOSED (`1abcfd0`)** | **90** | **3** | **2** | **0** | **1** |
-
-**Baseline → final: +4 passed, −2 failed, cannot-measure UNCHANGED.** The predicted +1
-cannot-measure is real and was measured twice; it is what the gate costs while an arc log is absent
-or still open, and it is not a standing cost.
-
-**The limitation a green invites you to miss:** the log the gate audits is written by the agent the
-gate is judging. It proves a run SAID the right things in the right order; it cannot prove the run
-DID them. On top of the duty-cycle hole already recorded as D3.433.
+*(measured figures recorded below, forward-only, after the merged tree is measured)*
