@@ -217,3 +217,27 @@ noted forward rather than silently absorbed.
 
 **No count moved beyond the +1 predicted**: 97 registered checks (96 at kickoff + 1 for the new
 gate), matching the `passed+1` branch exactly.
+
+### ARC 046 — the FINAL measurement, banked forward-only at `6f20d38`
+
+`verify.py --mode verify --privilege all` over the merged tree: **`91 passed | 3 failed | 2 cannot
+measure | 0 skipped | 1 guarded`, exit 1 — exactly the prediction**, reached on the FIRST
+post-write-back pass (the earlier `89|4|3|0|1` diagnostic reading was taken before the marker
+existed and before the two self-inflicted defects above were fixed; it is not re-fitted, it stands
+one section up). `check_arc_status_contract` now reads **PASS** — the marker, self-verify, and
+teardown line all landed correctly ahead of it this time.
+
+**Three FAILs, all standing, none of them this arc's:** `check_ibgateway_service` (127.0.0.1:4002
+ConnectionRefusedError — the Gateway is down), `check_monitor_tui` (ARM3 stale pin — recorded
+known-red arms that no longer fail), and `check_uncalled_entry_points`. **Two cannot-measure, both
+the §17 ECONNREFUSED chain:** `check_ibgateway_config` and `check_observed_resource_claims` (240s
+observation budget exhausted waiting on the same unreachable Gateway). **One guarded:**
+`check_artifact_gate_coverage`, all eight exclusions already re-owned to **ARC 047**.
+
+**No count moved beyond the predicted +1**: 97 registered checks, matching the `passed+1` branch —
+adding `check_limiter_daemon_dispatch` as a genuinely new gate file was rule 8 answered honestly,
+not a second instrument over an existing one.
+
+**Badge on bank — Limiter STAYS RED.** clean = `{I2, I5, I6, I7, I8, I10, I11}` = **7/12**,
+open = **5**: **I1** (daemon-wiring capstone, partially wired this arc), **I3**, **I4**, **I9**,
+**I12**.
