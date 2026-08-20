@@ -6750,3 +6750,57 @@ which passes 13/13 with `derived:ledger_rows=399 == stated:series_table_latest_r
 **Residual, explicitly not claimed:** I1 is NOT discharged; no order was placed and nothing was sent;
 the Plane-1 `filled` row (D3.434), stop trailing (D3.451), the balance refresh (D3.452) and
 D3.443's `pending_entries()` all stand. **Badge: RED. Count: 7/12. I1 path-progress 2 of ~6.**
+
+### ARC 047 — THE FINAL MEASUREMENT: `89 | 4 | 3 | 1 | 1` at `696020c`. **PREDICTION MISSED.**
+
+Predicted `91 | 3 | 2 | 0 | 1`. Measured, twice, at the merged tree. Recorded forward-only; the
+prediction above stands as written (directive 6).
+
+**FIRST re-measure at `70cba01`: `89 | 4 | 4 | 0 | 1`.** Four movers, and the isolation matters more
+than the arithmetic:
+
+1. **`check_uncalled_entry_points` FAIL — PRE-EXISTING, and this arc REDUCED it.** Measured both
+   ways rather than argued: with `1d241e2`'s `limiterd.py`, `completions.py` and
+   `uncalled_entry_points_baseline.json` restored into the live repo, the check exits **1 with 55
+   findings**; at `70cba01` it exits **1 with 54**. All three files were restored and confirmed
+   byte-identical by `git hash-object` afterwards. **So the predicted baseline of three fails did
+   not hold at the predecessor tip either** — the prediction inherited a stale premise from the
+   brief, and repeating it was the error. The `[??]`/`[FAIL]` composition ARC 046 reported is not
+   reproducible at the tip it named.
+2. **`check_untracked_attribution` FAIL — NOT this arc's work.**
+   `downloads/Pinokio-8.0.40-arm64.dmg` (143 MB, mtime 2026-08-20 19:45, in NO commit on any
+   branch) appeared in the canonical tree DURING this session and is not an ARC 047 artifact. It was
+   swept into a `git add -A`, caught before the commit, and unstaged. **It is left untracked and
+   untouched: not committed (a binary of unknown provenance is not this arc's to adopt), not
+   deleted, and NOT added to `.gitignore`** — ignoring it would suppress a detector that is working
+   exactly as designed. The gate's own instruction is *"Rule on provenance before adopting it"*, and
+   that ruling is the operator's. **The red stands and is named rather than laundered.**
+3. **`check_artifact_gate_coverage` CANNOT-MEASURE — OWED, AND DISCHARGED IN THIS CLOSE-OUT.** The
+   D3.40/D3.144 guard-owner transition, firing exactly where `CLAUDE.md` says it fires: the moment
+   `SESSION.md` named ARC 047 complete, the eight exclusion owners became a COMPLETED arc and the
+   gate refused — *"an owner that cannot pay is no owner wearing a name"* (doctrine B.3). The brief
+   required this re-point to be named in advance and it was: **047 -> 048**, committed at
+   `696020c`. Check contract rule 14's live-arc requirement is what makes the walk mandatory rather
+   than optional, and it is the ARC 032 -> 033 -> 035 walk `CLAUDE.md` describes — the sanctioned
+   mechanic, not a repair. The live instance stays in the JSON's own `exclusions` map and is
+   deliberately NOT restated anywhere else.
+4. **`check_arc_status_contract` CANNOT-MEASURE — STRUCTURAL, and it cannot be otherwise.** The log
+   carries no completion marker at re-measure time BECAUSE `CLAUDE.md` §16.4 orders the marker after
+   the final measurement is banked. This check is CANNOT-MEASURE by construction in every arc's
+   re-measure and green only against a completed arc's log.
+
+**SECOND re-measure at `696020c`, after the re-point: `89 | 4 | 3 | 1 | 1`.**
+`check_artifact_gate_coverage` recovered from CANNOT-MEASURE to **GUARDED** — the guarded column
+moves 0 -> 1, which is the count movement this arc actually produced and it is not an invariant
+flip. Standing: `check_ibgateway_service` FAIL and `check_ibgateway_config` /
+`check_observed_resource_claims` CANNOT-MEASURE (the gateway is down — not a misconfiguration,
+§4.1); `check_monitor_tui` FAIL (ARM3 stale pin, untouched by this arc).
+
+**Why the miss, stated as a lesson rather than an excuse:** the prediction was copied from the
+brief's expected baseline instead of being DERIVED from a measurement of the predecessor tip. A
+predicted delta is only as good as the level it is added to, and this arc never measured the level.
+**The rule that follows: measure the tip BEFORE predicting the delta** — one `verify.py` run at the
+predecessor costs what it costs and converts a guess into arithmetic. Same family as D3.102's
+undserived numerator: a figure carried forward without re-derivation.
+
+**Badge unchanged by all of it: Limiter RED, count 7/12, I1 path-progress 2 of ~6.**

@@ -278,3 +278,63 @@ inside `completions.py` is unchanged line-for-line** — the diff there is addit
 
 **Limiter STAYS RED. Count STAYS 7/12. I1 path-progress: 2 of ~6 wired.**
 When I1 fully lands it flips to 8/12 in one step — **ARC D of the four above.**
+
+---
+
+## POST-WRITE-BACK RE-MEASURE — **PREDICTION MISSED**
+
+**Predicted `91 | 3 | 2 | 0 | 1`. Final measurement: `89 | 4 | 3 | 1 | 1`, exit 1, at `696020c`.**
+Recorded forward-only; the prediction stands as written (directive 6).
+
+| | pass | fail | cannot-measure | guarded | exit |
+|---|---|---|---|---|---|
+| predicted (from the brief) | 91 | 3 | 2 | 0 | 1 |
+| first re-measure, `70cba01` | 89 | 4 | 4 | 0 | 1 |
+| **final, `696020c`** | **89** | **4** | **3** | **1** | **1** |
+
+### The four movers, ISOLATED rather than argued
+
+**1. `check_uncalled_entry_points` FAIL — PRE-EXISTING AT THE TIP, and this arc REDUCED it.**
+Measured both ways: with `1d241e2`'s `limiterd.py`, `completions.py` and
+`uncalled_entry_points_baseline.json` restored into the live repo, the check exits **1 with 55
+findings measured**; at `70cba01` it exits **1 with 54**. All three files restored and confirmed
+byte-identical by `git hash-object` afterwards. **The predicted baseline of three fails therefore
+did not hold at the predecessor tip either.** The ARC 046 composition the brief carried forward is
+not reproducible at the commit it names.
+
+**2. `check_untracked_attribution` FAIL — NOT THIS ARC'S WORK, AND IT NEEDS AN OPERATOR RULING.**
+`downloads/Pinokio-8.0.40-arm64.dmg` — 143 MB, mtime 2026-08-20 19:45, **in no commit on any
+branch** — appeared in the canonical tree during this session. It was swept into a `git add -A`,
+caught before the commit, and unstaged. **Disposition: left untracked and untouched.** Not committed
+(a binary of unknown provenance is not this arc's to adopt), not deleted, and **NOT added to
+`.gitignore`** — ignoring it would suppress a detector working exactly as designed, which is the
+laundering the ratchet exists to prevent. The gate's own instruction is *"Rule on provenance before
+adopting it"*. **The red stands, named.**
+
+**3. `check_artifact_gate_coverage` CANNOT-MEASURE -> GUARDED — the re-point the brief named, OWED
+AND DISCHARGED.** The D3.40/D3.144 guard-owner transition fired exactly where `CLAUDE.md` says it
+does: the moment `SESSION.md` named ARC 047 complete, the eight exclusion owners became a COMPLETED
+arc and the gate refused — *"an owner that cannot pay is no owner wearing a name"* (doctrine B.3).
+Re-pointed **047 -> 048** and committed at `696020c`; the gate returns GUARDED, exit 0. Check
+contract rule 14's live-arc requirement makes the walk mandatory, not optional; it is the
+ARC 032 -> 033 -> 035 walk `CLAUDE.md` describes, and the live instance stays in the JSON's own
+`exclusions` map rather than being restated anywhere else. **This is the one count movement the arc
+produced: guarded 0 -> 1. It is not an invariant flip.**
+
+**4. `check_arc_status_contract` CANNOT-MEASURE — STRUCTURAL.** No completion marker in the log at
+re-measure time BECAUSE `CLAUDE.md` §16.4 orders the marker after the final measurement is banked.
+CANNOT-MEASURE by construction in every arc's re-measure.
+
+Standing and unchanged: `check_ibgateway_service` FAIL, `check_ibgateway_config` and
+`check_observed_resource_claims` CANNOT-MEASURE (gateway down — not a misconfiguration, §4.1),
+`check_monitor_tui` FAIL (ARM3 stale pin, untouched here).
+
+### Why the miss — the lesson, not an excuse
+
+The prediction was **copied from the brief's expected baseline instead of DERIVED from a measurement
+of the predecessor tip.** A predicted delta is only as good as the level it is added to, and this
+arc never measured the level. **The rule that follows: measure the tip BEFORE predicting the
+delta** — one `verify.py` run at the predecessor converts a guess into arithmetic. Same family as
+D3.102's underived numerator: a figure carried forward without re-derivation.
+
+**Badge unchanged by all of it: Limiter RED, count 7/12, I1 path-progress 2 of ~6.**
