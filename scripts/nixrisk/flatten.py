@@ -293,13 +293,60 @@ class CloseTarget:
     strategy_id: str
 
 
+class OrderRole(enum.Enum):
+    """§3:173's partition of a working order: what an onset sweep may cancel.
+
+    ARC 045 / I11. §3:172-174 is *"Blackout/HALT onset => Limiter cancels all
+    pending ENTRY orders (exits untouched)"*, and until this enum existed the
+    tree had **no way to say which of the two an order was**: `ProposedOrder`,
+    `PendingEntry` and `NeutralOrder` all carry `side` (LONG/SHORT, BUY/SELL)
+    and none carries a role, so entry-vs-exit was a contract asserted in a
+    docstring and checkable by nothing. A predicate the type system cannot
+    express is a predicate the next author silently breaks.
+
+    `EXIT` and `PROTECTIVE` are kept distinct for the same reason
+    `CloseAuthority` keeps them distinct -- protective always wins (§4) and §14
+    gives the protective path zero delivery dependency -- but the onset sweep
+    treats them identically: neither is ever cancelled.
+    """
+
+    ENTRY = "entry"
+    EXIT = "exit"
+    PROTECTIVE = "protective"
+
+
+#: ARC 045 / I11. The order roles an onset sweep MAY cancel. §3:172 is *"cancels
+#: all pending ENTRY orders (exits untouched)"*, so this set is `{ENTRY}` and the
+#: two exit roles are excluded BY CONSTRUCTION rather than by a condition someone
+#: has to remember to write. It is a named frozenset and not an inline comparison
+#: so the exclusion has ONE site to audit, plant and read: widening it is the
+#: single edit that turns the onset sweep into something that cancels a
+#: protective stop and leaves a real position unprotected inside the window
+#: (§14), which is why `check_flatten`'s selectivity arm plants exactly here.
+#: Declared below `OrderRole` rather than beside `_ONSET_CAUSES` because the enum
+#: has to exist first, and BOUND ONCE: a forward declaration plus a rebinding
+#: reads to pylint as a mutable module variable, not a constant, which is the
+#: honest reading — a constant that is assigned twice is not one.
+_CANCELLABLE_ROLES: frozenset[OrderRole] = frozenset({OrderRole.ENTRY})
+
+
 @dataclass(frozen=True)
 class PendingEntry:
-    """One pending ENTRY order (§3). Onset cancels these; exits are untouched."""
+    """One pending ENTRY order (§3). Onset cancels these; exits are untouched.
+
+    `role` defaults to `ENTRY` because that is what this type IS -- the default
+    moves no existing construction site. It is NOT what admits an order to the
+    sweep: admission is DERIVED from the reservation ledger (see
+    `ProtectiveFlatten._classify_for_onset`), because §3's own pipeline is
+    *"approve => TAKE RESERVATION"* and §3:174 is *"no order may fill inside a
+    window it was not APPROVED for"*. A declared role can only ever EXCLUDE an
+    order from the sweep, never admit one.
+    """
 
     client_order_id: str
     strategy_id: str
     symbol: str
+    role: OrderRole = OrderRole.ENTRY
 
 
 @dataclass(frozen=True)
@@ -347,7 +394,14 @@ class FlattenAction:
 
 
 @dataclass(frozen=True)
-class OnsetCancellation:
+class OnsetCancellation:  # pylint: disable=too-many-instance-attributes
+    # Eight fields, one over the default, and every one is a DISPOSITION the
+    # §12.10:753 sweep field or an operator needs by name: cancelled, released,
+    # refused, failed-at-the-broker, excluded-as-an-exit, excluded-as-
+    # out-of-scope, unclassifiable — plus the cause. Collapsing any pair would
+    # merge a correct exclusion with an unsafe one, which is the distinction
+    # ARC 045 exists to draw. The threshold is about behavioural classes
+    # accreting state; this is a frozen value type with no behaviour.
     """One onset's entry-cancel sweep: what was cancelled and released under `cause`.
 
     `failures` is ARC 038 / A (FA-3) and it carries the entries whose broker
@@ -362,11 +416,38 @@ class OnsetCancellation:
     released: tuple[Reservation, ...]
     refusals: tuple[Refusal, ...]
     failures: tuple[tuple[str, str], ...] = ()
+    #: ARC 045 / I11 SELECTIVE. Orders the sweep REFUSED to cancel because they
+    #: are not entries -- `(client_order_id, why)`. §3:173's "exits untouched"
+    #: and §14's zero-delivery-dependency protective path: cancelling a stop
+    #: inside a blackout leaves a real position unprotected inside the window.
+    #: A CORRECT exclusion, so it does not make the sweep incomplete.
+    protected: tuple[tuple[str, str], ...] = ()
+    #: ARC 045 / I11 COMPLETE (scope). Orders outside a PER-SYMBOL onset's scope
+    #: -- `(client_order_id, why)`. A blackout on symbol A must not cancel
+    #: symbol B's entries (§6.1 is per-symbol via the live calendar). Also a
+    #: CORRECT exclusion; global HALT (`scope is None`) never populates it.
+    out_of_scope: tuple[tuple[str, str], ...] = ()
+    #: ARC 045 / I11 COMPLETE (derivation). Orders the sweep could NOT classify
+    #: as gate-approved pending entries -- `(client_order_id, why)`. NOT a
+    #: correct exclusion and NOT a safe one: an unclassifiable order is one the
+    #: sweep can neither cancel (it might be a protective exit) nor leave
+    #: quietly (it might be an entry that then fills inside the window). It is
+    #: named, and it makes `complete` False so the §12.10:753 HALT row books
+    #: `onset_sweep=partial` rather than claiming a clean sweep. This is the
+    #: I2/D3.440 lesson applied to a sweep: a fixed list of kinds that meets a
+    #: kind it does not know must say CANNOT-MEASURE, never PASS.
+    unclassified: tuple[tuple[str, str], ...] = ()
 
     @property
     def complete(self) -> bool:
-        """Did EVERY pending entry reach the venue as a cancel? §3:173's "all"."""
-        return not self.failures
+        """Did EVERY pending entry reach the venue as a cancel? §3:173's "all".
+
+        `protected` and `out_of_scope` are CORRECT exclusions and do not count
+        against it -- §3:173 cancels every pending ENTRY, not every order handed
+        over. `unclassified` DOES count: the sweep does not know whether it left
+        an entry live inside the window, and "I do not know" is not "complete".
+        """
+        return not self.failures and not self.unclassified
 
 
 @dataclass(frozen=True)
@@ -692,10 +773,134 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
 
     # -- B4: onset cancels pending ENTRY orders, exits untouched ---------------
 
-    def cancel_entries_on_onset(
-        self, cause: TerminalPath, pending: Sequence[PendingEntry]
+    def _classify_for_onset(  # pylint: disable=too-many-return-statements
+        self,
+        entry: object,
+        approved: dict[str, Reservation],
+        scope: str | None,
+    ) -> tuple[Reservation | None, str, str]:
+        """Derive whether one handed-over order is an in-scope pending ENTRY.
+
+        ARC 045 / I11. Returns `(reservation, bucket, why)`: the reservation when
+        the order is admitted (`bucket == ""`), otherwise `None` and the name of
+        the exclusion bucket -- `"protected"`, `"out_of_scope"` or
+        `"unclassified"` -- with the reason that names the site.
+
+        **The admission test is the RESERVATION LEDGER, not the caller's word.**
+        §3's pipeline is *"approve => TAKE RESERVATION (proposed margin)"* and
+        §3:174 is *"no order may fill inside a window it was not APPROVED for"*,
+        so the set of orders an onset may cancel is exactly the set holding an
+        OUTSTANDING reservation. That set is DERIVED here from
+        `ReservationLedgerPort.outstanding()` -- an in-memory read of the money
+        record the Limiter already owns, on a port verb that already exists. No
+        broker verb is added: `BrokerFlattenPort` withholds `query_order_status`
+        on purpose so §14's zero-wire claim stays legible (see the port's own
+        docstring), and this derivation needs no wire at all.
+
+        Measured before it was written (ARC 045 / S1): the ledger ALREADY knew.
+        `reservations.resolve` answers `_refuse_unknown` for a coid it never
+        took -- but the sweep asked it at `resolve` time, which is AFTER
+        `cancel_order` has already reached the venue, and then discarded the
+        answer onto `refusals` where nothing read it. The order was cancelled at
+        the broker and reported on `cancelled` as though it were an entry. The
+        repair is not new knowledge; it is asking the question first.
+
+        A DECLARED role can only EXCLUDE. `role=EXIT`/`PROTECTIVE` is honoured
+        unconditionally and without consulting the ledger, because refusing to
+        cancel something that says it is a stop is the safe direction whatever
+        the money record says. `role=ENTRY` is NOT trusted -- it still has to be
+        corroborated -- which is why the default on `PendingEntry` is harmless.
+
+        Scope is read off the RESERVATION, never off the handed object.
+        `blackout.py` used to filter with `getattr(entry, "symbol", None) ==
+        symbol`, and an entry object carrying no `symbol` attribute was
+        SILENTLY DROPPED from the sweep and left working inside the window
+        (measured, ARC 045 / S1). The money record always carries the symbol.
+        """
+        coid = getattr(entry, "client_order_id", None)
+        if not isinstance(coid, str) or not coid:
+            return (
+                None,
+                "unclassified",
+                (
+                    f"{type(entry).__name__} carries no usable client_order_id "
+                    f"({coid!r}) -- the sweep cannot name it, cancel it, or prove it "
+                    "is not an entry left live inside the window (§3:174)"
+                ),
+            )
+        role = getattr(entry, "role", None)
+        if role is not None and not isinstance(role, OrderRole):
+            return (
+                None,
+                "unclassified",
+                (
+                    f"{coid} declares role {role!r}, which is not an OrderRole -- an "
+                    "order kind this sweep cannot classify (§3:173)"
+                ),
+            )
+        if isinstance(role, OrderRole) and role not in _CANCELLABLE_ROLES:
+            return (
+                None,
+                "protected",
+                (
+                    f"{coid} is declared {role.value}; §3:173 leaves exits untouched "
+                    "and §14 gives the protective path zero delivery dependency -- "
+                    "cancelling it would leave a position unprotected inside the window"
+                ),
+            )
+        reservation = approved.get(coid)
+        if reservation is None:
+            return (
+                None,
+                "unclassified",
+                (
+                    f"{coid} holds NO outstanding reservation, so it is not a "
+                    "gate-approved pending entry (§3: approve => take reservation). "
+                    "The sweep will not cancel it -- it may be an exit or protective "
+                    "order, and §3:173 leaves those untouched -- and will not claim "
+                    "a complete sweep, because it may instead be an entry that can "
+                    "still fill inside the window (§3:174)"
+                ),
+            )
+        declared_symbol = getattr(entry, "symbol", None)
+        if declared_symbol is not None and declared_symbol != reservation.symbol:
+            return (
+                None,
+                "unclassified",
+                (
+                    f"{coid} declares symbol {declared_symbol!r} but its reservation "
+                    f"{reservation.reservation_id} is for {reservation.symbol!r} -- "
+                    "the book and the money record disagree about what this order is"
+                ),
+            )
+        if scope is not None and reservation.symbol != scope:
+            return (
+                None,
+                "out_of_scope",
+                (
+                    f"{coid} is {reservation.symbol}; this is a per-symbol "
+                    f"{scope} onset (§6.1 is per-symbol via the live calendar)"
+                ),
+            )
+        return (reservation, "", "")
+
+    def cancel_entries_on_onset(  # pylint: disable=too-many-locals
+        self,
+        cause: TerminalPath,
+        pending: Sequence[PendingEntry],
+        *,
+        scope: str | None = None,
     ) -> OnsetCancellation:
         """§3: Blackout/HALT onset cancels all pending ENTRY orders; exits untouched.
+
+        `scope` is the ONSET'S SCOPE and it is not decoration (ARC 045 / I11):
+        `None` means GLOBAL -- a HALT stops every strategy and every symbol
+        (§12.5) -- and a symbol means THAT SYMBOL ONLY, which is what §6.1/§6.2/
+        §6.3 blackout windows are, per-symbol off the live calendar. Before this
+        argument existed the scope lived only in the blackout caller's list
+        comprehension and this method had no notion of it at all: handed an
+        MNQU6 entry under a MESU6 `BLACKOUT_ONSET` it cancelled the MNQU6 order
+        without complaint (measured, ARC 045 / S1).
 
         Each cancelled entry releases its reservation under its OWN named cause
         (SPEC-A7): a HALT-onset cancel books `HALT_ONSET`, a blackout-onset cancel
@@ -763,7 +968,35 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
         released: list[Reservation] = []
         refusals: list[Refusal] = []
         failures: list[tuple[str, str]] = []
+        protected: list[tuple[str, str]] = []
+        out_of_scope: list[tuple[str, str]] = []
+        unclassified: list[tuple[str, str]] = []
+        # ARC 045 / I11. The in-scope pending-ENTRY set is DERIVED here, once,
+        # from the money record -- never taken on the caller's word. `pending`
+        # is `Sequence[object]` at both ports (`blackout.PendingEntriesPort`,
+        # `halt.PendingEntriesPort`) and has NO production implementation
+        # (D3.349), so "every element is an entry" was a promise nothing could
+        # check and this loop cancelled whatever it was handed.
+        buckets = {
+            "protected": protected,
+            "out_of_scope": out_of_scope,
+            "unclassified": unclassified,
+        }
+        approved = {
+            reservation.client_order_id: reservation
+            for reservation in self._ledger.outstanding()
+        }
         for entry in pending:
+            reservation, bucket, why = self._classify_for_onset(entry, approved, scope)
+            if reservation is None:
+                # NOT cancelled at the venue. The exclusion happens BEFORE the
+                # `cancel_order` below, which is the whole repair: the ledger's
+                # `_refuse_unknown` already existed, but it was consulted at
+                # `resolve` time, one line too late to stop the wire call.
+                buckets[bucket].append(
+                    (str(getattr(entry, "client_order_id", "<unnamed>")), why)
+                )
+                continue
             # ARC 038 / A (FA-3). The cancel was UNGUARDED here, and one refusal
             # aborted the whole sweep: MEASURED with three working entries and a
             # broker refusing the second — entries two and three stayed live at
@@ -789,8 +1022,8 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
                 self._book(
                     kind=EventKind.CANCEL,
                     trade_id=None,
-                    strategy_id=entry.strategy_id,
-                    symbol=entry.symbol,
+                    strategy_id=reservation.strategy_id,
+                    symbol=reservation.symbol,
                     reason=(
                         f"{cause.value} onset entry-cancel REFUSED by the broker "
                         f"({why}) — the entry is STILL WORKING at the venue and can "
@@ -813,8 +1046,8 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
                     UnbookedRow(
                         kind=EventKind.RESERVATION_RELEASED,
                         trade_id=None,
-                        strategy_id=entry.strategy_id,
-                        symbol=entry.symbol,
+                        strategy_id=reservation.strategy_id,
+                        symbol=reservation.symbol,
                         ts=now,
                         reason=(
                             f"releasing {entry.client_order_id} under "
@@ -831,8 +1064,8 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
             self._book(
                 kind=EventKind.CANCEL,
                 trade_id=None,
-                strategy_id=entry.strategy_id,
-                symbol=entry.symbol,
+                strategy_id=reservation.strategy_id,
+                symbol=reservation.symbol,
                 reason=f"{cause.value} onset entry-cancel",
                 ts=now,
             )
@@ -842,6 +1075,9 @@ class ProtectiveFlatten:  # pylint: disable=too-many-instance-attributes
             released=tuple(released),
             refusals=tuple(refusals),
             failures=tuple(failures),
+            protected=tuple(protected),
+            out_of_scope=tuple(out_of_scope),
+            unclassified=tuple(unclassified),
         )
 
     # -- B5: reconcile-then-publish the CONFIRMED state ------------------------

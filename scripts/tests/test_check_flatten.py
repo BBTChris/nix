@@ -271,3 +271,163 @@ def test_the_GATE_LEAVES_THE_INTERPRETER_AS_IT_FOUND_IT(home: Path) -> None:
     assert sys.modules.get("nixrisk.flatten") is real, (
         "the gate left the tmp_path copy of nixrisk.flatten in sys.modules"
     )
+
+
+# --------------------------------------------------------------------------
+# ARC 045 / I11 — the ONSET SELECTION arm (ARM 3b), bound from three plants
+# --------------------------------------------------------------------------
+#
+# Each plant is ONE literal edit to the COPIED subject, and each names a
+# different half of §3:172-174. A/B are FAIL (exit 1); C is CANNOT_MEASURE
+# (exit 2), because an order kind the arm cannot classify is a completeness it
+# did not measure — never a PASS (check contract rule 10, D3.440).
+
+
+#: A unique anchor on `OrderRole.PROTECTIVE`. The bare member line is NOT
+#: unique — `CloseAuthority` carries the same spelling — and `_plant` refuses a
+#: multi-hit anchor, which is the helper doing its job rather than a nuisance.
+_ORDER_ROLE_TAIL = (
+    '    PROTECTIVE = "protective"\n'
+    "\n"
+    "\n"
+    "#: ARC 045 / I11. The order roles an onset sweep MAY cancel."
+)
+
+#: The selectivity guard's two spellings. PLANT B widens it by exactly the two
+#: members §3:173 excludes — the smallest edit that unprotects a live position.
+_ROLES_NARROW = (
+    "_CANCELLABLE_ROLES: frozenset[OrderRole] = frozenset({OrderRole.ENTRY})"
+)
+_ROLES_WIDE = (
+    "_CANCELLABLE_ROLES: frozenset[OrderRole] = frozenset(\n"
+    "    {OrderRole.ENTRY, OrderRole.EXIT, OrderRole.PROTECTIVE}\n"
+    ")"
+)
+
+
+def test_the_REAL_TREE_passes_the_SELECTION_arm_and_the_EVIDENCE_names_it() -> None:
+    result = _run(REPO)
+
+    assert result.status is Status.PASS, result
+    assert "onset SELECTION" in result.evidence, result.evidence
+    assert "complete by derivation" in result.evidence, result.evidence
+    # Non-vacuity of the arm itself: it says what it staged, so a green over an
+    # empty scope is not readable as a green over a real one.
+    assert "3 entries + 2 exits + 1 open position staged" in result.evidence, (
+        result.evidence
+    )
+    assert "5 arms" in result.evidence, result.evidence
+
+
+def test_PLANT_A_an_INSCOPE_ENTRY_SURVIVES_the_onset_FAILS_and_NAMES_it(
+    home: Path,
+) -> None:
+    """INCOMPLETE. The sweep reaches only the first entry; two stay working."""
+    _plant(
+        home,
+        "        for entry in pending:",
+        "        for entry in tuple(pending)[:1]:",
+    )
+
+    result = _run(home)
+
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert "cancel_entries_on_onset[selection]" in result.site, result.site
+    assert "INCOMPLETE" in result.detail, result.detail
+    # It names the SURVIVING entries, not merely a count.
+    assert "c-a2" in result.detail and "c-b1" in result.detail, result.detail
+    # ...and the window they can now fill in.
+    assert "fill inside the HALT window" in result.detail, result.detail
+    assert "§3:174" in result.detail, result.detail
+
+
+def test_PLANT_B_the_predicate_CANCELS_AN_EXIT_FAILS_and_NAMES_the_position(
+    home: Path,
+) -> None:
+    """OVER-BROAD — the dangerous one. Widening `_CANCELLABLE_ROLES` by one
+    literal turns the onset sweep into something that cancels a protective stop
+    guarding a live position, which is what §14 exists to prevent."""
+    _plant(
+        home,
+        _ROLES_NARROW,
+        _ROLES_WIDE,
+    )
+
+    result = _run(home)
+
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert "cancel_entries_on_onset[selection]" in result.site, result.site
+    assert "OVER-BROAD" in result.detail, result.detail
+    # It names the cancelled protective order...
+    assert "c-stop" in result.detail, result.detail
+    # ...and the position that cancel left unprotected.
+    assert "MESU6" in result.detail, result.detail
+    assert "UNPROTECTED" in result.detail, result.detail
+    assert "§14" in result.detail, result.detail
+
+
+def test_PLANT_C_an_UNCLASSIFIABLE_ENTRY_KIND_is_CANNOT_MEASURE_never_PASS(
+    home: Path,
+) -> None:
+    """A new `OrderRole` member the arm has no disposition for. The arm must
+    refuse to certify completeness rather than pass over a kind it cannot
+    place — the D3.440 lesson, one module over."""
+    _plant(
+        home,
+        _ORDER_ROLE_TAIL,
+        '    PROTECTIVE = "protective"\n    ICEBERG = "iceberg"'
+        + _ORDER_ROLE_TAIL[len('    PROTECTIVE = "protective"') :],
+    )
+
+    result = _run(home)
+
+    assert result.status is Status.CANNOT_MEASURE, result
+    # It NAMES the kind it could not classify.
+    assert "iceberg" in result.detail, result.detail
+    assert "cannot classify" in result.detail, result.detail
+    assert "D3.440" in result.detail, result.detail
+    # And it is emphatically not a pass.
+    assert result.status is not Status.PASS
+
+
+def test_PLANT_C_and_a_REAL_FAIL_TOGETHER_report_the_FAIL(home: Path) -> None:
+    """Contract rule 4: Fail > Cannot-measure. A tree carrying both must not
+    hide a real violation behind an unmeasured one."""
+    _plant(
+        home,
+        _ORDER_ROLE_TAIL,
+        '    PROTECTIVE = "protective"\n    ICEBERG = "iceberg"'
+        + _ORDER_ROLE_TAIL[len('    PROTECTIVE = "protective"') :],
+    )
+    _plant(
+        home,
+        "        for entry in pending:",
+        "        for entry in tuple(pending)[:1]:",
+    )
+
+    result = _run(home)
+
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+
+
+def test_THE_PLANTS_REMOVED_the_SAME_TREE_PASSES(home: Path) -> None:
+    """The both-halves close: the throwaway tree is not passing because it is a
+    copy, and the plants above are not failing for an environmental reason."""
+    before = _run(home)
+    assert before.status is Status.PASS, before
+
+    _plant(
+        home,
+        _ROLES_NARROW,
+        _ROLES_WIDE,
+    )
+    planted = _run(home)
+    assert planted.status is Status.FAIL_NEEDS_OPERATOR, planted
+
+    _plant(
+        home,
+        _ROLES_WIDE,
+        _ROLES_NARROW,
+    )
+    after = _run(home)
+    assert after.status is Status.PASS, after

@@ -47,6 +47,16 @@ requires the falsifier to LOSE the property this gate's own assertion checks.
 An arm whose falsifier passes measures nothing; that is asserted, not assumed.
 """
 
+# too-many-lines: 1119 of a 1000 default, and the overage is ARM 3b's prose plus
+# its staging. ARC 045 added the onset SELECTION arm with the measurement behind
+# it in the comment block — that ARM 3's "exits untouched" clause was green over
+# a sweep cancelling a protective order at the venue, because cancelling an order
+# is not calling `flatten`. The alternative was to cut the reasoning to satisfy a
+# line count, which inverts directive 8: enforce mechanically what can be, and
+# the prose that cannot be is what makes the next reader's edit safe. Same call
+# `scripts/nixrisk/flatten.py` itself already makes, one file over.
+# pylint: disable=too-many-lines
+
 from __future__ import annotations
 
 import importlib
@@ -663,6 +673,297 @@ def _arm_onset(loaded: Loaded, home: Path) -> list[Finding]:
 
 
 # --------------------------------------------------------------------------
+# ARM 3b — onset SELECTION: complete (by derivation), selective, scoped
+# --------------------------------------------------------------------------
+#
+# ARC 045 / I11 (§3:172-174, §6.1, §15:995 C4, §14). ARM 3 above owns the
+# onset-cancel's CAUSE BOOKING; this arm owns WHICH ORDERS THE SWEEP PICKS, and
+# the split is stated in both docstrings so doctrine C.9's boundary survives the
+# next author. It is an ARM of this gate and not a new check for the same
+# reason: `flatten.ProtectiveFlatten.cancel_entries_on_onset` is one property's
+# one instrument, and `check_halt` ARM 4 measures the HALT TRANSITION's use of
+# it (that the transition sweeps at all, and books `onset_sweep`), never the
+# selection predicate.
+#
+# Measured before it was written (ARC 045 / S1, at e3bef1a): ARM 3's "exits
+# untouched" clause asserted `broker.flatten_calls == []` and that an open
+# POSITION survived — and both stay true while the sweep cancels every EXIT
+# ORDER it is handed, because cancelling an order is not calling `flatten`. The
+# arm was green over a sweep that cancelled a protective stop at the venue and
+# reported it on `cancelled` as an entry. That is the §0a shape: a gate green
+# over a real gap, in the half that unprotects a live position.
+
+
+#: What the sweep is contracted to do with each order role. DERIVED against the
+#: subject's own `OrderRole` on every run rather than transcribed: a role member
+#: that appears in `flatten.py` and not here is an order kind this arm cannot
+#: classify, and the arm answers CANNOT_MEASURE naming it (never PASS). That is
+#: the D3.440 lesson — a fixed list that meets an unknown kind must say so.
+_ROLE_DISPOSITION: dict[str, bool] = {
+    "entry": True,  # cancelled by the onset
+    "exit": False,  # never cancelled (§3:173)
+    "protective": False,  # never cancelled (§3:173, §14)
+}
+
+
+class _AlienKind:
+    """An order of a kind no `OrderRole` describes. The sweep must NOT cancel it.
+
+    Not a role member and not a `PendingEntry`: this is the shape a future book
+    hands over when a new order kind ships before this path learns about it. The
+    only safe dispositions are "refuse and name it"; cancelling it might kill a
+    stop, and skipping it quietly might leave an entry live inside the window.
+    """
+
+    def __init__(self, coid: str, symbol: str) -> None:
+        self.client_order_id = coid
+        self.strategy_id = "strat-alien"
+        self.symbol = symbol
+        self.role = "iceberg"
+
+
+def _stage_onset_scope(loaded: Loaded) -> tuple[Any, Any, Any, list[str], list[str]]:
+    """Real ledger + real executor + the orders the claim is about.
+
+    Returns `(executor, ledger, broker, entry_coids, exit_coids)`. Two symbols
+    and two strategies, so a per-symbol blackout has something to leave alone.
+
+    **`c-stop` holds an OUTSTANDING reservation and declares itself PROTECTIVE**,
+    and that is deliberate rather than convenient: it is ARC 038 / FA-6's shape
+    (CHECK-DEBT D3.354) — an approved entry that has FILLED at the venue and now
+    guards the position it opened, its reservation not yet converted to open
+    margin. In that state the money record still says "outstanding" and the ROLE
+    is the only thing between the sweep and cancelling a live stop, which is
+    exactly what makes `_CANCELLABLE_ROLES` load-bearing and plantable.
+    """
+    flatten = loaded.flatten
+    seam = loaded.seam
+    plane1 = _Plane1()
+    ledger = loaded.reservations.ReservationLedger(plane1)
+
+    def _take(coid: str, symbol: str, strategy: str) -> None:
+        ledger.take(
+            seam.ProposedOrder(
+                client_order_id=coid,
+                strategy_id=strategy,
+                symbol=symbol,
+                side=seam.Side.LONG,
+                qty=1,
+                margin_per_contract=1000.0,
+                stop_ticks=20,
+                stop_mode=seam.StopMode.FIXED,
+                signal_ts=1000.0,
+            ),
+            1.0,
+        )
+
+    _take("c-a1", "MESU6", "strat-1")
+    _take("c-a2", "MESU6", "strat-2")
+    _take("c-b1", "MNQU6", "strat-2")
+    _take("c-stop", "MESU6", "strat-1")
+    _take("c-exit", "MNQU6", "strat-2")
+
+    broker = _make_broker(
+        loaded,
+        positions=[loaded.broker_seam.Position("MESU6", 2, 5000.0)],
+        cash=20344.34,
+    )
+    _bind_balance(broker, loaded)
+    executor = flatten.ProtectiveFlatten(
+        broker=broker,
+        ledger=ledger,
+        picture=_flat_book(loaded, _RecordingSink()),
+        strategy=_StrategySink(),
+        plane1=plane1,
+        scoring=_ScoringSink(),
+        clock=_clock_seq(),
+    )
+    return executor, ledger, broker, ["c-a1", "c-a2", "c-b1"], ["c-stop", "c-exit"]
+
+
+def _onset_book(loaded: Loaded) -> list[Any]:
+    """The book a §3 pending-entry port hands over: entries AND the exits it knows."""
+    flatten = loaded.flatten
+    return [
+        flatten.PendingEntry("c-a1", "strat-1", "MESU6"),
+        flatten.PendingEntry("c-a2", "strat-2", "MESU6"),
+        flatten.PendingEntry("c-b1", "strat-2", "MNQU6"),
+        flatten.PendingEntry(
+            "c-stop", "strat-1", "MESU6", role=flatten.OrderRole.PROTECTIVE
+        ),
+        flatten.PendingEntry("c-exit", "strat-2", "MNQU6", role=flatten.OrderRole.EXIT),
+    ]
+
+
+def _arm_onset_selection(loaded: Loaded, home: Path) -> tuple[list[Finding], list[str]]:
+    """§3:173's SELECTION: every in-scope entry, only entries, only in scope.
+
+    Returns `(findings, unmeasurable)`. A non-empty `unmeasurable` takes the
+    whole gate to CANNOT_MEASURE — check-contract rule 10: a safety property
+    whose subject cannot be classified is not proven, and the verdict is never
+    PASS.
+    """
+    del home  # kept for call-shape symmetry with the other arm functions
+    findings: list[Finding] = []
+    unmeasurable: list[str] = []
+    flatten = loaded.flatten
+    seam = loaded.seam
+    site = f"{FLATTEN_FILE}:cancel_entries_on_onset[selection]"
+
+    # -- COMPLETENESS BY DERIVATION, not by a transcribed list --------------
+    roles = getattr(flatten, "OrderRole", None)
+    if roles is None:
+        unmeasurable.append(
+            f"{site}: the subject declares no `OrderRole`, so entry-vs-exit is "
+            "not expressible in order state and §3:173's partition cannot be "
+            "measured at all"
+        )
+        return findings, unmeasurable
+    unknown = [r.value for r in roles if r.value not in _ROLE_DISPOSITION]
+    if unknown:
+        unmeasurable.append(
+            f"{site}: `OrderRole` carries {unknown!r}, which this arm has no "
+            "disposition for — an order kind it cannot classify. §3:173 says "
+            "the onset cancels ALL pending ENTRY orders, and an unclassified "
+            "kind may be one; reporting PASS would certify a completeness this "
+            "arm did not measure (D3.440)"
+        )
+        # DELIBERATELY NOT a return. Contract rule 4 aggregates Fail ABOVE
+        # Cannot-measure, and an early return here inverted it: a tree carrying
+        # BOTH a new role member and a real incompleteness reported
+        # CANNOT_MEASURE and the violation went unnamed. Caught by this arm's
+        # own binding control (`test_PLANT_C_and_a_REAL_FAIL_TOGETHER_report_
+        # the_FAIL`) rather than reasoned about, which is why that control
+        # exists. The roles this arm DOES know are still measurable, so it
+        # keeps driving and reports both facts.
+
+    executor, ledger, broker, entry_coids, exit_coids = _stage_onset_scope(loaded)
+
+    # -- NON-VACUITY (rule 4): the scope really holds what the claim is about
+    outstanding = {r.client_order_id for r in ledger.outstanding()}
+    missing_entries = [c for c in entry_coids if c not in outstanding]
+    missing_exits = [c for c in exit_coids if c not in outstanding]
+    if missing_entries or missing_exits:
+        unmeasurable.append(
+            f"{site}: staging failed — entries not reserved {missing_entries!r}, "
+            f"exits not reserved {missing_exits!r}; a sweep over an empty scope "
+            "proves nothing"
+        )
+        return findings, unmeasurable
+    if not broker._positions:  # pylint: disable=protected-access
+        unmeasurable.append(
+            f"{site}: staging failed — no OPEN position, so 'a cancelled "
+            "protective order leaves a position unprotected' has no subject"
+        )
+        return findings, unmeasurable
+
+    # -- the drive: a GLOBAL HALT onset over the whole book -----------------
+    outcome = executor.cancel_entries_on_onset(
+        seam.TerminalPath.HALT_ONSET, tuple(_onset_book(loaded))
+    )
+    reached_venue = list(broker.cancel_calls)
+
+    # PLANT A — an in-scope entry SURVIVES the onset.
+    survivors = [c for c in entry_coids if c not in reached_venue]
+    if survivors:
+        findings.append(
+            Finding(
+                site,
+                f"INCOMPLETE: pending ENTRY {survivors!r} never reached the venue "
+                f"as a cancel on a GLOBAL HALT onset (cancelled={reached_venue!r}) "
+                "— each is still WORKING and can fill inside the HALT window it "
+                "was not approved for (§3:174, §15:995 C4)",
+            )
+        )
+
+    # PLANT B — the predicate cancels an EXIT / PROTECTIVE order.
+    killed = [c for c in exit_coids if c in reached_venue]
+    if killed:
+        findings.append(
+            Finding(
+                site,
+                f"OVER-BROAD: the onset cancelled {killed!r} at the venue. "
+                f"'c-stop' guards the OPEN MESU6 position "
+                f"{sorted(broker._positions)!r}, which the cancel leaves "  # pylint: disable=protected-access
+                "UNPROTECTED inside the window — §3:173 is 'exits untouched' and "
+                "§14 gives the protective path zero delivery dependency",
+            )
+        )
+    excluded = {c for c, _ in getattr(outcome, "protected", ())}
+    if not killed and set(exit_coids) - excluded:
+        findings.append(
+            Finding(
+                site,
+                f"the exits {sorted(set(exit_coids) - excluded)!r} were not "
+                "cancelled but are not reported on `OnsetCancellation.protected` "
+                "either — the exclusion must be ASSERTED, not incidental, or the "
+                "next reader cannot tell a guard from an accident",
+            )
+        )
+
+    # PLANT C — an order kind the sweep cannot classify: never cancelled, named.
+    executor2, _l2, broker2, _e2, _x2 = _stage_onset_scope(loaded)
+    alien = _AlienKind("c-alien", "MESU6")
+    out2 = executor2.cancel_entries_on_onset(
+        seam.TerminalPath.HALT_ONSET,
+        (flatten.PendingEntry("c-a1", "strat-1", "MESU6"), alien),
+    )
+    if "c-alien" in broker2.cancel_calls:
+        findings.append(
+            Finding(
+                site,
+                "an order of a kind the sweep cannot classify (role='iceberg') "
+                "was CANCELLED at the venue — it may be a protective order, and "
+                "§3:173 leaves those untouched",
+            )
+        )
+    elif "c-alien" not in {c for c, _ in getattr(out2, "unclassified", ())}:
+        findings.append(
+            Finding(
+                site,
+                "an unclassifiable order was silently skipped — not cancelled and "
+                "not reported on `unclassified`, so nothing can tell it from an "
+                "entry left live inside the window (§3:174)",
+            )
+        )
+    elif getattr(out2, "complete", True) is not False:
+        findings.append(
+            Finding(
+                site,
+                "the sweep reported `complete` over an order it could not "
+                "classify — §12.10:753's HALT row would claim a clean sweep it "
+                "did not perform",
+            )
+        )
+
+    # -- SCOPE: a per-symbol blackout leaves the other symbol alone ----------
+    executor3, _l3, broker3, _e3, _x3 = _stage_onset_scope(loaded)
+    executor3.cancel_entries_on_onset(
+        seam.TerminalPath.BLACKOUT_ONSET, tuple(_onset_book(loaded)), scope="MESU6"
+    )
+    scoped = list(broker3.cancel_calls)
+    if "c-b1" in scoped:
+        findings.append(
+            Finding(
+                site,
+                f"a MESU6 BLACKOUT onset cancelled MNQU6's entry 'c-b1' "
+                f"(cancelled={scoped!r}) — §6.1/§6.2/§6.3 windows are PER-SYMBOL "
+                "off the live calendar; a blackout on one symbol is not a HALT",
+            )
+        )
+    if not {"c-a1", "c-a2"} <= set(scoped):
+        findings.append(
+            Finding(
+                site,
+                f"a MESU6 BLACKOUT onset left MESU6 entries "
+                f"{sorted({'c-a1', 'c-a2'} - set(scoped))!r} working "
+                "(§3:173 cancels ALL in-scope pending entries)",
+            )
+        )
+    return findings, unmeasurable
+
+
+# --------------------------------------------------------------------------
 # ARM 4 — reconcile-then-publish: the CONFIRMED state, not the intent
 # --------------------------------------------------------------------------
 
@@ -779,13 +1080,27 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
         findings += _arm_zero_wire(loaded, ctx.nix_home)
         findings += _arm_precedence(loaded, ctx.nix_home)
         findings += _arm_onset(loaded, ctx.nix_home)
+        selection, unmeasurable = _arm_onset_selection(loaded, ctx.nix_home)
+        findings += selection
         findings += _arm_reconcile(loaded, ctx.nix_home)
         evidence = (
             f"{FLATTEN_FILE}: drove zero-wire fire, dual-authority precedence "
-            "under contention, onset-cancel cause booking + refusal, and "
-            "reconcile-then-publish (confirmed vs intent) — 4 arms, each with a "
-            "falsifier proven to lose its property"
+            "under contention, onset-cancel cause booking + refusal, onset "
+            "SELECTION (complete by derivation over the subject's own OrderRole "
+            "/ selective / per-symbol scope, 3 entries + 2 exits + 1 open "
+            "position staged), and reconcile-then-publish (confirmed vs intent) "
+            "— 5 arms, each with a falsifier proven to lose its property"
         )
+        if unmeasurable and not findings:
+            # Rule 10 / §17: the selection arm could not classify its subject,
+            # so completeness is UNMEASURED. Never PASS. A real FAIL still
+            # outranks it (contract rule 4: Fail > Cannot-measure).
+            return CheckResult(
+                name=NAME,
+                status=Status.CANNOT_MEASURE,
+                evidence=evidence,
+                detail="; ".join(unmeasurable),
+            )
         if findings:
             return CheckResult(
                 name=NAME,

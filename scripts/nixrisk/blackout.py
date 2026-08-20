@@ -480,9 +480,16 @@ class OnsetSweepPort(Protocol):
     """
 
     def cancel_entries_on_onset(
-        self, cause: object, pending: Sequence[object]
+        self, cause: object, pending: Sequence[object], *, scope: str | None = None
     ) -> object:
-        """Cancel every pending ENTRY order under `cause`. Exits untouched."""
+        """Cancel every in-scope pending ENTRY order under `cause`. Exits untouched.
+
+        `scope` is ARC 045 / I11: `None` = global (a HALT), a symbol = that
+        symbol's window only. Declared here as well as on the executor because
+        this port is the blackout module's statement of what it calls, and a
+        port that omitted the argument would let a caller drop the scope
+        silently -- which is precisely the defect the argument exists to remove.
+        """
 
 
 @dataclass(frozen=True)
@@ -1039,17 +1046,28 @@ class BlackoutEvaluator:  # pylint: disable=too-many-instance-attributes
         """
         released: list[str] = []
         if self._sweep is not None and self._pending is not None:
-            entries = [
-                entry
-                for entry in self._pending.pending_entries()
-                if getattr(entry, "symbol", None) == symbol
-            ]
+            # ARC 045 / I11. The per-symbol SCOPE is now the executor's argument,
+            # not a filter here, and the difference is measurable rather than
+            # stylistic. This comprehension used to read
+            # `if getattr(entry, "symbol", None) == symbol`, and an entry object
+            # that carried no `symbol` attribute compared `None != symbol` and was
+            # SILENTLY DROPPED: never cancelled, never named, still WORKING at the
+            # venue inside the §6.1 window it was never approved for (§3:174) --
+            # measured against a real broker book in ARC 045 / S1. Handing the
+            # whole book over with `scope=symbol` moves the decision to the one
+            # place that can read the money record: the executor scopes off
+            # `Reservation.symbol`, which always exists, and anything it cannot
+            # classify lands on `OnsetCancellation.unclassified` where
+            # `complete` and the §12.10:753 sweep field can see it.
+            #
             # The executor cancels at the venue AND releases each entry's
             # reservation under BLACKOUT_ONSET, so the release below must not also
             # run for those orders — a second release is a DoubleRelease the ledger
             # correctly refuses (§14: exactly one terminal release).
             outcome = self._sweep.cancel_entries_on_onset(
-                TerminalPath.BLACKOUT_ONSET, tuple(entries)
+                TerminalPath.BLACKOUT_ONSET,
+                tuple(self._pending.pending_entries()),
+                scope=symbol,
             )
             released.extend(
                 reservation.reservation_id
