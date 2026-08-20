@@ -240,4 +240,39 @@ CANNOT_MEASURE. This arc names itself complete at this write-back, so the owners
 **ARC 043** — without which the prediction would be `90 | 3 | 3 | 0 | 0`, guarded → cannot-measure.
 Stated as the arc-boundary maintenance it is, not as progress.
 
-*(measured figures recorded below, forward-only, after the merged tree is measured)*
+*(measured figures are recorded below — this line stands as written, forward-only.)*
+
+## THE MEASUREMENT — taken on the merged tree at `382cbd4`, forward-only
+
+| | passed | failed | cannot | skipped | guarded | exit |
+|---|---|---|---|---|---|---|
+| 041-T final (`1abcfd0`) | 90 | 3 | 2 | 0 | 1 | 1 |
+| **ARC 042 PREDICTED** | **90** | **3** | **2** | **0** | **1** | **1** |
+| **ARC 042 MEASURED** | **90** | **3** | **2** | **0** | **1** | **1** |
+
+**The prediction held exactly, and every term of it was load-bearing:**
+
+* **`passed` unmoved at 90.** S4 extended the existing owner instead of adding a gate, so rule 8 /
+  Part C.9 predicted no count move and there was none. The brief's conditional `passed+1` correctly
+  did not apply.
+* **The three fails are the three standing ones** — `check_ibgateway_service` (API endpoint
+  unreachable), `check_monitor_tui` (D3.431), `check_uncalled_entry_points` — unchanged.
+* **No new uncalled entry point.** Every row in that gate's finding is a pre-existing
+  `scripts/nixrisk/` surface; **not one is in `limiterd.py`**. `Plane1Booker`'s three verbs are all
+  reached from `main`, which is what the brief predicted the wiring would do.
+* **`guarded` held at 1** because the exclusion owners were re-pointed 042 → 043 *before* this arc
+  named itself complete. Left alone it would have read `90 | 3 | 3 | 0 | 0`.
+
+**And the two gates this arc touched are green on the merged tree:**
+
+```
+[ok]   check_go_timeout
+[ok]   check_plane1_event_coverage
+[ok]   check_arc_status_contract  scratchpad/arc_logs/arc_042.log
+```
+
+`check_arc_status_contract` passed against **this arc's own** log — `arc=042 pulses=48 teardowns=1
+wd_pid=4167605` — which is the 041-T tooling dogfooded end to end: `selfcheck` before Stage 1, every
+beat and banner emitted by `scripts/arc_heartbeat.sh` and never hand-formatted, and a teardown line
+matched to cc's OWN watchdog by pid. The root-owned kernel thread `watchdogd` (pid 165) is present,
+was never killed, and is correctly not treated as a leak.
