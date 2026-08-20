@@ -40,16 +40,33 @@ doubles — no pytest, no test-file import.
     asserts the published balance is the POST figure and differs from the
     pre-flatten one — exactly what `_PublishesIntentFlatten` in the test suite
     is shown to fail.
+ 6. Wire-freedom could pass over ONE trigger while another carries a wire —
+    which is not hypothetical: answer 2's arm drives `SYNTHETIC_STOP` alone, and
+    ARC 038 / sub-agent C filed that gap as FINDING FC5 / D3.373. ARC 048
+    re-measured it, and a wire dependency reachable only from `STALE_PRICE` left
+    a real position OPEN at the broker while this gate returned rc=0. CLOSED by
+    ARM 6, three ways at once: the trigger set is DERIVED from the frozen enum
+    minus the subject's own refusals (never a list here, which would go stale
+    the moment a member is added); every fireable member is driven in BOTH
+    target shapes with the state bus and the Plane-1 delivery wire dead; and the
+    live call census of each drive is classified against an ALLOW-set, so a
+    transport nobody thought to ban is CANNOT_MEASURE naming it rather than a
+    silent pass. The protective-exit sites themselves are derived from the
+    subject's AST and every one must have been ENTERED, so an exit added later
+    that the drive does not reach reddens instead of hiding.
 
-Each of the four arms above additionally drives a FALSIFIER — a subclass of
+Each of the arms above additionally drives a FALSIFIER — a subclass of
 `ProtectiveFlatten` deliberately wrong on the one property the arm names — and
 requires the falsifier to LOSE the property this gate's own assertion checks.
 An arm whose falsifier passes measures nothing; that is asserted, not assumed.
 """
 
-# too-many-lines: 1119 of a 1000 default, and the overage is ARM 3b's prose plus
-# its staging. ARC 045 added the onset SELECTION arm with the measurement behind
-# it in the comment block — that ARM 3's "exits untouched" clause was green over
+# too-many-lines: over the 1000 default, and the overage is ARM 3b's and ARM 6's
+# prose plus their staging. (The count itself is NOT restated here — directive 3;
+# `wc -l` derives it, and the figure this comment used to carry went stale in the
+# same arc that added an arm.) ARC 045 added the onset SELECTION arm and ARC 048
+# the exhaustive wire-freedom arm, each with the measurement behind it in its own
+# comment block — ARM 3's "exits untouched" clause was green over
 # a sweep cancelling a protective order at the venue, because cancelling an order
 # is not calling `flatten`. The alternative was to cut the reasoning to satisfy a
 # line count, which inverts directive 8: enforce mechanically what can be, and
@@ -1071,6 +1088,516 @@ def _arm_reconcile(loaded: Loaded, home: Path) -> list[Finding]:
 # --------------------------------------------------------------------------
 
 
+# --------------------------------------------------------------------------
+# ARM 6 — EXHAUSTIVE wire-freedom: EVERY derived trigger, everything DEAD
+# --------------------------------------------------------------------------
+#
+# ARC 048 / I3. ARM 1 above drives ONE trigger (`SYNTHETIC_STOP`) against ONE
+# dead surface (the picture sink), and that is the whole of what any standing
+# instrument asserted about §14:969's *"the exit/protective path has ZERO
+# wire/delivery dependency"*. ARC 038 / sub-agent C measured the gap and
+# recorded it as FINDING FC5 / D3.373: a wire dependency reachable from any
+# trigger ARM 1 does not drive is INVISIBLE here.
+#
+# Re-measured at ARC 048 / S1 before this arm was written, so the defect is a
+# measurement and not an inference. The frozen `FlattenTrigger` declares SEVEN
+# members and `flatten.py` refuses ONE (`SENTINEL`, R4) — so SIX are fireable
+# and ARM 1 drives ONE of them. Planting a wire dependency reachable only from
+# `STALE_PRICE` (`self._picture.publish(...)` guarded on the trigger) and
+# driving it with the wire dead left the position OPEN at the broker:
+#
+#     synthetic_stop  flattened=True   calls=['MESU6']  still_open=[]
+#     stale_price     RAISED ConnectionError  calls=[]  STILL OPEN=['MESU6']
+#     === check_flatten rc=0   pass: ...
+#
+# A real unflattened position, and the gate certifying wire-freedom over it.
+#
+# THE PROOF IS AN ABSENCE, so it is taken TWO ways and neither alone is enough:
+#
+#  (a) DRIVEN — every fireable trigger, in BOTH target shapes (§4's untargeted
+#      uncertainty flatten and the targeted per-trade close, which are the two
+#      DERIVED `self._broker.flatten(...)` sites), with the state bus, the
+#      Plane-1 delivery wire and the Allocator all DEAD. Each must still reach
+#      the broker.
+#
+#  (b) DERIVED, BY SHAPE — the live call census of each drive is taken from the
+#      running interpreter (`sys.setprofile`) and compared against an ALLOW-set,
+#      not merely a ban-list. A ban-list only catches wires someone thought to
+#      name; §7.12 asks what would make this pass while measuring nothing, and
+#      "a transport nobody listed" is the answer. So a module on the exit path
+#      that is neither allowed nor known-banned is UNCLASSIFIABLE and reports
+#      CANNOT_MEASURE naming it, never PASS (the I2/I11 completeness lesson).
+#      Measured: the shipped exit path enters FOUR module roots and 15 frames
+#      total, which is what makes an allow-set honest here rather than noisy.
+#
+# COMPLETENESS IS THE OBLIGATION (contract rule 4). The set of protective-exit
+# sites is DERIVED from the subject's own source by AST shape — an `ast.Call`
+# whose func is `.flatten` on an attribute of `self` inside a `ProtectiveFlatten`
+# method — never by matching an identifier's spelling (the D3.426 lesson). The
+# union of the drives must have ENTERED every derived site; a site the drive
+# never reached is a protective exit this arm did not prove anything about.
+
+#: The disposition this arm has for each declared trigger. A member of the
+#: frozen `FlattenTrigger` with NO entry here is one this arm cannot classify —
+#: it cannot know whether a newly-declared trigger is meant to fire or to be
+#: refused, and guessing either way would certify something unmeasured. It
+#: reports CANNOT_MEASURE naming the member. Same idiom, same reason, as
+#: `_ROLE_DISPOSITION` in ARM 3b.
+_TRIGGER_DISPOSITION: dict[str, str] = {
+    "synthetic_stop": "fireable",
+    "stale_price": "fireable",
+    "net_liq_floor": "fireable",
+    "session_close": "fireable",
+    "uncertainty": "fireable",
+    "orphan": "fireable",
+    # R4: the Sentinel is the last-resort executor that runs when the Limiter is
+    # DEAD (§14), so the live Limiter never issues it. `fire()` raises.
+    "sentinel": "refused",
+}
+
+#: Modules whose presence on the exit path IS a wire/delivery dependency. Named
+#: so the FAIL can say WHICH wire (check contract rule 11 — assert the reason,
+#: never the bare outcome). `nixrisk.wal` is deliberately ABSENT: the local WAL
+#: append is ON this path by design and is FC1's subject, made non-fatal rather
+#: than removed — a bounded in-process buffer append is not a wire.
+_BANNED_ON_EXIT: tuple[str, ...] = (
+    "asyncio",
+    "queue",
+    "concurrent",
+    "socket",
+    "select",
+    "selectors",
+    "ssl",
+    "http",
+    "urllib",
+    "zmq",
+    "subprocess",
+    "multiprocessing",
+    "nixbus",
+    "nixalloc",
+    "nixrisk.picture",
+    "nixrisk.plane1_sink",
+)
+
+#: The ONLY modules the protective path may enter. Derived by measurement, not
+#: by permission: the shipped path enters `nixrisk.flatten` (the subject),
+#: `nixrisk.seam` (the frozen vocabulary and record types) and `enum` (member
+#: value lookup). Anything else is unclassifiable — see the arm's comment.
+_ALLOWED_ON_EXIT: tuple[str, ...] = ("enum", "nixrisk.flatten", "nixrisk.seam")
+
+
+class _DeadPlane1:
+    """The Plane-1 delivery wire, unreachable. FC1's subject, kept dead here."""
+
+    def enqueue(self, row: Any) -> None:
+        raise OSError(27, "EFBIG: the WAL cannot append (delivery wire dead)")
+
+    def sync_to_disk(self) -> int:
+        raise OSError(27, "EFBIG: the WAL cannot append (delivery wire dead)")
+
+    def pending(self) -> int:
+        return 0
+
+
+def _module_of(entry: str) -> str:
+    """`nixrisk.flatten.ProtectiveFlatten.fire` -> `nixrisk.flatten`.
+
+    Two segments for a package'd module, one otherwise — the same shape the
+    census entries are built in, so classification never needs the qualname.
+    """
+    parts = entry.split(".")
+    if parts[0] in ("nixrisk", "nixbus", "nixalloc", "nixscore", "nixsentinel"):
+        return ".".join(parts[:2])
+    return parts[0]
+
+
+def _census(drive: Any) -> tuple[set[str], BaseException | None]:
+    """Every `module.qualname` ENTERED during `drive()`, plus what it raised.
+
+    §7.12: reading the source and concluding "there is no such path" is not a
+    measurement — a healthy transport hides a dependency it does not exercise,
+    and a dead one hides behind the exception. So the census comes from the
+    running interpreter and the exception is RETURNED rather than propagated,
+    because on this path a raise IS the finding.
+    """
+    seen: set[str] = set()
+
+    def profile(frame: Any, event: str, arg: Any) -> None:
+        del arg
+        if event == "call":
+            seen.add(
+                f"{frame.f_globals.get('__name__', '?')}.{frame.f_code.co_qualname}"
+            )
+
+    previous = sys.getprofile()
+    raised: BaseException | None = None
+    sys.setprofile(profile)
+    try:
+        drive()
+    except BaseException as exc:  # noqa: BLE001  pylint: disable=broad-except
+        raised = exc
+    finally:
+        sys.setprofile(previous)
+    return seen, raised
+
+
+def _self_broker_flatten_line(node: Any) -> int | None:
+    """The line of a `self.<anything>.flatten(...)` call, else `None`.
+
+    BY SHAPE, never by spelling (D3.426): the collaborator's ATTRIBUTE NAME is
+    not matched, only that the call is `.flatten(...)` on an attribute of
+    `self`. Renaming `_broker` does not hide a protective exit from this.
+
+    Returns the LINE rather than a bool so the caller keeps the coordinate
+    without re-narrowing the node — the shape test and the site's identity are
+    one answer, not two.
+    """
+    import ast  # pylint: disable=import-outside-toplevel
+
+    if not isinstance(node, ast.Call):
+        return None
+    func = node.func
+    if not isinstance(func, ast.Attribute) or func.attr != "flatten":
+        return None
+    owner = func.value
+    if not isinstance(owner, ast.Attribute):
+        return None
+    if not isinstance(owner.value, ast.Name) or owner.value.id != "self":
+        return None
+    return node.lineno
+
+
+def _exit_line_in_method(fn: Any) -> int | None:
+    """The `self.*.flatten(...)` line inside ONE method body, if any."""
+    import ast  # pylint: disable=import-outside-toplevel
+
+    for node in ast.walk(fn):
+        line = _self_broker_flatten_line(node)
+        if line is not None:
+            return line
+    return None
+
+
+def _methods_of_executor(tree: Any) -> list[Any]:
+    """Every `def` directly in the `ProtectiveFlatten` class body."""
+    import ast  # pylint: disable=import-outside-toplevel
+
+    return [
+        fn
+        for cls in ast.walk(tree)
+        if isinstance(cls, ast.ClassDef) and cls.name == "ProtectiveFlatten"
+        for fn in cls.body
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+
+
+def _exit_sites_in(tree: Any) -> dict[str, int]:
+    """`ProtectiveFlatten` methods holding a `self.*.flatten(...)` call."""
+    sites: dict[str, int] = {}
+    for fn in _methods_of_executor(tree):
+        line = _exit_line_in_method(fn)
+        if line is not None:
+            sites[fn.name] = line
+    return sites
+
+
+def _derive_exit_sites(home: Path) -> tuple[dict[str, int], str | None]:
+    """The protective-exit sites the drive must reach for the proof to be complete."""
+    import ast  # pylint: disable=import-outside-toplevel
+
+    try:
+        tree = ast.parse((home / FLATTEN_FILE).read_text(encoding="utf-8"))
+    except (OSError, SyntaxError) as exc:
+        return {}, f"cannot parse {FLATTEN_FILE}: {type(exc).__name__}: {exc}"
+    sites = _exit_sites_in(tree)
+    if not sites:
+        return {}, (
+            f"{FLATTEN_FILE}: the AST derivation found NO `self._broker.flatten("
+            ")` site inside `ProtectiveFlatten` — the protective-exit set cannot "
+            "be derived, so completeness is unmeasured (§17: never a PASS)"
+        )
+    return sites, None
+
+
+def _drive_one(loaded: Loaded, trigger: Any, *, targeted: bool, cls: Any = None):
+    """One trigger, one target shape, EVERYTHING dead. Returns the observation."""
+    broker = _make_broker(
+        loaded,
+        positions=[loaded.broker_seam.Position("MESU6", 1, 7800.0)],
+        cash=20344.34,
+    )
+    plane1 = _DeadPlane1()
+    flatten = loaded.flatten
+    executor_cls = cls or flatten.ProtectiveFlatten
+    _bind_balance(broker, loaded)
+    ledger = loaded.reservations.ReservationLedger(_Plane1())
+    executor = executor_cls(
+        broker=broker,
+        ledger=ledger,
+        picture=_flat_book(loaded, _DeadSink()),
+        strategy=_StrategySink(),
+        plane1=plane1,
+        scoring=_ScoringSink(),
+        clock=_clock_seq(),
+    )
+    # THE ALLOCATOR. §3:172 — *"Exit never routes through Allocator."* There is
+    # no dead Allocator double here and that is deliberate: `ProtectiveFlatten`
+    # takes no allocator collaborator at all, so injecting one to watch it go
+    # unused would be a prop, not a measurement (directive 1 — prove the
+    # property, not a proxy for it). The real assertion is the census below,
+    # where `nixalloc` and `nixbus` are BANNED and any module outside the
+    # allow-set is unclassifiable: an exit that reached the Allocator by ANY
+    # route — import, mirror read, bus round-trip — puts a frame on this path.
+    targets = [flatten.CloseTarget("T-1", "MESU6", "strat-1")] if targeted else []
+    seen, raised = _census(
+        lambda: executor.fire(trigger, symbol="MESU6", targets=targets)
+    )
+    return broker, seen, raised
+
+
+def _derive_fireable(loaded: Loaded, site: str) -> tuple[list[Any], list[str]]:
+    """DERIVATION 1 — the trigger vocabulary, off the frozen enum.
+
+    The set is the enum MINUS the subject's own refusals, and both halves have
+    to agree with this arm's disposition table or nothing is driven: a member
+    with no disposition, or one the subject and the table classify differently,
+    is a trigger whose REQUIRED BEHAVIOUR is undefined here. §17 answers that
+    with CANNOT_MEASURE, never a guess.
+    """
+    unmeasurable: list[str] = []
+    fireable: list[Any] = []
+    refused_by_subject = set(loaded.flatten._R4_TRIGGERS)  # pylint: disable=protected-access
+    for trigger in loaded.seam.FlattenTrigger:
+        disposition = _TRIGGER_DISPOSITION.get(trigger.value)
+        if disposition is None:
+            unmeasurable.append(
+                f"{site}: `FlattenTrigger` declares {trigger.value!r}, which this "
+                "arm has NO disposition for — it cannot know whether a newly "
+                "declared protective trigger is meant to fire or to be refused, "
+                "and either guess would certify a path it never drove. §3:169's "
+                "trigger set is the spec's, so a member appearing here is a "
+                "question for the architect, not for this gate (§17: never a PASS)"
+            )
+            continue
+        subject_refuses = trigger in refused_by_subject
+        if subject_refuses != (disposition == "refused"):
+            unmeasurable.append(
+                f"{site}: {trigger.value!r} is dispositioned {disposition!r} here "
+                f"but the subject's own `_R4_TRIGGERS` "
+                f"{'refuses' if subject_refuses else 'does not refuse'} it — the "
+                "arm and the subject disagree about what this trigger DOES, so "
+                "what it must prove is undefined (§17: never a PASS)"
+            )
+            continue
+        if disposition == "fireable":
+            fireable.append(trigger)
+    if not unmeasurable and not fireable:
+        unmeasurable.append(
+            f"{site}: the derivation produced NO fireable trigger — there is "
+            "nothing to drive, so wire-freedom is unmeasured (§17)"
+        )
+    return fireable, unmeasurable
+
+
+def _wire_is_really_dead(site: str) -> list[Finding]:
+    """NON-VACUITY: each double REJECTS, so "survived" is not "never touched"."""
+    findings: list[Finding] = []
+    for name, probe in (
+        ("the state bus", lambda: _DeadSink().emit(object())),
+        ("the Plane-1 delivery wire", lambda: _DeadPlane1().enqueue(object())),
+    ):
+        rejected: BaseException | None = None
+        try:
+            probe()
+        except Exception as exc:  # noqa: BLE001  pylint: disable=broad-except
+            # ANY raise is the proof: the double is unreachable, not merely
+            # idle. The exception TYPE is not asserted because the double's job
+            # is to be dead, and pinning the type here would make this control
+            # fail for a change in how deadness is spelled.
+            rejected = exc
+        if rejected is None:
+            findings.append(
+                Finding(site, f"{name} double did not reject — the drive is VACUOUS")
+            )
+    return findings
+
+
+def _classify_census(
+    seen: set[str], label: str, site: str
+) -> tuple[list[Finding], list[str]]:
+    """Each entered module: allowed, a NAMED wire, or UNCLASSIFIED.
+
+    The third bucket is the point. A ban-list only catches transports someone
+    thought to name, so an unknown module on the exit path is CANNOT_MEASURE
+    naming it — never quietly clean (§17, and the I2/I11 completeness lesson).
+    """
+    findings: list[Finding] = []
+    unmeasurable: list[str] = []
+    for entry in sorted(seen):
+        module = _module_of(entry)
+        if module in _ALLOWED_ON_EXIT or module == __name__:
+            continue
+        banned = next(
+            (b for b in _BANNED_ON_EXIT if module == b or module.startswith(b + ".")),
+            None,
+        )
+        if banned is not None:
+            findings.append(
+                Finding(
+                    site,
+                    f"{label} ENTERED {entry} — {banned} on the protective path "
+                    "IS a wire/delivery dependency (§14:969 gives the exit path "
+                    "ZERO)",
+                )
+            )
+        else:
+            unmeasurable.append(
+                f"{site}: {label} entered {entry}, a module this arm can neither "
+                "allow nor name as a wire. An allow-set is used precisely because "
+                "a ban-list only catches transports someone thought to list, so an "
+                "unknown module on the exit path is UNCLASSIFIED, never clean "
+                "(§17: never a PASS)"
+            )
+    return findings, unmeasurable
+
+
+def _judge_drive(broker: Any, raised: BaseException | None, label: str, site: str):
+    """One drive's verdict: did it flatten, with the wire dead?"""
+    findings: list[Finding] = []
+    still_open = sorted(broker._positions)  # pylint: disable=protected-access
+    if raised is not None:
+        findings.append(
+            Finding(
+                site,
+                f"{label} RAISED {type(raised).__name__}: {raised} with the wire "
+                f"DEAD, leaving {still_open!r} OPEN at the broker — the protective "
+                "path has a wire/delivery dependency (§14:969: ZERO wire "
+                "dependency; §3:172: exit never routes through the Allocator)",
+            )
+        )
+        return findings
+    if broker.flatten_calls != ["MESU6"]:
+        findings.append(
+            Finding(
+                site,
+                f"{label}: with the wire DEAD the broker saw "
+                f"{broker.flatten_calls!r}, not ['MESU6'] — the exit did not fire "
+                f"and {still_open!r} is still OPEN (§14:969)",
+            )
+        )
+    if still_open:
+        findings.append(
+            Finding(
+                site,
+                f"{label}: {still_open!r} survived a fired protective flatten "
+                "(§14:968 — every uncertainty resolves toward FLAT)",
+            )
+        )
+    return findings
+
+
+def _drive_every(
+    loaded: Loaded, fireable: list[Any], site: str
+) -> tuple[list[Finding], list[str], set[str]]:
+    """EVERY fireable trigger, BOTH target shapes, everything dead."""
+    findings: list[Finding] = []
+    unmeasurable: list[str] = []
+    entered: set[str] = set()
+    for trigger in fireable:
+        for targeted in (True, False):
+            shape = "targeted" if targeted else "untargeted"
+            label = f"trigger={trigger.value} ({shape})"
+            broker, seen, raised = _drive_one(loaded, trigger, targeted=targeted)
+            entered |= seen
+            findings += _judge_drive(broker, raised, label, site)
+            if raised is not None:
+                continue
+            census_findings, census_unmeasurable = _classify_census(seen, label, site)
+            findings += census_findings
+            unmeasurable += census_unmeasurable
+    return findings, unmeasurable, entered
+
+
+def _completeness(sites: dict[str, int], entered: set[str], site: str) -> list[Finding]:
+    """Every DERIVED protective-exit site must have been ENTERED (rule 4)."""
+    reached = {entry.split(".")[-1] for entry in entered}
+    missed = {name: line for name, line in sites.items() if name not in reached}
+    if not missed:
+        return []
+    return [
+        Finding(
+            site,
+            "the drive never entered "
+            + ", ".join(
+                f"ProtectiveFlatten.{n} ({FLATTEN_FILE}:{ln})"
+                for n, ln in sorted(missed.items(), key=lambda kv: kv[1])
+            )
+            + " — a DERIVED protective-exit site this arm proved nothing about, so "
+            "wire-freedom is not complete over the subject (contract rule 4: "
+            "completeness is the obligation)",
+        )
+    ]
+
+
+def _census_is_not_blind(loaded: Loaded, trigger: Any) -> list[Finding]:
+    """NON-VACUITY: a wire touch that EXISTS must appear in the census.
+
+    §7.12 — an instrument that cannot see the thing it is looking for reports
+    its absence just as confidently as a clean path does.
+    """
+    flatten = loaded.flatten
+
+    class _WireCoupledEvery(flatten.ProtectiveFlatten):  # type: ignore[name-defined]
+        def fire(self, trigger, *, symbol=None, targets=(), reason=None):
+            self._picture.publish(self._picture.current())  # WRONG: touches the wire
+            return super().fire(trigger, symbol=symbol, targets=targets, reason=reason)
+
+    findings: list[Finding] = []
+    site = f"{FLATTEN_FILE}:falsifier[wire-freedom]"
+    _broker, seen, raised = _drive_one(
+        loaded, trigger, targeted=True, cls=_WireCoupledEvery
+    )
+    if not any(_module_of(entry) == "nixrisk.picture" for entry in seen):
+        findings.append(
+            Finding(
+                site,
+                "the census did NOT see the wire-coupled falsifier's publish — it "
+                "is blind, so this arm's absence proof is unproven. Census held "
+                f"{sorted(e for e in seen if 'picture' in e)!r}",
+            )
+        )
+    if raised is None:
+        findings.append(
+            Finding(
+                site,
+                "the wire-coupled falsifier fired successfully with the wire dead "
+                "— it no longer falsifies",
+            )
+        )
+    return findings
+
+
+def _arm_wire_freedom(loaded: Loaded, home: Path) -> tuple[list[Finding], list[str]]:
+    site = f"{FLATTEN_FILE}:fire[wire-freedom]"
+
+    fireable, unmeasurable = _derive_fireable(loaded, site)
+    if unmeasurable:
+        return [], unmeasurable
+
+    sites, site_error = _derive_exit_sites(home)
+    if site_error is not None:
+        return [], [site_error]
+
+    vacuous = _wire_is_really_dead(site)
+    if vacuous:
+        return vacuous, []
+
+    findings, unmeasurable, entered = _drive_every(loaded, fireable, site)
+    findings += _completeness(sites, entered, site)
+    findings += _census_is_not_blind(loaded, fireable[0])
+    return findings, unmeasurable
+
+
 def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argument
     try:
         loaded, error = load(ctx.nix_home)
@@ -1083,13 +1610,21 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
         selection, unmeasurable = _arm_onset_selection(loaded, ctx.nix_home)
         findings += selection
         findings += _arm_reconcile(loaded, ctx.nix_home)
+        wire_free, wire_unmeasurable = _arm_wire_freedom(loaded, ctx.nix_home)
+        findings += wire_free
+        unmeasurable += wire_unmeasurable
         evidence = (
             f"{FLATTEN_FILE}: drove zero-wire fire, dual-authority precedence "
             "under contention, onset-cancel cause booking + refusal, onset "
             "SELECTION (complete by derivation over the subject's own OrderRole "
             "/ selective / per-symbol scope, 3 entries + 2 exits + 1 open "
-            "position staged), and reconcile-then-publish (confirmed vs intent) "
-            "— 5 arms, each with a falsifier proven to lose its property"
+            "position staged), reconcile-then-publish (confirmed vs intent), and "
+            "EXHAUSTIVE wire-freedom (every fireable FlattenTrigger the frozen "
+            "enum declares, in BOTH target shapes, with the state bus and the "
+            "Plane-1 delivery wire DEAD; each drive's live call census "
+            "classified against an allow-set, and every AST-derived "
+            "self._broker.flatten() site required to have been entered) "
+            "— 6 arms, each with a falsifier proven to lose its property"
         )
         if unmeasurable and not findings:
             # Rule 10 / §17: the selection arm could not classify its subject,

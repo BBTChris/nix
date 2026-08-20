@@ -40,6 +40,13 @@ a control that only ever runs the protected half proves nothing).
 """
 # pylint: disable=invalid-name,redefined-outer-name,protected-access
 # pylint: disable=missing-function-docstring,too-few-public-methods
+# too-many-lines: over the 1000 default since ARC 048 added the exhaustive
+# wire-freedom controls. The overage is the controls and their stated reasons,
+# and the alternative was to split I3's suite across two files — which is how
+# the ONE-trigger gap this arc closed stayed invisible for ten arcs: the
+# measurement and the property it measures belong in the reader's one view.
+# Same call `checks/check_flatten.py` and `scripts/nixrisk/flatten.py` make.
+# pylint: disable=too-many-lines
 # Test names SHOUT the property; the sys.path bootstrap is identical in every
 # suite by requirement. protected-access: the falsifier subclasses reach the
 # executor's injected collaborators to rebuild the PRE-FIX variant, which is how
@@ -798,7 +805,13 @@ class _PropagatingEverything(ProtectiveFlatten):  # pragma: no cover - child onl
     def _book(self, **kwargs: object) -> None:  # type: ignore[override]
         self._plane1.enqueue(_row_for(self, **kwargs))  # type: ignore[arg-type]
 
-    def cancel_entries_on_onset(self, cause, pending):  # type: ignore[override]
+    # `scope` is accepted and ignored: the falsifier differs from the subject in
+    # whether it PROPAGATES, and a narrower signature would make it differ in a
+    # second way (pylint W0221 / LSP).
+    def cancel_entries_on_onset(  # type: ignore[override]
+        self, cause, pending, *, scope=None
+    ):
+        del scope
         now = self._clock()
         cancelled: list[str] = []
         for entry in pending:
@@ -820,3 +833,179 @@ if __name__ == "__main__":  # pragma: no cover
     if _CHILD_FLAG in sys.argv:
         sys.exit(_child_main(sys.argv))
     raise SystemExit("this file is a pytest suite; run it with pytest")
+
+
+# ==========================================================================
+# ARC 048 / I3 — the EXHAUSTIVE arm. Every derived trigger, everything dead.
+# ==========================================================================
+#
+# `test_the_EXIT_PATH_TOUCHES_NO_WIRE_MODULE` above drives ONE trigger
+# (`SYNTHETIC_STOP`). ARC 038 recorded the gap as FC5 and ARC 048 re-measured
+# it: the frozen enum declares SEVEN triggers, `flatten.py` refuses ONE, so SIX
+# are fireable — and a wire dependency reachable from any of the other five was
+# invisible to every standing instrument. These controls close it at the
+# library level; `checks/check_flatten.py`'s ARM 6 is the standing gate.
+
+
+class _DeadSink:
+    """The state bus, unreachable. Every emit REJECTS — it is not merely idle."""
+
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    def emit(self, picture: object) -> None:
+        del picture
+        self.attempts += 1
+        raise ConnectionError("state bus down / ZMQ unavailable")
+
+
+def _module_refusals() -> frozenset[FlattenTrigger]:
+    import nixrisk.flatten as mod  # pylint: disable=import-outside-toplevel
+
+    return frozenset(mod._R4_TRIGGERS)  # pylint: disable=protected-access
+
+
+def _fireable_triggers() -> list[FlattenTrigger]:
+    """DERIVED, not listed: the frozen vocabulary minus the module's refusals.
+
+    A list written here would go stale the moment a member is added, which is
+    the precise failure mode this arm exists to prevent.
+    """
+    refused = _module_refusals()
+    return [t for t in FlattenTrigger if t not in refused]
+
+
+def test_the_DERIVED_TRIGGER_SET_IS_THE_SPEC_S_SET_and_the_REFUSAL_IS_LOUD() -> None:
+    """§3:169's list is the checklist the derivation is verified AGAINST.
+
+    Transcribed: "synthetic stop / stale price / net-liq floor / session close /
+    uncertainty / orphan / sentinel". If the enum and the spec ever disagree,
+    that is a finding about the spec to be reported (the ARC 028 / SPEC-A7 rule)
+    and this control is where it surfaces.
+    """
+    assert {t.value for t in FlattenTrigger} == {
+        "synthetic_stop",
+        "stale_price",
+        "net_liq_floor",
+        "session_close",
+        "uncertainty",
+        "orphan",
+        "sentinel",
+    }
+    fireable = _fireable_triggers()
+    assert {t.value for t in fireable} == {
+        "synthetic_stop",
+        "stale_price",
+        "net_liq_floor",
+        "session_close",
+        "uncertainty",
+        "orphan",
+    }, [t.value for t in fireable]
+
+    # The refused one is refused LOUDLY — never a silent no-op that would read
+    # as "flattened" (§14: the Sentinel runs when the Limiter is DEAD).
+    broker = _Broker()
+    executor = _executor(broker=broker, plane1=_Recorder())
+    with pytest.raises(Exception) as excinfo:
+        executor.fire(
+            FlattenTrigger.SENTINEL,
+            symbol="MESU6",
+            targets=[CloseTarget("T-1", "MESU6", "strat-1")],
+        )
+    assert "sentinel" in str(excinfo.value)
+    assert not broker.flatten_calls, broker.flatten_calls
+
+
+@pytest.mark.parametrize("targeted", [True, False], ids=["targeted", "untargeted"])
+def test_EVERY_FIREABLE_TRIGGER_FLATTENS_with_EVERYTHING_DEAD(targeted: bool) -> None:
+    """§14:969's absence proof, taken over the DERIVED set rather than one member.
+
+    Dead: the state bus (`emit` raises) and the Plane-1 delivery wire (`enqueue`
+    raises). Absent by construction: the Allocator — `ProtectiveFlatten` takes no
+    allocator collaborator, which is §3:172's *"exit never routes through
+    Allocator"* held structurally rather than mocked.
+
+    BOTH target shapes, because they are two DIFFERENT broker-flatten sites:
+    `fire` calls `self._broker.flatten(symbol)` directly for §4's untargeted
+    uncertainty flatten, and `_arbitrate` calls it per trade for a targeted one.
+    """
+    for trigger in _fireable_triggers():
+        sink, plane1 = _DeadSink(), _AngryPlane1("EFBIG: the WAL cannot append")
+        broker = _Broker()
+        executor = ProtectiveFlatten(
+            broker=broker,  # type: ignore[arg-type]
+            ledger=ReservationLedger(_Recorder()),  # type: ignore[arg-type]
+            picture=FinancialPictureBook(
+                balance=20000.0, deployable_fraction=0.70, sink=sink
+            ),
+            strategy=_Strategy(),  # type: ignore[arg-type]
+            plane1=plane1,  # type: ignore[arg-type]
+            scoring=_Scoring(),  # type: ignore[arg-type]
+        )
+        targets = [CloseTarget("T-1", "MESU6", "strat-1")] if targeted else []
+
+        executor.fire(trigger, symbol="MESU6", targets=targets)
+
+        assert broker.flatten_calls == ["MESU6"], (
+            f"{trigger.value} ({'targeted' if targeted else 'untargeted'}) did not "
+            f"reach the broker with the wire dead: {broker.flatten_calls!r}"
+        )
+        # NON-VACUITY: the dead wire was really REACHED FOR on the targeted
+        # shape (the exit books its Plane-1 row) and really refused, so this is
+        # a live dependency surviving, not a wire nobody touched. The untargeted
+        # shape books nothing, which is itself the property (§4).
+        if targeted:
+            assert plane1.attempts >= 1, (
+                f"{trigger.value}: the Plane-1 wire was never touched, so its "
+                "deadness proves nothing"
+            )
+            assert executor.unbooked, (
+                f"{trigger.value}: the refused row was not RECORDED — a flatten "
+                "that loses its audit row must say so (FC1)"
+            )
+
+
+def test_the_DEAD_DOUBLES_REALLY_REJECT_so_the_ARM_ABOVE_IS_NOT_VACUOUS() -> None:
+    """The other half of non-vacuity: prove the wire is dead, not just unused."""
+    with pytest.raises(ConnectionError):
+        _DeadSink().emit(object())
+    with pytest.raises(OSError):
+        _AngryPlane1("EFBIG").enqueue(object())
+
+
+def test_a_PROTECTIVE_EXIT_FIRES_MID_ONSET_and_STILL_WINS_over_DISCRETIONARY() -> None:
+    """§3:173 — an onset cancels pending ENTRIES and leaves exits untouched.
+
+    The I11 boundary, re-confirmed from the exit side: a HALT onset sweep runs,
+    and a protective flatten fired AFTER it still reaches the broker and still
+    beats a discretionary close of the same trade. A blackout that could starve
+    the exit would invert §14:969 exactly as a dead wire would.
+    """
+    broker = _Broker()
+    plane1 = _Recorder()
+    executor = _executor(broker=broker, plane1=plane1)
+    ledger = ReservationLedger(plane1)
+
+    # A HALT onset sweeps the pending entries. Nothing here flattens.
+    executor_ledger_before = len(broker.flatten_calls)
+    executor.cancel_entries_on_onset(TerminalPath.HALT_ONSET, [])
+    assert len(broker.flatten_calls) == executor_ledger_before, broker.flatten_calls
+    del ledger
+
+    # Mid-onset, a discretionary exit takes the trade first...
+    target = CloseTarget("T-1", "MESU6", "strat-1")
+    first = executor.request_close(target, CloseAuthority.DISCRETIONARY, "edge spent")
+    assert first.executed is True, first  # non-vacuity: it really went first
+
+    # ...and the protective exit OVERRIDES it, unconditionally.
+    second = executor.request_close(target, CloseAuthority.PROTECTIVE, "stop breached")
+
+    assert second.executed is True, second
+    record = executor.closed_record("T-1")
+    assert record is not None
+    assert record.authority is CloseAuthority.PROTECTIVE, record
+    assert record.superseded is CloseAuthority.DISCRETIONARY, record
+    # §4: the FSM hard-resets to flat and the one-in-flight slot is freed.
+    assert record.hard_reset is True, record
+    assert record.reason == "stop breached", record
+    assert broker.flatten_calls == ["MESU6", "MESU6"], broker.flatten_calls

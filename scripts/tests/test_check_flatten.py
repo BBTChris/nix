@@ -316,7 +316,9 @@ def test_the_REAL_TREE_passes_the_SELECTION_arm_and_the_EVIDENCE_names_it() -> N
     assert "3 entries + 2 exits + 1 open position staged" in result.evidence, (
         result.evidence
     )
-    assert "5 arms" in result.evidence, result.evidence
+    # ARC 048 / I3 added ARM 6 (exhaustive wire-freedom). The count is asserted
+    # rather than described so an arm silently dropped from `run` reddens here.
+    assert "6 arms" in result.evidence, result.evidence
 
 
 def test_PLANT_A_an_INSCOPE_ENTRY_SURVIVES_the_onset_FAILS_and_NAMES_it(
@@ -429,5 +431,158 @@ def test_THE_PLANTS_REMOVED_the_SAME_TREE_PASSES(home: Path) -> None:
         _ROLES_WIDE,
         _ROLES_NARROW,
     )
+    after = _run(home)
+    assert after.status is Status.PASS, after
+
+
+# --------------------------------------------------------------------------
+# ARM 6 — EXHAUSTIVE wire-freedom (ARC 048 / I3, discharging FC5 / D3.373)
+# --------------------------------------------------------------------------
+#
+# ARM 1 drives ONE trigger against ONE dead surface. ARC 038 / sub-agent C
+# measured what that misses and filed it as FC5: a wire dependency reachable
+# from a trigger ARM 1 never drives is invisible. ARC 048 / S1 re-measured it
+# before writing the arm — PLANT A below left a real position OPEN at the
+# broker and the gate returned rc=0 — so these controls pin a defect that was
+# observed, not one that was imagined.
+
+
+def _plant_seam(home: Path, old: str, new: str) -> None:
+    """PLANT C edits the frozen seam, not the executor — hence its own helper."""
+    path = home / "scripts/nixrisk/seam.py"
+    text = path.read_text(encoding="utf-8")
+    assert text.count(old) == 1, f"anchor appears {text.count(old)} times, not once"
+    path.write_text(text.replace(old, new), encoding="utf-8")
+
+
+#: The `reason` default line inside `fire`, unique in the module. PLANT A hangs
+#: a wire touch off it guarded on ONE trigger, which is what a real per-trigger
+#: dependency looks like — a stale-price flatten "just checking the bus first".
+_FIRE_REASON_DEFAULT = (
+    '            reason = f"protective flatten (trigger={trigger.value})"\n'
+)
+_FIRE_REASON_WIRED = _FIRE_REASON_DEFAULT + (
+    "        if trigger is FlattenTrigger.STALE_PRICE:\n"
+    "            self._picture.publish(self._picture.current())\n"
+)
+
+
+def test_the_REAL_TREE_passes_ARM_6_and_the_EVIDENCE_names_its_DERIVATIONS() -> None:
+    result = _run(REPO)
+
+    assert result.status is Status.PASS, result
+    assert "EXHAUSTIVE wire-freedom" in result.evidence, result.evidence
+    # The evidence has to say what made it exhaustive, or a green over one
+    # trigger reads identically to a green over all of them — which is the
+    # exact confusion FC5 recorded.
+    assert "every fireable FlattenTrigger" in result.evidence, result.evidence
+    assert "BOTH target shapes" in result.evidence, result.evidence
+    assert "Plane-1 delivery wire DEAD" in result.evidence, result.evidence
+    assert "AST-derived" in result.evidence, result.evidence
+
+
+def test_PLANT_A_a_WIRE_DEPENDENCY_on_an_UNDRIVEN_TRIGGER_FAILS_and_NAMES_it(
+    home: Path,
+) -> None:
+    """FC5's own shape. ARM 1 drives SYNTHETIC_STOP; this wires STALE_PRICE.
+
+    Measured at ARC 048 / S1 against the pre-extension gate: rc=0, `pass:`,
+    with `still_open=['MESU6']` at the broker. The whole point of ARM 6 is that
+    this now reddens, so the control asserts the REASON and not the status —
+    the trigger, the wire, and the position left open (contract rule 11).
+    """
+    _plant(home, _FIRE_REASON_DEFAULT, _FIRE_REASON_WIRED)
+    result = _run(home)
+
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert "fire[wire-freedom]" in result.site, result.site
+    assert "trigger=stale_price" in result.detail, result.detail
+    assert "ConnectionError" in result.detail, result.detail
+    assert "OPEN at the broker" in result.detail, result.detail
+    assert "§14:969" in result.detail, result.detail
+    # BOTH target shapes must report it — §4's untargeted uncertainty flatten
+    # and the targeted per-trade close are two distinct broker-flatten sites.
+    assert "(targeted)" in result.detail, result.detail
+    assert "(untargeted)" in result.detail, result.detail
+
+
+def test_PLANT_C_an_UNCLASSIFIABLE_TRIGGER_is_CANNOT_MEASURE_never_PASS(
+    home: Path,
+) -> None:
+    """A newly declared trigger the arm has no disposition for.
+
+    The I2/I11 completeness lesson: the arm cannot know whether a new member is
+    meant to fire or to be refused, and either guess certifies a path it never
+    drove. It must say so and name the member (§17: never a PASS).
+    """
+    _plant_seam(
+        home,
+        '    SENTINEL = "sentinel"\n',
+        '    SENTINEL = "sentinel"\n    MARGIN_CALL = "margin_call"\n',
+    )
+    result = _run(home)
+
+    assert result.status is Status.CANNOT_MEASURE, result
+    assert "margin_call" in result.detail, result.detail
+    assert "NO disposition" in result.detail, result.detail
+
+
+def test_PLANT_D_an_UNREACHED_EXIT_SITE_FAILS_because_COMPLETENESS_is_the_POINT(
+    home: Path,
+) -> None:
+    """A DERIVED `self._broker.flatten()` site the drive never enters.
+
+    Completeness is the obligation (contract rule 4). The set of protective-exit
+    sites is derived from the subject's own AST, so a NEW exit the drive does
+    not reach is a protective path this arm proved nothing about — which is the
+    general form of the defect FC5 recorded in the particular.
+    """
+    _plant(
+        home,
+        "    def request_close(\n",
+        "    def emergency_flatten(self, symbol: str) -> None:\n"
+        "        self._broker.flatten(symbol)\n"
+        "\n"
+        "    def request_close(\n",
+    )
+    result = _run(home)
+
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert "never entered" in result.detail, result.detail
+    assert "ProtectiveFlatten.emergency_flatten" in result.detail, result.detail
+
+
+def test_a_DISPOSITION_the_SUBJECT_DISAGREES_WITH_is_CANNOT_MEASURE(
+    home: Path,
+) -> None:
+    """The subject stops refusing SENTINEL while the arm still calls it refused.
+
+    Not a wire question, so not a FAIL: what the arm cannot do is say what this
+    trigger is supposed to DO, and driving it either way would assert the arm's
+    opinion rather than the subject's contract.
+    """
+    _plant(
+        home,
+        "_R4_TRIGGERS: frozenset[FlattenTrigger] = frozenset({FlattenTrigger.SENTINEL})",
+        "_R4_TRIGGERS: frozenset[FlattenTrigger] = frozenset()",
+    )
+    result = _run(home)
+
+    assert result.status is Status.CANNOT_MEASURE, result
+    assert "sentinel" in result.detail, result.detail
+    assert "disagree" in result.detail, result.detail
+
+
+def test_ARM_6_PLANTS_REMOVED_the_SAME_TREE_PASSES(home: Path) -> None:
+    """Both halves: the tree is not passing because it is a copy, and PLANT A is
+    not failing for an environmental reason. Same tree, three verdicts."""
+    before = _run(home)
+    assert before.status is Status.PASS, before
+
+    _plant(home, _FIRE_REASON_DEFAULT, _FIRE_REASON_WIRED)
+    planted = _run(home)
+    assert planted.status is Status.FAIL_NEEDS_OPERATOR, planted
+
+    _plant(home, _FIRE_REASON_WIRED, _FIRE_REASON_DEFAULT)
     after = _run(home)
     assert after.status is Status.PASS, after

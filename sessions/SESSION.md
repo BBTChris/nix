@@ -6804,3 +6804,102 @@ predecessor costs what it costs and converts a guess into arithmetic. Same famil
 undserived numerator: a figure carried forward without re-derivation.
 
 **Badge unchanged by all of it: Limiter RED, count 7/12, I1 path-progress 2 of ~6.**
+
+---
+
+## ARC 048 — ULTRAREVIEW: Limiter, slice 8 — I3 exit-path zero-wire independence (INTERIOR)
+
+**Predecessor DERIVED, not assumed.** The brief said `≈ 696020c`; `git rev-parse HEAD` said
+**`4b418f0`**, one commit further on (047's own final-measurement commit). Everything below freezes
+and diffs against `4b418f0`.
+
+**MEASURED BASELINE at `4b418f0`, before anything was written: `90 | 4 | 2 | 0 | 1`, exit 1.**
+047's `89 | 4 | 3 | 1 | 1` did NOT survive — three cells moved (passed 89→90, cannot-measure 3→2,
+skipped 1→0). This is the second consecutive arc where carrying the predecessor's composition
+forward would have been wrong, and it is why 047's own lesson (measure the tip, then predict the
+delta) was executed as the first action of this one rather than the last. Composition: FAIL =
+`check_ibgateway_service` (ECONNREFUSED), `check_monitor_tui` (ARM3 stale pin),
+`check_uncalled_entry_points` (21 + 4 rows), `check_untracked_attribution`
+(`downloads/Pinokio-8.0.40-arm64.dmg`, an operator artifact this arc did not create and does not
+delete); CANNOT-MEASURE = `check_ibgateway_config`, `check_observed_resource_claims` (both
+downstream of the dead gateway); GUARDED = `check_artifact_gate_coverage` (8 exclusions).
+
+**S1 — THE EXIT-PATH CODE IS CLEAN, AND SAYING SO IS THE FINDING.** The trigger set was DERIVED
+from the code rather than transcribed from §3's prose: `FlattenTrigger` (`seam.py:608`) declares
+SEVEN members, `flatten.py:143` refuses ONE (`SENTINEL`, R4) — SIX fireable. The
+`self._broker.flatten(...)` sites were derived by AST shape: `fire` (`flatten.py:664`, §4's
+untargeted uncertainty flatten) and `_arbitrate` (`flatten.py:746`, the targeted per-trade close).
+Driven across all six triggers × both target shapes with the state bus, the Plane-1 delivery wire
+and the Allocator all DEAD — each double proven to REJECT first (`ConnectionError`, `EFBIG` errno
+27) — **12/12 flattened**. ARC 038's FC1 and FC2 really were discharged. So, per the brief's own
+instruction, I3 re-targeted to its open half.
+
+**THE OPEN HALF WAS THE INSTRUMENT, and it was REPRODUCED before it was fixed.** ARC 038 /
+sub-agent C filed it as FC5 and D3.373 still carries it: `check_flatten`'s zero-wire arm drove ONE
+of the six triggers against ONE dead surface. Planting a wire dependency reachable only from
+`STALE_PRICE` — the shape a real per-trigger dependency takes, a stale-price flatten "just checking
+the bus first" — and driving the planted tree with the wire dead:
+
+```
+synthetic_stop  flattened=True          calls=['MESU6']  still_open=[]
+stale_price     RAISED ConnectionError  calls=[]         STILL OPEN=['MESU6']
+GATE VERDICT WITH PLANT A IN:  rc=0     pass: ...
+RESTORE: byte-identical=True
+```
+
+A real open position left unflattened at the broker, and the gate certifying wire-freedom over it.
+
+**S2 IS EMPTY ON PURPOSE, and that is the strongest thing in this arc.**
+`scripts/nixrisk/flatten.py` is **BYTE-IDENTICAL** across ARC 048 — `git hash-object` reads
+`d2c825f7f239657f1abb2935f7586cb9e8eddc13` at `4b418f0` and at the bank. There was no exit-path
+defect to repair; there was an absent proof. Editing the subject to make a point would have been
+the manufactured-green this gate's own `CORRECTABLE = False` exists to forbid.
+
+**S3/S4 — ARM 6, and every input to it is DERIVED rather than listed.** (a) the trigger set is the
+frozen enum minus the SUBJECT's own `_R4_TRIGGERS`, because a list inside the gate is precisely what
+went stale; (b) the protective-exit sites come from the subject's AST by shape — an `ast.Call` whose
+func is `.flatten` on an attribute of `self` inside `ProtectiveFlatten` — never by identifier
+spelling (D3.426), and every derived site must have been ENTERED or the proof is incomplete
+(contract rule 4); (c) wire-freedom is read off the LIVE CALL CENSUS (`sys.setprofile`) of each
+drive, classified against an **ALLOW-set and not merely a ban-list**. That inversion is the §7.12
+answer: a ban-list only catches transports someone thought to name, so an unknown module on the exit
+path is CANNOT_MEASURE NAMING IT, never a pass. The allow-set is honest here because it was
+measured, not chosen — the shipped exit path enters FOUR module roots across 15 frames.
+
+**BOUND FROM FOUR PLANTS**, each restored byte-identical, unperturbed tree exit 0: **A** (wire
+dependency on an undriven trigger) exit 1 naming the trigger, the wire AND the position left open,
+in both target shapes; **B** (discretionary beats protective) exit 1 `precedence-reverse`; **C** (a
+trigger the derivation cannot classify) exit 2 CANNOT_MEASURE naming `margin_call`; **D** (a derived
+exit site the drive never enters) exit 1 naming `ProtectiveFlatten.emergency_flatten`.
+
+**RED-before / GREEN-after, in the standing suite, is the sharpest evidence produced.** With PLANT A
+on the REAL file, ARC 038's own `test_the_EXIT_PATH_TOUCHES_NO_WIRE_MODULE` **PASSED** while both new
+exhaustive controls **FAILED** — the pre-existing control is blind to exactly this defect, which is
+FC5 restated as a measurement rather than a claim. Restore verified byte-identical against
+`git hash-object`.
+
+**FREEZE HELD.** `completions.py`, `fills.py`, `limiterd.py`, `outcomes.py`, `reservations.py`,
+`picture.py` byte-identical by `git hash-object`. **The `uncalled_entry_points` ratchet did NOT
+move and did not need to**: the gate measures 54, rendering 25 (21 + 4), IDENTICAL to the baseline —
+this arc changed no shipped call graph, so there was nothing to re-point. Closure: the derived
+reverse-dependency closure over the changed modules is one edge (`test_check_flatten.py` imports
+`check_flatten`); the D3.444 by-detection backstop found 29 further references the import graph
+cannot see (registry, gate cross-citations, prose), and the eight test suites among them run
+114 passed. Tripwires run EXPLICITLY, not via testmon: `test_check_order_path_bans` +
+`test_check_uncalled_entry_points` = 52 passed.
+
+**Opened: D3.453** — `FlattenTrigger.STALE_PRICE` is a §3 protective trigger that NOTHING in this
+tree ever fires, not shipped code and not even a check: `grep -rn STALE_PRICE` hits exactly two
+lines, the enum member and a parametrize list. `freshness.py` detects staleness and blocks NEW
+ENTRIES; §6.4's other half — flatten what is already open — has no implementation. It is invisible
+to `check_uncalled_entry_points` by construction, because that gate looks for uncalled entry points
+and this is an unreachable ENUM MEMBER with no producer at all. **D3.454** — ARM 6's allow-set is a
+measured property of today's exit path, so a future legitimate module reads CANNOT_MEASURE until an
+architect widens it; recorded so the next arc does not discharge a light-blue by quietly widening a
+tuple. **D3.373 STAYS OPEN and is deliberately NOT claimed**: its subject is
+`check_plane1_degraded`'s C2 tautology, which this arc did not touch. I3's property is now gated in
+a DIFFERENT gate, and marking the row discharged would be a false claim about `plane1_degraded_drill.py`.
+**ARC 048 series row = 401**, derived by `check_derived_claims`'s `derived:ledger_rows`, never typed.
+
+**BADGE — THE FIRST COUNT FLIP SINCE ARC 045. I3 DISCHARGED: clean
+`{I2, I3, I5, I6, I7, I8, I10, I11} = 8/12`, open = 4 (`I1`, `I4`, `I9`, `I12`). Limiter STAYS RED.**
