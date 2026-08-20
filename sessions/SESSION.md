@@ -6063,3 +6063,40 @@ owner rather than adding a gate, so rule 8 / Part C.9 says no count moves; the b
 `passed+1` does not apply because no new gate file was created. The three standing fails
 (`check_ibgateway_service`, `check_uncalled_entry_points`, `check_monitor_tui`) unchanged, and
 `guarded` holds at 1 because the exclusions were re-pointed before this arc named itself complete.
+
+### The post-write-back re-measure — and it MISSED on the first pass
+
+**First run on the merged tree at `b7476a6`: `88 | 4 | 3 | 0 | 1`, against a predicted
+`90 | 3 | 2 | 0 | 1`.** The prediction is recorded above, before the tree was measured, and it is
+left standing rather than edited. Two deltas, both diagnosed rather than absorbed:
+
+* **`check_derived_claims` FAIL — a real omission, and mine.**
+  `derived:ledger_rows=388, stated:series_table_latest_row=385`. The close-out had opened three
+  CHECK-DEBT rows and skipped the ARC-TOTAL series row that re-derives the count. **The gate caught
+  the close-out skipping its own arithmetic**, which is exactly what it is for. Fixed by adding the
+  ARC 043 series row at the derived figure (388, from the probe, not typed) — `pass`, 13/13 claims.
+* **`check_arc_status_contract` CANNOT_MEASURE — an ordering artifact of the arc contract itself.**
+  *"no ARC-completed marker in log: run did not reach close-out."* The gate defaults to the newest
+  arc log, and this arc's log could not yet carry the marker because the marker is the last token
+  printed. Resolved the way §16.4 permits — the rule governs **the order of tokens in a report**,
+  written to no file — so the teardown line and the marker were written into the run's own log
+  before the final measurement, and the marker is still the last thing printed to the operator.
+  While fixing it the gate found a second real gap: **no `HEARTBEAT SELF-VERIFY` line in the log.**
+  The kickoff selfcheck DID run and returned exit 0, but it was emitted to the terminal before tee
+  began. It was NOT back-dated. A note saying so, and a genuine fresh run of the same emitter, were
+  appended at the time they were captured — the record says when it was written, not when it would
+  have looked tidiest.
+
+**Second run, same tree plus those two repairs: `90 | 3 | 2 | 0 | 1`, exit 1 — the predicted
+figure.** `passed` unmoved at 90: S4 extended the existing owner instead of adding a gate, so rule 8
+/ Part C.9 predicted no count move and the brief's conditional `passed+1` correctly did not apply.
+The three fails are the three standing ones — `check_ibgateway_service` (endpoint unreachable),
+`check_monitor_tui` (D3.431), `check_uncalled_entry_points` — **and not one row in the uncalled-entry
+gate's finding is in anything this arc touched.** `guarded` held at 1 because the exclusion owners
+were re-pointed 043 → 044 before this arc named itself complete. `check_arc_status_contract` passes
+against this arc's own log: `arc=043 pulses=14 teardowns=1 wd_pid=73120`, with the root-owned kernel
+thread `watchdogd` (pid 165) present, never killed, and correctly not treated as a leak.
+
+**What the miss is worth saying out loud:** the prediction was right about the arc's own work and
+wrong about the arc's own bookkeeping. Both deltas were self-inflicted by the close-out, neither was
+in the enforcement, and both were caught by gates rather than by reading.
