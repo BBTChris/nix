@@ -6903,3 +6903,39 @@ a DIFFERENT gate, and marking the row discharged would be a false claim about `p
 
 **BADGE — THE FIRST COUNT FLIP SINCE ARC 045. I3 DISCHARGED: clean
 `{I2, I3, I5, I6, I7, I8, I10, I11} = 8/12`, open = 4 (`I1`, `I4`, `I9`, `I12`). Limiter STAYS RED.**
+
+### ARC 048 — THE FINAL MEASUREMENT: `90 | 4 | 2 | 0 | 1` at `b462121`. **PREDICTION HIT.**
+
+Re-measured on the merged tree after the write-back commit. **Identical to the measured baseline at
+`4b418f0`, which is exactly the predicted delta**: extending `check_flatten` creates no new gate
+file, so `passed` does not move; the badge axis (7/12 → 8/12) is separate from the verify tuple.
+This is the discipline 047 failed and named — the level was MEASURED at the derived tip before the
+delta was predicted, so the prediction was arithmetic rather than a guess.
+
+**One thing in this tuple is green for the wrong reason, and it is this arc's own defect.**
+`check_arc_status_contract` reports `[ok]` against
+`/home/bbt/nix/scratchpad/arc_logs/arc_047.log` — a COMPLETED arc's log — because `arc_048.log` did
+not exist when the check ran (it sits at position 7 in the plan and executed minutes before the log
+was created at stage 14). That is **D3.455** manifesting inside the banked measurement rather than
+merely being described by it: a check certifying a property while its real subject was absent, which
+is check-contract rule 10's shape reached by mislabelling rather than unavailability. The pass is
+recorded as measured and is NOT claimed as evidence about ARC 048.
+
+**A prediction correction, stated because the correction was the error.** Mid-arc, after creating
+`arc_048.log`, this arc revised its prediction to `89 | 4 | 3 | 0 | 1` on the reasoning that the new
+log would take `check_arc_status_contract` to cannot-measure. The revision was WRONG and the
+original was right — the check had already executed. The lesson is narrower than 047's and worth
+keeping separate from it: a mid-run change to a check's SUBJECT does not retroactively change a
+verdict already recorded in the same run, and reasoning about plan-ordered checks requires knowing
+where in the plan they sit.
+
+Standing, unchanged from baseline and untouched by this arc: `check_ibgateway_service` FAIL with
+`check_ibgateway_config` / `check_observed_resource_claims` CANNOT-MEASURE (the gateway is down —
+not a misconfiguration, §4.1); `check_monitor_tui` FAIL (ARM3 stale pin);
+`check_uncalled_entry_points` FAIL at 54 measured / 25 rendered, byte-identical baseline;
+`check_untracked_attribution` FAIL on `downloads/Pinokio-8.0.40-arm64.dmg`, the operator artifact
+this arc neither created nor deleted. `check_artifact_gate_coverage` GUARDED with its eight
+exclusions now reading `-> ARC 049`, the re-point made BEFORE this file named ARC 048 complete.
+
+**Badge: I3 DISCHARGED. Clean `{I2, I3, I5, I6, I7, I8, I10, I11} = 8/12`, open = 4
+(`I1`, `I4`, `I9`, `I12`). Limiter STAYS RED. Ledger 402, derived.**

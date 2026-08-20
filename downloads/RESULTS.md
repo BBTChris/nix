@@ -166,4 +166,34 @@ capstone, ~4 arcs), **I4**, **I9**, **I12**. **Limiter STAYS RED.**
 
 ## 9. THE FINAL MEASUREMENT
 
-*(recorded after the write-back commit — see below)*
+```
+90 passed | 4 failed | 2 cannot measure | 0 skipped | 1 guarded    exit 1    @ b462121
+```
+
+**PREDICTION HIT** — identical to the measured baseline at `4b418f0`, which is exactly the predicted
+delta. Extending `check_flatten` creates no new gate file, so `passed` does not move; the badge axis
+(7/12 -> 8/12) is separate from the verify tuple. The level was MEASURED at the derived tip before
+the delta was predicted, which is the discipline ARC 047 failed and named.
+
+**One pass in this tuple is green for the wrong reason, and it is this arc's own defect.**
+`check_arc_status_contract` reports `[ok]` against `scratchpad/arc_logs/arc_047.log` — a COMPLETED
+arc's log — because `arc_048.log` did not exist when the check ran (position 7 in the plan, executed
+minutes before the log was created at stage 14). That is **D3.455** visible inside the banked
+measurement, not merely described by it. It is recorded as measured and NOT claimed as evidence
+about ARC 048.
+
+**The mid-arc prediction revision was the error, not the original.** After creating `arc_048.log`
+this arc revised its prediction to `89 | 4 | 3 | 0 | 1`, reasoning the new log would take
+`check_arc_status_contract` to cannot-measure. Wrong: the check had already executed. A mid-run
+change to a check's subject does not retroactively change a verdict already recorded in the same
+run.
+
+Standing and untouched by this arc: `check_ibgateway_service` FAIL + `check_ibgateway_config` /
+`check_observed_resource_claims` CANNOT-MEASURE (gateway down, not a misconfiguration, §4.1);
+`check_monitor_tui` FAIL (ARM3 stale pin); `check_uncalled_entry_points` FAIL at 54/25, baseline
+byte-identical; `check_untracked_attribution` FAIL on the operator's `Pinokio-8.0.40-arm64.dmg`.
+`check_artifact_gate_coverage` GUARDED, exclusions now `-> ARC 049`.
+
+**Ledger 402** (derived). **D3.455 opened by the write-back against this arc's own process** — the
+heartbeat emitter ran from kickoff but was never tee'd to `arc_logs/arc_048.log`. The ARC 048 series
+row at 401 is struck and superseded by 402, the ARC 039 / D3.424 convention.
