@@ -138,9 +138,19 @@ context compaction; a format in code does not.)
 
 Every arc:
 
-- **Write progress each stage + sub-step** to `$NIX_SCRATCH/arc_progress.txt` (key=value, stamped
-  with THIS arc + a monotonic ts — D3.244 class):
-  `arc=<id>  start=<epoch>  ts=<epoch-now>  stage=<k>  total=<T>  op=<text>  pct=<0-100>`
+- **Write progress each stage + sub-step** to `$NIX_SCRATCH/arc_progress.txt` — **ONE `key=value`
+  PER LINE** (the parser reads line-by-line, splitting on the first `=`; a single space-joined line
+  parses only `arc` and leaves `stage`/`pct` empty -> `stage ?/?` and a false `STALL WARNING` — D3.445,
+  measured in ARC 045). Stamp with THIS arc + a monotonic ts (D3.244 class). Exactly:
+  ```
+  arc=<id>
+  start=<epoch>
+  ts=<epoch-now>
+  stage=<k>
+  total=<T>
+  op=<text>
+  pct=<0-100>
+  ```
 - **PULSE** — one line, ~5-min cadence *within* a stage (also the watchdog's beat):
   `scripts/arc_heartbeat.sh pulse`
 - **BANNER** — boxed, **only at a stage transition**:

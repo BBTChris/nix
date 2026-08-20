@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+# C0302 (too-many-lines) disabled, matching every daemon/gate module over
+# pylint's 1000-line default elsewhere in this tree (e.g. `check_flatten.py`,
+# `check_order_path_bans.py`, `feed_kill_drill.py`). ARC 046 grew this file
+# past the line by wiring the completion ingress, the §11.3 ledger, and §3's
+# handlers as process state (S2) — one daemon file over several is a smaller
+# surface for the property this module exists to hold (a thing with a pid),
+# not an accident of not having split it.
+# pylint: disable=too-many-lines
 """`limiterd` — the Limiter as an OS PROCESS. The §2:42 Risk-Engine entrypoint.
 
 Every `§` in this module cites `docs/nics_risk_subsystem_spec_v1.3.md`, the
@@ -52,6 +60,12 @@ THE RUNTIME DIRECTORY IS A FIXED CONTRACT
                                     because the Sentinel reads it by that name.
     DIR/inbox/                      `*.json` command files. Drained and unlinked
                                     by the loop's own tick.
+    DIR/completions/                ARC 046. `*.json` §2A exec reports — §5:322's
+                                    THIRD loop input, standing in for what the
+                                    §5:323 sender thread surfaces, by the same
+                                    files-rather-than-ZMQ argument above. Read
+                                    inside the tick, dispatched serially, and
+                                    unlinked once dispatched.
     DIR/outbox/                     `<id>.reply.json`, one per command, atomic.
     DIR/limiter.runtime.json        written ONCE at boot and again at clean stop.
     DIR/plane1.wal                  ARC 042. §9's DURABLE LOCAL WAL, appended by
@@ -122,7 +136,14 @@ from pathlib import Path
 from types import FrameType
 from typing import Any, Final
 
+import risk_config
+from nixrisk.completions import (
+    CompletionDispatcher,
+    MalformedCompletion,
+    parse_completion,
+)
 from nixrisk.loop import (
+    CONFIG_MODULE,
     GoTimeout,
     LimiterLoop,
     LoopStop,
@@ -130,8 +151,10 @@ from nixrisk.loop import (
     heartbeat_interval_from_config,
     tick_interval_for,
 )
+from nixrisk.outcomes import OrderOutcomes
 from nixrisk.recovery import RecoveryError
-from nixrisk.seam import EventKind, EventRow
+from nixrisk.reservations import ReservationLedger
+from nixrisk.seam import EventKind, EventRow, ProposedOrder, Side, StopMode
 from nixrisk.wal import Plane1Wal, WalError
 from nixsentinel.heartbeat import DEFAULT_HEARTBEAT_NAME, HeartbeatPublisher
 
@@ -144,6 +167,11 @@ SITE: Final[str] = "scripts/limiterd.py"
 HEARTBEAT_NAME: Final[str] = DEFAULT_HEARTBEAT_NAME
 INBOX_DIR: Final[str] = "inbox"
 OUTBOX_DIR: Final[str] = "outbox"
+#: ARC 046. §5:322's THIRD serial input. A directory for the same reason the
+#: inbox is one (see the module docstring): there is no bus in this tree, and a
+#: completion path that needed one could not be driven by the out-of-process
+#: gate that has to prove the DAEMON dispatches rather than the library.
+COMPLETIONS_DIR: Final[str] = "completions"
 RUNTIME_NAME: Final[str] = "limiter.runtime.json"
 #: ARC 042. §9's durable local WAL, inside the runtime directory by default so
 #: one directory is the whole contract and a drive can find the evidence beside
@@ -163,6 +191,37 @@ REPLY_SCHEMA: Final[int] = 1
 #: dumped ten thousand files into must not hold one tick open past the beat.
 INBOX_MAX_PER_TICK: Final[int] = 32
 
+#: ARC 046. The same §11:581 bound on the completion read. Separate from the
+#: command bound and deliberately so: a venue that pushes a burst of exec
+#: reports and an operator who dropped files in the inbox are different
+#: pressures, and one number covering both would make the tick's worst case a
+#: function of two unrelated things.
+COMPLETIONS_MAX_PER_TICK: Final[int] = 32
+
+#: ARC 046. §12A:830's `PENDING_ACK_TIMEOUT_MS`, by the key it has in its one
+#: physical home. Read through `risk_config` rather than off the raw JSON for
+#: the reason `nixrisk/loop.py::go_timeout_from_config` records: the file
+#: carries a cross-knob boot rule (`liveness.go_timeout_outlasts_pending_ack`)
+#: relating this knob to the GO timeout, and reading around the validator would
+#: leave that rule validating a value this process then ignored.
+PENDING_ACK_TIMEOUT_KEY: Final[str] = "pending_ack_timeout_ms"
+
+
+def pending_ack_timeout_from_config(root: Path | None = None) -> float:
+    """§12A:830's ack deadline in SECONDS. No default (directive 4).
+
+    `OrderOutcomes` requires a finite positive interval and refuses construction
+    without one, which is why this raises rather than substituting: a Limiter
+    that invented an ack deadline would query the venue about orders that were
+    never late, or never query about ones that were.
+    """
+    configs = risk_config.load_risk_configs(root)
+    return (
+        risk_config.knob(configs.modules[CONFIG_MODULE], PENDING_ACK_TIMEOUT_KEY)
+        / 1000.0
+    )
+
+
 #: The mode every file this process writes carries. Nothing in `~/nix` outside
 #: `state/` needs to be world-readable and the default umask is not a guarantee;
 #: `nixsentinel/heartbeat.py` records the same reasoning for the beat.
@@ -180,11 +239,19 @@ VERB_STATUS: Final[str] = "status"
 #: it every GO in this process would end at the timeout and a gate would read
 #: that as the invariant working — §0a of this arc's brief, exactly.
 VERB_RESOLVE: Final[str] = "resolve"
+#: ARC 046. §3's *"taken at approval"*. Landed because a daemon that holds no
+#: reservations has nothing for a cancel completion to RELEASE: the dispatch
+#: this arc wires could otherwise only be proven against a ledger a test
+#: constructed, which is the exact library-not-process gap ARC 038 found and
+#: this arc exists to close. It reaches money's ACCOUNTING and not the venue —
+#: no order is placed, nothing is sent.
+VERB_RESERVE: Final[str] = "reserve"
 VERBS: Final[tuple[str, ...]] = (
     VERB_REGISTER,
     VERB_GO,
     VERB_STATUS,
     VERB_RESOLVE,
+    VERB_RESERVE,
 )
 
 
@@ -254,6 +321,177 @@ class Inbox:
         return taken
 
 
+@dataclass(frozen=True)
+class RawCompletion:
+    """ARC 046. One §2A exec report the completion ingress read, UNPARSED.
+
+    Carries bytes for the same reason `RawCommand` does: the parse is a decision,
+    decisions belong in the tick (§5:322's serial processing), and a parse that
+    ran on the ingress would decide what a completion means outside the one
+    thread §5:322 says decides anything.
+    """
+
+    path: Path
+    blob: bytes
+    read_error: str
+
+
+# R0903 (too-few-public-methods): ONE public verb is the whole collaborator —
+# the same argument `Inbox` records above.
+# pylint: disable=too-few-public-methods
+class CompletionInbox:
+    """ARC 046. §5:322's THIRD input read, standing in for the sender's surface.
+
+    §5:323 puts the blocking venue I/O on the low-priority sender thread and
+    §5:322 puts the PROCESSING in the loop. This reads what that thread would
+    have surfaced. The read is here rather than on `SenderThread` deliberately:
+    `nixrisk/loop.py`'s sender is a stub that records and never sends, and
+    teaching it to also receive would put the venue's inbound path inside the
+    module that owns the threading shape — two contracts in one object, which is
+    what `Plane1Booker.before` refuses to do one collaborator over.
+
+    WHAT THIS DOES NOT CLAIM: that a real broker session pushed anything. There
+    is no vendor integration in this tree (`CLAUDE.md`'s spec table lists it
+    under *not yet authored*). It claims exactly what it does — a completion
+    that entered this PROCESS from outside it is dispatched by the loop's own
+    tick, serially, on the loop's own thread.
+    """
+
+    def __init__(self, directory: Path, loop: LimiterLoop) -> None:
+        self.directory = directory
+        self._loop = loop
+
+    def drain(self, tick: int) -> int:
+        """Read up to `COMPLETIONS_MAX_PER_TICK` exec reports onto the loop's queue.
+
+        Does NOT unlink and does NOT parse. `CompletionHandler` removes the file
+        after the dispatch decision is made, so a crash between the read and the
+        dispatch leaves the exec report where the next boot can still see it —
+        the same durability argument `Inbox.drain` makes for a command.
+        """
+        del tick
+        try:
+            names = sorted(
+                entry.name
+                for entry in os.scandir(self.directory)
+                if entry.is_file() and entry.name.endswith(".json")
+            )
+        except OSError as exc:
+            raise RuntimeError(
+                f"{SITE}: cannot scan the completions directory "
+                f"{self.directory}: {exc!r}"
+            ) from exc
+        taken = 0
+        for name in names[:COMPLETIONS_MAX_PER_TICK]:
+            path = self.directory / name
+            try:
+                blob = path.read_bytes()
+                error = ""
+            except OSError as exc:
+                blob = b""
+                error = f"cannot read {path.name}: {exc!r}"
+            self._loop.submit(RawCompletion(path=path, blob=blob, read_error=error))
+            taken += 1
+        return taken
+
+
+# R0903 (too-few-public-methods): ONE public verb, the loop's per-item callback.
+# pylint: disable=too-few-public-methods
+class CompletionHandler:
+    """ARC 046. Turns one `RawCompletion` into one §3 dispatch. NEVER RAISES.
+
+    This is I1's shape in one object: the completion arrives from outside the
+    process, the LOOP drains it inside its own tick, and the dispatcher calls
+    §3's already-proven handler. Nothing here decides what a release means —
+    `nixrisk/outcomes.py` does, unchanged, and `nixrisk/reservations.py`
+    accounts for it, unchanged. Both are byte-identical across this arc.
+
+    Contained for the reason every other handler in this file is: a Limiter that
+    died of one malformed exec report would be a remote kill switch on the
+    process holding every synthetic stop (§12.1:604).
+    """
+
+    def __init__(self, dispatcher: CompletionDispatcher) -> None:
+        self._dispatcher = dispatcher
+        #: Refusals that never reached the dispatcher — unreadable file, bad
+        #: JSON, no exec_id. Counted here rather than in the dispatcher's ledger
+        #: because "never parsed" and "parsed and refused" are two readings and
+        #: one counter over both would hide which (`completions.py` §7.12 #1).
+        self.malformed: list[str] = []
+
+    def handle(self, item: RawCompletion) -> None:
+        """The loop's per-item callback for a completion. Dispatches, then unlinks."""
+        # Counted HERE — before the parse, before the dispatch, before anything
+        # can decide the completion away. This is the loop saying "I drained
+        # one", and it must survive the dispatch being absent: see
+        # `nixrisk/completions.py::DispatchLedger` on the PLANT A measurement
+        # that put it here.
+        self._dispatcher.ledger.consumed += 1
+        if item.read_error:
+            self._refuse(item, item.read_error)
+            return
+        try:
+            completion = parse_completion(item.blob, source=str(item.path))
+        except MalformedCompletion as exc:
+            self._refuse(item, str(exc))
+            return
+        self._dispatcher.dispatch(completion)
+        self._unlink(item)
+
+    def _refuse(self, item: RawCompletion, why: str) -> None:
+        self.malformed.append(why)
+        self._dispatcher.ledger.malformed += 1
+        self._unlink(item)
+
+    @staticmethod
+    def _unlink(item: RawCompletion) -> None:
+        try:
+            item.path.unlink()
+        except OSError:
+            # Gone already, or a directory that vanished under us. The dispatch
+            # decision is recorded either way, and §4:214's dedup makes a
+            # re-served completion a counted duplicate rather than a second
+            # release — which is precisely why the dedup is keyed on the exec
+            # report and not on the file.
+            pass
+
+
+# R0903 (too-few-public-methods): ONE public verb — it IS the loop's handler.
+# pylint: disable=too-few-public-methods
+class LoopHandler:
+    """ARC 046. Routes ONE drained item to the collaborator that owns it.
+
+    §5:322 gives the loop three serial inputs and ONE place that processes them.
+    `LimiterLoop.attach` takes one handler, so the routing is here rather than
+    in the loop: which kinds of work a Limiter serves is this file's business
+    (it is the process), and how they are serialised is `nixrisk/loop.py`'s.
+
+    Still fail-closed on an unknown item, and the refusal still names both types
+    — an item nobody owns is a submission bug, and absorbing it would let a
+    future arc queue something the loop silently discarded.
+    """
+
+    def __init__(
+        self, commands: CommandHandler, completions: CompletionHandler
+    ) -> None:
+        self._commands = commands
+        self._completions = completions
+
+    def handle(self, item: object) -> None:
+        """The loop's per-item callback."""
+        if isinstance(item, RawCommand):
+            self._commands.handle(item)
+            return
+        if isinstance(item, RawCompletion):
+            self._completions.handle(item)
+            return
+        raise TypeError(
+            f"{SITE}: the loop handed the handler a {type(item).__name__}; this "
+            f"process submits only {RawCommand.__name__} (§5:322's inbox) and "
+            f"{RawCompletion.__name__} (§5:322's sender completions)"
+        )
+
+
 # R0903 (too-few-public-methods): ONE public verb is the whole handler. It is
 # the loop's per-item callback and nothing else calls it; a second method added
 # to clear a threshold would widen a surface whose narrowness is the point.
@@ -268,9 +506,21 @@ class CommandHandler:
     Sentinel watching, so an unparsable file is answered, not fatal.
     """
 
-    def __init__(self, loop: LimiterLoop, outbox: Path) -> None:
+    def __init__(
+        self,
+        loop: LimiterLoop,
+        outbox: Path,
+        reservations: ReservationLedger | None = None,
+        dispatcher: CompletionDispatcher | None = None,
+    ) -> None:
         self._loop = loop
         self._outbox = outbox
+        #: ARC 046. Optional so every reader written against the ARC 040 CLI
+        #: still constructs this handler; a build without them serves `reserve`
+        #: as a NAMED refusal rather than as an unknown verb, because "this
+        #: build has no ledger" and "no such verb exists" are two readings.
+        self._reservations = reservations
+        self._dispatcher = dispatcher
 
     def handle(self, item: object) -> None:
         """The loop's per-item callback. Writes the reply, then unlinks the command."""
@@ -362,6 +612,13 @@ class CommandHandler:
                     f"go timeout knob {self._loop.go_timeout_s}, "
                     f"sender handoffs {self._loop.sender.handoffs}"
                 ),
+                # ARC 046. The LIVE §11.3 aggregate and the §5:322 dispatch
+                # counters, in the daemon's own published snapshot. Structured
+                # fields rather than more prose in `reason`: the gate has to
+                # read committed BEFORE and AFTER a completion and compare two
+                # numbers, and a number parsed back out of a sentence is a
+                # number that drifts with the sentence.
+                extra=self._picture(),
             )
         strategy_id = str(raw.get("strategy_id") or "")
         if not strategy_id:
@@ -399,18 +656,118 @@ class CommandHandler:
                 "§4:266-268 keys every piece of Limiter state to a registration, "
                 "so there is no slot for an order to be in flight in",
             )
+        if verb == VERB_RESERVE:
+            return self._reserve(command_id, strategy_id, client_order_id, raw)
         accepted, reason = self._loop.take_in_flight(strategy_id, client_order_id)
         if accepted:
             self._loop.hand_to_sender((strategy_id, client_order_id))
         return self._reply(command_id, verb, accepted=accepted, reason=reason)
 
+    def _reserve(
+        self,
+        command_id: str,
+        strategy_id: str,
+        client_order_id: str,
+        raw: dict[str, Any],
+    ) -> dict[str, Any]:
+        """ARC 046. §3's *taken at approval*, through the REAL ledger.
+
+        Reaches money's ACCOUNTING and not the venue: no order is placed and
+        nothing is sent. It exists because the release this arc wires has to
+        have something to release, IN THIS PROCESS — a cancel dispatch proven
+        against a ledger a test constructed would be one more library proof, and
+        that is the gap (ARC 038) rather than the fix.
+        """
+        if self._reservations is None:
+            return self._refuse(
+                command_id,
+                VERB_RESERVE,
+                f"{VERB_RESERVE!r} needs §11.3's reservation ledger and this "
+                "build was constructed without one",
+            )
+        try:
+            order = ProposedOrder(
+                client_order_id=client_order_id,
+                strategy_id=strategy_id,
+                symbol=str(raw.get("symbol") or ""),
+                side=Side(str(raw.get("side") or Side.LONG.value)),
+                qty=int(raw.get("qty") or 0),
+                margin_per_contract=float(raw.get("margin_per_contract") or 0.0),
+                stop_ticks=int(raw.get("stop_ticks") or 0),
+                stop_mode=StopMode(str(raw.get("stop_mode") or StopMode.FIXED.value)),
+                signal_ts=float(raw.get("signal_ts") or time.time()),
+            )
+        except (TypeError, ValueError) as exc:
+            return self._refuse(
+                command_id,
+                VERB_RESERVE,
+                f"{client_order_id!r} is not a readable §3 order: "
+                f"{type(exc).__name__}: {exc}",
+            )
+        try:
+            reservation = self._reservations.take(order, time.time())
+        except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
+            # The ledger's OWN refusals (duplicate, sub-minimum margin, …), each
+            # of which already names its spec coordinate. Re-raising would kill
+            # a tick over an accounting refusal; the reason is the assertion
+            # (check contract v2 §11), so it is carried through verbatim.
+            return self._refuse(
+                command_id,
+                VERB_RESERVE,
+                f"§11.3's ledger refused the reservation: {type(exc).__name__}: {exc}",
+            )
+        reply = self._reply(
+            command_id,
+            VERB_RESERVE,
+            accepted=True,
+            reason=(
+                f"{SITE}: §3 reservation {reservation.reservation_id} taken at "
+                f"approval for {client_order_id!r} — "
+                f"{reservation.margin} of margin COMMITTED in this process's "
+                "live ledger; nothing was placed and nothing was sent"
+            ),
+        )
+        reply.update(self._picture())
+        return reply
+
+    def _picture(self) -> dict[str, Any]:
+        """The live §11.3 aggregate + §5:322 dispatch counters. DERIVED, never cached.
+
+        `None` where the collaborator is absent, so a build without a ledger
+        reads as *cannot say* rather than as *committed nothing* — check
+        contract rule 10 one layer down: an aggregate reported as 0.0 by a
+        process that has no ledger is a safety property certified over an
+        unavailable subject.
+        """
+        return {
+            "committed": (
+                None
+                if self._reservations is None
+                else self._reservations.total_reserved()
+            ),
+            "outstanding": (
+                None
+                if self._reservations is None
+                else len(self._reservations.outstanding())
+            ),
+            "completions": (
+                None if self._dispatcher is None else self._dispatcher.record()
+            ),
+        }
+
     # -- reply plumbing -----------------------------------------------------
 
     def _reply(
-        self, command_id: str, verb: str, *, accepted: bool, reason: str
+        self,
+        command_id: str,
+        verb: str,
+        *,
+        accepted: bool,
+        reason: str,
+        extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """The reply record. `tick` and `seq` are read at reply time, from the loop."""
-        return {
+        reply = {
             "schema": REPLY_SCHEMA,
             "id": command_id,
             "verb": verb,
@@ -420,6 +777,9 @@ class CommandHandler:
             "seq": self._loop.heartbeat_seq,
             "pid": os.getpid(),
         }
+        if extra:
+            reply.update(extra)
+        return reply
 
     def _refuse(self, command_id: str, verb: str, why: str) -> dict[str, Any]:
         """A refusal. Always carries a reason; `accepted: false` alone says nothing."""
@@ -647,12 +1007,14 @@ def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
         raise
 
 
-def _runtime_record(
+def _runtime_record(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     loop: LimiterLoop,
     *,
     boot_ts: float,
     stopped_ts: float | None,
     booker: Plane1Booker | None = None,
+    reservations: ReservationLedger | None = None,
+    dispatcher: CompletionDispatcher | None = None,
 ) -> dict[str, Any]:
     """`limiter.runtime.json`'s content, at boot and again at clean stop.
 
@@ -680,22 +1042,50 @@ def _runtime_record(
         #: *never fired*. `None` only if the booker could not be built, which
         #: `main` refuses to boot on.
         "plane1": None if booker is None else booker.record(),
+        #: ARC 046. §11.3's LIVE aggregate and the §5:322 dispatch counters, in
+        #: the record an out-of-process reader opens. `None` rather than 0.0
+        #: where the collaborator is absent: check contract rule 10 — a Σ of
+        #: 0.0 reported by a process that holds no ledger would be a safety
+        #: property certified over an unavailable subject.
+        "reservations": (
+            None
+            if reservations is None
+            else {
+                "committed": reservations.total_reserved(),
+                "outstanding": len(reservations.outstanding()),
+                "released": len(reservations.released()),
+                "refused": len(reservations.refusals()),
+            }
+        ),
+        "completions": None if dispatcher is None else dispatcher.record(),
         "stopped_ts": stopped_ts,
     }
 
 
-def _stop_record(
+def _stop_record(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     loop: LimiterLoop,
     stop: LoopStop,
     *,
     boot_ts: float,
     stopped_ts: float,
     booker: Plane1Booker | None = None,
+    reservations: ReservationLedger | None = None,
+    dispatcher: CompletionDispatcher | None = None,
+    malformed: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """The clean-stop record: the boot shape plus what the run actually did."""
     record = _runtime_record(
-        loop, boot_ts=boot_ts, stopped_ts=stopped_ts, booker=booker
+        loop,
+        boot_ts=boot_ts,
+        stopped_ts=stopped_ts,
+        booker=booker,
+        reservations=reservations,
+        dispatcher=dispatcher,
     )
+    # ARC 046. The completions the ingress read and the PARSE refused, so
+    # "no exec report arrived" and "an exec report arrived unreadable" are two
+    # readings rather than one absence (`nixrisk/completions.py` §7.12 #1).
+    record["completions_malformed"] = list(malformed)
     record.update(
         {
             # `flat` comes from the STOP OBSERVATION here, not from the live
@@ -869,7 +1259,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         inbox_dir = runtime_dir / INBOX_DIR
         outbox_dir = runtime_dir / OUTBOX_DIR
-        for directory in (runtime_dir, inbox_dir, outbox_dir):
+        completions_dir = runtime_dir / COMPLETIONS_DIR
+        for directory in (runtime_dir, inbox_dir, outbox_dir, completions_dir):
             directory.mkdir(parents=True, exist_ok=True)
         publisher = HeartbeatPublisher(runtime_dir / HEARTBEAT_NAME)
         go_timeout = (
@@ -895,7 +1286,25 @@ def main(argv: list[str] | None = None) -> int:
             if args.plane1_wal is None
             else Path(args.plane1_wal)
         )
-        booker = Plane1Booker(loop, Plane1Wal(wal_path))
+        wal = Plane1Wal(wal_path)
+        booker = Plane1Booker(loop, wal)
+        # ARC 046. §11.3's ledger and §3's terminal handlers, held by the
+        # PROCESS. Both are constructed here and NEITHER is modified by this
+        # arc: `nixrisk/reservations.py` and `nixrisk/outcomes.py` are
+        # byte-identical across ARC 046 and that is asserted with
+        # `git hash-object`, not claimed. The whole change is that something
+        # with a pid now owns them and the loop now calls one of them.
+        #
+        # The ledger writes §12.10's reservation rows through the SAME
+        # `Plane1Port` the booker holds — §9's sole-writer split, one process,
+        # one WAL. A second writer would be the thing §9 forbids outright.
+        reservations = ReservationLedger(wal)
+        outcomes = OrderOutcomes(
+            reservations,
+            clock=time.time,
+            pending_ack_timeout_s=pending_ack_timeout_from_config(),
+        )
+        dispatcher = CompletionDispatcher(outcomes)
     except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
         print(
             f"{SITE}: refusing to boot the Limiter: {type(exc).__name__}: {exc}",
@@ -907,20 +1316,47 @@ def main(argv: list[str] | None = None) -> int:
     # loop must own them rather than the other way round: §5:322's serial
     # processing means the inbox read and the command handling happen INSIDE the
     # tick, not on either collaborator's own schedule.
+    # ARC 046. The completion read runs AFTER the command read inside the same
+    # tick, and both feed ONE queue that ONE drain serves — §5:322's *processed
+    # serially*, enforced by there being one queue rather than asserted. The
+    # ORDER matters and is not a preference: a `reserve` command and the cancel
+    # completion for that same order can land in one tick, and reading the
+    # commands first means the reservation exists before the release for it is
+    # dispatched. Reading completions first would make that pair's outcome
+    # depend on filesystem timing, which is a race nobody declared.
+    command_ingress = Inbox(inbox_dir, loop).drain
+    completion_ingress = CompletionInbox(completions_dir, loop).drain
+
+    def _read_both(tick: int) -> object:
+        taken = command_ingress(tick)
+        completion_ingress(tick)
+        return taken
+
+    completion_handler = CompletionHandler(dispatcher)
     loop.attach(
         # ARC 042: the booking runs FIRST inside the tick, then the inbox read.
         # `Plane1Booker.before` composes the two rather than folding the write
         # into the reader — see its docstring for why it is one tick behind the
         # firing and why nothing is lost to that.
-        ingress=booker.before(Inbox(inbox_dir, loop).drain),
-        handler=CommandHandler(loop, outbox_dir).handle,
+        ingress=booker.before(_read_both),
+        handler=LoopHandler(
+            CommandHandler(loop, outbox_dir, reservations, dispatcher),
+            completion_handler,
+        ).handle,
     )
 
     boot_ts = time.time()
     runtime_path = runtime_dir / RUNTIME_NAME
     _write_json_atomically(
         runtime_path,
-        _runtime_record(loop, boot_ts=boot_ts, stopped_ts=None, booker=booker),
+        _runtime_record(
+            loop,
+            boot_ts=boot_ts,
+            stopped_ts=None,
+            booker=booker,
+            reservations=reservations,
+            dispatcher=dispatcher,
+        ),
     )
     _install_signal_handlers(loop)
 
@@ -936,7 +1372,14 @@ def main(argv: list[str] | None = None) -> int:
     _write_json_atomically(
         runtime_path,
         _stop_record(
-            loop, stop, boot_ts=boot_ts, stopped_ts=time.time(), booker=booker
+            loop,
+            stop,
+            boot_ts=boot_ts,
+            stopped_ts=time.time(),
+            booker=booker,
+            reservations=reservations,
+            dispatcher=dispatcher,
+            malformed=tuple(completion_handler.malformed),
         ),
     )
     return 0

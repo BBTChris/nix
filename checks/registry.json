@@ -44,6 +44,7 @@
         "check_ibgateway_expected_schema",
         "check_ibgateway_service",
         "check_ledger_row_preservation",
+        "check_limiter_daemon_dispatch",
         "check_limiter_gate",
         "check_limiter_loop_alive",
         "check_limiter_seam",
@@ -137,6 +138,7 @@
         "file-write:/tmp",
         "interpreter:sys.modules",
         "interpreter:sys.path",
+        "postgres:nix_plane1",
         "subprocess:createdb",
         "subprocess:dropdb",
         "subprocess:psql"

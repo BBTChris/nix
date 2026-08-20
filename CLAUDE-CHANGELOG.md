@@ -404,3 +404,12 @@ tie-breaker against its own prose, on directive 8 (enforce mechanically, keep pr
 Paired instruments registered in the same arc: `checks/check_arc_status_contract.py` (audits an
 arc's own log for heartbeat evidence + `[watchdogd]`-safe teardown proof) and
 `checks/check_tmpfs_inode_headroom.py` (the axis that stopped ARC 039R — CHECK-DEBT D3.423).
+
+## ARC 046 (2026-08-20) — STATUS EMIT block: D3.445 corrected
+`arc_progress.txt` is **one `key=value` per line**, not one space-joined line. The block documented
+the joined form while `scripts/arc_heartbeat.sh` has always parsed line-by-line
+(`while IFS='=' read -r k v`), so the joined form parsed `arc` only, left `stage`/`ts` empty, and
+ARC 045 emitted a false `STALL WARNING` against a run that was moving. Documentation now matches the
+parser, which is the authority (directive 3: the format lives in the code, not in prose).
+Not fixed here, recorded instead: `arc_heartbeat.sh`'s OWN header comment (line 16) still shows the
+joined form — same defect, but the file is outside ARC 046's declared freeze. CHECK-DEBT row filed.

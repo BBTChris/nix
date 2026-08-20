@@ -116,3 +116,26 @@ checks/*.proposed
 # DIRECTORY only, and a provisioned worktree could hold a symlink instead.
 scratchpad
 scratchpad/
+
+# Ruflo (`npx ruflo mcp start`, wired via .mcp.json) init output — machine-local
+# runtime state and a wholesale vendored copy of claude-flow's own agent/command/
+# skill library, not Nix-authored config. Confirmed by inspection: .claude-flow/
+# config.yaml carries a "# Generated: <timestamp>" header, daemon-state.json and
+# harness-active-policy.json are live/learned daemon state, and .claude/ (2.3M)
+# is claude-flow's SPARC/hive-mind/swarm/consensus agent-and-command boilerplate,
+# none of which predates the `ruflo init` that created it. Same shape as `state/`
+# and `.venv` above: generated/machine-local, not something history should hold.
+# If a future arc hand-edits part of this tree into real Nix-specific config,
+# carve out that one path with a `!`-negation here rather than untracking the rule.
+.env.local
+.env.*.local
+.mcp.json
+.claude-flow/
+.claude-flow
+.swarm/
+.swarm
+.agents/
+.agents
+.claude/
+.claude
+ruvector.db

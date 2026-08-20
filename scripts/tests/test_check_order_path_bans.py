@@ -390,7 +390,29 @@ def test_the_control_passes_and_its_evidence_names_what_it_read(
     # scope the gate still reports 0 banned modules and 0 banned calls under
     # arm(ii) — 232 modules resident, 0 banned. The literal went stale; the
     # property did not.
-    assert "arm(ii) imported 36 order-path module(s)" in evidence, evidence
+    # ARC 046: 36 -> 38, and it is TWO bumps in one edit because the literal was
+    # ALREADY STALE when this arc opened. MEASURED both sides: with ARC 046's
+    # file moved aside the merged tree reports 37, with it present 38.
+    #   36 -> 37  `scripts/nixrisk/outcomes.py`, landed in ARC 044 (4d04bfd)
+    #             without bumping this line.
+    #   37 -> 38  `scripts/nixrisk/completions.py`, ARC 046's §5:322 completion
+    #             parse + §4:214 dedup + dispatch.
+    # WHY IT SURVIVED TWO ARCS, which is the part worth keeping: ARC 044 and
+    # ARC 045 both committed on the testmon-SELECTED path — neither touched a
+    # testmon-uncovered file, so neither escalated, and this test was never
+    # selected because its own file had not changed. That is
+    # `scripts/runtime_gate.py`'s hazard #4 verbatim ("a test in a file the db
+    # has no fingerprint for that is ALSO unchanged against HEAD... visible only
+    # on the incremental path; the escalated run does execute it"). ARC 046
+    # touches `scripts/limiterd.py`, which IS uncovered, so its commit escalated
+    # to the full pass and the two-arc-old red surfaced. FOUND, not caused —
+    # and it is the second reason S4.4 recommends bringing limiterd.py under
+    # testmon: an escalation that only happens by accident is not a schedule.
+    # Re-banked from the gate's OWN printed evidence on the merged tree, never
+    # from arithmetic here. Re-read rather than assumed: over the widened scope
+    # the gate still reports 0 banned modules, 0 banned calls, and no new retry
+    # shape; `completions.py` declares no order-port verb and sends nothing.
+    assert "arm(ii) imported 38 order-path module(s)" in evidence, evidence
 
 
 def test_the_reviewed_suppressions_are_the_two_known_fanouts_and_no_plant_is_pre_silenced(
