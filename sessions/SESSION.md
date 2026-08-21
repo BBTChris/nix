@@ -7326,3 +7326,31 @@ basetemp inside the tree is still a recursive one.** Banked **D3.462** with a me
 
 **Badge: I9 DISCHARGED. Clean `{I2, I3, I4, I5, I6, I7, I8, I9, I10, I11} = 10/12`, open = 2
 (`I1`, `I12`). Limiter STAYS RED. Ledger 382 D3 rows, derived.**
+
+### ARC 050 — the final measurement. **PREDICTION MISSED, then reached.**
+
+Predicted delta on the measured baseline `91|4|2|0|1` at `89e0e2a`: `passed +1` from a NEW gate
+(stated from the ownership census BEFORE the run), giving `92|4|2|0|1`.
+
+**The FIRST re-measure of the merged tree read `91 | 5 | 2 | 0 | 1` — a MISS.** `passed` did not
+move and `failed` went 4 -> 5. The new failure was `check_derived_claims`:
+*"derived:ledger_rows=408, stated:series_table_latest_row=403"*. cc appended five CHECK-DEBT rows
+(D3.458–D3.462) and did not move the ARC-TOTAL series row — the close-out obligation (d) this
+arc's own brief names. **That is directive 3 enforced mechanically against this arc's write-back,
+and the gate was right.** The row was then re-derived WHOLE off the instrument rather than typed
+as 403 plus arithmetic, which is what the ARC 049 row's own wording requires of its successor.
+
+**Final, at `ffd6b69`: `92 passed | 4 failed | 2 cannot-measure | 0 skipped | 1 guarded`, exit 1.**
+`check_hot_path_purity` `[ok]` · `check_derived_claims` `[ok]` (13/13,
+`registered_check_count=99`) · `check_arc_status_contract` `[ok]`, auditing `arc_049.log` at BOTH
+baseline and re-measure — **the brief predicted cannot-measure at baseline and it was PASS both
+times; recorded as measured, not as predicted.**
+
+The four FAILs are the baseline four, unchanged and none of them this arc's: `check_ibgateway_service`
+(4002 ECONNREFUSED), `check_monitor_tui` (stale pin), `check_uncalled_entry_points` (no ratchet
+movement — this arc added no public entry point under `scripts/` outside `tests/`), and
+`check_untracked_attribution` (`downloads/Pinokio-8.0.40-arm64.dmg`, **still present and
+deliberately NOT deleted** — it is not this arc's file to rule on).
+
+**The predicted tuple was reached only AFTER the gate caught the omission. The prediction MISSED
+on the first measurement of the merged tree, and that is the honest reading of it.**

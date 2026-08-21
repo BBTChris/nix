@@ -126,6 +126,29 @@ entirely, because the tests copy `~/nix`; a cleaned basetemp inside the tree is 
 one.** Banked **D3.462** with a mechanical discharge. Re-run from `/var/tmp/arc050_pt`; disk back
 to 727 GB free.
 
+## FINAL MEASUREMENT — **PREDICTION MISSED, then reached**
+
+Predicted delta on the baseline `91|4|2|0|1` at `89e0e2a`: `passed +1` from a NEW gate (stated
+from the census BEFORE the run) → `92|4|2|0|1`.
+
+**The FIRST re-measure read `91 | 5 | 2 | 0 | 1` — a MISS.** New failure: `check_derived_claims`,
+*"derived:ledger_rows=408, stated:series_table_latest_row=403"* — cc appended five debt rows and
+did not move the ARC-TOTAL series row, which is close-out obligation (d). **Directive 3 enforced
+mechanically against this arc's own write-back; the gate was right.** Row re-derived whole off the
+instrument, not typed as 403 + arithmetic.
+
+**Final, at `ffd6b69`: `92 passed | 4 failed | 2 cannot-measure | 0 skipped | 1 guarded`, exit 1.**
+`check_hot_path_purity` `[ok]` · `check_derived_claims` `[ok]` (13/13, `registered_check_count=99`)
+· `check_arc_status_contract` `[ok]` auditing `arc_049.log` at BOTH baseline and re-measure — the
+brief predicted cannot-measure at baseline; it was PASS both times.
+
+Four FAILs, all the baseline four, none this arc's: ibgateway 4002 · monitor_tui stale pin ·
+uncalled_entry_points (**no ratchet movement**) · untracked_attribution (the `.dmg`, still present,
+deliberately not deleted).
+
+**The predicted tuple was reached only AFTER the gate caught the omission. The prediction MISSED
+on the first measurement of the merged tree.**
+
 ## BADGE
 
 **I9 DISCHARGED. Clean `{I2, I3, I4, I5, I6, I7, I8, I9, I10, I11} = 10/12`, open = 2
