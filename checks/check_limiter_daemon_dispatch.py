@@ -143,6 +143,7 @@ nothing?
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import subprocess  # nosec B404 - the subject is a REAL limiterd PROCESS
@@ -162,6 +163,7 @@ import _preamble  # noqa: F401  pylint: disable=unused-import,wrong-import-order
 from nixrisk.completions import (
     EVENT_CANCEL,
     EVENT_FILL,
+    EVENT_REJECT,
     SPEC_EVENTS,
     WIRED_EVENTS,
 )
@@ -201,6 +203,15 @@ SUBJECTS: tuple[str, ...] = (
     # places the stop lives here. A plant in `FillHandler._arm` must redden this
     # gate, which it cannot do if the file is not declared its subject.
     "scripts/nixrisk/fills.py",
+    # ARC 053. The §3 terminal handlers the daemon now CALLS on BOTH resolution
+    # paths — `on_reject` from the completion dispatch and
+    # `resolve_pending_timeouts` from the per-tick poll. Declared for the reason
+    # `fills.py` is: the property measured is *the running Limiter resolves a
+    # reject and an overdue order*, and a plant in either handler must redden
+    # this gate, which it cannot do if the file is not its subject. This arc
+    # edited none of it — `outcomes.py` is byte-identical and that is asserted
+    # with `git hash-object`, not claimed.
+    "scripts/nixrisk/outcomes.py",
 )
 
 NAME = "check_limiter_daemon_dispatch"
@@ -250,6 +261,46 @@ EXPECT_FILL_COMMITTED: Final[float] = FILL_QTY * FILL_MARGIN_PER_CONTRACT
 #: back off the daemon and compared against itself.
 EXPECT_STOP_LEVEL: Final[float] = FILL_PRICE - FILL_STOP_TICKS * FILL_TICK_SIZE
 
+# -- ARC 053, the REJECT arm. Its own id, its own exec id and its own margin,
+# for the reason the fill arm's are its own: an arm asserted against another
+# arm's numbers is an arm that can pass on the wrong measurement.
+REJECT_CID = "cdd-reject-1"
+REJECT_EXEC = "cdd-exec-reject-1"
+REJECT_QTY: Final[int] = 5
+REJECT_MARGIN_PER_CONTRACT: Final[float] = 300.0
+EXPECT_REJECT_COMMITTED: Final[float] = REJECT_QTY * REJECT_MARGIN_PER_CONTRACT
+
+# -- ARC 053, the PENDING-TIMEOUT arm. Two orders, deliberately: one the venue
+# says is DEAD (must release) and one it cannot resolve (must be HELD, and must
+# still be held after many further queries). One order could only ever prove one
+# of the two, and the second is where §4's no-resend rule actually bites.
+TIMEOUT_DEAD_CID = "cdd-timeout-dead-1"
+TIMEOUT_HELD_CID = "cdd-timeout-held-1"
+TIMEOUT_QTY: Final[int] = 4
+TIMEOUT_MARGIN_PER_CONTRACT: Final[float] = 250.0
+EXPECT_TIMEOUT_COMMITTED: Final[float] = TIMEOUT_QTY * TIMEOUT_MARGIN_PER_CONTRACT
+#: The seam's OWN spellings (`broker_seam.OrderStatus.state`), not invented here.
+STATE_DEAD: Final[str] = "cancelled"
+STATE_UNRESOLVABLE: Final[str] = "indeterminate"
+#: How many reservations the pending-timeout arm takes, and therefore how many
+#: further terminal releases the stop record must show. DERIVED into
+#: `_arm_stop_record`'s expectation rather than written there as a literal.
+TIMEOUT_RESERVATIONS: Final[int] = 2
+#: How many FURTHER §4 queries the unresolvable order must survive unchanged.
+#: One query proves nothing about the second — §0a, and the resend this arm
+#: exists to refuse would most plausibly appear on a retry, not a first look.
+FURTHER_QUERIES: Final[int] = 20
+
+
+#: ARC 053 / D3.463. Every `reserve` this gate sends now carries a signal
+#: instant, because the daemon REFUSES one that does not: an absent `signal_ts`
+#: reads STALE (§17) rather than being dated at arrival. Sent as a live clock
+#: read rather than a constant so the drive is never accidentally stale.
+def _fresh_signal_ts() -> float:
+    """A signal instant the daemon will accept. See D3.463."""
+    return time.time()
+
+
 #: The §2A events this build must dispatch, READ from the module's declaration.
 #: Empty is a CANNOT_MEASURE, not a pass: a build that wires nothing has no
 #: subject for this gate.
@@ -261,6 +312,8 @@ WIRED: Final[tuple[str, ...]] = tuple(WIRED_EVENTS)
 #: wrong invariant.
 HAS_CANCEL: Final[bool] = EVENT_CANCEL in WIRED
 HAS_FILL: Final[bool] = EVENT_FILL in WIRED
+#: ARC 053, derived the same way and for the same reason.
+HAS_REJECT: Final[bool] = EVENT_REJECT in WIRED
 #: A §2A event this build does NOT wire, derived the same way. Used by the
 #: UNWIRED arm so "not dispatched" is measured rather than assumed.
 UNWIRED_CANDIDATES: Final[tuple[str, ...]] = tuple(
@@ -361,6 +414,36 @@ class Drive:
         path.write_text(json.dumps({"schema": 1, **fields}))
         return path
 
+    def answer(self, client_order_id: str, state: str, **fields: object) -> Path:
+        """ARC 053. THE STUB BROKER'S §4 STATUS ANSWER, where the daemon reads one.
+
+        A file, not a call: the daemon's `DirectoryStatusQuery` opens
+        `DIR/status/<id>.json`, so writing one here is the venue answering from
+        OUTSIDE the process — the same out-of-process argument `push` makes for
+        an exec report. An order with NO file here is answered `unknown`, which
+        is the seam's own spelling for *this surface has no record of the id*.
+        """
+        path = self.dir / "status" / f"{client_order_id}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"state": state, **fields}))
+        return path
+
+    def reserve(self, client_order_id: str, qty: int, margin: float, **fields: object):
+        """One `reserve`, always carrying a FRESH signal instant (D3.463)."""
+        return self.cmd(
+            "reserve",
+            strategy_id=STRATEGY,
+            client_order_id=client_order_id,
+            symbol=fields.pop("symbol", "ES"),
+            side="long",
+            qty=qty,
+            margin_per_contract=margin,
+            stop_ticks=fields.pop("stop_ticks", 8),
+            stop_mode="fixed",
+            signal_ts=_fresh_signal_ts(),
+            **fields,
+        )
+
     def watch(self, pred, what: str) -> dict[str, Any]:
         """Poll the daemon's OWN status until `pred`. Watches PAST the tick."""
         deadline = time.time() + WATCH_HORIZON_S
@@ -371,6 +454,26 @@ class Drive:
             time.sleep(0.03)
             status = self.cmd("status")
         raise _Missed(what, status)
+
+    def settle(self, pred, seconds: float) -> dict[str, Any]:
+        """Poll the daemon's own status until `pred`, then return the LAST status.
+
+        Unlike `watch`, this NEVER raises when the condition does not arrive.
+        Its callers exist to report an ABSENCE with a sentence — *the loop
+        consumed the reject and did not release it*, *the order is past its
+        deadline and nothing queried it* — and a `_Missed` timeout would replace
+        that sentence with a generic one. The distinction is this gate's own
+        PLANT C lesson (see the test module's docstring): a broken instrument
+        and the defect it was built to find must not read alike.
+        """
+        deadline = time.time() + seconds
+        status = self.cmd("status")
+        while time.time() < deadline:
+            if pred(status):
+                return status
+            time.sleep(0.03)
+            status = self.cmd("status")
+        return status
 
     def stop(self) -> dict[str, Any]:
         """SIGTERM, join, and return the daemon's own stop record."""
@@ -428,17 +531,9 @@ def _arm_driven(drive: Drive) -> tuple[list[tuple[str, str]], dict[str, Any]]:
         raise Cannot(f"the daemon refused to register: {reg.get('reason')}")
 
     # -- NON-VACUITY: a reservation is really TAKEN, in the running daemon ----
-    took = drive.cmd(
-        "reserve",
-        strategy_id=STRATEGY,
-        client_order_id=CANCEL_CID,
-        symbol="ES",
-        side="long",
-        qty=QTY,
-        margin_per_contract=MARGIN_PER_CONTRACT,
-        stop_ticks=8,
-        stop_mode="fixed",
-    )
+    # ARC 053 / D3.463: `signal_ts` is now REQUIRED — a reserve without one is
+    # refused as STALE (§17), so `Drive.reserve` always sends a live clock read.
+    took = drive.reserve(CANCEL_CID, QTY, MARGIN_PER_CONTRACT)
     if not took.get("accepted"):
         raise Cannot(f"the daemon refused the reservation: {took.get('reason')}")
     committed = took.get("committed")
@@ -631,16 +726,12 @@ def _fill_non_vacuity(drive: Drive, seen: dict[str, Any]) -> list[tuple[str, str
             f"{LIMITERD_FILE}: this build's status reply carries no `fills` block "
             "— the daemon holds no §4 fill path, so there is no subject"
         )
-    took = drive.cmd(
-        "reserve",
-        strategy_id=STRATEGY,
-        client_order_id=FILL_CID,
+    took = drive.reserve(
+        FILL_CID,
+        FILL_QTY,
+        FILL_MARGIN_PER_CONTRACT,
         symbol=FILL_SYMBOL,
-        side="long",
-        qty=FILL_QTY,
-        margin_per_contract=FILL_MARGIN_PER_CONTRACT,
         stop_ticks=FILL_STOP_TICKS,
-        stop_mode="fixed",
     )
     if not took.get("accepted"):
         raise Cannot(f"the daemon refused the fill reservation: {took.get('reason')}")
@@ -1466,6 +1557,636 @@ def _arm_unwired(drive: Drive, seen: dict[str, Any]) -> list[tuple[str, str]]:
     return findings
 
 
+def _arm_reject(drive: Drive, seen: dict[str, Any]) -> list[tuple[str, str]]:
+    """ARC 053. The daemon RELEASES on a §2A reject, driven through the ingress.
+
+    The cheap half of this arc and it reuses the ARC 046 mechanism whole: a
+    reject exec report is a sender completion like any other, and the only new
+    thing is that `completions.py` now routes it to `outcomes.on_reject` instead
+    of naming it UNWIRED. The arm is separate from the cancel arm rather than
+    parameterised over it because the two release paths must be independently
+    plantable — PLANT A removes the reject dispatch and must not be able to hide
+    behind a working cancel.
+    """
+    findings: list[tuple[str, str]] = []
+    took = drive.reserve(REJECT_CID, REJECT_QTY, REJECT_MARGIN_PER_CONTRACT)
+    if not took.get("accepted"):
+        raise Cannot(f"the daemon refused the reject reservation: {took.get('reason')}")
+    before = drive.cmd("status")
+    seen["reject_committed_before"] = before.get("committed")
+    seen["reject_dispatched_before"] = (before.get("completions") or {}).get(
+        "rejects_dispatched"
+    )
+    if seen["reject_dispatched_before"] is None:
+        raise Cannot(
+            f"{COMPLETIONS_FILE}: this build's dispatch record carries no "
+            "`rejects_dispatched` counter — the per-path counters cannot "
+            "distinguish a reject from a cancel, so there is nothing to measure"
+        )
+    path = drive.push(
+        "reject",
+        event=EVENT_REJECT,
+        client_order_id=REJECT_CID,
+        exec_id=REJECT_EXEC,
+        done_qty=0,
+    )
+    seen["reject_pushed"] = str(path)
+    # `settle`, not `watch`: a build that CONSUMES the reject and never releases
+    # is the defect this arm exists to catch, and it must be reported as that
+    # sentence rather than as a generic timeout. The wait keys on the completion
+    # being CONSUMED — which happens on every build, wired or not — so the
+    # assertions below are made against a daemon that has definitely seen it.
+    consumed_before = (before.get("completions") or {}).get("consumed", 0)
+    after = drive.settle(
+        lambda st: (st.get("completions") or {}).get("consumed", 0) > consumed_before,
+        WATCH_HORIZON_S,
+    )
+    completions = after.get("completions") or {}
+    if completions.get("consumed", 0) <= consumed_before:
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"the §2A {EVENT_REJECT} written to the completions directory "
+                    f"NEVER ARRIVED: consumed is still {consumed_before} after "
+                    f"{WATCH_HORIZON_S}s. That is the INGRESS, not the dispatch — "
+                    "the loop is not reading the directory at all, so nothing "
+                    "below could measure the reject path"
+                ),
+            )
+        )
+        return findings
+    seen["reject_dispatched"] = completions.get("rejects_dispatched")
+    seen["reject_last_disposition"] = completions.get("last_disposition")
+    seen["reject_committed_after"] = after.get("committed")
+    released = float(before.get("committed") or 0.0) - float(
+        after.get("committed") or 0.0
+    )
+    if not completions.get("rejects_dispatched"):
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"THE DAEMON DID NOT RELEASE ON A REJECT. The §2A "
+                    f"{EVENT_REJECT} for {REJECT_CID!r} was DRAINED BY THE LOOP "
+                    f"(consumed={completions.get('consumed')}) and recorded "
+                    f"{completions.get('last_disposition')!r} with "
+                    f"rejects_dispatched={completions.get('rejects_dispatched')} "
+                    f"— reason {completions.get('last_reason')!r}. Committed is "
+                    f"still {after.get('committed')} and the reservation for "
+                    f"{REJECT_CID!r} is still TAKEN: §3 releases on reject, and a "
+                    "venue refusal that leaks its reservation inflates §11.3's Σ "
+                    "against every capital rule that reads it"
+                ),
+            )
+        )
+        return findings
+    seen["reject_released"] = released
+    if completions.get("last_disposition") != "dispatched":
+        findings.append(
+            (
+                COMPLETIONS_FILE,
+                (
+                    f"the daemon consumed a §2A {EVENT_REJECT} and recorded "
+                    f"{completions.get('last_disposition')!r}, not 'dispatched' — "
+                    f"reason {completions.get('last_reason')!r}"
+                ),
+            )
+        )
+    if released != EXPECT_REJECT_COMMITTED:
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"the daemon dispatched a §2A {EVENT_REJECT} for "
+                    f"{REJECT_CID!r} and committed moved by {released} — expected "
+                    f"{EXPECT_REJECT_COMMITTED} released. §3 releases the "
+                    "reservation on reject and nothing was ever working against "
+                    "it, so a reject that releases nothing is a leak"
+                ),
+            )
+        )
+    # §7.12 guard 1, and the shape of the assertion is the whole point: a reject
+    # counted as a cancel would satisfy every assertion above that reads
+    # `dispatched` alone. What must hold is that pushing a REJECT moved the
+    # reject counter and left the CANCEL counter where it was — not that the two
+    # numbers differ, which they need not (one cancel and one reject are both
+    # legitimately 1).
+    cancels_before = (before.get("completions") or {}).get("cancels_dispatched")
+    if completions.get("cancels_dispatched") != cancels_before:
+        findings.append(
+            (
+                COMPLETIONS_FILE,
+                (
+                    f"pushing a §2A {EVENT_REJECT} moved cancels_dispatched "
+                    f"{cancels_before} -> {completions.get('cancels_dispatched')}. "
+                    "The daemon counted a reject as a cancel, so this build "
+                    "cannot name the path it dispatched and the release above is "
+                    "attributed to the wrong §3 terminal path"
+                ),
+            )
+        )
+    # §4:214 — the identical exec report a second time is ONE release.
+    drive.push(
+        "reject-again",
+        event=EVENT_REJECT,
+        client_order_id=REJECT_CID,
+        exec_id=REJECT_EXEC,
+        done_qty=0,
+    )
+    again = drive.watch(
+        lambda st: (
+            (st.get("completions") or {}).get("duplicates", 0)
+            > (completions.get("duplicates") or 0)
+        ),
+        "the daemon to refuse the re-delivered reject as a §4:214 duplicate",
+    )
+    replayed = (again.get("completions") or {}).get("rejects_dispatched")
+    seen["reject_dispatched_after_replay"] = replayed
+    if replayed != seen["reject_dispatched"]:
+        findings.append(
+            (
+                COMPLETIONS_FILE,
+                (
+                    f"re-delivering the identical §2A {EVENT_REJECT} moved "
+                    f"rejects_dispatched {seen['reject_dispatched']} -> "
+                    f"{replayed}. §4:214 deduplicates by (order_id, exec_id) and "
+                    "a second dispatch is the double release §14 forbids"
+                ),
+            )
+        )
+    return findings
+
+
+def _arm_pending_timeout(drive: Drive, seen: dict[str, Any]) -> list[tuple[str, str]]:
+    """ARC 053. §4's pending-timeout resolution, DRIVEN — and it never resends.
+
+    Two orders, because one could only ever prove one half:
+
+    * `TIMEOUT_DEAD_CID` — the venue answers `cancelled`. The reservation must
+      be RELEASED, by a QUERY, without any exec report ever arriving.
+    * `TIMEOUT_HELD_CID` — the venue answers `indeterminate`. The reservation
+      must be HELD, and must STILL be held after `FURTHER_QUERIES` more queries.
+      That second half is where §4's rule bites: a resend is far likelier on a
+      retry than on the first look, and `committed` is the number that would
+      move if one happened — a second live order needs a second reservation.
+
+    THE ARM IS DRIVEN AND THE CENSUS BESIDE IT IS STRUCTURAL, and both are
+    required. Driving proves the daemon did not resend THIS TIME; the census
+    proves it holds no verb that could.
+    """
+    findings: list[tuple[str, str]] = []
+    boot = drive.cmd("status")
+    timeouts = boot.get("timeouts")
+    if timeouts is None:
+        raise Cannot(
+            f"{LIMITERD_FILE}: this build's status reply carries no `timeouts` "
+            "block — the daemon holds no §4 pending-timeout poller, so there is "
+            "no subject. A build that does not poll is not a build that polled "
+            "and found nothing due (check contract rule 10)"
+        )
+    ack_s = float(timeouts.get("pending_ack_timeout_s") or 0.0)
+    if ack_s <= 0.0:
+        raise Cannot(
+            f"{LIMITERD_FILE}: the daemon reports pending_ack_timeout_s="
+            f"{timeouts.get('pending_ack_timeout_s')!r}; §12A:830's deadline is "
+            "what makes an order overdue and without it nothing is ever due"
+        )
+    seen["timeout_ack_s"] = ack_s
+
+    # -- the venue's answers, written BEFORE the reservations exist so the
+    #    first query already has something to read.
+    drive.answer(TIMEOUT_DEAD_CID, STATE_DEAD, terminal=True)
+    drive.answer(TIMEOUT_HELD_CID, STATE_UNRESOLVABLE)
+    dead = drive.reserve(TIMEOUT_DEAD_CID, TIMEOUT_QTY, TIMEOUT_MARGIN_PER_CONTRACT)
+    held = drive.reserve(TIMEOUT_HELD_CID, TIMEOUT_QTY, TIMEOUT_MARGIN_PER_CONTRACT)
+    if not (dead.get("accepted") and held.get("accepted")):
+        raise Cannot(
+            "the daemon refused a pending-timeout reservation: "
+            f"{dead.get('reason')!r} / {held.get('reason')!r}"
+        )
+    taken = drive.cmd("status")
+    seen["timeout_committed_after_take"] = taken.get("committed")
+    resolved_before = (taken.get("timeouts") or {}).get("resolved", 0)
+    completions_before = (taken.get("completions") or {}).get("seen", 0)
+
+    # -- the DEAD order must release, and it must release BY QUERY ------------
+    # `settle`, not `watch`: a build whose poll never runs leaves an order past
+    # its deadline that nothing ever asks about — a ZOMBIE — and that is the
+    # defect this arm exists to name. A timeout would report it as *the gate got
+    # bored*, which is the same reading as a slow machine.
+    after = drive.settle(
+        lambda st: (st.get("timeouts") or {}).get("resolved", 0) > resolved_before,
+        WATCH_HORIZON_S,
+    )
+    poll = after.get("timeouts") or {}
+    if (poll.get("resolved") or 0) <= resolved_before:
+        overdue = float(taken.get("committed") or 0.0)
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"ZOMBIE ORDER: {TIMEOUT_DEAD_CID!r} is past §12A:830's "
+                    f"{ack_s}s ack deadline, the venue's answer {STATE_DEAD!r} has "
+                    f"been on disk for the whole window, and after "
+                    f"{WATCH_HORIZON_S}s the daemon reports polls="
+                    f"{poll.get('polls')!r} queries="
+                    f"{(poll.get('query') or {}).get('queries')!r} resolved="
+                    f"{poll.get('resolved')!r}. NOTHING POLLED IT. The order hangs "
+                    f"indefinitely and its reservation LEAKS — committed is still "
+                    f"{overdue} with outstanding={after.get('outstanding')!r}. §4 "
+                    "resolves a pending timeout by querying; a daemon that never "
+                    "asks holds capital against an order it has forgotten"
+                ),
+            )
+        )
+        return findings
+    query = poll.get("query") or {}
+    seen["timeout_poll"] = poll
+    if not query.get("queries"):
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    "the poll reported a resolution with queries="
+                    f"{query.get('queries')!r} — §4 resolves a pending timeout "
+                    "BY QUERYING, and a release with no query behind it did not "
+                    "come from the venue"
+                ),
+            )
+        )
+    if (query.get("answers") or {}).get(STATE_DEAD, 0) < 1:
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"the venue answered {query.get('answers')!r}; the arm wrote "
+                    f"{STATE_DEAD!r} for {TIMEOUT_DEAD_CID!r} and the poll never "
+                    "read it, so the release above was not this answer's"
+                ),
+            )
+        )
+    if (after.get("completions") or {}).get("seen", 0) != completions_before:
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    "a completion arrived during the pending-timeout arm "
+                    f"(seen {completions_before} -> "
+                    f"{(after.get('completions') or {}).get('seen')}). The release "
+                    "measured here must be the POLL's, and a push event in the "
+                    "same window makes that unprovable"
+                ),
+            )
+        )
+
+    return findings + _timeout_hold_findings(drive, seen, after, resolved_before)
+
+
+def _timeout_hold_findings(  # pylint: disable=too-many-locals
+    drive: Drive,
+    seen: dict[str, Any],
+    after: dict[str, Any],
+    resolved_before: int,
+) -> list[tuple[str, str]]:
+    """The HOLD half of §4's pending-timeout arm — and the no-resend proof.
+
+    Split from the release half because the two ask different questions of the
+    same poll: the release half asks *did a query resolve a dead order*, and this
+    one asks *does an UNRESOLVABLE answer leave everything exactly where it was,
+    across many further queries*. The second is where §4's rule actually bites.
+    """
+    findings: list[tuple[str, str]] = []
+    poll = after.get("timeouts") or {}
+    query = poll.get("query") or {}
+    committed_at_hold = after.get("committed")
+    outstanding_at_hold = after.get("outstanding")
+    queries_at_hold = query.get("queries", 0)
+    seen["timeout_committed_at_hold"] = committed_at_hold
+    later = drive.watch(
+        lambda st: (
+            ((st.get("timeouts") or {}).get("query") or {}).get("queries", 0)
+            >= queries_at_hold + FURTHER_QUERIES
+        ),
+        f"{FURTHER_QUERIES} further §4 status queries",
+    )
+    later_poll = later.get("timeouts") or {}
+    later_query = later_poll.get("query") or {}
+    seen["timeout_queries_total"] = later_query.get("queries")
+    seen["timeout_answers"] = later_query.get("answers")
+    if (later_query.get("answers") or {}).get(STATE_UNRESOLVABLE, 0) < 1:
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"the poll never read the {STATE_UNRESOLVABLE!r} answer "
+                    f"written for {TIMEOUT_HELD_CID!r}; answers="
+                    f"{later_query.get('answers')!r}. The hold below would then "
+                    "be a hold over an order nobody asked about"
+                ),
+            )
+        )
+    if later.get("outstanding") != outstanding_at_hold:
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"an {STATE_UNRESOLVABLE!r} order changed the outstanding "
+                    f"count {outstanding_at_hold} -> {later.get('outstanding')} "
+                    f"across {FURTHER_QUERIES} further queries. §4 resolves an "
+                    "unresolvable answer by HOLDING toward flat (§14): nothing "
+                    "terminal has happened, so nothing may be released — and "
+                    "nothing may be placed"
+                ),
+            )
+        )
+    if later.get("committed") != committed_at_hold:
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"*** §4 NO-RESEND: committed moved {committed_at_hold} -> "
+                    f"{later.get('committed')} across {FURTHER_QUERIES} further "
+                    "status queries with no exec report. A poll that RESENDS "
+                    "takes a second reservation for a second live order at the "
+                    "venue while the first is still working — the double fill §4 "
+                    "forbids outright. §4 resolves by QUERYING, never by "
+                    "resending ***"
+                ),
+            )
+        )
+    if later_poll.get("resends") != 0:
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"*** §4 NO-RESEND: the daemon reports resends="
+                    f"{later_poll.get('resends')!r} over "
+                    f"{later_poll.get('polls')!r} polls. §4:240-241 forbids the "
+                    "auto-resend outright ***"
+                ),
+            )
+        )
+    # -- AND THE HOLD IS NOT A DEAD END --------------------------------------
+    # The unresolvable order is now answered `cancelled`, and it must release.
+    # Two reasons, and the second is why this is not tidy-up: a HOLD that could
+    # never be resolved would be indistinguishable from a leak, so the arm has to
+    # show the reservation was recoverable; and leaving it outstanding at exit
+    # would force `_arm_stop_record`'s leak detector to accept a non-zero
+    # `outstanding`, which is the one number in this gate that must stay exact.
+    drive.answer(TIMEOUT_HELD_CID, STATE_DEAD, terminal=True)
+    freed = drive.watch(
+        lambda st: (
+            (st.get("timeouts") or {}).get("resolved", 0)
+            > (later_poll.get("resolved") or 0)
+        ),
+        "the held order to release once the venue finally answers",
+    )
+    seen["timeout_resolved_total"] = (freed.get("timeouts") or {}).get("resolved")
+    seen["timeout_outstanding_after"] = freed.get("outstanding")
+    if freed.get("committed") != 0.0:
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"both pending-timeout orders were answered {STATE_DEAD!r} and "
+                    f"committed is {freed.get('committed')!r}, not 0.0 — a held "
+                    "reservation that cannot be released once the venue answers "
+                    "is a leak wearing §4's hold"
+                ),
+            )
+        )
+    later_poll = freed.get("timeouts") or later_poll
+    # Idempotence: each order resolved once and only once, across every one
+    # of those further sweeps.
+    if later_poll.get("resolved") != resolved_before + 2:
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"the poll resolved {later_poll.get('resolved')} order(s); "
+                    f"expected {resolved_before + 2}. A released reservation "
+                    "leaves the outstanding set, so a re-queried order that "
+                    "resolves twice is the double release §14 forbids"
+                ),
+            )
+        )
+    return findings
+
+
+#: The seam file whose roster names every verb that can reach the venue. READ,
+#: never restated: `broker_seam.ORDER_PORT_VERBS` is *"the authority, not the
+#: docstrings"* by its own comment, and a ban list this gate spelled itself would
+#: go stale the day the seam gained a verb.
+BROKER_SEAM_FILE = "scripts/broker/broker_seam.py"
+ORDER_PORT_ROSTER = "ORDER_PORT_VERBS"
+#: The ONE verb on that roster the poll path is allowed to reach.
+POLL_ALLOWED_VERB = "query_order_status"
+#: Where the poll path starts. QUALIFIED, because `before` is NOT a unique name
+#: in `limiterd.py` — `Plane1Booker` has one too, and a bare-name index resolves
+#: it to whichever the AST walk reached first, which walked the WAL-booking path
+#: instead of the poll's. Both entries are named: `before` is what the loop
+#: actually calls and `poll_due` is where the work is.
+POLL_ENTRIES: tuple[str, ...] = (
+    "PendingTimeoutPoller.poll_due",
+    "PendingTimeoutPoller.before",
+)
+#: Modules the closure may cross. The poll path is `limiterd.py` ->
+#: `outcomes.py` and nothing else; a call that leaves them is UNRESOLVED and is
+#: reported as such rather than assumed harmless.
+POLL_MODULES: tuple[str, ...] = (LIMITERD_FILE, "scripts/nixrisk/outcomes.py")
+
+
+def _placement_verbs(home: Path) -> tuple[frozenset[str], str]:
+    """Every venue-reaching verb EXCEPT the status query, read off the seam."""
+    try:
+        tree = ast.parse((home / BROKER_SEAM_FILE).read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, ValueError) as exc:
+        return frozenset(), f"{BROKER_SEAM_FILE} would not parse: {exc!r}"
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.AnnAssign) and not isinstance(node, ast.Assign):
+            continue
+        targets: list[ast.expr] = (
+            [node.target] if isinstance(node, ast.AnnAssign) else list(node.targets)
+        )
+        if not any(
+            isinstance(t, ast.Name) and t.id == ORDER_PORT_ROSTER for t in targets
+        ):
+            continue
+        value = node.value
+        if not isinstance(value, ast.Tuple):
+            return frozenset(), (
+                f"{BROKER_SEAM_FILE}:{ORDER_PORT_ROSTER} is not a literal tuple"
+            )
+        verbs = {
+            elt.value
+            for elt in value.elts
+            if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+        }
+        if POLL_ALLOWED_VERB not in verbs:
+            return frozenset(), (
+                f"{BROKER_SEAM_FILE}:{ORDER_PORT_ROSTER} does not contain "
+                f"{POLL_ALLOWED_VERB!r} — this gate is reading the wrong roster"
+            )
+        return frozenset(verbs) - {POLL_ALLOWED_VERB}, ""
+    return frozenset(), f"{BROKER_SEAM_FILE} declares no {ORDER_PORT_ROSTER}"
+
+
+def _functions(home: Path) -> tuple[dict[str, ast.FunctionDef], str]:
+    """`Class.name` AND bare `name` -> FunctionDef, over the poll's modules.
+
+    Both keyings, deliberately, and the pair is what makes the walk both aimed
+    and conservative. The ENTRY POINTS are looked up qualified, so the closure
+    starts in the right class; the CALL SITES are resolved bare, because
+    `self._outcomes.resolve_pending_timeouts(...)` gives an attribute name and
+    no class. Bare resolution OVER-APPROXIMATES — a name shared by two classes
+    pulls both bodies in — and that is the safe direction for a ban check: it
+    can only make the closure larger, so a verb absent from it is absent from
+    every reading of it. An under-approximation would be the dangerous error and
+    is what a first-wins bare index quietly produced.
+    """
+    found: dict[str, ast.FunctionDef] = {}
+    for rel in POLL_MODULES:
+        try:
+            tree = ast.parse((home / rel).read_text(encoding="utf-8"))
+        except (OSError, SyntaxError, ValueError) as exc:
+            return {}, f"{rel} would not parse: {exc!r}"
+        _index_module(tree, found)
+    return found, ""
+
+
+def _index_module(tree: ast.AST, found: dict[str, ast.FunctionDef]) -> None:
+    """Fold ONE module into the index, qualified names first then bare ones."""
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for item in node.body:
+            if isinstance(item, ast.FunctionDef):
+                found[f"{node.name}.{item.name}"] = item
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef):
+            found.setdefault(node.name, node)
+
+
+def _called_names(fn: ast.FunctionDef) -> set[str]:
+    """Every name this function CALLS. `self.x()` and `x()` both count."""
+    names: set[str] = set()
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name):
+            names.add(node.func.id)
+        elif isinstance(node.func, ast.Attribute):
+            names.add(node.func.attr)
+    return names
+
+
+def _poll_closure(
+    functions: dict[str, ast.FunctionDef],
+) -> tuple[set[str], set[str]]:
+    """`(reachable, called)` from the poll's entry points, transitively.
+
+    A bare call name may denote SEVERAL bodies (`before` is two in this tree).
+    Every one is followed — see `_functions` on why over-approximating is the
+    safe direction for a ban check.
+    """
+    bodies: dict[str, list[ast.FunctionDef]] = {}
+    for key, fn in functions.items():
+        bodies.setdefault(key.rsplit(".", 1)[-1], []).append(fn)
+    reachable: set[str] = set()
+    calls: set[str] = set()
+    queue = [name for name in POLL_ENTRIES if name in functions]
+    while queue:
+        name = queue.pop()
+        if name in reachable:
+            continue
+        reachable.add(name)
+        for fn in bodies.get(name.rsplit(".", 1)[-1], []):
+            for called in _called_names(fn):
+                calls.add(called)
+                if called in functions and called not in reachable:
+                    queue.append(called)
+    return reachable, calls
+
+
+def _arm_no_resend_census(
+    home: Path, seen: dict[str, Any]
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """ARC 053. §4's no-resend rule, proven STRUCTURALLY as well as by driving.
+
+    THE SHARPEST ASSERTION IN THIS ARC, and it is a reachability census rather
+    than a grep. Starting at `PendingTimeoutPoller.poll_due`, every function the
+    poll path can reach is collected transitively across `limiterd.py` and
+    `outcomes.py`, and every name any of them CALLS is compared against the
+    venue-reaching roster the broker seam declares. A resend is not merely absent
+    from this path: it is UNREACHABLE from it.
+
+    Driving alone could not settle this. A driven arm proves the daemon did not
+    resend on the run the gate watched; it cannot prove there is no input that
+    would make it. The census cannot prove the daemon runs at all — which is why
+    both exist and why the driven arm runs first.
+
+    NON-VACUITY, and it matters more here than anywhere else in the file: a
+    closure that resolved nothing would contain no banned verb and would pass
+    while measuring nothing. So the census REQUIRES its own reach — the closure
+    must contain the poll's own work (`resolve_pending_timeouts`) and the one
+    verb it is allowed (`query_order_status`) — before any absence is credited.
+    """
+    findings: list[tuple[str, str]] = []
+    banned, complaint = _placement_verbs(home)
+    if complaint:
+        return findings, [f"the venue-verb roster could not be derived: {complaint}"]
+    functions, complaint = _functions(home)
+    if complaint:
+        return findings, [f"the poll path could not be parsed: {complaint}"]
+
+    if not any(name in functions for name in POLL_ENTRIES):
+        no_entry = (
+            f"{LIMITERD_FILE} defines none of {list(POLL_ENTRIES)} — the poll "
+            "path has no entry point, so there is nothing to walk"
+        )
+        return findings, [no_entry]
+    reachable, calls = _poll_closure(functions)
+
+    seen["poll_closure"] = sorted(reachable)
+    seen["poll_calls"] = len(calls)
+    seen["banned_verbs"] = sorted(banned)
+
+    # -- NON-VACUITY BEFORE THE ABSENCE ---------------------------------------
+    unclassifiable: list[str] = []
+    if "resolve_pending_timeouts" not in calls:
+        unclassifiable.append(
+            f"the closure from {list(POLL_ENTRIES)} does not reach "
+            "`resolve_pending_timeouts` — the walk did not find the poll's own "
+            "work, so an absence of placement verbs in it proves nothing"
+        )
+    if POLL_ALLOWED_VERB not in calls:
+        unclassifiable.append(
+            f"the closure from {list(POLL_ENTRIES)} does not reach "
+            f"{POLL_ALLOWED_VERB!r} — §4 resolves a pending timeout BY QUERYING "
+            "and this walk cannot see the query, so it cannot see a resend either"
+        )
+
+    # -- THE PROPERTY ----------------------------------------------------------
+    reached = sorted(calls & banned)
+    if reached:
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"*** §4 NO-RESEND VIOLATION: the pending-timeout poll path "
+                    f"REACHES venue-placement verb(s) {reached} "
+                    f"(closure: {sorted(reachable)}). §4 resolves a pending "
+                    "timeout by `query_order_status` and NEVER by an auto-resend; "
+                    "a poll that can place puts a SECOND LIVE ORDER at the venue "
+                    "while the first is still working, and §3 holds one "
+                    "reservation for both ***"
+                ),
+            )
+        )
+    return findings, unclassifiable
+
+
 def _arm_stop_record(record: dict[str, Any]) -> list[tuple[str, str]]:
     """The daemon's OWN stop record. §7.12 #5: whose dedup actually stopped it?"""
     findings: list[tuple[str, str]] = []
@@ -1486,7 +2207,14 @@ def _arm_stop_record(record: dict[str, Any]) -> list[tuple[str, str]]:
     # release too (*"released on: fill (converts to open-margin)"*). The figure is
     # DERIVED from which arms this build can run rather than written as a
     # literal, so a build that wires only cancel still gets an exact assertion.
-    expect_released = int(HAS_CANCEL) + int(HAS_FILL)
+    # ARC 053 extends the same DERIVATION rather than editing a literal: the
+    # reject arm releases one more, and the pending-timeout arm takes TWO and
+    # releases both — one when the venue answers `cancelled` on the first query,
+    # one when the arm finally answers the order it deliberately held. Both
+    # timeout releases are the POLL's, and §3 counts them the same as a push.
+    expect_released = (
+        int(HAS_CANCEL) + int(HAS_FILL) + int(HAS_REJECT) + TIMEOUT_RESERVATIONS
+    )
     if res.get("released") != expect_released:
         findings.append(
             (
@@ -1559,7 +2287,60 @@ def _evidence(seen: dict[str, Any], record: dict[str, Any]) -> str:
         f"released={res.get('released')} outstanding={res.get('outstanding')} "
         f"refused={res.get('refused')}; WIRED_EVENTS={list(WIRED)}"
         + _fill_evidence(seen)
+        + _resolution_evidence(seen)
     )
+
+
+def _resolution_evidence(seen: dict[str, Any]) -> str:
+    """ARC 053. What the two RESOLUTION paths did, in the verdict line itself.
+
+    Printed on PASS as well as on FAIL. A gate whose green says only *the cancel
+    and the fill worked* while silently also covering reject and pending-timeout
+    is a gate whose scope a reader cannot see — and §4's no-resend guarantee in
+    particular is a NEGATIVE property, which nobody can read off an absence.
+    """
+    if "reject_released" not in seen and "timeout_poll" not in seen:
+        return ""
+    poll = seen.get("timeout_poll") or {}
+    query = poll.get("query") or {}
+    parts = []
+    if "reject_released" in seen:
+        parts.append(
+            f"REJECT ARM: reserved {EXPECT_REJECT_COMMITTED} for {REJECT_CID!r}, "
+            f"pushed a §2A {EVENT_REJECT}, the loop dispatched it "
+            f"(rejects_dispatched={seen.get('reject_dispatched')}, "
+            f"last_disposition={seen.get('reject_last_disposition')!r}) and "
+            f"{seen.get('reject_released')} of committed margin was RELEASED "
+            f"({seen.get('reject_committed_before')} -> "
+            f"{seen.get('reject_committed_after')}); re-delivering the identical "
+            f"reject left rejects_dispatched="
+            f"{seen.get('reject_dispatched_after_replay')}"
+        )
+    if "timeout_poll" in seen:
+        parts.append(
+            f"PENDING-TIMEOUT ARM: two orders reserved at "
+            f"{EXPECT_TIMEOUT_COMMITTED} each past §12A:830's "
+            f"{seen.get('timeout_ack_s')}s deadline; the poll QUERIED "
+            f"{seen.get('timeout_queries_total')} time(s) and the venue answered "
+            f"{seen.get('timeout_answers')}; the {STATE_DEAD!r} order RELEASED, "
+            f"the {STATE_UNRESOLVABLE!r} order was HELD across "
+            f"{FURTHER_QUERIES} further queries with committed unchanged at "
+            f"{seen.get('timeout_committed_at_hold')} and then released once the "
+            f"venue answered ({seen.get('timeout_resolved_total')} resolved, "
+            f"outstanding {seen.get('timeout_outstanding_after')}); "
+            f"*** resends={poll.get('resends')} over {poll.get('polls')} polls "
+            f"and {query.get('queries')} queries ***"
+        )
+    if "poll_closure" in seen:
+        parts.append(
+            f"NO-RESEND CENSUS: the poll path's transitive closure is "
+            f"{seen.get('poll_closure')} across {POLL_MODULES}, making "
+            f"{seen.get('poll_calls')} distinct call(s), and it reaches NONE of "
+            f"the venue-placement verbs {seen.get('banned_verbs')} derived from "
+            f"{BROKER_SEAM_FILE}:{ORDER_PORT_ROSTER} — §4 resolves a pending "
+            f"timeout by {POLL_ALLOWED_VERB!r} and never by an auto-resend"
+        )
+    return "; " + "; ".join(parts)
 
 
 def _fill_evidence(seen: dict[str, Any]) -> str:
@@ -1614,7 +2395,9 @@ def _no_subject() -> str:
     return ""
 
 
-def _drive_every_arm(drive: Drive, seen: dict[str, Any]) -> list[tuple[str, str]]:
+def _drive_every_arm(
+    drive: Drive, seen: dict[str, Any]
+) -> tuple[list[tuple[str, str]], list[str]]:
     """Every arm, in order, stopping at the first that finds something.
 
     THE ORDER IS DELIBERATE and it is not alphabetical. The FILL arms run BEFORE
@@ -1624,19 +2407,53 @@ def _drive_every_arm(drive: Drive, seen: dict[str, Any]) -> list[tuple[str, str]
     arms first makes such a failure name the expensive site rather than the cheap
     one.
     """
+    # ARC 053. The STRUCTURAL census runs FIRST — before anything is driven —
+    # and the order is the argument. If the poll path can reach a placement verb,
+    # DRIVING it is the one thing this gate must not do: the drive would itself
+    # be the act of putting a second order at a venue. A census that only reads
+    # source is safe to run in advance and is the only arm that can say so.
+    findings, unclassifiable = _arm_no_resend_census(drive.nix_home, seen)
+    if findings:
+        # A build that CAN resend is never driven. The finding is enough and the
+        # drive would itself be the act this arm exists to refuse.
+        return findings, unclassifiable
     findings, seen_now = _arm_driven(drive)
     seen.update(seen_now)
     if not findings and HAS_FILL:
         findings += _arm_fill(drive, seen)
         if not findings:
             findings += _arm_fill_idempotent(drive, seen)
+    # ARC 053. The STRUCTURAL census runs BEFORE the pending-timeout drive, and
+    # the order is the argument: if the poll path can reach a placement verb,
+    # DRIVING it is the one thing this gate must not do — the drive would be the
+    # act of sending a second order at a venue. A census that reads source is
+    # safe to run first and is the only arm that can say so in advance.
     if not findings:
         findings += _arm_idempotent(drive, seen)
         findings += _arm_unwired(drive, seen)
-    return findings
+    # ARC 053. The two new DRIVEN arms run LAST, and that is not tidiness: both
+    # take further reservations and both release them, so running either before
+    # `_arm_idempotent` would move the CUMULATIVE `released_margin` that arm
+    # asserts against exactly. Measured — the reject arm ran first once and the
+    # idempotence assertion read 4000.0 where it expects the cancel arm's own
+    # 2000.0. An arm made approximate to accommodate a later arm is an arm that
+    # has stopped measuring; moving the later arm costs nothing.
+    if not findings:
+        findings += _arm_pending_timeout(drive, seen)
+    if not findings and HAS_REJECT:
+        findings += _arm_reject(drive, seen)
+    return findings, unclassifiable
 
 
-def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argument
+# R0911 refused with a reason: SEVEN returns and every one is a DISTINCT named
+# outcome — no subject, the fail, the cannot-measure from a blind arm, the pass,
+# the subject-unreachable refusal, the missed condition, and the uncaught error.
+# Collapsing any pair would merge two verdicts this gate is required to keep
+# apart (check contract rule 10, and B.2's exit-2-is-not-exit-1). The threshold
+# is about branchy control flow; this is a verdict table.
+def run(  # pylint: disable=unused-argument,too-many-return-statements
+    mode: Mode, ctx: Context
+) -> CheckResult:
     """Measure-only. `CORRECTABLE = False` — see the module constant."""
     absent = _no_subject()
     if absent:
@@ -1645,17 +2462,39 @@ def run(mode: Mode, ctx: Context) -> CheckResult:  # pylint: disable=unused-argu
     seen: dict[str, Any] = {}
     try:
         drive = Drive(ctx.nix_home)
-        findings = _drive_every_arm(drive, seen)
+        findings, unclassifiable = _drive_every_arm(drive, seen)
         record = drive.stop()
         findings += _arm_stop_record(record)
         evidence = _evidence(seen, record)
+        # RULE 4 — UNCLASSIFIABLE IS JUDGED LAST, and this ordering is the rule
+        # rather than a preference. A run in which one arm found a REAL defect
+        # and another could not measure at all is a FAIL: cannot-measure is the
+        # verdict for a run with nothing against it, and downgrading a found
+        # defect because a different arm went blind is how a red becomes a light
+        # blue. The unclassifiable is still NAMED in the detail, so the operator
+        # is never told the whole run was judged when part of it was not.
         if findings:
+            blind = (
+                ""
+                if not unclassifiable
+                else (
+                    "; ALSO UNMEASURED (rule 4 — a FAIL outranks it, and it is "
+                    "reported rather than absorbed): " + "; ".join(unclassifiable)
+                )
+            )
             return CheckResult(
                 name=NAME,
                 status=Status.FAIL_NEEDS_OPERATOR,
                 site="; ".join(site for site, _ in findings),
                 evidence=evidence,
-                detail="; ".join(f"{site}: {why}" for site, why in findings),
+                detail="; ".join(f"{site}: {why}" for site, why in findings) + blind,
+            )
+        if unclassifiable:
+            return CheckResult(
+                name=NAME,
+                status=Status.CANNOT_MEASURE,
+                evidence=evidence,
+                detail=f"{NAME}: " + "; ".join(unclassifiable),
             )
         return CheckResult(name=NAME, status=Status.PASS, evidence=evidence)
     except Cannot as exc:

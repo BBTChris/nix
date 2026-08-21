@@ -179,10 +179,10 @@ SPEC_EVENTS: Final[tuple[str, ...]] = (
 #: The §2A events this build DISPATCHES. Spelled as a tuple so an arc adds a
 #: member rather than editing a condition, and so a census can read which paths
 #: this build actually serves without executing it. ARC 046 put `on_cancel`
-#: here; ARC 047 added `on_fill`. `checks/check_limiter_daemon_dispatch.py`
-#: READS this tuple, so the gate's UNWIRED arm narrows as the tuple grows
-#: instead of going quietly stale.
-WIRED_EVENTS: Final[tuple[str, ...]] = (EVENT_CANCEL, EVENT_FILL)
+#: here; ARC 047 added `on_fill`; ARC 053 added `on_reject`.
+#: `checks/check_limiter_daemon_dispatch.py` READS this tuple, so the gate's
+#: UNWIRED arm narrows as the tuple grows instead of going quietly stale.
+WIRED_EVENTS: Final[tuple[str, ...]] = (EVENT_CANCEL, EVENT_FILL, EVENT_REJECT)
 
 #: §4:214's dedup ceiling. Bounded for §11:581; see the module docstring on why
 #: eviction is counted rather than assumed away.
@@ -212,6 +212,18 @@ class OutcomesPort(Protocol):  # pylint: disable=too-few-public-methods
 
     def on_cancel(self, client_order_id: str, *, reason: str = "") -> Any:
         """§3's cancel release. ARC 044 / I2 proved it; ARC 046 CALLS it."""
+
+    def on_reject(self, client_order_id: str, *, reason: str = "") -> Any:
+        """§3's reject release. ARC 044 / I2 proved it; ARC 053 CALLS it.
+
+        A SECOND verb rather than one `resolve(via=...)`: `outcomes.py` spells
+        its three `resolve(..., TerminalPath.X, ...)` calls literally so the AST
+        census that measures which §3 release paths production books can read
+        the `via` STATICALLY, and a port that collapsed the two verbs here would
+        push the same unreadability up one layer. Two verbs are also two
+        INDEPENDENTLY plantable dispatch sites, which is what makes PLANT A
+        (reject dispatch removed) unable to hide behind the cancel arm.
+        """
 
 
 class FillSinkPort(Protocol):  # pylint: disable=too-few-public-methods
@@ -557,8 +569,17 @@ class DispatchLedger:  # pylint: disable=too-many-instance-attributes
     #: path ran*, and with two wired events that question is the whole subject:
     #: a gate asserting `dispatched == 1` after pushing a fill would be equally
     #: satisfied by a cancel. Two counters, two readings.
+    #:
+    #: ARC 053 adds the THIRD, and adding it was not optional. `_finish` counted
+    #: every non-fill dispatch as a cancel, so the moment `on_reject` became a
+    #: wired event a reject would have incremented `cancels_dispatched` — the
+    #: precise defect the paragraph above says these counters exist to prevent,
+    #: reached by a new event arriving rather than by anyone editing the counter.
+    #: A per-path counter set that is not extended when a path is added is a
+    #: counter set that silently stops discriminating.
     cancels_dispatched: int = 0
     fills_dispatched: int = 0
+    rejects_dispatched: int = 0
     #: Σ open margin the last dispatched fill's published picture reported, and
     #: how many §3 rows this daemon has opened. Both come off the handler's own
     #: `FillOutcome` (§7.12 guard 7).
@@ -573,6 +594,7 @@ class DispatchLedger:  # pylint: disable=too-many-instance-attributes
             "dispatched": self.dispatched,
             "cancels_dispatched": self.cancels_dispatched,
             "fills_dispatched": self.fills_dispatched,
+            "rejects_dispatched": self.rejects_dispatched,
             "duplicates": self.duplicates,
             "unwired": self.unwired,
             "unknown": self.unknown,
@@ -684,6 +706,8 @@ class CompletionDispatcher:
             )
         if completion.event == EVENT_FILL:
             return self._finish(self._dispatch_fill(completion))
+        if completion.event == EVENT_REJECT:
+            return self._finish(self._dispatch_reject(completion))
         return self._finish(self._dispatch_cancel(completion))
 
     def _dispatch_cancel(self, completion: SenderCompletion) -> DispatchResult:
@@ -718,6 +742,56 @@ class CompletionDispatcher:
             f"{SITE}: §5:322's loop dispatched a §2A on_cancel to §3's handler "
             f"and {released} of committed margin was released for "
             f"{completion.client_order_id!r}",
+            released_margin=released,
+        )
+
+    def _dispatch_reject(self, completion: SenderCompletion) -> DispatchResult:
+        """ARC 053. §3's reject release. CALLS `outcomes.on_reject`; never reimplements.
+
+        A LITERAL MIRROR of `_dispatch_cancel`, and the duplication is the
+        mechanism rather than an oversight — the same argument `outcomes.py`
+        makes above its own three `resolve` sites, one layer up. Folding the two
+        into `getattr(self._outcomes, EVENT_TO_VERB[event])` would make the
+        handler this dispatcher calls `<unresolved>` to any AST census of the
+        daemon's dispatch surface, so a gate could no longer read WHICH §3 path
+        the daemon books from the source. It would also collapse two
+        independently plantable sites into one: PLANT A removes the reject
+        dispatch and must not be able to hide behind a working cancel arm.
+
+        The §4 difference from cancel is in the SENTENCE, not the mechanism: a
+        cancel means the order was working and stopped; a reject means it never
+        worked at all, so nothing was ever at risk against the reservation it
+        held. Both release, and §3 is indifferent between them for Σ — which is
+        exactly why the reason string has to say which one happened.
+        """
+        record = self._outcomes.on_reject(
+            completion.client_order_id,
+            reason=(
+                f"{SITE}: the §5:323 sender surfaced a §2A on_reject "
+                f"(exec_id {completion.exec_id!r}, done_qty "
+                f"{completion.done_qty}) and §5:322's loop dispatched it "
+                f"serially from {completion.source!r}"
+            ),
+        )
+        released = float(getattr(record, "released_margin", 0.0) or 0.0)
+        if released <= 0.0:
+            # The handler ran and released nothing — see `_dispatch_cancel`.
+            return DispatchResult(
+                Disposition.REFUSED,
+                completion,
+                f"{SITE}: §3's on_reject ran for "
+                f"{completion.client_order_id!r} and released no margin — the "
+                "reservation ledger refused the terminal event; see its own "
+                "refusals for which of unknown/duplicate it was",
+                released_margin=0.0,
+            )
+        return DispatchResult(
+            Disposition.DISPATCHED,
+            completion,
+            f"{SITE}: §5:322's loop dispatched a §2A on_reject to §3's handler "
+            f"and {released} of committed margin was released for "
+            f"{completion.client_order_id!r} — the venue refused the order "
+            "outright, so nothing was ever working against that reservation",
             released_margin=released,
         )
 
@@ -869,6 +943,12 @@ class CompletionDispatcher:
                 # successive partial fills of one order would double-count the
                 # same position's margin on every event.
                 self.ledger.converted_margin = result.converted_margin
+            elif result.completion.event == EVENT_REJECT:
+                # ARC 053. NAMED, not folded into the cancel arm: *the venue
+                # stopped a working order* and *the venue never accepted it* are
+                # two §4 facts, and a single counter over both would make the
+                # reject arm's own driven proof unfalsifiable.
+                self.ledger.rejects_dispatched += 1
             else:
                 self.ledger.cancels_dispatched += 1
         elif result.disposition == Disposition.DUPLICATE:

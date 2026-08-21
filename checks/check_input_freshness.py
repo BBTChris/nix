@@ -80,18 +80,33 @@ quantity on a gate input that no refusal site in the tree reads — and that is
 reported by name, against the ratchet below, rather than being quietly absorbed.
 
 ------------------------------------------------------------------------------
-`ProposedOrder.signal_ts` — THE ONE ACCEPTED UNGATED TIME FIELD, AND WHY
+`ProposedOrder.signal_ts` — THE ONE ACCEPTED UNGATED TIME FIELD, AND ITS EXIT
 ------------------------------------------------------------------------------
-The derivation finds exactly one today and it is stated here rather than
-discovered by a reader of a red verdict. §6.4b's monotonic guard is scoped by
-its own words to *"ALL venue-sourced state ... balance, per-symbol margin, and
-position/quantity updates"*. A GO's `signal_ts` is STRATEGY-sourced: it does not
-arrive from the venue, is not admitted through a guard, and has no `decode_*` in
-this tree. §4:210-212 bounds the OTHER interval — admission to terminal feedback
-— on the loop's own monotonic tick clock (`nixrisk/loop.py::GoTimeout`), not on
-the signal instant. Whether a signal's own age should bound entry is a question
-the frozen spec does not answer, so it is CHECK-DEBT (D3.463) and an architect's
-ruling, not a decision this instrument makes by going red or by going quiet.
+ARC 051 derived exactly one and admitted it by name: a GO's `signal_ts` is
+STRATEGY-sourced, so §6.4b's monotonic guard — scoped by its own words to *"ALL
+venue-sourced state ... balance, per-symbol margin, and position/quantity
+updates"* — does not reach it, and §4:210-212 bounds the OTHER interval
+(admission to terminal feedback, on the loop's own monotonic tick clock) rather
+than the signal instant. Whether a signal's own age should bound ENTRY was a
+question the frozen spec does not answer, so it was CHECK-DEBT D3.463 and an
+architect's ruling rather than a decision this instrument made by going red or
+by going quiet.
+
+**THE RULING ARRIVED AND ARC 053 IMPLEMENTED IT, on the RESERVE seam.** §3 takes
+a reservation *at approval*, and approving capital against a signal of unbounded
+age was the one entry-side time quantity nothing in this tree refused. The ARC
+052 recon settled WHERE: `signal_ts` enters the daemon through `reserve` and
+through nothing else — the `go` verb carries a strategy id and an order id and
+no instant at all — so the ceiling belongs at the reserve, before the take,
+where a refusal still costs nothing.
+
+Both halves of this file's derivation moved, and that is why `_ACCEPTED_UNGATED`
+below is EMPTY rather than merely unread. `limiterd.signal_age_refusal` reads a
+clock and subtracts `order.signal_ts`, so the field is now a STAMP FIELD by this
+file's own definition; and `limiterd.py`'s `or time.time()` fallback is gone, so
+it is no longer CLOCK-SOURCED either. An absent `signal_ts` is a REFUSED
+reserve, because §17 is stale-until-proven-fresh and the absence of a stamp is
+the strongest reason to distrust one — not a licence to mint it.
 
 `_ACCEPTED_UNGATED` is a ONE-WAY RATCHET, in the shape
 `checks/uncalled_entry_points_baseline.json` and `gate_coverage_baseline.json`
@@ -249,17 +264,27 @@ FLOORS: dict[str, int] = {
 #: somewhere in shipped code but that NO freshness-refusal site reads. Admitted
 #: BY NAME, with the debt row that owns it. A field NOT here is a FAIL — silent
 #: growth is the defect. See the module docstring's `signal_ts` section.
-_ACCEPTED_UNGATED: dict[str, str] = {
-    "ProposedOrder.signal_ts": (
-        "STRATEGY-sourced, not venue-sourced: §6.4b scopes the monotonic guard "
-        "to 'ALL venue-sourced state — balance, per-symbol margin, and "
-        "position/quantity updates', and a GO is none of those. §4:210-212 "
-        "bounds admission -> terminal feedback on the loop's own monotonic tick "
-        "clock (nixrisk/loop.py::GoTimeout), not the signal instant. Whether a "
-        "signal's OWN age should bound entry is unanswered by the frozen spec "
-        "— CHECK-DEBT D3.463, architect ruling"
-    ),
-}
+#: EMPTIED BY ARC 053, and the emptying is a RATCHET SHRINK — the direction this
+#: set is allowed to move. It held exactly one entry, `ProposedOrder.signal_ts`,
+#: from ARC 051 (which found it) to ARC 053 (which gated it). D3.463 is
+#: discharged and BOTH halves of the derivation moved, which is why the entry is
+#: removed rather than left in place as a courtesy:
+#:
+#:   * it is no longer CLOCK-SOURCED. `scripts/limiterd.py` built the field as
+#:     `signal_ts=float(raw.get("signal_ts") or time.time())`, so a GO carrying
+#:     no instant was dated at the moment it happened to arrive and could never
+#:     be stale. The fallback is gone; an absent `signal_ts` is now a REFUSED
+#:     reserve (§17 — stale-until-proven-fresh), not a minted one.
+#:   * it IS now a STAMP FIELD. `limiterd.signal_age_refusal` reads a clock and
+#:     subtracts `order.signal_ts` from it, which is this file's own definition
+#:     of a freshness-refusal site, and the census reports it as one.
+#:
+#: An entry left here after its field was gated would be the STALE PIN
+#: `check_monitor_tui` reports on its own known-red list: a record that has
+#: stopped describing its subject, admitting something that no longer needs
+#: admitting. The set is empty and stays a ONE-WAY RATCHET — a new field
+#: appearing here needs its own debt row and its own architect ruling.
+_ACCEPTED_UNGATED: dict[str, str] = {}
 
 
 class Finding(NamedTuple):

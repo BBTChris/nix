@@ -222,6 +222,60 @@ def deployable_fraction_from_config(root: Path | None = None) -> float:
     return risk_config.knob(configs.modules[CONFIG_MODULE], DEPLOYABLE_PCT_KEY)
 
 
+#: §12A:830's key, read through the validator for the reason
+#: `pending_ack_timeout_from_config` gives.
+SIGNAL_MAX_AGE_KEY: Final[str] = "signal_max_age_ms"
+
+
+def signal_max_age_from_config(root: Path | None = None) -> float:
+    """ARC 053 / D3.463. The oldest signal a reservation may be approved against.
+
+    A DECLARED NIX ADDITION, not a §12A knob, and `risks/limiter.config.json`'s
+    `_meta` entry carries the whole argument. No default (directive 4): a Limiter
+    that invented a signal-age ceiling would approve capital against opinions of
+    an age nobody chose.
+    """
+    configs = risk_config.load_risk_configs(root)
+    return risk_config.knob(configs.modules[CONFIG_MODULE], SIGNAL_MAX_AGE_KEY) / 1000.0
+
+
+def signal_age_refusal(order: ProposedOrder, max_age_s: float) -> str:
+    """ARC 053 / D3.463. §17's stale-until-proven-fresh, applied to a GO's OWN age.
+
+    THE FRESHNESS-REFUSAL SITE FOR `ProposedOrder.signal_ts`, and being one is
+    the point rather than a side effect. `checks/check_input_freshness.py`
+    derives its STAMP FIELDS as *"an attribute a function that calls a clock
+    subtracts from it"*, and until this arc `signal_ts` matched no such site
+    anywhere in the tree — it was CLOCK-SOURCED (born at
+    `signal_ts=... or time.time()` two hundred lines below) and read by no
+    refusal, which is exactly what that gate reports as an UNGATED TIME FIELD and
+    exactly what D3.463 recorded. The fix is both halves: this function makes it
+    a stamp field, and killing the fallback stops it being clock-sourced.
+
+    WHY THE RESERVE SEAM AND NOT `go`. The ARC 052 recon measured it: `signal_ts`
+    enters this process through `reserve` and through nothing else — the `go`
+    verb carries a strategy id and an order id and no instant at all. §3 takes
+    the reservation AT APPROVAL, so the reserve is where a signal's age can still
+    change a decision; by `go` the capital is already committed.
+
+    Returns the refusal sentence, or `""` when the signal is fresh enough.
+    """
+    age = time.time() - order.signal_ts
+    if age <= max_age_s:
+        return ""
+    # NO `{SITE}:` prefix: this sentence is handed to `CommandHandler._refuse`,
+    # which prepends one. Two prefixes read as two sites and there is one.
+    return (
+        f"§3 refuses to take a reservation against a signal that is "
+        f"{age:.3f}s old — the ceiling is {max_age_s:.3f}s "
+        f"({SIGNAL_MAX_AGE_KEY}). §17 is stale-until-proven-fresh and §6.4 puts "
+        "a reading past its threshold behind a refusal; approving capital "
+        "against an opinion of unbounded age is the one entry-side time "
+        "quantity nothing in this tree refused (CHECK-DEBT D3.463). Nothing "
+        "was taken and nothing was sent"
+    )
+
+
 #: Command files read per tick. §11:581's bound applied to the ingress read for
 #: the same reason `nixrisk/loop.py` bounds the drain: a directory somebody
 #: dumped ten thousand files into must not hold one tick open past the beat.
@@ -969,13 +1023,23 @@ class CommandHandler:
     Sentinel watching, so an unparsable file is answered, not fatal.
     """
 
-    def __init__(
+    # R0913/R0917 refused with a reason: SEVEN parameters and six of them are
+    # COLLABORATORS this process owns and hands in — the loop, the outbox, §11.3's
+    # ledger, §5:322's dispatcher, §4's fill path and §4's timeout poller — plus
+    # one §12A ceiling read at boot. Bundling them into a config object would put
+    # a container between this handler and the objects whose ABSENCE it reports
+    # differently from their emptiness (`_picture()`'s `None`-vs-0.0 argument, and
+    # check contract rule 10 underneath it), and every one is optional precisely
+    # so that difference stays visible.
+    def __init__(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self,
         loop: LimiterLoop,
         outbox: Path,
         reservations: ReservationLedger | None = None,
         dispatcher: CompletionDispatcher | None = None,
         fills: FillPath | None = None,
+        timeouts: PendingTimeoutPoller | None = None,
+        signal_max_age_s: float | None = None,
     ) -> None:
         self._loop = loop
         self._outbox = outbox
@@ -991,6 +1055,15 @@ class CommandHandler:
         #: an empty stop book, because *no fill path* and *a fill path holding
         #: nothing* are two readings (check contract rule 10).
         self._fills = fills
+        #: ARC 053. §4's pending-timeout poller, optional on the same argument:
+        #: `timeouts: null` says *this build does not poll* and is a different
+        #: fact from a poller that has run and found nothing due.
+        self._timeouts = timeouts
+        #: ARC 053 / D3.463. `None` means this build enforces NO signal-age
+        #: ceiling, and it is reported as `null` rather than as a number so a
+        #: reader cannot mistake *unbounded* for *bounded at something*. `main`
+        #: always supplies one; the default exists for the ARC 040 CLI readers.
+        self._signal_max_age_s = signal_max_age_s
 
     def handle(self, item: object) -> None:
         """The loop's per-item callback. Writes the reply, then unlinks the command."""
@@ -1155,6 +1228,30 @@ class CommandHandler:
                 f"{VERB_RESERVE!r} needs §11.3's reservation ledger and this "
                 "build was constructed without one",
             )
+        # ARC 053 / D3.463. AN ABSENT SIGNAL INSTANT READS STALE, NOT NOW.
+        #
+        # This line used to be `signal_ts=float(raw.get("signal_ts") or
+        # time.time())`, and the fallback is the whole defect: a GO that carried
+        # no instant was DATED AT THE MOMENT IT HAPPENED TO ARRIVE, so it could
+        # never be stale — the one input in this tree that got fresher by being
+        # unreadable. §17 is stale-until-proven-fresh, and the absence of a stamp
+        # is the strongest reason to distrust one, not a licence to mint it.
+        #
+        # It is a REFUSAL here rather than a sentinel value passed inward
+        # (`0.0`, `-inf`) because §3's order is what a later fill converts
+        # against: a `ProposedOrder` carrying a fabricated instant would travel
+        # into the ledger, into `join.py`'s trade record and into §12.10's rows,
+        # and every reader downstream would see a number nobody sent.
+        if raw.get("signal_ts") is None:
+            return self._refuse(
+                command_id,
+                VERB_RESERVE,
+                f"{client_order_id!r} carries NO signal_ts. §17 is "
+                "stale-until-proven-fresh: an absent signal instant reads STALE, "
+                "never NOW, so §3 refuses the reservation rather than dating the "
+                "signal at the instant the command happened to arrive "
+                "(CHECK-DEBT D3.463). Nothing was taken and nothing was sent",
+            )
         try:
             order = ProposedOrder(
                 client_order_id=client_order_id,
@@ -1165,7 +1262,7 @@ class CommandHandler:
                 margin_per_contract=float(raw.get("margin_per_contract") or 0.0),
                 stop_ticks=int(raw.get("stop_ticks") or 0),
                 stop_mode=StopMode(str(raw.get("stop_mode") or StopMode.FIXED.value)),
-                signal_ts=float(raw.get("signal_ts") or time.time()),
+                signal_ts=float(raw["signal_ts"]),
             )
         except (TypeError, ValueError) as exc:
             return self._refuse(
@@ -1174,6 +1271,13 @@ class CommandHandler:
                 f"{client_order_id!r} is not a readable §3 order: "
                 f"{type(exc).__name__}: {exc}",
             )
+        # ARC 053 / D3.463. The age check runs BEFORE the take, so a stale signal
+        # costs nothing: §3's *taken at approval* has not happened yet and there
+        # is no reservation to unwind.
+        if self._signal_max_age_s is not None and (
+            stale := signal_age_refusal(order, self._signal_max_age_s)
+        ):
+            return self._refuse(command_id, VERB_RESERVE, stale)
         try:
             reservation = self._reservations.take(order, time.time())
         except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
@@ -1274,6 +1378,12 @@ class CommandHandler:
             # property).
             "fills": None if self._fills is None else self._fills.record(),
             "picture": (None if self._fills is None else self._fills.picture_record()),
+            # ARC 053. §4's pending-timeout resolution, as the RUNNING process
+            # reports it. `None` where the poller is absent — *this build does
+            # not poll* and *this build polled and nothing was due* are two
+            # readings, and the zombie this arc exists to kill lives in the gap
+            # between them.
+            "timeouts": None if self._timeouts is None else self._timeouts.record(),
         }
 
     # -- reply plumbing -----------------------------------------------------
@@ -1503,6 +1613,235 @@ class Plane1Booker:
         }
 
 
+# ===========================================================================
+#  ARC 053 — §4's PENDING-TIMEOUT RESOLUTION: A POLL, AND IT QUERIES.
+#
+#  THE SAFETY SPINE OF THIS ARC, stated where the code is. §4 "Failure
+#  resolution": a pending order past its ack deadline is resolved by
+#  `query_order_status` and **NEVER by an auto-resend**. The failure mode a
+#  resend produces is not a wasted call — it is a SECOND LIVE ORDER at the venue
+#  while the first is still working, i.e. a double fill on a single signal, with
+#  §3's reservation covering one of them. `place_order` is therefore not merely
+#  unused on this path: it is UNREACHABLE from it, and
+#  `checks/check_limiter_daemon_dispatch.py` proves that structurally (an AST
+#  reachability census from the poll entry point) as well as by driving it.
+#
+#  WHY A DIRECTORY, AGAIN. `DirectoryStatusQuery` reads `DIR/status/<id>.json`
+#  for exactly the reason `CompletionInbox` reads `DIR/completions/` — the
+#  module docstring's files-rather-than-ZMQ argument — and for one more: it is
+#  the narrowest surface that can answer §4's question. `broker_seam`'s
+#  `BrokerOrderPort` can place and flatten; a reservation-release path holding
+#  that port would be a second order-placement site, which is precisely what
+#  `outcomes.StatusQueryPort`'s own docstring refuses. This class has ONE verb
+#  and it opens one file for reading.
+#
+#  WHAT `filled` DOES, AND WHY IT IS NOT THE FILL CASCADE. §2A's `OrderStatus`
+#  carries four fields — `client_order_id`, `terminal`, `state`,
+#  `cumulative_qty`. It carries NO `exec_id`, NO `symbol` and NO `price`, and
+#  §2A:75's `on_fill` seam requires all three. So a status query answering
+#  `filled` CANNOT drive `fills.py`'s cascade without inventing execution data,
+#  and driving it from here would create a SECOND conversion site when §4
+#  converts ONCE, at the confirmed fill. The answer is therefore HELD — the
+#  reservation stays committed — and the conversion happens when the real
+#  `on_fill` exec report arrives through the completion path ARC 047 already
+#  wired. That is a NAMED hold, counted separately below, because *held because
+#  the order is still working* and *held because the venue says it filled and
+#  the exec report has not arrived* are two operational facts and one counter
+#  over both would hide the second.
+# ===========================================================================
+
+#: `*.json` status answers, one per `client_order_id`. Read-only to this process.
+STATUS_DIR: Final[str] = "status"
+
+#: The seam's own spelling for *this surface has no record of the id* — NOT a
+#: statement about the venue (`broker_seam.OrderStatus.state`'s own docstring
+#: makes that distinction and it is the difference between holding a reservation
+#: and releasing one). An absent file is exactly that case.
+STATUS_UNKNOWN: Final[str] = "unknown"
+
+
+@dataclass(frozen=True)
+class StatusReply:
+    """One §2A `OrderStatus` answer, as this process reads it off disk.
+
+    STRUCTURAL, not imported. §2A invariant 2 keeps vendor structure below the
+    seam, and `outcomes.StatusQueryPort` consumes the answer structurally
+    (`.state`) precisely so nothing above the seam has to import `scripts/broker`
+    — the same narrowing `fills.py::CancelPort` applies to the same adapter.
+    """
+
+    client_order_id: str
+    state: str
+    terminal: bool = False
+    cumulative_qty: int = 0
+
+
+class DirectoryStatusQuery:
+    """§4's status query, served from `DIR/status/`. ONE verb, and it is a READ.
+
+    Structurally an `outcomes.StatusQueryPort`. It cannot place, cancel or
+    flatten — there is no such method on it and no object here holds one.
+
+    NEVER RAISES. An unreadable file, malformed JSON or a missing `state` all
+    answer `unknown`, which `outcomes.py` routes to HELD: the reservation stays
+    committed, which is the direction that over-counts §11.3's Σ and can never
+    breach a cap. Raising instead would put an I/O fault on the tick that
+    §12.1:604 has the Sentinel watching, turning a filesystem hiccup into a
+    trading outage — the conflation §12.4 forbids.
+    """
+
+    def __init__(self, directory: Path) -> None:
+        self._dir = directory
+        #: What the VENUE said, per state. A query surface that cannot say what
+        #: it was told can only be believed (`ReservationLedger`'s argument).
+        self.answers: dict[str, int] = {}
+        self.queries = 0
+        self.unreadable = 0
+        self.last_error = ""
+
+    def query_order_status(self, client_order_id: str) -> StatusReply:
+        """§2A:71 — the status query. NEVER an auto-resend."""
+        self.queries += 1
+        state = STATUS_UNKNOWN
+        terminal = False
+        cumulative = 0
+        path = self._dir / f"{client_order_id}.json"
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                state = str(raw.get("state", STATUS_UNKNOWN))
+                terminal = bool(raw.get("terminal", False))
+                cumulative = int(raw.get("cumulative_qty", 0) or 0)
+        except FileNotFoundError:
+            pass  # the documented `unknown` case: no record of this id here
+        except (OSError, ValueError, TypeError) as exc:
+            self.unreadable += 1
+            self.last_error = (
+                f"{SITE}: {path.name} could not be read as a §2A status answer "
+                f"({type(exc).__name__}: {exc}); answering {STATUS_UNKNOWN!r}, "
+                "which §4 resolves by HOLDING the reservation, never by "
+                "releasing it and never by resending the order"
+            )
+        self.answers[state] = self.answers.get(state, 0) + 1
+        return StatusReply(client_order_id, state, terminal, cumulative)
+
+    def record(self) -> dict[str, Any]:
+        """The out-of-process evidence block."""
+        return {
+            "dir": str(self._dir),
+            "queries": self.queries,
+            "answers": dict(sorted(self.answers.items())),
+            "unreadable": self.unreadable,
+            "last_error": self.last_error,
+        }
+
+
+class PendingTimeoutPoller:
+    """ARC 053. The per-tick hook that runs §4's pending-timeout resolution.
+
+    Composed onto the loop's ingress exactly as `Plane1Booker` is, and for the
+    same reason: `LimiterLoop.tick` runs `_run_ingress -> _drain ->
+    _break_go_deadlocks -> _beat_if_due` and the ingress callback is the one hook
+    this process owns inside the tick. §5:322's serial processing then holds for
+    the poll too — the query and its resolution happen on the loop's thread,
+    between drains, so a release performed here cannot race a completion being
+    dispatched in the same tick.
+
+    ORDER, and it is not a preference. The poll runs AFTER the reads, so a
+    terminal completion sitting in this tick's directory resolves the order
+    BEFORE the poll would ask the venue about it. Polling first would query an
+    order whose answer was already on disk, and — worse — would spend a §4 query
+    on an order that is about to be resolved by a push event.
+
+    WHAT IT DOES NOT DO: it does not place, resend, cancel or flatten. Its whole
+    outbound surface is `DirectoryStatusQuery.query_order_status`, and the sweep
+    itself lives in `outcomes.OrderOutcomes.resolve_pending_timeouts` (ARC 044),
+    which this class CALLS and does not reimplement.
+    """
+
+    def __init__(self, outcomes: OrderOutcomes, query: DirectoryStatusQuery) -> None:
+        self._outcomes = outcomes
+        self._query = query
+        self.polls = 0
+        self.resolved = 0
+        self.held = 0
+        self.refused = 0
+        self.last_error = ""
+
+    def poll_due(self) -> int:
+        """Resolve every overdue order. NEVER RAISES. Returns records produced.
+
+        Contained for the reason `Plane1Booker.book_new_firings` is: this runs
+        inside the tick and an exception escaping here would kill the process
+        §12.1:604 has the Sentinel watching. A poll that cannot run is a
+        reservation held longer than it should be — bounded and safe; a poll that
+        kills the daemon is an outage.
+        """
+        self.polls += 1
+        try:
+            records = self._outcomes.resolve_pending_timeouts(self._query)
+        except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
+            self.last_error = (
+                f"{SITE}: §4's pending-timeout sweep raised "
+                f"{type(exc).__name__}: {exc}. The sweep is CONTAINED — every "
+                "overdue reservation stays COMMITTED, which over-counts §11.3's "
+                "Σ and can never breach a cap. §4:240-241 forbids the retry and "
+                "nothing here resends"
+            )
+            return 0
+        for record in records:
+            disposition = getattr(record.disposition, "value", "")
+            if disposition == "released":
+                self.resolved += 1
+            elif disposition == "refused":
+                self.refused += 1
+            else:
+                self.held += 1
+        return len(records)
+
+    def before(self, inner: Callable[[int], object]) -> Callable[[int], object]:
+        """Wrap the loop's ingress so the poll runs AFTER the reads, same tick."""
+
+        def _ingress(tick: int) -> object:
+            taken = inner(tick)
+            self.poll_due()
+            return taken
+
+        return _ingress
+
+    def record(self) -> dict[str, Any]:
+        """The out-of-process evidence block. Read by the daemon-dispatch gate.
+
+        Counters, not a boolean, and SIX of them rather than one: *never polled*,
+        *polled and nothing was due*, *polled and released*, *polled and held*,
+        *polled and refused* and *the query surface itself could not answer* must
+        be six readings. `queries` and `due` come off the HANDLER's own counters
+        (`outcomes.OrderOutcomes`), not re-counted here, so a poller that thought
+        it queried and a handler that did not are visibly different — §7.12
+        guard 2 applied to a sweep whose real work happens one call down.
+
+        `resends` is present and is ALWAYS 0. It is not decoration and not a
+        placeholder: §4's rule is a NEGATIVE property, and a negative property
+        that is nowhere reported cannot be read off a running process. An
+        operator asking *did the daemon ever resend?* gets a number.
+        """
+        return {
+            "polls": self.polls,
+            "due_seen": self._outcomes.queries,
+            "resolved": self.resolved,
+            "held": self.held,
+            "refused": self.refused,
+            "timeouts_released": self._outcomes.timeouts_released,
+            "pending_ack_timeout_s": self._outcomes.pending_ack_timeout_s,
+            #: §4:240-241. ALWAYS 0, by construction: this path holds no verb
+            #: that can place an order. See the class docstring and the gate's
+            #: structural reachability census.
+            "resends": 0,
+            "query": self._query.record(),
+            "last_error": self.last_error,
+        }
+
+
 def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
     """Serialise into a sibling temp file and `os.replace` it into place.
 
@@ -1538,6 +1877,8 @@ def _runtime_record(  # pylint: disable=too-many-arguments,too-many-positional-a
     dispatcher: CompletionDispatcher | None = None,
     fills: FillPath | None = None,
     feedback: OpenFeedback | None = None,
+    timeouts: PendingTimeoutPoller | None = None,
+    signal_max_age_s: float | None = None,
 ) -> dict[str, Any]:
     """`limiter.runtime.json`'s content, at boot and again at clean stop.
 
@@ -1596,6 +1937,19 @@ def _runtime_record(  # pylint: disable=too-many-arguments,too-many-positional-a
             if feedback is None
             else {"pushed": list(feedback.pushed), "failures": list(feedback.failures)}
         ),
+        #: ARC 053. §4's pending-timeout resolution, in the record an
+        #: out-of-process reader opens. `None` rather than zeroed counters where
+        #: the poller is absent, for the reason `reservations` is `None` rather
+        #: than 0.0: a `resends: 0` published by a process that has no poller
+        #: would certify §4:240-241's no-resend rule over a path that does not
+        #: exist — check contract rule 10, applied to the one guarantee this arc
+        #: is most obliged not to overstate.
+        "timeouts": None if timeouts is None else timeouts.record(),
+        #: ARC 053 / D3.463. The signal-age ceiling this process booted with, in
+        #: the record an out-of-process reader opens. `null` means UNBOUNDED and
+        #: says so, because *no ceiling* and *a ceiling of zero* are opposite
+        #: facts and a missing key would read as neither.
+        "signal_max_age_s": signal_max_age_s,
         "stopped_ts": stopped_ts,
     }
 
@@ -1611,6 +1965,8 @@ def _stop_record(  # pylint: disable=too-many-arguments,too-many-positional-argu
     dispatcher: CompletionDispatcher | None = None,
     fills: FillPath | None = None,
     feedback: OpenFeedback | None = None,
+    timeouts: PendingTimeoutPoller | None = None,
+    signal_max_age_s: float | None = None,
     malformed: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """The clean-stop record: the boot shape plus what the run actually did."""
@@ -1623,6 +1979,8 @@ def _stop_record(  # pylint: disable=too-many-arguments,too-many-positional-argu
         dispatcher=dispatcher,
         fills=fills,
         feedback=feedback,
+        timeouts=timeouts,
+        signal_max_age_s=signal_max_age_s,
     )
     # ARC 046. The completions the ingress read and the PARSE refused, so
     # "no exec report arrived" and "an exec report arrived unreadable" are two
@@ -1864,7 +2222,17 @@ def main(argv: list[str] | None = None) -> int:
         inbox_dir = runtime_dir / INBOX_DIR
         outbox_dir = runtime_dir / OUTBOX_DIR
         completions_dir = runtime_dir / COMPLETIONS_DIR
-        for directory in (runtime_dir, inbox_dir, outbox_dir, completions_dir):
+        # ARC 053. Created at boot for the reason `completions/` is: a §4 status
+        # query against a directory that does not exist would answer `unknown`
+        # for a reason that has nothing to do with the venue.
+        status_dir = runtime_dir / STATUS_DIR
+        for directory in (
+            runtime_dir,
+            inbox_dir,
+            outbox_dir,
+            completions_dir,
+            status_dir,
+        ):
             directory.mkdir(parents=True, exist_ok=True)
         publisher = HeartbeatPublisher(runtime_dir / HEARTBEAT_NAME)
         go_timeout = (
@@ -1922,6 +2290,20 @@ def main(argv: list[str] | None = None) -> int:
             clock=time.time,
         )
         dispatcher = CompletionDispatcher(outcomes, fills=fills.sink)
+        # ARC 053. §4's pending-timeout resolution, held by the PROCESS. It
+        # shares the ONE `OrderOutcomes` above rather than constructing a second:
+        # `due_for_status_query` reads the ledger's own TAKEN set, and a poller
+        # with a private handler would sweep a different set from the one Σ is
+        # derived from. `outcomes.py` and `reservations.py` are byte-identical
+        # across this arc — asserted with `git hash-object`, not claimed — and
+        # the whole change is that something with a pid now polls them.
+        status_query = DirectoryStatusQuery(status_dir)
+        timeouts = PendingTimeoutPoller(outcomes, status_query)
+        # ARC 053 / D3.463. Read at BOOT and refused there if unreadable, for the
+        # reason every other knob in this block is: §12A's lifecycle is
+        # boot-loaded and restart-only, and a ceiling re-read per command would
+        # let an edit change what the running process approves without a restart.
+        signal_max_age_s = signal_max_age_from_config()
     except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
         print(
             f"{SITE}: refusing to boot the Limiter: {type(exc).__name__}: {exc}",
@@ -1958,9 +2340,25 @@ def main(argv: list[str] | None = None) -> int:
         # `Plane1Booker.before` composes the two rather than folding the write
         # into the reader — see its docstring for why it is one tick behind the
         # firing and why nothing is lost to that.
-        ingress=booker.before(_read_both),
+        #
+        # ARC 053: and §4's pending-timeout poll runs LAST inside the same tick,
+        # composed the same way. The resulting order is
+        #   book firings -> read commands -> read completions -> poll overdue
+        # and every step of it is deliberate. Polling AFTER the reads means a
+        # terminal completion sitting in this tick's directory resolves its order
+        # before the poll would ask the venue about it, so the daemon does not
+        # spend a §4 query on an order whose answer is already on disk.
+        ingress=booker.before(timeouts.before(_read_both)),
         handler=LoopHandler(
-            CommandHandler(loop, outbox_dir, reservations, dispatcher, fills),
+            CommandHandler(
+                loop,
+                outbox_dir,
+                reservations,
+                dispatcher,
+                fills,
+                timeouts,
+                signal_max_age_s,
+            ),
             completion_handler,
         ).handle,
     )
@@ -1978,6 +2376,8 @@ def main(argv: list[str] | None = None) -> int:
             dispatcher=dispatcher,
             fills=fills,
             feedback=feedback,
+            timeouts=timeouts,
+            signal_max_age_s=signal_max_age_s,
         ),
     )
     _install_signal_handlers(loop)
@@ -2003,6 +2403,8 @@ def main(argv: list[str] | None = None) -> int:
             dispatcher=dispatcher,
             fills=fills,
             feedback=feedback,
+            timeouts=timeouts,
+            signal_max_age_s=signal_max_age_s,
             malformed=tuple(completion_handler.malformed),
         ),
     )

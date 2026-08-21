@@ -57,10 +57,24 @@ class _Outcomes:  # pylint: disable=too-few-public-methods
     def __init__(self, released: float = 500.0) -> None:
         self.released = released
         self.calls: list[tuple[str, str]] = []
+        #: ARC 053. Which VERB was asked for, per call. `calls` alone cannot say,
+        #: and with two release verbs on the port that is the whole question: a
+        #: dispatcher that routed a reject into `on_cancel` would leave `calls`
+        #: identical. mypy found the missing verb before this stub did — the
+        #: protocol grew and a stand-in that does not grow with it stops standing
+        #: in for the thing under test.
+        self.verbs: list[str] = []
 
     def on_cancel(self, client_order_id: str, *, reason: str = ""):
         """Record the call and return a released_margin the dispatcher reads."""
         self.calls.append((client_order_id, reason))
+        self.verbs.append("on_cancel")
+        return type("Rec", (), {"released_margin": self.released})()
+
+    def on_reject(self, client_order_id: str, *, reason: str = ""):
+        """ARC 053. §3's reject release, recorded separately from the cancel."""
+        self.calls.append((client_order_id, reason))
+        self.verbs.append("on_reject")
         return type("Rec", (), {"released_margin": self.released})()
 
 
@@ -204,7 +218,6 @@ def test_a_REDELIVERY_is_a_DUPLICATE_and_the_HANDLER_IS_NEVER_CALLED_TWICE():
     "event",
     [
         "on_ack",
-        "on_reject",
         "on_balance",
         "on_margin",
         "on_position",
@@ -213,12 +226,15 @@ def test_a_REDELIVERY_is_a_DUPLICATE_and_the_HANDLER_IS_NEVER_CALLED_TWICE():
 )
 def test_every_UNWIRED_2A_event_is_RECORDED_as_unwired_and_NAMES_ITSELF(event: str):
     """An unwired path that is silently dropped reads exactly like one that works."""
-    # ARC 047 wired `on_fill`, so it LEFT this set. The literal moving is the
-    # mechanism working: the assertion below named the drift the moment
-    # WIRED_EVENTS grew, which is exactly what a literal list is kept for.
+    # ARC 047 wired `on_fill`, so it LEFT this set; ARC 053 wired `on_reject`
+    # and it left too. The literal moving is the mechanism WORKING: the
+    # assertion below named the drift the moment `WIRED_EVENTS` grew — it went
+    # red in ARC 053's own runtime gate, before the arc's first commit — which
+    # is exactly what a literal list is kept for. A comprehension here would
+    # have adjusted silently and this test would have gone on reporting that it
+    # measured the unwired set while measuring a smaller one.
     assert set(SPEC_EVENTS) - set(WIRED_EVENTS) == {
         "on_ack",
-        "on_reject",
         "on_balance",
         "on_margin",
         "on_position",
@@ -475,3 +491,51 @@ def test_a_NON_FILL_event_carries_NO_price_and_that_is_not_a_missing_value():
     """§2A's `on_cancel` genuinely has no symbol, price or running total."""
     c = parse_completion(_cancel(), source="s")
     assert (c.symbol, c.price, c.cumulative_qty) == ("", 0.0, 0)
+
+
+# ---------------------------------------------------------------------------
+# ARC 053 — the REJECT route. §3 has two non-fill release verbs and the
+# dispatcher must call the RIGHT one: a reject routed into `on_cancel` releases
+# the same margin and books the wrong §3 terminal path, which §11.7's reconcile
+# and every §12.10 row downstream then carry as a fact.
+# ---------------------------------------------------------------------------
+def test_a_2A_on_reject_is_routed_to_ON_REJECT_and_not_to_on_cancel():
+    """The verb, not just the release. Both release; only one is correct."""
+    outcomes = _Outcomes(released=750.0)
+    d = CompletionDispatcher(outcomes)
+    result = d.dispatch(
+        parse_completion(_cancel(event="on_reject", exec_id="E-REJ"), source="s")
+    )
+    assert result.disposition == Disposition.DISPATCHED, result.reason
+    assert outcomes.verbs == ["on_reject"], outcomes.verbs
+    assert result.released_margin == 750.0
+    # The reason names the §2A event and the §5:322 path it came through.
+    assert "on_reject" in result.reason
+    assert "the venue refused the order outright" in result.reason
+
+
+def test_the_LEDGER_counts_a_reject_SEPARATELY_from_a_cancel():
+    """§7.12 guard 1. `_finish` counted every non-fill dispatch as a cancel until
+    ARC 053; the moment `on_reject` was wired that would have made a reject
+    indistinguishable from a cancel in the one record an out-of-process reader
+    opens."""
+    outcomes = _Outcomes()
+    d = CompletionDispatcher(outcomes)
+    d.dispatch(parse_completion(_cancel(exec_id="E-C"), source="s"))
+    d.dispatch(parse_completion(_cancel(event="on_reject", exec_id="E-R"), source="s"))
+    record = d.record()
+    assert record["cancels_dispatched"] == 1, record
+    assert record["rejects_dispatched"] == 1, record
+    assert record["dispatched"] == 2, record
+
+
+def test_a_reject_whose_LEDGER_REFUSES_is_REFUSED_and_never_counted_dispatched():
+    """A handler that ran and released nothing is not a dispatch (§7.12 guard 2)."""
+    outcomes = _Outcomes(released=0.0)
+    d = CompletionDispatcher(outcomes)
+    result = d.dispatch(
+        parse_completion(_cancel(event="on_reject", exec_id="E-R0"), source="s")
+    )
+    assert result.disposition == Disposition.REFUSED, result.reason
+    assert "released no margin" in result.reason
+    assert d.record()["rejects_dispatched"] == 0

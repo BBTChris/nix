@@ -62,6 +62,12 @@ COMPLETIONS = "scripts/nixrisk/completions.py"
 #: the gate although this arc edited none of it — the arm that places the
 #: protective stop lives here, and a plant in it must redden the gate.
 FILLS = "scripts/nixrisk/fills.py"
+#: ARC 053. The §3 terminal handlers the daemon now CALLS on BOTH resolution
+#: paths — `on_reject` from the completion dispatch, `resolve_pending_timeouts`
+#: from the per-tick poll. A subject of the gate for the reason `FILLS` is: a
+#: plant in either handler must redden it, which it cannot do unless the file is
+#: declared. This arc edited none of it.
+OUTCOMES = "scripts/nixrisk/outcomes.py"
 
 
 def _ctx(home: Path) -> Context:
@@ -109,11 +115,22 @@ def test_NON_VACUITY_the_SHIPPED_daemon_PASSES_and_the_evidence_names_the_drive(
     assert "committed 0.0 -> 2000.0" in result.evidence
     assert "dispatched=1" in result.evidence
     assert "duplicates=1" in result.evidence
-    # ARC 047. TWO reservations now reach a terminal release in one drive — one
-    # RELEASED by the cancel arm, one CONVERTED by the fill arm — and §3 makes
-    # a fill a terminal release too (*"released on: fill (converts to
-    # open-margin)"*). The literal moved because the drive did.
-    assert "released=2" in result.evidence
+    # ARC 047 made it TWO — one RELEASED by the cancel arm, one CONVERTED by the
+    # fill arm, and §3 makes a fill a terminal release too (*"released on: fill
+    # (converts to open-margin)"*). ARC 053 makes it FIVE: the reject arm
+    # releases one and the pending-timeout arm takes two and releases both. The
+    # literal moves because the DRIVE does, and the gate derives the same figure
+    # from which arms this build can run rather than carrying it as a constant.
+    assert "released=5" in result.evidence
+    # ARC 053 — the two RESOLUTION paths, and the negative property, in the
+    # evidence of a PASS. A green that does not say it covered them is a green
+    # whose scope a reader cannot see.
+    assert "REJECT ARM:" in result.evidence
+    assert "1500.0 of committed margin was RELEASED" in result.evidence
+    assert "PENDING-TIMEOUT ARM:" in result.evidence
+    assert "resends=0" in result.evidence
+    assert "NO-RESEND CENSUS:" in result.evidence
+    assert "reaches NONE of the venue-placement verbs" in result.evidence
     # And the FILL arm's own evidence: the conversion AND the placed stop.
     assert "FILL ARM:" in result.evidence
     assert "PROTECTIVE STOP is armed at 4998.0" in result.evidence
@@ -133,6 +150,9 @@ def test_NON_VACUITY_the_gate_reads_the_WIRED_PATH_DECLARATION_not_a_literal():
     # DERIVATION, not the literal.
     assert gate.HAS_CANCEL is ("on_cancel" in completions.WIRED_EVENTS)
     assert gate.HAS_FILL is ("on_fill" in completions.WIRED_EVENTS)
+    # ARC 053, derived the same way and for the same reason.
+    assert gate.HAS_REJECT is ("on_reject" in completions.WIRED_EVENTS)
+    assert "on_reject" in gate.WIRED
     # And every §2A event the build does NOT wire is derived, never listed here.
     assert set(gate.UNWIRED_CANDIDATES) == set(completions.SPEC_EVENTS) - set(
         gate.WIRED
@@ -355,7 +375,7 @@ def test_the_gate_DECLARES_the_subprocess_and_the_temp_write_it_actually_makes()
     assert gate.CORRECTABLE is False
     assert gate.NON_CORRECTABLE_REASON
     assert not gate.DEPENDS_ON
-    assert set(gate.SUBJECTS) == {LIMITERD, COMPLETIONS, FILLS}
+    assert set(gate.SUBJECTS) == {LIMITERD, COMPLETIONS, FILLS, OUTCOMES}
 
 
 # ---------------------------------------------------------------------------
@@ -367,3 +387,215 @@ def test_the_SHIPPED_daemon_still_PASSES_after_every_plant(tmp_path: Path):
     above — proves the plants, not the fixture, cause the failures."""
     result = gate.run(Mode.VERIFY, _ctx(_population(tmp_path)))
     assert result.status is Status.PASS, f"{result.status}: {result.detail}"
+
+
+# ===========================================================================
+# ARC 053 — the two RESOLUTION paths, and the one that can lose money.
+#
+# Three plants, and the third is not like the other two. PLANT 053A and 053B
+# remove a resolution: a reservation leaks, §11.3's Σ stays inflated, and every
+# capital rule that reads it becomes more conservative than it should be. That
+# is a real defect and it costs opportunity.
+#
+# PLANT 053C is the one that costs MONEY. §4 resolves a pending timeout by
+# `query_order_status` and NEVER by an auto-resend, because a resend puts a
+# SECOND LIVE ORDER at the venue while the first is still working — a double
+# fill on one signal, with §3 holding one reservation for both. It is the single
+# most dangerous defect this arc could introduce, so it is refused twice: by the
+# STRUCTURAL census (which runs before anything is driven, precisely so that a
+# build that can resend is never driven) and by the driven arm (which watches
+# `committed` across twenty further queries, because a second live order needs a
+# second reservation and that is the number that would move).
+# ===========================================================================
+
+
+def test_PLANT_053A_a_daemon_that_LEAVES_REJECT_UNWIRED_FAILS_naming_the_leak(
+    tmp_path: Path,
+):
+    """PLANT 053A: `on_reject` removed from `WIRED_EVENTS` — the pre-ARC-053
+    daemon exactly. The loop DRAINS the reject and records it UNWIRED, so the
+    venue refused the order and its reservation is never returned."""
+    home = _population(tmp_path)
+    _perturb(
+        home,
+        COMPLETIONS,
+        "WIRED_EVENTS: Final[tuple[str, ...]] = "
+        "(EVENT_CANCEL, EVENT_FILL, EVENT_REJECT)",
+        "WIRED_EVENTS: Final[tuple[str, ...]] = (EVENT_CANCEL, EVENT_FILL)"
+        "  # PLANT 053A",
+    )
+    result = gate.run(Mode.VERIFY, _ctx(home))
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
+    assert LIMITERD in result.site
+    # THE REASON: drained, not dispatched, and the capital is still committed.
+    assert "THE DAEMON DID NOT RELEASE ON A REJECT" in result.detail
+    assert "DRAINED BY THE LOOP" in result.detail
+    assert "rejects_dispatched=0" in result.detail
+    assert "still TAKEN" in result.detail
+    # And it must be distinguishable from the INGRESS failure PLANT C models.
+    assert "NEVER ARRIVED" not in result.detail
+
+
+def test_PLANT_053B_a_daemon_whose_POLL_NEVER_RUNS_FAILS_naming_the_ZOMBIE(
+    tmp_path: Path,
+):
+    """PLANT 053B: the poll unhooked from the tick. An order past §12A:830's ack
+    deadline is never queried — it hangs indefinitely and its reservation
+    leaks. The daemon still HOLDS a poller, so `timeouts` is present and the
+    gate must not read this as *this build does not poll*."""
+    home = _population(tmp_path)
+    _perturb(
+        home,
+        LIMITERD,
+        "        ingress=booker.before(timeouts.before(_read_both)),",
+        "        ingress=booker.before(_read_both),  # PLANT 053B: poll unhooked",
+    )
+    result = gate.run(Mode.VERIFY, _ctx(home))
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
+    assert LIMITERD in result.site
+    # THE REASON: the zombie and the leaked reservation, both named.
+    assert "ZOMBIE ORDER" in result.detail
+    assert "NOTHING POLLED IT" in result.detail
+    assert "polls=0" in result.detail
+    assert "reservation LEAKS" in result.detail
+    # NOT the cannot-measure branch: the poller is present, it simply never ran.
+    assert "holds no §4 pending-timeout poller" not in result.detail
+
+
+def test_PLANT_053C_a_poll_that_RESENDS_instead_of_QUERYING_FAILS_the_CENSUS(
+    tmp_path: Path,
+):
+    """PLANT 053C — THE DANGEROUS ONE. The poll calls `place_order` on every
+    overdue order instead of resolving what the query said. §4 forbids the
+    auto-resend outright: the original order is still working at the venue, so
+    the resend is a second live order on one signal and one reservation.
+
+    The STRUCTURAL census must catch it, and catching it there rather than by
+    driving is the point — the gate refuses to DRIVE a build that can place a
+    second order, because the drive would itself be the act of placing it."""
+    home = _population(tmp_path)
+    _perturb(
+        home,
+        LIMITERD,
+        "            records = self._outcomes.resolve_pending_timeouts(self._query)",
+        "            records = self._outcomes.resolve_pending_timeouts(self._query)\n"
+        "            for _r in records:  # PLANT 053C: §4's forbidden auto-resend\n"
+        "                self._query.place_order(_r)",
+    )
+    result = gate.run(Mode.VERIFY, _ctx(home))
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
+    assert LIMITERD in result.site
+    # THE REASON: the §4 violation, the verb, and the double-order risk.
+    assert "NO-RESEND VIOLATION" in result.detail
+    assert "place_order" in result.detail
+    assert "SECOND LIVE ORDER" in result.detail
+    assert "NEVER by an auto-resend" in result.detail
+
+
+def test_the_NO_RESEND_CENSUS_derives_its_BAN_LIST_from_the_SEAM_not_itself():
+    """§7.12: the census would pass while measuring nothing if its ban list were
+    empty, or if the closure resolved nothing. Both are refused, and neither
+    figure is written in the gate — the verbs come off
+    `broker_seam.ORDER_PORT_VERBS`, which that file's own comment calls *"the
+    authority, not the docstrings"*."""
+    banned, complaint = gate._placement_verbs(REPO)  # pylint: disable=protected-access
+    assert not complaint, complaint
+    assert "place_order" in banned
+    assert "flatten" in banned
+    assert "cancel_order" in banned
+    # The ONE verb the poll may reach is excluded, not banned.
+    assert gate.POLL_ALLOWED_VERB not in banned
+    # And the ban list is the seam's, not a copy: every member is on the roster.
+    seam = (REPO / gate.BROKER_SEAM_FILE).read_text(encoding="utf-8")
+    for verb in banned:
+        assert f'"{verb}"' in seam, verb
+
+
+def test_the_NO_RESEND_CENSUS_is_CANNOT_MEASURE_when_the_SEAM_is_UNREADABLE(
+    tmp_path: Path,
+):
+    """A ban list that could not be derived must never become an empty one.
+
+    This is the vacuity trap the census exists inside: `calls & banned` over an
+    empty `banned` is empty for every build, including one that resends on every
+    tick. So an unreadable roster is CANNOT_MEASURE, never a pass."""
+    home = _population(tmp_path)
+    (home / gate.BROKER_SEAM_FILE).write_text("ORDER_PORT_VERBS = 'not a tuple'\n")
+    result = gate.run(Mode.VERIFY, _ctx(home))
+    assert result.status is Status.CANNOT_MEASURE, result.detail
+    assert "roster could not be derived" in result.detail
+
+
+def test_the_NO_RESEND_CENSUS_REFUSES_to_credit_an_ABSENCE_it_cannot_see(
+    tmp_path: Path,
+):
+    """The other half of the vacuity trap: a walk that resolves no calls contains
+    no banned verb either, so the census REQUIRES its own reach — the poll's work
+    and the one verb it is allowed — before it will credit an absence.
+
+    MEASURED, and the measurement is a second control for free: gutting the poll
+    so it does no work makes the census blind AND makes the driven arm find a
+    real zombie, so the verdict is FAIL by rule 4 rather than the CANNOT_MEASURE
+    this test first expected. Both are named, which is what rule 4 requires — the
+    found defect decides the verdict and the blind arm is still reported."""
+    home = _population(tmp_path)
+    _perturb(
+        home,
+        LIMITERD,
+        "            records = self._outcomes.resolve_pending_timeouts(self._query)",
+        "            records = ()  # the poll no longer does the poll's work",
+    )
+    result = gate.run(Mode.VERIFY, _ctx(home))
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
+    # The census went blind and SAID SO rather than crediting the absence.
+    assert "does not reach `resolve_pending_timeouts`" in result.detail
+    assert "ALSO UNMEASURED" in result.detail
+    # And the driven arm found the real consequence of the same gutting.
+    assert "ZOMBIE ORDER" in result.detail
+
+
+def test_RULE_4_a_FAIL_on_one_arm_OUTRANKS_a_CANNOT_MEASURE_on_another(
+    tmp_path: Path,
+):
+    """THE PLANT-BOTH CONTROL. Rule 4: Fail > Cannot-measure, and the ordering is
+    the rule rather than a convenience.
+
+    Both are planted at once — the reject path left UNWIRED (a real, found
+    defect) and the venue-verb roster made unreadable (an arm that cannot
+    measure at all). The verdict must be FAIL, because cannot-measure is the
+    answer for a run with nothing against it; downgrading a found defect because
+    a DIFFERENT arm went blind is exactly how a red becomes a light blue.
+
+    And the blind arm must still be NAMED: an operator told `fail` must not also
+    be left believing the whole run was judged."""
+    home = _population(tmp_path)
+    _perturb(
+        home,
+        COMPLETIONS,
+        "WIRED_EVENTS: Final[tuple[str, ...]] = "
+        "(EVENT_CANCEL, EVENT_FILL, EVENT_REJECT)",
+        "WIRED_EVENTS: Final[tuple[str, ...]] = (EVENT_CANCEL, EVENT_FILL)"
+        "  # PLANT: reject unwired",
+    )
+    (home / gate.BROKER_SEAM_FILE).write_text("ORDER_PORT_VERBS = 'not a tuple'\n")
+
+    result = gate.run(Mode.VERIFY, _ctx(home))
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
+    # The FAIL is the reject leak — the arm that actually found something.
+    assert "THE DAEMON DID NOT RELEASE ON A REJECT" in result.detail
+    # ...and the arm that could not measure is reported, not absorbed.
+    assert "ALSO UNMEASURED" in result.detail
+    assert "roster could not be derived" in result.detail
+
+
+def test_RULE_4_the_SAME_blind_arm_ALONE_is_CANNOT_MEASURE_not_a_PASS(
+    tmp_path: Path,
+):
+    """The other half of the pair, and it is what makes the test above mean
+    something: with ONLY the blind arm planted the verdict is CANNOT_MEASURE. If
+    this were a PASS, the control above would be showing that FAIL beats PASS."""
+    home = _population(tmp_path)
+    (home / gate.BROKER_SEAM_FILE).write_text("ORDER_PORT_VERBS = 'not a tuple'\n")
+    result = gate.run(Mode.VERIFY, _ctx(home))
+    assert result.status is Status.CANNOT_MEASURE, result.detail
+    assert "roster could not be derived" in result.detail

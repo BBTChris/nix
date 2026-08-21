@@ -9,39 +9,35 @@
     "validated_by": "scripts/risk_config.py",
     "landed_by": "ARC 028 sub-agent D (D1).",
     "not_implemented_here": "Landing a knob as DATA is not implementing the rule that reads it. Stop conversion and trailing maintenance, protective-exit wiring, session-close flatten, full HALT semantics and auto-clear, cold-start reconciliation, the Sentinel, Scoring and the Allocator are all OUT of this arc; a value below existing proves only that the value has a home.",
-    "cc_calibrate": "§12A:799-800 marks several of these placeholders until measured on node02 (§13). A CC-calibrate default here is a PLACEHOLDER with a stated direction of error, never a measured figure."
+    "cc_calibrate": "§12A:799-800 marks several of these placeholders until measured on node02 (§13). A CC-calibrate default here is a PLACEHOLDER with a stated direction of error, never a measured figure.",
+    "signal_max_age_ms": "NOT a §12A knob — a Nix addition under the ARC 020 operator ruling for declared additions, flagged here exactly as `indeterminate` and `feed_lag()` are. §12A has no knob for the age of a STRATEGY signal because the frozen spec never asks the question: §6.4's staleness is about VENUE-sourced state and §4:210-212 bounds admission -> terminal feedback on the loop's own monotonic clock, not on the signal instant. CHECK-DEBT D3.463 opened the gap and the architect ruled it closed on the RESERVE seam (ARC 053): a reservation is §3's *taken at approval*, and approving capital against a signal of unbounded age is the one entry-side time quantity nothing in this tree refused. 5000 ms — deliberately LOOSER than `pending_ack_timeout_ms` (2000 ms) and tied to nothing else: the two bound different intervals (this one signal->approval, that one approval->ack) and deriving one from the other would assert a relationship neither the spec nor any measurement supports. The failure of too TIGHT a value is a denied entry on a healthy but slow path; the failure of too LOOSE a value is capital approved against a stale opinion. CC-calibrate against real strategy->Limiter latency once the bus exists. AN ABSENT `signal_ts` IS STALE, NOT NOW (§17): `scripts/limiterd.py` refuses the reserve rather than dating the signal at the instant it happened to arrive, which is what it did before this arc and is why D3.463 existed."
   },
-
-  "deployable_pct": 0.70,
-  "agg_margin_cap_pct": 0.70,
+  "deployable_pct": 0.7,
+  "agg_margin_cap_pct": 0.7,
   "netliq_safety_pad": 0.25,
   "ledger_drift_tolerance_usd": 1.0,
-
   "eod_blackout_min": 20,
   "session_flatten_lead_min": 10,
   "session_flatten_lead_pad_min": 5,
   "eow_blackout_min": 30,
   "news_blackout_min": 20,
-  "margin_elevated_pct": 0.10,
+  "margin_elevated_pct": 0.1,
   "margin_min_hold_s": 300,
   "margin_reacceptance_s": 3600,
-
   "eod_blackout_min_by_symbol": {},
   "session_flatten_lead_min_by_symbol": {},
-
   "pending_ack_timeout_ms": 2000,
+  "signal_max_age_ms": 5000,
   "fill_timeout_ms": 10000,
   "go_timeout_s": 10,
   "heartbeat_interval_s": 1,
   "heartbeat_miss_grace_cycles": 1,
-
   "cooldown_min_time_s": {
     "discretionary": 0,
     "stop": 60,
     "uncertainty": 300,
     "margin_session": 900
   },
-
   "halt_cooldown_floor_s": {
     "stale_data": 60,
     "clock_skew": 300,
@@ -49,7 +45,6 @@
     "invariant_breach": 900,
     "aggregate_drift": 900
   },
-
   "_derivations": {
     "deployable_pct": "§12A:811 `DEPLOYABLE_PCT` = 0.70 — stated outright by the spec, not chosen here. §6.5:411 gives the same number as '30% buffer / 70% deployable — single number'.",
     "agg_margin_cap_pct": "§12A:811 `AGG_MARGIN_CAP_PCT` = 0.70 of balance — stated outright. §6.5:412-413 is the rule it feeds: `Σ committed intraday margin (open + pending reservations + proposed) < 70% × balance`, hard, 100% of the time.",
@@ -73,7 +68,6 @@
     "halt_cooldown_floor_s": "NOT a §12A knob, and its absence is a finding rather than an omission here — the same shape as `session_flatten_lead_pad_min` above. §12.5:632 states the rule outright ('Auto-set conditions may auto-clear on condition-clear + minimum floor (cooldown discipline)') and §12A names NO knob for that floor. The nearest thing it has is `COOLDOWN_MIN_TIME` at §12A line 839, which is §4:300-302's POST-PROTECTIVE cooldown, keyed by EXIT CLASS (discretionary / stop / uncertainty / margin_session), which is a different ladder for a different subject and is already landed above. Reusing it would make one number govern both how long a strategy waits after a stop and how long the whole system stays halted after a clock-skew event. Landed as a declared Nix addition so the §12.5:632 rule can run at all, keyed by the §12.5:631 CAUSE. `operator` is deliberately absent: §12.5:633 gives an operator HALT no auto-clear, so a floor for it would imply one exists — `scripts/nixrisk/halt.py` REFUSES to construct if the key appears. Every value is a CC-calibrate placeholder that errs LARGE, because the two directions are not symmetric: too short and the system resumes trading into a condition that has only just stopped flapping, too long and it sits flat, which costs opportunity and never solvency. The ladder mirrors §4:301's order — the fast-recovering data condition shortest, the ones that mean the system's own arithmetic or supervision was wrong the longest. Recorded in docs/CHECK-DEBT.md.",
     "cooldown_min_time_s": "§12A:839 `COOLDOWN_MIN_TIME` — 'floor + condition-clear (hybrid), per exit class'. CC-calibrate. The KEYS are the exit classes §4:301 enumerates, transcribed rather than invented: 'Discretionary exit → none. Ordinary stop → short. Feed/uncertainty/stale → longer. Margin/session → longest or until condition clears.' The spec fixes the ORDER and not the seconds, so the ladder is boot-validated (rule `cooldown.ladder_is_ordered`) and the four numbers are placeholders. `discretionary` is 0 because §4:301 says 'none', which is a value and not a missing one."
   },
-
   "_boot_validation": [
     {
       "id": "positive.scalars",
