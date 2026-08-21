@@ -8345,3 +8345,18 @@ I1 is NOT discharged. C2 (D3.453/372/469) and D (completions + convergence) rema
 11/12 and the Limiter badge stays RED. D3.473 (the ring is command-fed), D3.470, D3.468 unchanged.
 No green here may be read as *the Limiter is receiving real prices* or *a live broker event reaches
 this handler*.
+
+### POST-WRITE-BACK RE-MEASURE — `94 | 4 | 3 | 0` at `eb2e853`. **PREDICTION MET.**
+
+Predicted delta before the run: `passed +0, failed +0, cannot-measure +0` on a measured baseline of
+`94|4|3|0`, because the census said EXTEND the arm owner rather than add a gate. Measured at the
+merged tree: **`94 passed | 4 failed | 3 cannot-measure | 0 skipped`**, exit 1 — the same four fails
+(`check_ibgateway_service`, `check_monitor_tui`, `check_uncalled_entry_points`,
+`check_untracked_attribution`) and the same three cannot-measures.
+
+**Why `check_arc_status_contract` could never have cleared in this arc, which the brief did not
+account for:** the check EXCLUDES the running arc's own log by name and audits the newest of what
+remains (`check_arc_status_contract.py:483`). So it audits `arc_055.log` — which carries no marker —
+whatever this arc does. It clears at ARC 057, auditing `arc_056.log`, **provided that log carries
+the marker**, which is why this arc's marker is written into it. That is the structural correction to
+the brief's `~95|4|2|0`: the figure was not merely early, it was unreachable from inside this arc.

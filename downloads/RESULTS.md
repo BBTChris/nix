@@ -143,6 +143,21 @@ arithmetic, which would have said 417**. `check_derived_claims` PASS.
 
 ---
 
+## POST-WRITE-BACK RE-MEASURE — `94 | 4 | 3 | 0` at `eb2e853`. **PREDICTION MET.**
+
+Predicted before the run: `+0 / +0 / +0` on a measured baseline of `94|4|3|0` — the census said
+EXTEND the arm owner, not add a gate. Measured at the merged tree: **`94 passed | 4 failed | 3
+cannot-measure | 0 skipped`**, exit 1. Same four fails, same three cannot-measures.
+
+**Why `check_arc_status_contract` could NEVER have cleared inside this arc** (the brief did not
+account for it): the check EXCLUDES the running arc's own log by name and audits the newest of what
+remains (`check_arc_status_contract.py:483`). It therefore audits `arc_055.log` — markerless —
+whatever this arc does. It clears at **ARC 057**, auditing `arc_056.log`, **provided that log
+carries the marker** — which is why this arc's marker is written into it. The brief's `~95|4|2|0`
+was not early; it was unreachable from inside this arc.
+
+---
+
 ## RESIDUAL — NOT CLAIMED
 
 **I1 is NOT discharged.** C2 (D3.453/372/469) then D (completions + convergence -> 12/12) then
