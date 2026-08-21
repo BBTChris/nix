@@ -125,10 +125,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import signal
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -157,6 +159,7 @@ from nixrisk.fills import (
 # asserted with `git hash-object`, not claimed (see the ARC 054 block below).
 from nixrisk.flatten import (
     BrokerFlattenPort,
+    CloseTarget,
     OrderRole,
     PendingEntry,
     ProtectiveFlatten,
@@ -179,12 +182,14 @@ from nixrisk.reservations import ReservationLedger
 from nixrisk.seam import (
     EventKind,
     EventRow,
+    FlattenTrigger,
     ProposedOrder,
     Side,
     StopMode,
     TerminalPath,
 )
 from nixrisk.stops import StopBook
+from nixrisk.stopwatch import BreachFiring, PriceRing, PriceRingFull, StopWatch
 from nixrisk.wal import Plane1Wal, WalError
 from nixsentinel.heartbeat import DEFAULT_HEARTBEAT_NAME, HeartbeatPublisher
 
@@ -353,12 +358,29 @@ VERB_RESOLVE: Final[str] = "resolve"
 #: this arc exists to close. It reaches money's ACCOUNTING and not the venue —
 #: no order is placed, nothing is sent.
 VERB_RESERVE: Final[str] = "reserve"
+#: ARC 055 / I1 ARC C1. §5:322's FIRST loop input — *"shared-mem price poll"*.
+#:
+#: There is no capture feed, no shared-memory segment and no vendor integration
+#: in this tree, so the price arrives the way every other out-of-process fact
+#: does: through the serial ingress §5:322 already describes. That is the same
+#: relationship the spec's shared-memory ring has with its consumer — something
+#: else writes, the tick READS — and it is what lets the poll stay hot-path pure
+#: (I9): `PriceRing.head` is one dict lookup. It is NOT a market data feed and
+#: CHECK-DEBT D3.473 says so, so no green here may be read as *the Limiter is
+#: receiving real prices*.
+#:
+#: Not strategy-scoped, unlike every verb below `register`: a price is a fact
+#: about an INSTRUMENT, and requiring a `strategy_id` on it would make the
+#: maintenance of a position's stop depend on which strategy happened to send
+#: the tick.
+VERB_PRICE: Final[str] = "price"
 VERBS: Final[tuple[str, ...]] = (
     VERB_REGISTER,
     VERB_GO,
     VERB_STATUS,
     VERB_RESOLVE,
     VERB_RESERVE,
+    VERB_PRICE,
 )
 
 
@@ -538,6 +560,48 @@ class RecordedCancels:
     def cancel_order(self, client_order_id: str) -> None:
         """Record the IOC cancel §4 requires. Sends nothing."""
         self.issued.append(str(client_order_id))
+
+
+class RecordedVenue(RecordedCancels):
+    """ARC 055 / I1 ARC C1. The daemon's broker, NOW WITH §4's `flatten` VERB.
+
+    ARC 054 gave `ProtectiveFlatten` a broker that had `cancel_order` and NOT
+    `flatten`, deliberately: *"a broker here that could flatten would be
+    authority this arc withheld. The missing verb is the guarantee, not an
+    oversight."* MEASURED again at this arc's S1 on a live daemon —
+    `hasattr(RecordedCancels(), "flatten") is False`. C1 is the arc that grants
+    the authority, because a synthetic stop that breaches and cannot be
+    protectively closed is not a stop.
+
+    STILL A STUB, and the same one `RecordedCancels` is: there is no vendor
+    integration in this tree, so `flatten` RECORDS the protective close this
+    process issued and puts it on no socket. What is real is everything on this
+    side of the venue — the breach was detected on the tick, the flatten was
+    arbitrated under §4's PROTECTIVE authority, the §12.10 `protective_exit` row
+    was booked, and the call reached the broker port. What is NOT real is the
+    position going flat at an exchange. CHECK-DEBT records it; no green here may
+    be read as *the position is closed*, which is the exact distinction
+    `flatten.FlattenAction` is a separate type from `ConfirmedFlat` to preserve.
+
+    IT IS ALSO WHY I3 SURVIVES THIS ARC. §14's zero-wire property is that the
+    protective exit reaches the venue through a DIRECT IN-PROCESS SYNC CALL — no
+    Allocator, no ZMQ, no state bus, nothing awaited. A recorder satisfies that
+    by construction and `check_flatten` ARM 6 measures it; this arc adds no
+    transport and therefore removes no part of the guarantee.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        #: Every protective flatten this process issued, in order, as
+        #: `(symbol, seq)`. `None` is §4's flatten-everything. Enumerated rather
+        #: than counted for the reason every observable in this file is: the
+        #: safety question is *was exactly one flatten issued for this breach*,
+        #: and a total cannot answer it.
+        self.flattened: list[str | None] = []
+
+    def flatten(self, symbol: str | None = None) -> None:
+        """Record §4's protective close. SYNC, in-process, sends nothing."""
+        self.flattened.append(None if symbol is None else str(symbol))
 
 
 class FillPath:  # pylint: disable=too-many-instance-attributes
@@ -1061,6 +1125,8 @@ class CommandHandler:  # pylint: disable=too-many-instance-attributes
         onset: OnsetWatch | None = None,
         book: PendingEntryBook | None = None,
         signal_max_age_s: float | None = None,
+        prices: PriceRing | None = None,
+        stopwatch: StopWatchDriver | None = None,
     ) -> None:
         self._loop = loop
         self._outbox = outbox
@@ -1092,6 +1158,15 @@ class CommandHandler:  # pylint: disable=too-many-instance-attributes
         #: reader cannot mistake *unbounded* for *bounded at something*. `main`
         #: always supplies one; the default exists for the ARC 040 CLI readers.
         self._signal_max_age_s = signal_max_age_s
+        #: ARC 055. §5:322's price ring and the driver that polls it, both
+        #: optional on the argument every collaborator above is optional on:
+        #: `stops: null` says *this build cannot maintain a stop* and is a
+        #: different fact from a build that polled and found no breach. That
+        #: distinction is D3.451 itself — an armed stop nothing drives reads
+        #: identical to an armed stop nothing has breached, and telling them
+        #: apart is why this arc exists.
+        self._prices = prices
+        self._stopwatch = stopwatch
 
     def handle(self, item: object) -> None:
         """The loop's per-item callback. Writes the reply, then unlinks the command."""
@@ -1191,6 +1266,8 @@ class CommandHandler:  # pylint: disable=too-many-instance-attributes
                 # number that drifts with the sentence.
                 extra=self._picture(),
             )
+        if verb == VERB_PRICE:
+            return self._price(command_id, raw)
         strategy_id = str(raw.get("strategy_id") or "")
         if not strategy_id:
             return self._refuse(
@@ -1233,6 +1310,61 @@ class CommandHandler:  # pylint: disable=too-many-instance-attributes
         if accepted:
             self._loop.hand_to_sender((strategy_id, client_order_id))
         return self._reply(command_id, verb, accepted=accepted, reason=reason)
+
+    def _price(self, command_id: str, raw: dict[str, Any]) -> dict[str, Any]:
+        """§5:322's price, published into the ring the TICK reads. Never raises.
+
+        Deliberately NOT strategy-scoped (see `VERB_PRICE`): a price is a fact
+        about an instrument. Every refusal below is a REPLY with a reason, never
+        an exception, for `CommandHandler`'s own stated reason — a command that
+        could kill this process would be a remote kill switch on the one process
+        §12.1:604 has the Sentinel watching.
+        """
+        if self._prices is None:
+            return self._refuse(
+                command_id,
+                VERB_PRICE,
+                f"{SITE}: this build holds no §5:322 price ring, so a price has "
+                "nowhere to land and no stop could be maintained against it",
+            )
+        symbol = str(raw.get("symbol") or "")
+        if not symbol:
+            return self._refuse(
+                command_id, VERB_PRICE, f"{VERB_PRICE!r} requires a non-empty symbol"
+            )
+        raw_price = raw.get("price")
+        try:
+            price = float(cast(Any, raw_price))
+        except TypeError, ValueError:
+            return self._refuse(
+                command_id,
+                VERB_PRICE,
+                f"{VERB_PRICE!r} for {symbol!r} carries price {raw_price!r}, which "
+                "is not a number — a stop maintained against it would sit at an "
+                "undefined level (§4's conversion needs a price scale)",
+            )
+        if not math.isfinite(price) or price <= 0.0:
+            return self._refuse(
+                command_id,
+                VERB_PRICE,
+                f"{VERB_PRICE!r} for {symbol!r} carries price {price!r}, which is "
+                "not a positive finite number. §4 anchors and breaches stops "
+                "against real prices; refusing rather than ratcheting on a NaN",
+            )
+        try:
+            tick = self._prices.publish(symbol, price)
+        except PriceRingFull as exc:
+            return self._refuse(command_id, VERB_PRICE, str(exc))
+        return self._reply(
+            command_id,
+            VERB_PRICE,
+            accepted=True,
+            reason=(
+                f"{SITE}: {symbol} @ {tick.price} published to §5:322's price "
+                f"ring at seq {tick.seq}; the next tick maintains and tests every "
+                "stop on this symbol against it (§4:190-196)"
+            ),
+        )
 
     def _reserve(
         self,
@@ -1420,6 +1552,25 @@ class CommandHandler:  # pylint: disable=too-many-instance-attributes
             # onset surface* stays distinguishable from *no onset arrived*.
             "onset": None if self._onset is None else self._onset.record(),
             "pending_entries": None if self._book is None else self._book.record(),
+            # ARC 055. §4:190-196's trail and the breach->flatten path as the
+            # RUNNING process reports it: what it polled, what it maintained,
+            # what breached, what it suppressed as already-in-flight, and what
+            # the BROKER recorded on the other side of the send. `None` where
+            # absent, for the reason every sibling above is `None` where absent.
+            "stops": (None if self._stopwatch is None else self._stopwatch.record()),
+            "prices": (
+                None
+                if self._prices is None
+                else {
+                    "symbols": list(self._prices.symbols()),
+                    "published": self._prices.published(),
+                    "head": {
+                        symbol: head.price
+                        for symbol in self._prices.symbols()
+                        if (head := self._prices.head(symbol)) is not None
+                    },
+                }
+            ),
         }
 
     # -- reply plumbing -----------------------------------------------------
@@ -2370,6 +2521,210 @@ class OnsetWatch:  # pylint: disable=too-many-instance-attributes
         return tuple(self._cancels.issued)
 
 
+class StopWatchDriver:  # pylint: disable=too-many-instance-attributes
+    # R0902: eight attributes, and seven of them are OBSERVATIONS a gate reads
+    # out of the runtime record — fires, sends, refusals, the last action, the
+    # last refusal, the sending thread's native id, and the trigger it fires
+    # under. Folding them behind a sub-object would put the measured facts one
+    # indirection away from the object that produced them, which is the
+    # argument `loop.SenderThread` records against the same message.
+    """ARC 055 / I1 ARC C1. §5:322's price poll DRIVEN, and its breach FIRED.
+
+    TWO HALVES ON TWO THREADS, and the split is the whole design:
+
+    * `before()` runs on the HOT LOOP. It polls `StopWatch` — §4:190-196's trail
+      and the breach test, cache reads plus §15's `O(positions <= 5)/tick` stop
+      evaluation — then hands each detected firing across §5:323's thread
+      boundary with an unbounded `put` that never blocks the caller.
+    * `send()` runs on the SENDER THREAD. It is where `ProtectiveFlatten.fire`
+      is called, and it is there and not on the loop because `fire` takes the §4
+      arbitration lock (`request_close` -> `_arbiter`, ARC 038 FC2) and appends a
+      §12.10 row. §5:323 is explicit — *"blocking I/O ... hot loop never
+      blocks"* — so a fire on the loop would break I9, a DISCHARGED invariant,
+      silently.
+
+    WHAT IT DOES NOT DO, STATED FIRST. It does not RECONCILE. C1 ends at *a
+    protective flatten was correctly fired and sent*; the closing fill coming
+    back, §12.10's `closed` row, the position closing and §3's release are ARC D.
+    A flatten sent here is IN FLIGHT until D reconciles it, and `StopWatch`'s
+    fire-once mark is what stops the next tick re-firing it in the meantime.
+
+    NO RETRY, NO AUTO-RESEND. A firing that the sender refused or that raised is
+    RECORDED (`refusals`, `SenderThread.send_errors`) and never re-queued. §4's
+    resend prohibition is the same one `outcomes.py` keeps on the timeout path,
+    and the reason is identical: a protective flatten resent on a schedule
+    nobody declared is an unbounded stream of venue orders produced by a defect.
+    """
+
+    def __init__(
+        self,
+        watch: StopWatch,
+        exits: ProtectiveFlatten,
+        loop: LimiterLoop,
+        fills: FillPath,
+    ) -> None:
+        self._watch = watch
+        self._exits = exits
+        self._loop = loop
+        self._fills = fills
+        #: Firings handed across the §5:323 boundary by the hot loop.
+        self.fires = 0
+        #: Firings the SENDER THREAD actually fired a protective flatten for.
+        #: Counted separately from `fires` because check contract rule 2's
+        #: argument applies across a thread boundary too: what the loop handed
+        #: over and what the sender did with it are two facts.
+        self.sends = 0
+        #: Firings the sender could not fire, with the reason. NEVER re-queued.
+        self.refusals: list[str] = []
+        #: The last `FlattenAction` this driver produced, flattened to JSON.
+        self.last_action: dict[str, Any] = {}
+        #: The native id of the thread the LAST send ran on. Read from inside
+        #: the send, so it is the SENDER's id and not the loop's — the ARC 040
+        #: `SenderThread.native_id` argument, applied to the work rather than to
+        #: the thread. This is the field that proves the send was OFF the hot
+        #: path, and it is compared against the loop thread's own id by
+        #: `check_stop_maintenance`.
+        self.sent_on_native_id: int | None = None
+
+    # -- the hot loop half --------------------------------------------------
+
+    def before(self, inner: Callable[[int], object]) -> Callable[[int], object]:
+        """Compose the price poll AHEAD of `inner` inside one tick.
+
+        The position is deliberate and is the mirror of `OnsetWatch.before`'s:
+        the poll runs BEFORE the ingress reads, so a stop breached by the price
+        already in the ring is detected and enqueued before this tick's commands
+        can approve anything new against the capital that breach is about to
+        release. §4's protective exit always wins, and running it first is the
+        cheapest way to make that ordering a property of the tick rather than a
+        race between two readers.
+        """
+
+        def _tick(tick: int) -> object:
+            self._poll_and_hand(tick)
+            return inner(tick)
+
+        return _tick
+
+    def _poll_and_hand(self, tick: int) -> int:
+        """Poll, drain, hand to the sender. HOT PATH; never blocks (§5:323).
+
+        `StopWatch.poll` is the part `check_hot_path_purity` traces and is pure.
+        The drain is a list swap and `hand_to_sender` is an unbounded
+        `queue.Queue.put`, which `SenderThread.hand_off` documents as never
+        blocking the caller — §5:323's own words for this boundary.
+        """
+        self._watch.poll(tick)
+        handed = 0
+        for firing in self._watch.drain():
+            self._loop.hand_to_sender(firing)
+            self.fires += 1
+            handed += 1
+        return handed
+
+    # -- the sender-thread half ---------------------------------------------
+
+    def send(self, payload: object) -> None:
+        """Fire the protective flatten for ONE breach. RUNS ON THE SENDER THREAD.
+
+        Ignores anything that is not a `BreachFiring`: §5:323's queue is shared
+        with the `go` verb's `(strategy_id, client_order_id)` handoff, and a
+        sender that flattened on an unrecognised payload would be firing venue
+        orders off a type confusion.
+        """
+        if not isinstance(payload, BreachFiring):
+            return
+        self.sent_on_native_id = threading.get_native_id()
+        origin = self._fills.origins.origin_for_order(payload.client_order_id)
+        if origin is None:
+            # §3:159 keys the position table by `trade_id` and §4's close is
+            # against a TRADE. An order with no recorded join has no trade to
+            # close, so this is refused and NAMED rather than flattened under a
+            # guessed identity — the §4 uncertainty case that would cover it is
+            # C2's (D3.372/D3.453/D3.469), and inventing it here would be this
+            # arc claiming authority it was not given.
+            self.refusals.append(
+                f"{payload.client_order_id}: breached at {payload.level} with "
+                f"price {payload.price} on tick {payload.tick}, but this process "
+                "holds no trade<->order join for it, so there is no trade_id to "
+                "close under (§3:159). NOT flattened; NOT re-queued"
+            )
+            return
+        action = self._exits.fire(
+            FlattenTrigger.SYNTHETIC_STOP,
+            symbol=payload.symbol,
+            targets=(
+                CloseTarget(
+                    trade_id=origin.trade_id,
+                    symbol=payload.symbol,
+                    strategy_id=origin.strategy_id,
+                ),
+            ),
+            # §4's protective close, named by the trigger that caused it, with
+            # the two numbers an operator needs to audit the decision without
+            # replaying the tick: where the stop was and what price took it out.
+            reason=(
+                f"protective flatten (trigger={FlattenTrigger.SYNTHETIC_STOP.value}, "
+                f"level={payload.level}, price={payload.price})"
+            ),
+        )
+        self.sends += 1
+        self.last_action = {
+            "trigger": action.trigger.value,
+            "symbol": action.symbol,
+            "trade_ids": [target.trade_id for target in action.targets],
+            "executed": [outcome.executed for outcome in action.outcomes],
+            "dropped": [
+                outcome.dropped_reason
+                for outcome in action.outcomes
+                if outcome.dropped_reason
+            ],
+            "fired_ts": action.fired_ts,
+            "client_order_id": payload.client_order_id,
+            "level": payload.level,
+            "price": payload.price,
+            "tick": payload.tick,
+        }
+
+    # -- evidence -----------------------------------------------------------
+
+    def record(self) -> dict[str, Any]:
+        """What this driver did, for the out-of-process reader.
+
+        ENUMERATED, not counted, wherever the safety question needs a name: *was
+        exactly one protective flatten issued for this breach* is unanswerable
+        from a total, which is `FillPath.record`'s own argument for enumerating
+        its stops.
+        """
+        return {
+            "polls": self._watch.polls,
+            "maintained": self._watch.maintained,
+            "breaches": self._watch.breaches,
+            "suppressed": self._watch.suppressed,
+            "in_flight": list(self._watch.in_flight()),
+            "pending": len(self._watch.pending()),
+            "fires": self.fires,
+            "sends": self.sends,
+            "refusals": list(self.refusals),
+            "last_action": dict(self.last_action),
+            "sent_on_native_id": self.sent_on_native_id,
+            "loop_native_id": threading.get_native_id(),
+            "sender_native_id": self._loop.sender.native_id,
+            "sender_sent": self._loop.sender.sent,
+            "sender_send_errors": list(self._loop.sender.send_errors),
+            # THE BROKER'S OWN RECORD, read off the object the flatten reached.
+            # Not this driver's count of what it asked for: check contract rule
+            # 2 — the return value of a mutating call is not a verification, and
+            # `sends` is exactly such a return value one layer up.
+            "flattened": list(self._exits_broker_flattened()),
+        }
+
+    def _exits_broker_flattened(self) -> tuple[str | None, ...]:
+        """Every symbol the BROKER recorded a protective flatten for, in order."""
+        broker = getattr(self._exits, "_broker", None)
+        return tuple(getattr(broker, "flattened", ()))
+
+
 def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
     """Serialise into a sibling temp file and `os.replace` it into place.
 
@@ -2395,7 +2750,9 @@ def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
         raise
 
 
-def _runtime_record(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+# R0914: the locals ARE the collaborators this process holds, one per §-numbered
+# surface. A record builder with fewer would be a record with fewer facts in it.
+def _runtime_record(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     loop: LimiterLoop,
     *,
     boot_ts: float,
@@ -2409,6 +2766,8 @@ def _runtime_record(  # pylint: disable=too-many-arguments,too-many-positional-a
     onset: OnsetWatch | None = None,
     book: PendingEntryBook | None = None,
     signal_max_age_s: float | None = None,
+    prices: PriceRing | None = None,
+    stopwatch: StopWatchDriver | None = None,
 ) -> dict[str, Any]:
     """`limiter.runtime.json`'s content, at boot and again at clean stop.
 
@@ -2487,6 +2846,30 @@ def _runtime_record(  # pylint: disable=too-many-arguments,too-many-positional-a
         #: handed and to what it cancelled, and an entry present here and absent
         #: from the cancels is the exact defect §3:174 names.
         "pending_entries": None if book is None else book.record(),
+        #: ARC 055 / I1 ARC C1. §4:190-196's trail and the breach->flatten path,
+        #: in the record an out-of-process reader opens. `None` rather than
+        #: zeroed counters where the driver is absent, for the reason every
+        #: sibling above is `None`: a `breaches: 0` published by a process that
+        #: polls no prices reads as *nothing breached* when the truth is
+        #: *nothing could breach*, and those two are exactly what D3.451 was.
+        "stops": None if stopwatch is None else stopwatch.record(),
+        #: The §5:322 ring the poll reads. Its `published` count is the
+        #: NON-VACUITY of everything in `stops`: a trail that never moved
+        #: against a ring that was never written measures an absent input, not
+        #: an omission.
+        "prices": (
+            None
+            if prices is None
+            else {
+                "symbols": list(prices.symbols()),
+                "published": prices.published(),
+                "head": {
+                    symbol: head.price
+                    for symbol in prices.symbols()
+                    if (head := prices.head(symbol)) is not None
+                },
+            }
+        ),
         #: ARC 053 / D3.463. The signal-age ceiling this process booted with, in
         #: the record an out-of-process reader opens. `null` means UNBOUNDED and
         #: says so, because *no ceiling* and *a ceiling of zero* are opposite
@@ -2496,7 +2879,7 @@ def _runtime_record(  # pylint: disable=too-many-arguments,too-many-positional-a
     }
 
 
-def _stop_record(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def _stop_record(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     loop: LimiterLoop,
     stop: LoopStop,
     *,
@@ -2511,6 +2894,8 @@ def _stop_record(  # pylint: disable=too-many-arguments,too-many-positional-argu
     onset: OnsetWatch | None = None,
     book: PendingEntryBook | None = None,
     signal_max_age_s: float | None = None,
+    prices: PriceRing | None = None,
+    stopwatch: StopWatchDriver | None = None,
     malformed: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """The clean-stop record: the boot shape plus what the run actually did."""
@@ -2527,6 +2912,8 @@ def _stop_record(  # pylint: disable=too-many-arguments,too-many-positional-argu
         onset=onset,
         book=book,
         signal_max_age_s=signal_max_age_s,
+        prices=prices,
+        stopwatch=stopwatch,
     )
     # ARC 046. The completions the ingress read and the PARSE refused, so
     # "no exec report arrived" and "an exec report arrived unreadable" are two
@@ -2874,16 +3261,33 @@ def main(argv: list[str] | None = None) -> int:
         # integration in this tree to send one on. A SECOND instance from the one
         # `IocRemainder` holds, so §4's remainder cancel and §3:173's onset cancel
         # stay two readable facts.
-        onset_cancels = RecordedCancels()
+        # ARC 055 / I1 ARC C1. THE BROKER NOW HAS §4's `flatten` VERB.
+        #
+        # ARC 054 constructed this as a `RecordedCancels` and said why: *"a
+        # broker here that could flatten would be authority this arc withheld.
+        # The missing verb is the guarantee, not an oversight."* C1 is the arc
+        # that grants it, because a synthetic stop that breaches and cannot be
+        # protectively closed is not a stop (D3.451, re-measured at this arc's
+        # S1 on a live daemon: `hasattr(broker, "flatten") is False`).
+        #
+        # ONE object and ONE `ProtectiveFlatten`, shared by §3:173's onset sweep
+        # and C1's stop exit, for the reason `FillPath` shares the ONE ledger:
+        # §4's dual-authority arbiter (`request_close`) decides precedence by
+        # reading and writing ONE `_closed` book, and a second executor would
+        # arbitrate against a different book — so *protective always wins* would
+        # hold twice, separately, over two halves of one truth. The onset sweep
+        # still never flattens; `cancel_entries_on_onset` issues cancels and its
+        # own docstring says *"It never calls `flatten`"*, which `check_flatten`
+        # ARM 3 measures rather than assumes.
+        onset_cancels = RecordedVenue()
         pending_book = PendingEntryBook(reservations, fills.approvals, loop)
-        onset_sweep = ProtectiveFlatten(
-            # `cast`, and again the cast is the statement: `BrokerFlattenPort`
-            # declares `flatten` AND `cancel_order`, and this object has only
-            # `cancel_order` DELIBERATELY. §3:173's sweep issues cancels and never
-            # flattens (`cancel_entries_on_onset`: *"It never calls `flatten`"*),
-            # and ARC 054 did not wire the protective-exit path — so a broker here
-            # that could flatten would be authority this arc withheld. The missing
-            # verb is the guarantee, not an oversight.
+        exits = ProtectiveFlatten(
+            # `cast` still, and it still states something: `BrokerFlattenPort`
+            # declares four verbs and this object has TWO — the SYNC pair §2A
+            # invariant 5 forbids blocking. The two ASYNC reconcile reads
+            # (`query_positions` / `query_balance`) are still absent, and their
+            # absence is still the guarantee: C1 FIRES and SENDS, and the
+            # reconcile that would need them is ARC D.
             broker=cast(BrokerFlattenPort, onset_cancels),
             ledger=reservations,
             picture=fills.picture,
@@ -2892,7 +3296,15 @@ def main(argv: list[str] | None = None) -> int:
             scoring=UnwiredExitSinks(),
             clock=time.time,
         )
-        onset = OnsetWatch(onset_dir, pending_book, onset_sweep, onset_cancels, fills)
+        onset = OnsetWatch(onset_dir, pending_book, exits, onset_cancels, fills)
+        # ARC 055. §5:322's price ring, §4:190-196's trail and the breach->fire
+        # path, held by the PROCESS. `StopWatch` is handed `fills.stops` — the
+        # ONE `StopBook` the fill path arms into — and not a second book, for the
+        # reason every collaborator above shares one: a driver maintaining stops
+        # in a private book would trail stops no position has and leave the armed
+        # ones exactly as D3.451 found them.
+        prices = PriceRing()
+        stopwatch = StopWatchDriver(StopWatch(prices, fills.stops), exits, loop, fills)
     except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
         print(
             f"{SITE}: refusing to boot the Limiter: {type(exc).__name__}: {exc}",
@@ -2945,7 +3357,19 @@ def main(argv: list[str] | None = None) -> int:
         # a `reserve` arriving in the same tick as a declared onset is taken
         # AFTER the sweep, so §3's branch-0 gate answers it rather than the
         # sweep pretending to.
-        ingress=onset.before(booker.before(timeouts.before(_read_both))),
+        # ARC 055: and §5:322's price poll runs FIRST of all, ahead of even the
+        # onset sweep. The resulting order inside one tick is
+        #   poll prices -> poll onset -> book firings -> read commands
+        #   -> read completions -> poll overdue
+        # and the poll's position is the decision `StopWatchDriver.before`
+        # records: §4's protective exit always wins, so the breach that is about
+        # to release capital is detected before this tick's commands can approve
+        # anything against it. The FIRE is not here — it is handed to §5:323's
+        # sender thread by `sender_send` below, because it takes a lock and
+        # writes a row and the hot loop never blocks (I9, §5:323).
+        ingress=stopwatch.before(
+            onset.before(booker.before(timeouts.before(_read_both)))
+        ),
         handler=LoopHandler(
             CommandHandler(
                 loop,
@@ -2957,9 +3381,16 @@ def main(argv: list[str] | None = None) -> int:
                 onset,
                 pending_book,
                 signal_max_age_s,
+                prices,
+                stopwatch,
             ),
             completion_handler,
         ).handle,
+        # ARC 055. WHERE THE PROTECTIVE FLATTEN IS ACTUALLY SENT. On §5:323's
+        # low-priority thread, never on the loop: `ProtectiveFlatten.fire` takes
+        # the §4 arbitration lock and appends a §12.10 row, and *the hot loop
+        # never blocks*.
+        sender_send=stopwatch.send,
     )
 
     boot_ts = time.time()
@@ -2979,6 +3410,8 @@ def main(argv: list[str] | None = None) -> int:
             onset=onset,
             book=pending_book,
             signal_max_age_s=signal_max_age_s,
+            prices=prices,
+            stopwatch=stopwatch,
         ),
     )
     _install_signal_handlers(loop)
@@ -3008,6 +3441,8 @@ def main(argv: list[str] | None = None) -> int:
             onset=onset,
             book=pending_book,
             signal_max_age_s=signal_max_age_s,
+            prices=prices,
+            stopwatch=stopwatch,
             malformed=tuple(completion_handler.malformed),
         ),
     )

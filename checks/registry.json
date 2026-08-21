@@ -76,6 +76,7 @@
         "check_session_flatten",
         "check_spec_citations",
         "check_staleness",
+        "check_stop_maintenance",
         "check_supervision",
         "check_survival_watch",
         "check_synthetic_stop_only",

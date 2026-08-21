@@ -254,6 +254,13 @@ SUBJECTS: tuple[str, ...] = (
     "scripts/nixrisk/gate.py",
     "scripts/nixrisk/stops.py",
     "scripts/nixrisk/loop.py",
+    # ARC 055 / I1 ARC C1. §5:322's price poll, which is NEW hot-path code: the
+    # tick now maintains §4's trails and tests for breach on every pass. I9 is a
+    # DISCHARGED invariant and this arc's own poll is exactly the way a
+    # discharged invariant gets broken silently, so the poll is declared a
+    # subject here and DRIVEN by ARM 3c below. A plant inside `StopWatch.poll`
+    # must redden this gate, which it cannot do if the file is not its subject.
+    "scripts/nixrisk/stopwatch.py",
 )
 
 NAME = "check_hot_path_purity"
@@ -268,6 +275,7 @@ _MODULES = (
     "nixrisk.reservations",
     "nixrisk.seam",
     "nixrisk.stops",
+    "nixrisk.stopwatch",
     "nixrisk.wal",
 )
 
@@ -292,6 +300,12 @@ _ALLOWED_ROOTS: dict[str, str] = {
     # -- the subject itself ------------------------------------------------
     "nixrisk.gate": "the §3 pass under judgement",
     "nixrisk.stops": "§15's O(positions<=5)/tick stop evaluation",
+    "nixrisk.stopwatch": (
+        "§5:322's price poll — the ring READ (one dict lookup) and the breach "
+        "ENQUEUE. It is on this list because §5:322 puts the price poll on the "
+        "loop by its own words; the FIRE it enqueues for is NOT here, and that "
+        "is ARM 3c's whole point"
+    ),
     "nixrisk.loop": "the daemon's own per-GO one-in-flight decision (§3:140)",
     "nixrisk.reservations": "§3's reservation take and its O(1) running Σ",
     "nixrisk.picture": "§11.3's precomputed snapshot, read as ONE attribute load",
@@ -784,6 +798,13 @@ def _derive_entry_points(home: Path) -> tuple[set[str], str]:
         ("gate.py", "GatePass", "evaluate", "call"),
         ("loop.py", "LimiterLoop", "take_in_flight", "call"),
         ("stops.py", "StopBook", "_by_symbol", "loop"),
+        # ARC 055. The DRIVER of the two above, derived by the same shape rule
+        # the daemon-side per-GO entry is derived by: the `StopWatch` method
+        # that calls `breached` on its collaborator. Deriving it rather than
+        # transcribing `stopwatch.poll` is what makes a LATER method that also
+        # breaches — a second poll, a batch sweep — appear in `derived` and fail
+        # ARM 6 until it is driven, instead of slipping past uncensused.
+        ("stopwatch.py", "StopWatch", "breached", "call"),
     ):
         path = home / SCAN_ROOT / PACKAGE / module
         if not path.is_file():
@@ -983,6 +1004,79 @@ def _arm_ticks(
     return census, armed, seen[0], complaint
 
 
+def _arm_poll(
+    mods: dict[str, ModuleType],
+) -> tuple[Census, int, int, str]:
+    """ARM 3c. `(census, armed, enqueued, complaint)` — ARC 055's NEW hot path.
+
+    §5:322's price poll, DRIVEN. This is the arm that re-proves I9 over code I9
+    was discharged before: the tick now reads the price ring, ratchets §4's
+    trails and tests every armed stop for breach, and every one of those steps
+    is new since ARC 050.
+
+    The drive is shaped so BOTH branches of the poll are exercised — the
+    maintain-only path and the breach path — because a census over a poll that
+    never breached would say nothing about the enqueue, which is the branch that
+    produces work for another thread and therefore the branch most likely to
+    acquire something expensive. It is also the arm that proves the FIRE is not
+    here: if `StopWatch.poll` ever reached `ProtectiveFlatten.fire`, this census
+    would show `nixrisk.flatten` and `threading`-lock frames and the allow-set
+    would refuse them.
+    """
+    seam = mods["nixrisk.seam"]
+    stops = mods["nixrisk.stops"]
+    stopwatch = mods["nixrisk.stopwatch"]
+    book = stops.StopBook({"ES": 0.25})
+    for i in range(MAX_POSITIONS):
+        book.arm(
+            5000.0, _order(seam, 800_000 + i, seam.StopMode.TRAILING), trail_ticks=20
+        )
+    armed = len(book.stops())
+    ring = stopwatch.PriceRing()
+    watch = stopwatch.StopWatch(ring, book)
+    enqueued = [0]
+
+    def drive() -> None:
+        for i in range(M_TICK):
+            # A sawtooth that spends most of its time ABOVE every stop (the
+            # maintain branch) and dips THROUGH them periodically (the breach
+            # branch). `drain` is called so the pending list cannot grow without
+            # bound across 2 x M_TICK ticks and turn this census into a memory
+            # measurement instead of a purity one.
+            price = 5000.0 + (i % 40) * 0.25 - (60.0 if i % 400 == 399 else 0.0)
+            ring.publish("ES", price)
+            enqueued[0] += watch.poll(i)
+            watch.drain()
+
+    census = _census(drive)
+    complaint = ""
+    if armed > MAX_POSITIONS:
+        complaint = (
+            f"{armed} stops armed, above §15's bound of {MAX_POSITIONS} — the "
+            "poll's one loop is O(positions <= 5)/tick and this drive exceeded "
+            "it, so a clean census would be about the wrong shape"
+        )
+    elif watch.polls <= 0:
+        complaint = (
+            f"the poll ran {watch.polls} time(s) across two drives of {M_TICK} — "
+            "a census over an unexercised path is vacuous"
+        )
+    elif watch.maintained <= 0:
+        complaint = (
+            f"{M_TICK} polls ratcheted NOTHING ({watch.maintained} maintained) "
+            "over "
+            f"{armed} armed trailing stop(s) — the MAINTAIN branch never ran, so "
+            "this census says nothing about §4's ratchet on the tick"
+        )
+    elif enqueued[0] <= 0:
+        complaint = (
+            f"{M_TICK} polls enqueued NOTHING across two drives — the BREACH "
+            "branch never ran, so the branch that produces work for the sender "
+            "thread was never censused and is the one a forbidden op would hide in"
+        )
+    return census, armed, enqueued[0], complaint
+
+
 def _arm_reads(mods: dict[str, ModuleType], tmp: Path) -> tuple[Census, float, str]:
     """ARM 3b. §11.3's precomputed aggregates, read O(1) — no I/O, no recompute."""
     res = mods["nixrisk.reservations"]
@@ -1097,7 +1191,12 @@ def _measure(home: Path) -> CheckResult:  # pylint: disable=too-many-return-stat
         unload(saved)
 
 
-def _drive_arms(
+# R0911/R0914 (ARC 055): the returns ARE the ladder this function exists to
+# keep separate — one CANNOT_MEASURE per arm that did not run, each naming its
+# own site. ARC 055's ARM 3c (§5:322's price poll) added a fourth arm and with it
+# a fourth pair of refusals; collapsing them would put "the gate did not run" and
+# "which part of the gate did not run" behind one sentence.
+def _drive_arms(  # pylint: disable=too-many-return-statements,too-many-locals
     mods: dict[str, ModuleType], tmp: Path
 ) -> tuple[dict[str, Any] | None, CheckResult | None]:
     """`(readings, refusal)` — run every arm, or say why nothing was measured.
@@ -1129,6 +1228,18 @@ def _drive_arms(
             site="nixrisk.stops",
         )
 
+    poll, poll_armed, enqueued, complaint = _arm_poll(mods)
+    if complaint:
+        return None, _cannot(
+            f"ARM 3c (price poll): {complaint}", site="nixrisk.stopwatch"
+        )
+    if poll.raised is not None:
+        return None, _cannot(
+            f"ARM 3c (price poll): the drive raised {type(poll.raised).__name__}: "
+            f"{poll.raised}",
+            site="nixrisk.stopwatch",
+        )
+
     reads, acc, complaint = _arm_reads(mods, tmp)
     if complaint:
         return None, _cannot(
@@ -1143,9 +1254,67 @@ def _drive_arms(
         "ticks": ticks,
         "armed": armed,
         "states": states,
+        "poll": poll,
+        "poll_armed": poll_armed,
+        "enqueued": enqueued,
         "reads": reads,
         "acc": acc,
     }, None
+
+
+#: ARM 6's TRACED set — every hot-path entry point this gate's arms actually
+#: drive. It is compared against the set DERIVED from the subject's own source,
+#: and a derived entry point missing from here is CANNOT_MEASURE. ARC 055 added
+#: `stopwatch.StopWatch.poll` when §5:322's price poll became real hot-path code.
+_TRACED: frozenset[str] = frozenset(
+    {
+        "gate.GatePass.evaluate",
+        "gate.GatePass._dispatch",
+        "loop.LimiterLoop.take_in_flight",
+        "stops.StopBook.maintain",
+        "stops.StopBook.breached",
+        "stopwatch.StopWatch.poll",
+    }
+)
+
+
+def _judge_per_tick_io(
+    ticks: Census, poll: Census, reads: Census, evidence: str
+) -> CheckResult | None:
+    """The per-tick I/O rung. `None` when all three per-tick arms wrote nothing.
+
+    Split out of `_judge` when ARC 055's ARM 3c made it a three-way test: §15's
+    per-tick budget is O(positions <= 5) of ARITHMETIC, and the site named is
+    whichever arm actually wrote, because "the per-tick path wrote" is not a
+    finding an operator can act on until it says WHICH per-tick path.
+    """
+    if ticks.writes == 0 and poll.writes == 0 and reads.writes == 0:
+        return None
+    site = "nixrisk.stopwatch" if poll.writes else "nixrisk.stops"
+    return _fail(
+        site,
+        f"THE PER-TICK PATH PERFORMED I/O: {ticks.writes} raw write(2) in "
+        f"stop-eval, {poll.writes} in §5:322's price poll, {reads.writes} in the "
+        "aggregate reads. §15's per-tick budget is O(positions <= 5) of "
+        "ARITHMETIC; §11.3 has the aggregates maintained as running values and "
+        "READ, never written, by the tick",
+        evidence,
+    )
+
+
+def _arm_completeness(derived: set[str]) -> CheckResult | None:
+    """ARM 6. `None` when every derived entry point was driven, else the refusal."""
+    missing = sorted(derived - _TRACED)
+    if not missing:
+        return None
+    return _cannot(
+        "ARM 6 (completeness): the subject's source derives hot-path entry "
+        f"point(s) this gate does not drive: {missing}. A hot-path callee this "
+        "census never entered is one the verdict says nothing about, and a "
+        "forbidden op inside it is exactly the defect. Extend the drive, or the "
+        "allow-set is being applied to the wrong path",
+        site="nixrisk",
+    )
 
 
 def _judge(  # pylint: disable=too-many-return-statements,too-many-locals,too-many-branches,too-many-statements
@@ -1171,27 +1340,15 @@ def _judge(  # pylint: disable=too-many-return-statements,too-many-locals,too-ma
     ticks = readings["ticks"]
     armed = readings["armed"]
     states = readings["states"]
+    poll = readings["poll"]
+    poll_armed = readings["poll_armed"]
+    enqueued = readings["enqueued"]
     reads = readings["reads"]
     acc = readings["acc"]
 
-    # -- ARM 6: the traced set equals the derived set ------------------------
-    traced = {
-        "gate.GatePass.evaluate",
-        "gate.GatePass._dispatch",
-        "loop.LimiterLoop.take_in_flight",
-        "stops.StopBook.maintain",
-        "stops.StopBook.breached",
-    }
-    missing = sorted(derived - traced)
-    if missing:
-        return _cannot(
-            "ARM 6 (completeness): the subject's source derives hot-path entry "
-            f"point(s) this gate does not drive: {missing}. A hot-path callee "
-            "this census never entered is one the verdict says nothing about, "
-            "and a forbidden op inside it is exactly the defect. Extend the "
-            "drive, or the allow-set is being applied to the wrong path",
-            site="nixrisk",
-        )
+    refusal = _arm_completeness(derived)
+    if refusal is not None:
+        return refusal
 
     # -- the allow-set, over the UNION of every arm --------------------------
     expensive: list[str] = []
@@ -1200,13 +1357,16 @@ def _judge(  # pylint: disable=too-many-return-statements,too-many-locals,too-ma
         (shipped, "ARM 1 per-GO gate"),
         (detached, "ARM 2 discriminator"),
         (ticks, "ARM 3 per-tick stop-eval"),
+        (poll, "ARM 3c per-tick price poll"),
         (reads, "ARM 3b aggregate reads"),
     ):
         found_e, found_u = _classify(census.roots, arm)
         expensive.extend(found_e)
         unclassifiable.extend(found_u)
 
-    events = _forbidden_events(shipped.events + ticks.events + reads.events)
+    events = _forbidden_events(
+        shipped.events + ticks.events + poll.events + reads.events
+    )
 
     off_path, complaint = _arm_off_path(mods, tmp, wal)
 
@@ -1223,6 +1383,9 @@ def _judge(  # pylint: disable=too-many-return-statements,too-many-locals,too-ma
         f"ARM 3 per-tick stop-eval (2 x {M_TICK} ticks, |stops|={armed} <= "
         f"{MAX_POSITIONS}, {states} states returned): raw write(2)={ticks.writes}, "
         f"roots={sorted(ticks.roots)} | "
+        f"ARM 3c per-tick price poll (2 x {M_TICK} ticks, |stops|={poll_armed} "
+        f"<= {MAX_POSITIONS}, {enqueued} breach(es) enqueued): raw write(2)="
+        f"{poll.writes}, roots={sorted(poll.roots)} | "
         f"ARM 3b aggregate reads (2 x {M_TICK}, Σ={acc}): raw write(2)="
         f"{reads.writes}, roots={sorted(reads.roots)} | "
         f"ARM 6 derived entry points: {sorted(derived)} | "
@@ -1287,15 +1450,9 @@ def _judge(  # pylint: disable=too-many-return-statements,too-many-locals,too-ma
             "cache reads and arithmetic only",
             evidence,
         )
-    if ticks.writes != 0 or reads.writes != 0:
-        return _fail(
-            "nixrisk.stops",
-            f"THE PER-TICK PATH PERFORMED I/O: {ticks.writes} raw write(2) in "
-            f"stop-eval, {reads.writes} in the aggregate reads. §15's per-tick "
-            "budget is O(positions <= 5) of ARITHMETIC; §11.3 has the aggregates "
-            "maintained as running values and READ, never written, by the tick",
-            evidence,
-        )
+    per_tick = _judge_per_tick_io(ticks, poll, reads, evidence)
+    if per_tick is not None:
+        return per_tick
     if complaint:
         return _fail(
             "nixrisk", f"OFF-PATH WORK STOPPED HAPPENING: {complaint}", evidence

@@ -324,7 +324,36 @@ class SenderThread:
         *,
         nice: int = DEFAULT_SENDER_NICE,
         ledger_max: int = SENDER_LEDGER_MAX,
+        send: Callable[[object], None] | None = None,
     ) -> None:
+        #: ARC 055 / I1 ARC C1. WHAT THE THREAD DOES WITH A DEQUEUED PAYLOAD, and
+        #: the one thing that turns this stub into §5:323's real sender.
+        #:
+        #: `None` keeps the ARC 040 behaviour EXACTLY — record and send nothing —
+        #: so every reader written against the stub is unchanged and the
+        #: threading-shape proof (`check_limiter_loop_alive`) measures the same
+        #: object it always did. A callable makes the blocking work happen HERE,
+        #: on the low-priority thread, which is the whole of §5:323's containment:
+        #: *"blocking I/O, releases GIL; hung socket contained; hot loop never
+        #: blocks"*. The protective flatten C1 wires takes an arbitration lock
+        #: (`flatten.ProtectiveFlatten.request_close`) and appends a §12.10 row,
+        #: and a lock the hot loop can block on is the exact race §5:323 exists
+        #: to eliminate — so the fire runs here or it violates I9.
+        #:
+        #: It NEVER raises into the serve loop: a sender that died on one payload
+        #: would silently stop sending every later one, and a protective exit
+        #: that stopped being sent without saying so is the worst failure this
+        #: file can have. The exception lands on `send_errors`, where a gate and
+        #: an operator can read it.
+        self._send = send
+        #: Payloads the send callback raised on, oldest first. Bounded by the
+        #: same ledger bound, for the same reason.
+        self.send_errors: deque[str] = deque(maxlen=ledger_max)
+        #: How many payloads the callback was actually run over. Counted rather
+        #: than inferred from `handoffs`: a payload the thread dequeued and a
+        #: payload it SENT are two facts, and check contract rule 2's argument
+        #: (a return value is not a verification) applies to both.
+        self.sent = 0
         self._queue: queue.Queue[object] = queue.Queue()
         self._ledger: deque[SenderHandoff] = deque(maxlen=ledger_max)
         self._nice = int(nice)
@@ -377,6 +406,22 @@ class SenderThread:
                 "the only part of §5's threading model this arc can prove"
             )
 
+    def set_send(self, send: Callable[[object], None]) -> None:
+        """Install the send callback. REFUSED once the thread is running.
+
+        The refusal is the point and it is `LimiterLoop.attach`'s argument one
+        layer down: a callback swapped while the thread is draining would let two
+        payloads from one queue take two different actions, and the operator
+        reading the ledger could not tell which payload got which.
+        """
+        if self._thread.is_alive():
+            raise LoopError(
+                f"{SITE}: set_send() on a §5:323 sender that is already running. "
+                "Two payloads from one queue would take two different actions and "
+                "the ledger could not say which took which"
+            )
+        self._send = send
+
     def hand_off(self, payload: object, *, tick: int) -> SenderHandoff:
         """Queue one item from the loop thread. NEVER BLOCKS (§5:323-324).
 
@@ -415,8 +460,28 @@ class SenderThread:
                 if isinstance(item, SenderHandoff):
                     self._ledger.append(item)
                     self._handoffs += 1
+                    self._deliver(item.payload)
             finally:
                 self._queue.task_done()
+
+    def _deliver(self, payload: object) -> None:
+        """Run the send callback for one payload, ON THIS THREAD. Never raises.
+
+        `Exception` is caught deliberately broadly and the reason is the same one
+        `flatten.ProtectiveFlatten._book` gives for its own broad catch: the
+        alternative is worse. An exception escaping here kills `_serve`, the
+        queue stops being drained, and every subsequent protective flatten sits
+        in it forever while `alive` reads False and nothing else changes. Losing
+        one send and RECORDING it beats losing all of them silently.
+        """
+        if self._send is None:
+            return
+        try:
+            self._send(payload)
+        except Exception as exc:  # noqa: BLE001  pylint: disable=broad-except
+            self.send_errors.append(f"{type(exc).__name__}: {exc}")
+            return
+        self.sent += 1
 
     def _lower_priority(self) -> None:
         """§5:323's *low-priority*, applied to THIS thread and then read back."""
@@ -961,6 +1026,7 @@ class LimiterLoop:
         *,
         ingress: Callable[[int], object] | None = None,
         handler: Callable[[object], None] | None = None,
+        sender_send: Callable[[object], None] | None = None,
     ) -> None:
         """Wire the inbox reader and the per-item handler AFTER construction.
 
@@ -982,6 +1048,17 @@ class LimiterLoop:
             self._ingress = ingress
         if handler is not None:
             self._handler = handler
+        if sender_send is not None:
+            # ARC 055. Attached rather than constructed, and for the SAME reason
+            # the ingress and the handler are: the thing this callback fires —
+            # §4's protective flatten — needs the fill path, the ledger and the
+            # picture, none of which can exist before the loop they are wired
+            # around. `attach`'s refusal after the first tick is exactly the
+            # lifecycle a send callback wants: swapping what the sender DOES
+            # mid-run would mean two ticks' worth of protective exits taking two
+            # different actions, which is the §12.11 shape the paragraph above
+            # refuses for the handler.
+            self.sender.set_send(sender_send)
 
     def submit(self, item: object) -> None:
         """Queue one item for the next tick's drain. Callable from any thread.

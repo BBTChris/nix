@@ -397,6 +397,15 @@ def test_the_control_passes_and_its_evidence_names_what_it_read(
     #             without bumping this line.
     #   37 -> 38  `scripts/nixrisk/completions.py`, ARC 046's §5:322 completion
     #             parse + §4:214 dedup + dispatch.
+    #   38 -> 39  `scripts/nixrisk/stopwatch.py`, ARC 055's §5:322 price poll +
+    #             §4:190-196 trail maintenance + breach DETECTION. It joined the
+    #             derived scope the moment it landed under `scripts/nixrisk`, and
+    #             the gate re-read over the widened scope still reports 0 banned
+    #             modules and 0 banned calls: the poll DETECTS and ENQUEUES and
+    #             reaches no order verb at all — `StopWatch` holds no broker by
+    #             construction (`test_stopwatch.py` asserts the absence). This
+    #             arc's own bump, made in the arc that caused it rather than
+    #             discovered two arcs later.
     # WHY IT SURVIVED TWO ARCS, which is the part worth keeping: ARC 044 and
     # ARC 045 both committed on the testmon-SELECTED path — neither touched a
     # testmon-uncovered file, so neither escalated, and this test was never
@@ -412,7 +421,7 @@ def test_the_control_passes_and_its_evidence_names_what_it_read(
     # from arithmetic here. Re-read rather than assumed: over the widened scope
     # the gate still reports 0 banned modules, 0 banned calls, and no new retry
     # shape; `completions.py` declares no order-port verb and sends nothing.
-    assert "arm(ii) imported 38 order-path module(s)" in evidence, evidence
+    assert "arm(ii) imported 39 order-path module(s)" in evidence, evidence
 
 
 def test_the_reviewed_suppressions_are_the_two_known_fanouts_and_no_plant_is_pre_silenced(

@@ -1,131 +1,128 @@
-# ARC 054 — I1 ARC B: onset dispatch. `pending_entries()` built, the daemon's onset sweep wired.
+## ARC 055 — I1 ARC C1: the stop protective-exit path (poll + maintain + breach → flatten)
 
-**TIER: INTERIOR · Limiter STAYS RED · count STAYS 11/12 · no board redraw · I1 NOT discharged.**
-Predecessor tip **DERIVED**: `git rev-parse HEAD` = **`24da438`** (the brief's "≈ 9e92a38" was ARC
-053's fix commit, one behind its own write-back). Everything frozen and diffed against `24da438`.
+**TIER: INTERIOR. Limiter STAYS RED. Count STAYS 11/12** (I1 discharges at ARC D's convergence gate,
+not here). Derived tip `66f9f8b` (the brief said ≈`58c9582`; the real tip was ARC 054's re-measure
+commit). Measured baseline **`93 | 5 | 2 | 0`**; predicted delta `+1 passed`; **measured
+`94 | 5 | 2 | 0`. PREDICTION MET.**
 
-## THE BASELINE WAS NOT WHAT THE BRIEF SAID — read this first
+**The baseline was NOT the brief's `94|4|2|0`.** `check_arc_status_contract` moved cannot-measure →
+**FAIL**, auditing `arc_054.log`: *no watchdog self-verify line (HEARTBEAT SELF-VERIFY: ok) before
+marker*. ARC 054 genuinely never emitted `selfcheck` into its own log. That log is banked evidence
+(directive 6) and was not rewritten; ARC 055 wrote the line into its own log so ARC 056 measures PASS.
 
-`verify.py` at `24da438`: **`93 passed | 4 failed | 3 cannot measure | 0 skipped`**, exit 1.
-The brief recorded `94|4|2|0|0` for ARC 053's close. The one row of difference:
+### S1 — D3.451 reproduced on the live loop
 
-    [??] check_arc_status_contract  arc_053.log - ARC 053: no ARC-completed marker in log:
-                                                  run did not reach close-out
+A real `limiterd`, a real reservation, a real fill, a real armed stop:
 
-The ARC 052 "the marker tees to the log" fix did **not** take effect for ARC 053's own log. This is
-the D3.464 shape recurring. Every delta below sits on the **measured** 93|4|3|0, not on the reported one.
-
-## What was wrong (S1, measured on the live loop)
-
-| gap | evidence |
+| measurement | result |
 |---|---|
-| **no production `pending_entries()`** (D3.443/D3.349) | `grep -rn "def pending_entries"` over the whole tree: **5 sites — 2 Protocol declarations, 3 test/check doubles, ZERO producers.** And nothing in production constructs a `HaltFlag` or a `BlackoutEvaluator`, so the two shipped call sites can never fire |
-| **no onset dispatch at all** | the daemon serves `['register','go','status','resolve','reserve']` — `blackout_onset` and `halt` are *unknown verb*; signal files sit unconsumed |
-| **consequence, driven** | 4 gate-approved entries staged over 2 symbols × 2 strategies + a real open position with an armed stop at 4998.0 → both onsets driven → **committed 7000.0 → 7000.0, outstanding 3 → 3, zero cancels.** Every entry survived, still working inside the window |
+| non-vacuity: stop genuinely armed | `level=4998.0` = `5000.0 − 8 × 0.25`, `anchor=5000.0` |
+| **NO MAINTAIN** | 101 real ticks (8→109); `level` **invariant** |
+| **NO PRICE INGRESS** | dirs `[completions, inbox, onset, outbox, status]`; verbs `[register, go, status, resolve, reserve]`; no price block |
+| **NO BREACH** | `RecordedCancels` verbs `['cancel_order','issued']` → `hasattr(flatten)==False`; `SYNTHETIC_STOP`, `.maintain(`, `.breached(` all absent from `limiterd.py` |
+| non-vacuity: the LIBRARY works on the same numbers | armed 4998.0 → trails to **5002.0**; `breached(level−1 tick)` returns it |
 
-## What was built (S2) — and what was NOT touched
+The mechanism worked and **nothing with a pid drove it**.
 
-* **`limiterd.PendingEntryBook.pending_entries()`** — D3.443's producer, **complete by DERIVATION**:
-  one entry per OUTSTANDING reservation in §11.3's ledger, **plus** one per holder of §4:208's
-  in-flight lock that holds no reservation. The second source is the load-bearing half — such an
-  order can still fill — and it is handed over as `InFlightOnly`, deliberately carrying no `role`
-  and no `symbol`, so **I11's own `_classify_for_onset` decides** and buckets it `unclassified`.
-* **`limiterd.OnsetWatch`** — reads `DIR/onset/state.json` on the loop's own tick, holds the prior
-  state, fires **once per `False → True` transition**: per-symbol for blackout (`scope=<symbol>`),
-  once globally for HALT (`scope=None`). Composed AHEAD of the ingress reads.
-* The daemon now constructs a real **`flatten.ProtectiveFlatten`** over the process's one ledger and
-  one picture. Its broker has exactly one verb — measured, `hasattr(broker, "flatten")` is **False**
-  — so the sweep cannot flatten even in principle. Its §4 fan-out sinks **RAISE**, so ARC C's
-  unwired protective-exit path cannot run silently.
+### S2 — what was wired
 
-**FREEZE HELD**, proven with `git hash-object` against `24da438`: **23 files byte-identical**,
-including `flatten.py`, `blackout.py`, `outcomes.py`, `reservations.py`, `fills.py`, `halt.py`,
-`seam.py`, `broker_seam.py`. The whole diff is **three files + `docs/CHECK-DEBT.md`**.
+* **NEW `scripts/nixrisk/stopwatch.py`** — `PriceRing` (§5:322's ring, `head()` = one dict read) and
+  `StopWatch` (poll → `maintain` → `breached` → mark flatten-in-flight → enqueue). Holds **no broker,
+  no Plane-1 sink and no clock**, structurally. `BreachFiring` carries **no timestamp** — a clock read
+  on the hot path is what the I9 arm refuses.
+* **`scripts/limiterd.py`** — `VERB_PRICE`; `RecordedVenue` (the broker **gains `flatten`**, which 054
+  deliberately withheld); `StopWatchDriver` (`before()` on the hot loop, `send()` on the sender
+  thread); the tick order is now `poll prices → poll onset → book firings → read commands → read
+  completions → poll overdue`; **ONE** `ProtectiveFlatten` shared by the onset sweep and the stop
+  exit, so §4's arbiter reads one `_closed` book.
+* **`scripts/nixrisk/loop.py`** — `SenderThread` gains an **additive** `send` callback (`set_send`,
+  refused once running) and `LimiterLoop.attach(sender_send=...)`. `None` keeps the ARC 040 stub
+  behaviour exactly. This file is **NOT on the brief's freeze list** and is disclosed as the one
+  deviation: §5:323's thread was a recorder, and C1 cannot send off the hot path without it.
 
-## What was proven (S3, watched past the tick)
+**Spec-citation correction:** the brief cites **§7.4** for the trailing stop. **§7.4 does not exist**
+in frozen v1.3 (§7 → §7.5). The authority is **§4:187-196**, which `stops.py` itself cites, and that
+is what this arc's code and gates cite.
 
-| claim | measurement |
+### S3 — proven on the running daemon, watched past the tick
+
+* **BREACH FIRES** — price crosses 4998.0 → `fires=1`, `sends=1`, broker `flattened=['ES']`,
+  trigger `synthetic_stop`, `executed=[True]`, `in_flight=['csm-fixed']`, no refusals, no send errors.
+* **SEND IS OFF THE HOT PATH** — send ran on native tid = the **sender thread's**, ≠ the loop's.
+* **FIRE-ONCE** — 116 further polls with price still past the level: still `sends=1`,
+  `flattened=['ES']`, `suppressed=76`.
+* **TRAIL MONOTONIC** — armed 4998.0 → tightens to 5002.0 (hwm 5003.0 − 4×0.25); retrace to 5002.75
+  leaves the level at 5002.0 and the high-water at 5003.0; a **descending walk** of 3 steps never
+  lowers it; crossing 5001.75 fires ONE firing naming **5002.0**, not the armed level.
+
+### The two discharged invariants, RE-PROVEN over the new code
+
+* **I9 (hot-path purity)** — `check_hot_path_purity` gains **ARM 3c**: 2 × 2000 real polls, both
+  branches driven, roots `['__main__','dataclasses','nixrisk.seam','nixrisk.stops','nixrisk.stopwatch']`,
+  `write(2)=0`, 0 PEP-578 events. `stopwatch.StopWatch.poll` is now **DERIVED by shape** into ARM 6's
+  entry-point set, so a later second poll fails ARM 6 until it is driven.
+* **I3 (exit-path wire-freedom)** — `check_stop_maintenance` ARM 4 traces the **daemon's own send
+  closure** under a transport ban-set and finds nothing. That subject is invisible to `check_flatten`
+  ARM 6, which never imports `limiterd`.
+
+### S4 — the gate, and the four plants it is BOUND from
+
+**NEW `checks/check_stop_maintenance.py`** (+1 passed). Census: `check_synthetic_stop_only` owns the
+§12.1 prohibition; `check_flatten` owns the executor as a library; `check_limiter_daemon_dispatch`
+owns the completion routes; `check_hot_path_purity` owns purity. **Monotonicity-under-drive and
+fire-once were owned by nothing.**
+
+| plant | verdict |
 |---|---|
-| BLACKOUT onset, **per-symbol** | handed all 4, `scope='ES'`, cancelled `es-1, es-2` — **none survives** |
-| **scope** — another symbol untouched | `nq-1, nq-2` → `out_of_scope` with the executor's reason, **still pending after** |
-| **release** (the 044 path) | RSV-1/RSV-2 released, **committed 7500.0 → 2500.0**, `complete=True` |
-| **selective** — exits untouched | protective stop `es-fill` still armed **at 4998.0**, position still open |
-| **edge-triggered** | 61 further polls in the same blackout → `blackout_onsets` still 1, one sweep |
-| HALT onset, **global** | `scope=None`, cancelled `nq-1, nq-2`, **committed 2500.0 → 0.0, outstanding 0**; stop still at 4998.0 |
-| **re-entry — *which*?** | **EDGE-TRIGGERED *and* IDEMPOTENT**: 3rd sweep `handed=[] cancelled=[] released=[] refusals=[]`; the ledger refuses a second release |
-| **completeness (absence proof)** | in every sweep `handed` == `cancelled` ∪ `out_of_scope` ∪ `protected` ∪ `unclassified`, nothing unaccounted |
-| **CANNOT-MEASURE arm live** | a lock-holder with no reservation → enumerated (`role: null`), swept, `unclassified` naming it, **`complete: false`** |
+| **A** the poll never tests for breach | **exit 1** — *THE DAEMON DID NOT FIRE A PROTECTIVE FLATTEN FOR AN UNPROTECTED POSITION*, naming `'csm-fixed'` and level 4998.0 |
+| **B** the ratchet reads the CURRENT price | **exit 1** — §4:190-196, *THE HIGH-WATER RETREATED from 5003.0 to 5002.75* |
+| **B′** the trail widened AWAY from price | **exit 1** — §4:190-196, *the trail did not TIGHTEN* |
+| **C** the fire-once mark ignored | **exit 1** — *DOUBLE-FLATTEN … sends=76* |
+| **D** I/O on the poll path | **exit 1** via `check_hot_path_purity` — *FORBIDDEN SYSCALL … open('/dev/null','w')* |
+| all removed | **exit 0 / exit 0** |
 
-## The gate (S4) — one owner, four plants
+**A first PLANT B did NOT fire and that was a finding about the gate, not the tree**: widening
+`_tighter` is invisible to a single retrace comparison, because the high-water is monotone and so is
+the level it implies. ARM 3 was strengthened to a **descending-walk sequence property** before the
+plant was accepted.
 
-Census: DISPATCH → `check_limiter_daemon_dispatch` (046); SELECTION already in `check_flatten` ARM 3b
-(045). **No new gate** (doctrine C.9); the onset arm extended the dispatch's owner and `flatten.py`
-was added to its SUBJECTS. The arm declares the onset from **outside the process** — never by calling
-the sweep.
+### THE HEADLINE FINDING — D3.474, and it was not looked for
 
-* **PLANT A (no sweep)** → exit 1, names `['cdd-onset-a1','cdd-onset-a2']` surviving and the ES window
-* **PLANT B (incomplete enumeration)** → exit 1, *"INCOMPLETE ENUMERATION: `['cdd-onset-a2']` hold OUTSTANDING §3 reservations"*
-* **PLANT B2 (omission its own report HIDES)** → exit 1 four ways, incl. Σ 3600.0 → 2700.0 vs expected 1800.0. **Σ over the TAKEN set is a number `pending_entries()` cannot edit**
-* **PLANT C (over-broad)** → exit 1 in **two forms**: a venue cancel of a protective order is caught by the census *before* driving; the form §12.1's SYNTHETIC stop actually takes (`StopBook.forget`, invisible to that census) is caught by the driven arm — *"before `{'cdd-fill-1': 4998.0}`, after `{}`. The OPEN position(s) `{'TRD-…': 'ES'}` were left unprotected inside the window"*
+Driving the monotonic-trail proof through the daemon revealed that **this build CANNOT ARM A TRAILING
+STOP AT ALL**. Measured on a live `limiterd`: `reserve(stop_mode=trailing)` → `accepted: true`, 1000.0
+committed; the `on_fill` that follows → `last_disposition: refused`, `InvalidStopIntent: a trailing
+stop needs a trail distance, which the frozen ProposedOrder does not carry`. `fills.py` calls
+`arm(report.price, order)` with no `trail_ticks`. `stops.py` documented the seam gap; **nobody had
+measured what it does to a running process, which is that the position never opens and the
+reservation stays taken.** NOT fixed here — the repair edits the frozen `ProposedOrder` and the fill
+path, both of which this arc freezes byte-identical.
 
-Plants removed ⇒ **exit 0**, green evidence carries `*** PROTECTIVE BOOK UNCHANGED across both
-onsets ***`.
+### FREEZE — asserted with `git hash-object` against `66f9f8b`
 
-**FOUND AND FIXED, NOT CARRIED:** the gate's own `Drive` wrote command/completion/status files
-non-atomically while the daemon scans every 0.02 s. Measured: the daemon read `cdd0012.json` **empty**
-and the FILL arm then reported a conversion that had happened. All four writers now use `os.replace`.
+**IDENTICAL:** `flatten.py`, `outcomes.py`, `reservations.py`, `fills.py`, `fill_seam.py`, `stops.py`,
+`picture.py`, `positions.py`, `completions.py`, `freshness.py`, `seam.py`, `execution.py`, `join.py`,
+`wal.py`, `gate.py`. **Changed:** `limiterd.py`, `nixrisk/loop.py` (disclosed above),
+`check_hot_path_purity.py`, `registry.json`, `CHECK-DEBT.md`, `test_check_order_path_bans.py`.
+**New:** `nixrisk/stopwatch.py`, `check_stop_maintenance.py`, `test_stopwatch.py`,
+`test_check_stop_maintenance.py`.
+**`uncalled_entry_points_baseline.json` did NOT move** — every new public entry point has a call site.
+`check_order_path_bans` scope grew 38 → **39** modules (`stopwatch.py` joined) and still reports
+**0 banned modules, 0 banned calls**; the tripwire's banked number was bumped **in the arc that caused
+it**, not two arcs later.
 
-## Close-out
+### CHECK-DEBT
 
-* **442 tests green** — derived reverse-dependency closure + the D3.444 by-detection backstop over the
-  NEW structural edge `limiterd → nixrisk.flatten`.
-* **Ratchet did NOT move:** 1210 entry points judged vs 1203, all 7 new ones CALLED; UNCALLED 171,
-  GATE-ONLY 53, both unchanged. The predicted shrink did not occur and could not have:
-  `cancel_entries_on_onset` already had shipped callers — what it lacked was a **process**.
-* **CHECK-DEBT: D3.443 DISCHARGED. D3.442 shrank a third time (restated, not removed). D3.470/471/472
-  opened.** ARC TOTAL **413**, read off the instrument (413 of 484 rows), RED against the stale 411
-  before the edit and GREEN after.
+**D3.451 DISCHARGED.** **D3.473 OPENED** (the ring is fed by a `price` command — no capture feed, so
+no green may be read as *the Limiter is receiving real prices*). **D3.474 OPENED** (the trailing-fill
+refusal above). ARC-TOTAL re-derived whole by `check_derived_claims`: **414** (+1 net; two opened, one
+discharged), read off the instrument, not typed.
 
-## Residual — explicitly NOT claimed
+### RESIDUAL — explicitly NOT claimed
 
-* **The daemon DISPATCHES an onset; it does not DETECT one (D3.470).** §6.1's `BlackoutEvaluator`
-  needs §6.4's window cache and the vendored calendar; §12.5's `HaltFlag` needs the cooldown floors,
-  a marker and a Plane-2 emitter. Neither is constructible here and neither was half-built. **No green
-  may be read as *the daemon knows when a window opens*.**
-* **D3.471** — an onset arriving while the state file is unreadable is MISSED; counted and published,
-  never silent, never invented in either direction.
-* **D3.472** — the no-resend census now over-approximates into `OnsetWatch`; its ban claim stays scoped
-  to two modules. `place_order` remains unreachable and separately driven.
-* **I1 is NOT discharged.** Only the **protective flatten** remains (ARC C — D3.453/D3.372/D3.469),
-  then ARC D's convergence gate flips 11/12 → 12/12.
-
-**BADGE: Limiter STAYS RED · count STAYS 11/12 · no board redraw · I1 path-progress 5 of 6 wired
-(cancel · fill · reject · pending-timeout · onset). D3.442 restated: only protective flatten owed.**
-
-
----
-
-## POST-WRITE-BACK RE-MEASURE at `58c9582`
-
-**`93 passed | 4 failed | 3 cannot measure | 0 skipped`, exit 1 — IDENTICAL to the baseline at
-`24da438`. PREDICTION MISSED, and the miss is the finding.**
-
-Predicted: `94|4|2|0`, on `check_arc_status_contract` moving CANNOT-MEASURE -> PASS because this arc
-tees its marker into its own log. **That was structurally unreachable, and the gate says so in its
-own source:** `_pick_log` excludes the RUNNING arc's log (`candidates = [p for p in logs if p.name
-!= own]`) because *"its conduct is not judgeable until it reaches close-out"* — while the
-arc-completion protocol puts the re-measure BEFORE the marker. **A marker written by arc N cannot be
-visible to arc N's own re-measure under any ordering; it can only appear in arc N+1's baseline.**
-Measured both ways here: baseline and re-measure both read `arc_053.log`, both CANNOT-MEASURE, across
-a commit that changed four files. That is the mechanism behind the 050 -> 051 -> 052 -> 053 chain,
-now recorded on **D3.464**. ARC 055's baseline should show it PASS against `arc_054.log`.
-
-**Everything this arc's own delta predicted DID hold.** No new check file -> `registered_check_count`
-stayed 100. `check_uncalled_entry_points` FAIL with rows unchanged (1210 vs 1203 judged, all 7 new
-ones CALLED; UNCALLED 171, GATE-ONLY 53 both sides). The other three fails are standing:
-`check_ibgateway_service` (gateway down), `check_monitor_tui` (stale pin),
-`check_untracked_attribution` (the `.dmg` — the operator's file, not this arc's to adopt or delete).
-**Clean set 11/12, no flip.** `check_limiter_daemon_dispatch` green WITH the onset arm;
-`check_flatten` and `check_halt` green and untouched.
-
-**Recorded forward-only. This is the figure ARC 054 closed on.**
+* **I1 is NOT discharged.** C2 (the three uncertainty producers, D3.453/372/469) and D (flatten
+  completions + the convergence gate) remain. **Count stays 11/12.**
+* **The completion path is ARC D.** C1 fires and sends; the closing fill, the §12.10 `closed` row, the
+  position close and the release are D. A flatten sent here is IN FLIGHT until D reconciles it.
+* **Nothing reaches a venue.** `RecordedVenue.flatten` records; there is no vendor integration.
+* **No green here means the daemon has real prices** (D3.473) or **that it can hold a trailing stop**
+  (D3.474).
