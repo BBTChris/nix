@@ -7171,3 +7171,158 @@ nor deleted. `check_artifact_gate_coverage` GUARDED with its eight exclusions no
 
 **Badge: I4 DISCHARGED. Clean `{I2, I3, I4, I5, I6, I7, I8, I10, I11} = 9/12`, open = 3
 (`I1`, `I9`, `I12`). Limiter STAYS RED. Ledger 403, derived.**
+
+---
+
+## ARC 050 — ULTRAREVIEW: Limiter, slice 10 — I9 hot-path purity (INTERIOR)
+
+**Predecessor derived, not carried.** The brief said "≈ `67ce36f`"; `git rev-parse HEAD` said
+`89e0e2a` (049's final-measurement commit). Everything below is frozen and diffed against
+`89e0e2a`. **Measured baseline at that tip: `91 | 4 | 2 | 0 | 1`, exit 1** — and one prediction
+in the brief was WRONG on measurement: `check_arc_status_contract` read **PASS** at baseline
+(auditing `arc_049.log`), not cannot-measure. `downloads/Pinokio-8.0.40-arm64.dmg` was still
+present and was NOT deleted — it is not this arc's file to rule on, and it is one of the four
+baseline FAILs.
+
+**Gate ownership census FIRST (the I4 lesson), stated before the run.** Four gates in the tree
+touch the words "hot path" and NONE owned this property: `check_plane1_hot_path` owns §11.6
+group-commit LATENCY isolation (a µs relation over one off-path item, and D3.400 records it
+times a `GatePass` built with `ledger=None`); `check_limiter_gate.arm_hot_path` owns §11.3's
+O(1)-in-|positions| SHAPE (traversal counts, µs explicitly excluded from its verdict);
+`check_flatten` ARM 6 owns wire-freedom of the EXIT path; `check_pollers` owns that the caches
+are MAINTAINED. Nothing owned *the transitive operation census of the hot path against an
+allow-set*. **Predicted `passed +1` from a NEW gate, before the run. Correct.**
+
+### S1 — I9 IS NOT MET-IN-CODE. The charter's defect reproduced at this tip.
+
+I9's charter (ARC 038, `arc_038_ultrareview_limiter_pass1.md:45`) names the defect as *"a
+synchronous I/O or compute on the gate path"*. 2,000 real APPROVE decisions through the shipped
+`GatePass` -> `ReservationLedger.take` -> `_book` -> `_emit` -> `Plane1Wal.enqueue`, non-vacuous
+(`{'APPROVE': 2000}`, `ledger.total_reserved() = 16000000.0`):
+
+| arm | raw `write(2)` | PEP-578 events | module roots entered |
+|---|---|---|---|
+| A per-GO gate | **2000 — exactly 1/approval** | **0** | gate, reservations, seam, **wal**, **json**, enum |
+| B per-tick stop-eval (\|stops\|=5) | 0 | 0 | stops, seam, dataclasses |
+| C O(1) aggregate reads | 0 | 0 | picture, reservations (3 frames) |
+
+**The finding that matters more than the count: the PEP-578 audit hook saw ZERO events while
+the kernel counted 2,000 `write(2)`.** That is ARC 038 sub-agent F's blind spot reproduced
+exactly — `Plane1Wal` opens `open(..., "ab", buffering=0)` and appends through `_io.FileIO.write`
+on an ALREADY-OPEN descriptor, and PEP 578 audits `open`, not `write`. **An audit-hook-only
+purity gate is vacuous BY CONSTRUCTION**, and that is now a measurement of this tree rather than
+a hypothesis about it. Banked as **D3.461**, scoped to the MECHANISM: `scripts/nixverify/observe.py`
+records file writes from the audit `open` event and its "what is NOT observed" table does not
+name this case, so `check_observed_resource_claims` inherits it.
+
+Also on the gate path: `json.dumps` + `JSONEncoder.iterencode`, ~500 B/row, inside `wal.encode_row`.
+
+### S2 — EMPTY BY DESIGN. The subject is byte-identical; the arc's work is the gate.
+
+`git hash-object` against `89e0e2a`, every one IDENTICAL: `gate.py` `69eef09f`, `stops.py`
+`ca907302`, `loop.py` `723feacc`, `wal.py` `bf9c08f1`, `reservations.py` `ecf9d22d`,
+`picture.py` `dcbb5a67`, `flatten.py` `d2c825f7`, `positions.py` `1561c8e2`, `projection.py`
+`2ee2ef13`, `outcomes.py` `ebff41ad`, `fills.py` `847af3de`, `fill_seam.py` `339ca62f`,
+`plane1_sink.py` `a6f0027d`, `limiterd.py` `432781f8`. `CORRECTABLE = False` honoured in fact,
+not only in the declaration.
+
+**Why the write is not moved off, stated rather than assumed.** §11 item 6 reads verbatim:
+*"**Group-commit** event-log writes off hot path (WAL-buffered)."* The operation §11.6 places
+OFF the path is the GROUP-COMMIT; the mechanism keeping it off is that the hot path is
+*WAL-buffered* — it appends to the WAL and the commit drains it elsewhere. §11.6 therefore puts
+the WAL append ON the hot path by its own words, and `check_flatten` already banked that reading
+(`_BANNED_ON_EXIT` deliberately omits `nixrisk.wal`: *"a bounded in-process buffer append is not
+a wire"*). **And `buffering=0` is load-bearing, not an oversight**: it is what gets bytes into
+the page cache before `fsync`, which is the property `check_plane1_crash_gap` owns — bytes in the
+kernel survive a process crash, bytes in a `BufferedWriter` do not. Flipping that flag would
+green this arc by breaking another gate's subject. **Banked OPEN as D3.458** (the real §11.6
+shape is a bounded in-memory ring the off-path writer both drains and makes crash-visible — an
+architect ruling, not a flag).
+
+### S4 — `checks/check_hot_path_purity.py`, and the three mechanisms
+
+Purity by an **ALLOW-SET, never a ban-list** (the I3 ARM-6 pattern): a module root outside
+`_ALLOWED_ROOTS` is UNCLASSIFIABLE -> CANNOT_MEASURE naming it, never PASS. Entry points
+**DERIVED BY SHAPE**, never transcribed — the `GatePass` method that dispatches a `.evaluate`,
+the `LimiterLoop` method that calls `.take_in_flight`, and the public `StopBook` methods that
+**LOOP over** `self._by_symbol`. Read with `ast.walk`/`ast.iter_child_nodes`, never a bare
+`.keys` (the 049 cross-gate ratchet-erosion hazard).
+
+**THREE mechanisms, because S1 proved one is vacuous:** (1) `sys.setprofile` — every frame
+entered, so every root and every per-eval import; (2) `sys.addaudithook` (PEP 578) —
+`open`/`socket`/`subprocess`/`exec`/`os.*`, unbypassable but blind to writes on open
+descriptors; (3) **`/proc/self/io` `syscw`/`syscr` — raw kernel syscall counts, which is the
+only one that sees D3.400's write.** Mechanism 3 supplies the count, mechanism 1 supplies the
+site; neither alone is actionable.
+
+**The `nixrisk.wal` allow-set entry is BOUNDED three ways, not granted:**
+`MAX_WRITES_PER_APPROVAL = 1` (a second write is a FAIL, counted by the kernel); **any fsync on
+the hot path is an unconditional FAIL** (`os.fsync` IS the group-commit's blocking verb and
+§11.6's actual prohibition — measured 0 across 2,000 approvals); and **ARM 2, the
+DISCRIMINATOR** — the identical pass driven with the WAL swapped for a pure in-memory sink, whose
+write count must fall to **0**. It does. ARM 2 is what makes ARM 1's allow-set honest, the role
+`check_plane1_hot_path`'s synchronous control plays for its timings. Banked as **D3.459** that an
+allow-set is a measured property of today's path and refuses in the strict direction.
+
+**S3(b) — off-path work still HAPPENS**, because purity achieved by dropping the work is a worse
+bug: `sync_to_disk()` made 4,000 rows durable off-path (fsyncs 0 -> 1), §11.7's full-scan
+reconcile ran and saw the ledger, `FinancialPictureBook.commit()` raised the version the hot path
+then reads O(1).
+
+### The gate is BOUND — three plants, three distinguishable verdicts
+
+Planted into a **COPY** of the tree, driven through the gate's own positional `home` argument, so
+`scripts/nixrisk/` was never touched. **A exit 1** naming the `open`; **B exit 1** naming `queue`
+(per-eval import of a blocking primitive); **C exit 2** CANNOT_MEASURE naming `base64`; **plants
+removed, exit 0 on the same tree** (RED-before/GREEN-after on ONE tree, not two). Plus two more
+controls: breaking the derived shape (`_by_symbol` renamed) -> exit 2 naming ARM 6, and an empty
+home -> exit 2 rather than falling through to this checkout (D3.124). 7/7.
+
+### Four findings that were about the INSTRUMENT, and are recorded because they were measured
+
+1. **The first drill DENIED all 2,000 evaluations** — a port double answered `state`/`tradable`
+   where the frozen `SymbolFlagPort` verb is `read` — and every "no forbidden op" it printed was
+   true and worthless. This is why `MIN_APPROVALS` and the `total_reserved() > 0` assertion are in
+   the gate rather than in a comment.
+2. **The gate's first green run reddened on its own sibling arm**: ARM 4 calls `sync_to_disk()`
+   to prove the group-commit still happens, and the fsync assertion read the counter afterwards.
+   `fsyncs_on_path` is now snapshotted at the close of the gate arms and never re-read.
+3. **ARM 2's non-zero write count was CANNOT_MEASURE and should have been FAIL.** PLANT A exposed
+   it: the discriminator had POSITIVELY OBSERVED a writer it could name the count of. Cannot-measure
+   is for what an instrument could not see, never for what it saw.
+4. **The verdict ladder let an unclassifiable root MASK a positive observation.** PLANT A's
+   `open(..., encoding="utf-8")` drags in `codecs`, and the gate answered "codecs is
+   unclassifiable" — true, useless, and exit 2 where the operator needed exit 1 and the word
+   `open`. UNCLASSIFIABLE is now judged LAST, which is check contract rule 10's principle one
+   layer down: *a positively-observed claim outranks masking.*
+
+### Residual, named rather than implied
+
+**D3.460**: `GatePass.evaluate` has NO production caller — the shipped daemon's per-GO decision is
+`LimiterLoop.take_in_flight`, which enforces §3:140's one-in-flight lock and none of the other
+eight rules. The gate drives BOTH and its ARM 6 derivation names both by shape, so what is open is
+COVERAGE, not purity: seven of nine rules are proven pure of code `limiterd` does not yet run.
+That is the I1 daemon capstone's work, exactly as this brief's scope line says.
+
+`check_artifact_gate_coverage` GUARDED, ratchet unmoved at 8, its eight exclusions re-pointed
+`-> ARC 051` **before** this file names ARC 050 complete. That is the FIFTH consecutive
+arc-boundary bump on the same eight artifacts and the count is the fact worth reading: this
+brief calls D3.104 a pay-down candidate, not a perpetual re-point, and this bump does not answer
+that.
+
+### An ops finding this arc caused, measured, and must not bury
+
+**`--basetemp` inside `~/nix` filled the disk — 620 GB, `/` at 100%.** The tree-copying tests
+(`test_check_order_path_bans` and siblings) copy the WHOLE canonical tree into `tmp_path`, so a
+basetemp under `scratchpad/` makes each copy re-copy its own growing destination, every level
+carrying the 137 MB `.dmg`. This was cc's flag, not the test's defect. Nothing was corrupted —
+`SESSION.md`, `RESULTS.md`, `CHECK-DEBT.md`, both JSON baselines and both new Python files were
+re-verified intact after the recovery — but that was luck: a write-back landing mid-fill would
+have truncated a banked file. **CLAUDE.md's pre-flight says "basetemp clean"; what this measured
+is that basetemp must be OUTSIDE `~/nix` entirely, because the tests copy `~/nix`, and a cleaned
+basetemp inside the tree is still a recursive one.** Banked **D3.462** with a mechanical discharge
+(a `conftest.py` that REFUSES a basetemp under the canonical tree — rule 8). Re-run from
+`/var/tmp/arc050_pt`; disk back to 727 GB free.
+
+**Badge: I9 DISCHARGED. Clean `{I2, I3, I4, I5, I6, I7, I8, I9, I10, I11} = 10/12`, open = 2
+(`I1`, `I12`). Limiter STAYS RED. Ledger 382 D3 rows, derived.**

@@ -1,151 +1,132 @@
-# ARC 049 — RESULTS — Limiter slice 9: I4, two-phase entry (OPEN only on confirmed fill)
+# ARC 050 — RESULTS. Limiter slice 10: **I9 DISCHARGED → 10/12.** Limiter STAYS RED.
 
-**Tier: INTERIOR. Limiter STAYS RED. I4 DISCHARGED: 8/12 -> 9/12.**
-**Predecessor tip DERIVED: `e6835fb`** (the brief's ≈`b462121` is 048's I3 commit, not the tip).
+**Tier INTERIOR.** Predecessor **DERIVED**: the brief said "≈ `67ce36f`"; `git rev-parse HEAD`
+said **`89e0e2a`**. Everything frozen and diffed against `89e0e2a`.
 
-## Headline
+## Measured baseline, and one prediction the measurement refused
 
-**I4 was MET IN CODE. The defect was the PROOF, and the proof is now a gate.** Five sites in the
-shipped tree originate `OPEN`, all five behind a confirmed fill, and the eight-surface drive is
-unchanged from ARC 038: an ack opens nothing, a fill opens everything. What was missing was an
-absence proof that could survive the next edit — and the standing one could not.
+**`91 passed | 4 failed | 2 cannot-measure | 0 skipped | 1 guarded`, exit 1 at `89e0e2a`.**
 
-## S1 — the defect, reproduced on a copy
+FAILs: `check_ibgateway_service` (4002 ECONNREFUSED), `check_monitor_tui` (stale pin),
+`check_uncalled_entry_points` (54 findings), `check_untracked_attribution`
+(`downloads/Pinokio-8.0.40-arm64.dmg`, still present, NOT deleted — not this arc's file to rule on).
 
-`test_arc038_c_open_is_confirmed_fill.py::test_OPEN_is_WRITTEN_at_EXACTLY_TWO_SITES_and_PENDING_at_NONE`
-derives the OPEN-setter set by `grep -rn "state=PositionState.OPEN"` and asserts the set of MODULES.
-Planted into a throwaway copy: a phantom path publishing §3's row with `state=_ENTRY_STATE`, where
-`_ENTRY_STATE = PositionState.OPEN` sits at module level.
+**The brief predicted `check_arc_status_contract` would read cannot-measure at this baseline. It
+read PASS**, auditing `arc_049.log`. Recorded as measured, not as predicted (directive 2).
 
-* the standing control: **GREEN**, `sites == {positions.py, projection.py}` still holds
-* the by-shape census: **5 originators -> 6**, naming `positions.py::publish_on_ack`
+## Gate ownership census — stated BEFORE the run, and it decided the delta
 
-It is also module-granular (`projection.py`'s three `build.state = STATE_OPEN` transitions were
-outside its match entirely) and it is a pytest control, so **`verify.py` had no arm for I4 at all.**
+Four gates in this tree touch the words "hot path". **None owned this property.**
 
-## S2 — empty by design, proven byte-identical
-
-Twelve frozen paths, `git hash-object` before and after, all IDENTICAL: `positions.py`,
-`projection.py`, `picture.py`, `seam.py`, `completions.py`, `fills.py`, `limiterd.py`, `flatten.py`,
-`outcomes.py`, `reservations.py`, `nixalloc/mirror.py`, `execution.py`. `CORRECTABLE = False`.
-
-## S3/S4 — `checks/check_two_phase_entry.py`
-
-**ARCHITECT DECISION NEEDED / TAKEN — the brief's premise was false.** It asked me to find and
-EXTEND "the gate that owns the entry-state / two-phase discipline". Censused across all 98 gates:
-**no gate owns it.** `check_execution_ledger` owns the ledger's arithmetic and says in its own text
-that nothing there proves the state model calls it; `check_fill_handler` owns the fill motion;
-`check_origin_write` owns `stop_distance`'s value; `check_plane1_projection` owns rebuildability;
-`check_limiter_gate`'s "two-phase" is §3's gate-wall, a different property under the same words.
-Doctrine C.9 forbids a SECOND instrument for an OWNED property; this one was unowned, and folding it
-into any of those four would have merged two properties against §5.5. **So a NEW gate, and `passed`
-moves +1** — a departure from the brief's predicted delta, stated before the run.
-
-* value domain **DERIVED** from `seam.py`'s enum, not spelled; aliases resolved to a fixpoint, so
-  `PositionState.OPEN`, `PositionState("open")`, `STATE_OPEN`, `"open"`, ternaries and local names
-  all resolve alike (D3.426)
-* three-way fail-closed: ORIGINATOR / TRANSPORT / **UNCLASSIFIABLE => CANNOT_MEASURE naming it**
-* each accepted originator carries a **named structural precondition re-derived from the AST every
-  run** (`_row` only from `on_fill` which ingests first; `_on_fill` bound to `EVENT_FILLED` alone;
-  the two projection handlers refuse BEFORE the transition — the order is checked; `fold_events`
-  still filters `qty_filled > 0`), keyed by `(module, function)`, never by line number
-* driven on real objects with non-vacuity asserted first, and **watched past the tick** (a REJECT
-  release after the ack, every surface re-read)
-
-### Demonstrated FAIL
-
-| plant | verdict | exit |
+| gate | what it owns | I9? |
 |---|---|---|
-| A (driven) — ack publishes optimistically | FAIL — `PHANTOM POSITION … ['phantom-0'] reading OPEN` | 1 |
-| A (static) — same defect through an alias | FAIL — `UNDECLARED OPEN-SETTER in publish_on_ack` | 1 |
-| B — confirmed fill never reaches OPEN | FAIL — `UNPROTECTED REAL POSITION … ['c-fill-1:pending:2']` | 1 |
-| B (gate) — `qty_filled == 0` refusal removed | FAIL — invisible to every drive; derived statically | 1 |
-| C — unresolvable `state` expression | CANNOT_MEASURE naming it | 2 |
-| plants removed | PASS — 100 modules, 5 originators, 3 drives | 0 |
+| `check_plane1_hot_path` | §11.6 group-commit **latency** isolation, a µs relation over one off-path item; D3.400 records it times a `GatePass` with `ledger=None` | no |
+| `check_limiter_gate.arm_hot_path` | §11.3's O(1)-in-\|positions\| **shape**; µs explicitly excluded from its verdict (D3.39) | no |
+| `check_flatten` ARM 6 | wire-freedom of the **exit** path | no |
+| `check_pollers` | that §6.4's caches are **maintained** | no |
 
-**A gate defect the plant found:** PLANT A made the ack arm RED and the fill arm unmeasurable, and
-the first draft returned the refusal — light-blue over a measured phantom. Rule 4 orders
-Fail > Cannot-measure for exactly this; unmeasured arms now ride alongside the FAIL, not instead.
+→ **NEW gate is correct (doctrine C.9 permits a new instrument for a new property). Predicted
+`passed +1` before the run.**
 
-## D3.455 — DISCHARGED
+## S1 — I9 was NOT met-in-code. The charter's defect, reproduced.
 
-By the row's OWN stated mechanism: `arc_heartbeat.sh` writes its own log by default (twelve lines),
-named from the progress file's `arc=` line, so a beat cannot be emitted without being recorded and
-never under another arc's name. **Plus** the durable half: `check_arc_status_contract` excludes the
-RUNNING arc's log by name, audits the immediately-previous arc, and NAMES it —
-`AUDITED ARC 048 (arc_048.log): arc=048 pulses=9 teardowns=1 wd_pid=434005`. Nothing older inside the
-freshness window is CANNOT_MEASURE naming what is missing, never a fall-back pass. 8 tests including
-the demonstrated FAIL. **D3.433's one-arc-late cadence is unchanged and still open.**
+I9's charter names *"a synchronous I/O or compute on the gate path"*. 2,000 real APPROVE
+decisions through the shipped path, non-vacuous (`{'APPROVE': 2000}`, Σ reserved 16,000,000):
 
-## NOT CLAIMED — needs an architect ruling
+| arm | raw `write(2)` | PEP-578 events | roots |
+|---|---|---|---|
+| A per-GO gate | **2000 = 1.000/approval** | **0** | gate, reservations, seam, **wal**, **json**, enum |
+| B per-tick stop-eval (\|stops\|=5) | 0 | 0 | stops, seam, dataclasses |
+| C O(1) aggregate reads | 0 | 0 | picture, reservations |
 
-**D3.372 stands and is why I4's discharge is narrower than I4's sentence.** A confirmed fill whose
-origin write is REFUSED (`UntradableSymbol`, §4:198) leaves §3's table and §12.7's mirror reading
-FLAT over a real position and records only a counter — a real *confirmed fills ⊄ OPEN* case. The new
-gate drives the ACCEPTING path and **names this refusal as out of scope in its evidence on every
-run**, so no green covers it. Owner re-pointed ARC 039 (ten arcs stale) -> ARC 050+. **The ruling
-still owed: WHICH surface carries the not-tradable condition** — publish the row anyway (with what
-margin figure?) or hand `nixrisk.flatten` an `UNCERTAINTY` trigger from that site, plus a consumer.
+**THE HEADLINE IS NOT THE COUNT — IT IS THAT THE AUDIT HOOK SAW NOTHING.** Zero PEP-578 events
+against 2,000 kernel `write(2)`. `Plane1Wal` opens `buffering=0` and appends through
+`_io.FileIO.write` on an already-open descriptor; PEP 578 audits `open`, not `write`. **An
+audit-hook-only purity gate is vacuous by construction** — now a measurement of this tree, not a
+hypothesis. Banked **D3.461**, scoped to the mechanism: `scripts/nixverify/observe.py` inherits
+the blind spot and its "NOT observed" table does not name it.
 
-Also not claimed: the pending-timeout resolution (`query_order_status`, never an auto-resend) is the
-POLL path = **I1 ARC A**. D3.450 and D3.453 stand untouched.
+## S2 — EMPTY BY DESIGN. Subject byte-identical.
 
-## A pre-existing red found by the write-back, and fixed
+`git hash-object` vs `89e0e2a`, all IDENTICAL: `gate.py` `69eef09f` · `stops.py` `ca907302` ·
+`loop.py` `723feacc` · `wal.py` `bf9c08f1` · `reservations.py` `ecf9d22d` · `picture.py`
+`dcbb5a67` · `flatten.py` `d2c825f7` · `positions.py` `1561c8e2` · `projection.py` `2ee2ef13` ·
+`outcomes.py` `ebff41ad` · `fills.py` `847af3de` · `fill_seam.py` `339ca62f` · `plane1_sink.py`
+`a6f0027d` · `limiterd.py` `432781f8`. **`CORRECTABLE = False` honoured in fact.**
 
-The pre-commit gate refused the commit on `test_restated_figures::test_the_LIVE_LEDGER_no_longer_
-contradicts_itself`. **Already red on trunk** (verified by stashing this arc's write-back files and
-re-deriving), carried as `recorded_failures=1`. **ARC 047's row is CORRECT; the instrument was
-wrong**: `restated_figures` ended the `Opened:` passage on `". "` and that row closes `…balance).**`
-— a period against bold markup, no space — so the segment ran on and counted `(D3.177)`, cited two
-sentences later, as a fifth opening. The SAME failure mode `_segment`'s docstring already records for
-ARC 020, under a different spelling; `discharged_count` already stopped at `"**"`, and the asymmetry
-was the defect. Fixed by adding `".**"` to the stop set: **live-ledger defects 2 -> 0**, no other
-row's reconciliation moved, bound by two new tests (the bold sentence end stops the passage; the
-narrowed stop still REFUTES a wrong total). 41 -> 43 tests. ARC 047's banked row was NOT edited and
-`--no-verify` was NOT used.
+**Why the write is not moved off — argued from the spec, not assumed.** §11.6 verbatim:
+*"**Group-commit** event-log writes off hot path (WAL-buffered)."* What §11.6 puts OFF the path
+is the group-commit; the mechanism is that the hot path is *WAL-buffered*. §11.6 therefore places
+the WAL append ON the path by its own words, and `check_flatten` already banked that reading.
+**And `buffering=0` is load-bearing**: it is what gets bytes into the page cache before `fsync`,
+which is `check_plane1_crash_gap`'s property. Flipping it would green this arc by breaking
+another gate's subject. **Banked OPEN as D3.458** — the real §11.6 shape is an architect ruling,
+not a flag.
 
-**One more thing the gates caught on each other, worth keeping.** The new gate read `_HANDLERS` with
-`node.value.keys`, and `check_uncalled_entry_points` resolves a public entry point BY RECEIVER TYPE:
-a bare `.keys` on an expression it cannot type moved a real finding —
-`freshness.py::SourceMonotonicGuard.keys` — from `uncalled` to `cannot_resolve`, which its own
-baseline arm correctly reported as a stale row. **A new instrument was eroding an existing one's
-ratchet as a side effect of how it SPELLS an AST read.** Rewritten to `ast.iter_fields`, and the
-reason is in the code beside it. `check_uncalled_entry_points` is back to its byte-identical
-baseline, 54 measured / 25 rendered.
+## The gate: `checks/check_hot_path_purity.py`
 
-## Ledger
+* **ALLOW-SET, not a ban-list.** A root outside `_ALLOWED_ROOTS` ⇒ CANNOT_MEASURE naming it,
+  never PASS.
+* **Entry points DERIVED BY SHAPE** — the `GatePass` method dispatching a `.evaluate`, the
+  `LimiterLoop` method calling `.take_in_flight`, the public `StopBook` methods that **LOOP over**
+  `self._by_symbol` (§15's one permitted traversal). `ast.walk`/`iter_child_nodes`, never a bare
+  `.keys` (the 049 hazard).
+* **THREE mechanisms**, because S1 proved one is vacuous: `sys.setprofile` (frames + per-eval
+  imports) · `sys.addaudithook` (open/socket/subprocess/exec) · **`/proc/self/io` `syscw`** (the
+  only one that sees D3.400's write). Count from 3, site from 1.
+* **The `nixrisk.wal` permission is BOUNDED three ways**: `MAX_WRITES_PER_APPROVAL = 1`; **any
+  hot-path fsync is an unconditional FAIL** (that is §11.6's actual prohibition — measured 0 over
+  2,000 approvals); and **ARM 2, the DISCRIMINATOR** — the same pass with the WAL swapped for an
+  in-memory sink must record **0** writes. It does. ARM 2 is what makes ARM 1 honest.
+* **ARM 4 — the off-path work still HAPPENS**: 4,000 rows made durable off-path (fsyncs 0→1),
+  §11.7's full-scan reconcile ran and saw the ledger, `commit()` raised the version the hot path
+  reads O(1). Purity by dropping the work would be a worse bug.
 
-**+1 net.** OPENED: **D3.456** (the census scopes bare `.state =` to modules naming a state value;
-a cross-module alias is outside it — stated where the boundary is drawn), **D3.457**
-(`projection.py::position_rows` stamps OPEN on every stored row unconditionally; safe only because
-`fold_events` filters upstream, which the gate now re-derives every run). DISCHARGED: **D3.455**.
-**Series row 403**, read off `check_derived_claims`'s `derived:ledger_rows`, never typed.
-The eight `gate_coverage_baseline.json` exclusions re-pointed 049 -> 050 before close-out, with the
-reason recorded: **fourth consecutive arc of boundary maintenance on the same eight artifacts** —
-D3.104's overdue-work case carried, not paid.
+**BOUND — 7/7, plants into a COPY of the tree so the subject was never touched:**
+**A** `open` on the gate path → **exit 1**, names the op · **B** per-eval `import queue` →
+**exit 1**, names it · **C** unclassifiable `base64` → **exit 2** CANNOT_MEASURE, names it ·
+**plants removed → exit 0 on the same tree** · derived shape broken → exit 2 naming ARM 6 ·
+empty home → exit 2, no fall-through (D3.124).
 
-## Measurement
+## Four findings about the INSTRUMENT, recorded because they were measured
 
-* **BASELINE at `e6835fb`: `89 | 4 | 3 | 0 | 1`, exit 1.** Not 048's closing `90 | 4 | 2 | 0 | 1`,
-  and the difference is this arc's own kickoff: the D3.455 tee creates `arc_049.log` before Stage 1,
-  so `check_arc_status_contract` (which took the NEWEST log) read a run in flight. 048's `[ok]` over
-  `arc_047.log` and this `[??]` over `arc_049.log` are the same defect from its two sides.
-* **PREDICTED: `91 | 4 | 2 | 0 | 1`** — +1 for the new gate file, +1/-1 for
-  `check_arc_status_contract` flipping to PASS under the patch. 97 -> 98 checks.
-* **RE-MEASURED at `67ce36f`: `91 | 4 | 2 | 0 | 1`, exit 1. PREDICTION HIT.**
-  `check_two_phase_entry` `[ok]` (new gate file, 97 -> 98 checks) and
-  `check_arc_status_contract` `[ok]` against `arc_048.log` — CANNOT_MEASURE at the baseline, PASS
-  now, and the verdict NAMES the arc: `AUDITED ARC 048 (arc_048.log): arc=048 pulses=9 teardowns=1
-  wd_pid=434005`. Set beside ARC 048's own line, that naming is the whole D3.455 fix: 048 was green
-  over `arc_047.log` with nothing saying so.
-  Standing and untouched: gateway down (1 FAIL + 2 CANNOT-MEASURE), `check_monitor_tui` ARM3 stale
-  pin, `check_uncalled_entry_points` at a byte-identical 54/25, the `.dmg`. Coverage GUARDED at
-  8 exclusions -> ARC 050.
-  **The prediction departed from the brief's and said so BEFORE the run**: the brief assumed both
-  changes extend existing gates; no gate owned this property, so it is +1 for a new file.
+1. The first drill **denied all 2,000** — a port double answered the wrong verb, and every "no
+   forbidden op" it printed was true and worthless. Hence `MIN_APPROVALS` and the Σ-reserved
+   assertion live in the gate.
+2. The gate's first green run **reddened on its own sibling arm** — ARM 4's `sync_to_disk()` ran
+   before the fsync assertion read the counter. `fsyncs_on_path` is now snapshotted.
+3. **ARM 2's non-zero write count was CANNOT_MEASURE and should have been FAIL.** It had
+   *positively observed* a writer. Cannot-measure is for what an instrument could not see.
+4. **The ladder let an unclassifiable root mask a positive observation** — PLANT A's `codecs`
+   beat its own `open`. UNCLASSIFIABLE is now judged LAST: rule 10's principle one layer down.
+
+## Debt banked
+
+**D3.462** basetemp-inside-the-tree recursion (this arc caused it) · **D3.458** 1 `write(2)`/approval, `buffering=0` vs §11.6's "WAL-buffered" — and why the flag must
+NOT be flipped · **D3.459** the allow-set is a measured property of today's path (D3.454's shape)
+· **D3.460** `GatePass.evaluate` has no production caller; the daemon's decision is
+`take_in_flight`, so seven of nine rules are proven pure of code `limiterd` does not yet run —
+I1's work · **D3.461** the PEP-578 write blind spot, scoped to the mechanism and to `observe.py`.
+
+## Not claimed
+
+D3.372 · D3.450 · D3.453 (I1 ARC C) · **D3.104** — its eight exclusions re-pointed `→ ARC 051`
+**before** SESSION.md named this arc complete. **Fifth consecutive bump on the same eight
+artifacts.** The brief calls it a pay-down candidate, not a perpetual re-point; this bump does
+not answer that.
+
+## An ops finding this arc CAUSED — reported, not buried
+
+**`--basetemp` inside `~/nix` filled the disk: 620 GB, `/` at 100%.** The tree-copying tests copy
+the WHOLE canonical tree into `tmp_path`, so a basetemp under `scratchpad/` makes each copy
+re-copy its own growing destination, every level carrying the 137 MB `.dmg`. **cc's flag, not the
+test's defect.** Nothing was corrupted — every written artifact was re-verified intact afterwards
+— but that was luck, not design. **The rule this measured: basetemp must be OUTSIDE `~/nix`
+entirely, because the tests copy `~/nix`; a cleaned basetemp inside the tree is still a recursive
+one.** Banked **D3.462** with a mechanical discharge. Re-run from `/var/tmp/arc050_pt`; disk back
+to 727 GB free.
 
 ## BADGE
 
-**I4 DISCHARGED. Clean `{I2, I3, I4, I5, I6, I7, I8, I10, I11} = 9/12`, open = 3
-(`I1`, `I9`, `I12`). Limiter STAYS RED.** Three-quarters of the module. Remaining: **I1** (the
-4-arc daemon capstone), **I9**, **I12** — then greening.
+**I9 DISCHARGED. Clean `{I2, I3, I4, I5, I6, I7, I8, I9, I10, I11} = 10/12`, open = 2
+(`I1` daemon capstone, `I12` freshness). Limiter STAYS RED.**
