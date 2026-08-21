@@ -8170,3 +8170,29 @@ discharged), read off the instrument, not typed.
 * **Nothing reaches a venue.** `RecordedVenue.flatten` records; there is no vendor integration.
 * **No green here means the daemon has real prices** (D3.473) or **that it can hold a trailing stop**
   (D3.474).
+
+### POST-WRITE-BACK RE-MEASURE — ARC 055
+
+Measured on the MERGED tree at `4601a06` (the arc's own write-back commit), after `SESSION.md` and
+`RESULTS.md` landed and after every one of this arc's untracked files became tracked:
+
+```
+94 passed | 5 failed | 2 cannot measure | 0 skipped     exit 1
+```
+
+**PREDICTION MET.** Baseline at the derived tip `66f9f8b` was `93 | 5 | 2 | 0`; the predicted delta
+was `+1 passed` from a genuinely unowned `check_stop_maintenance` and no other movement; the merged
+tree measures `94 | 5 | 2 | 0`.
+
+The five reds are the standing set, unchanged by this arc:
+
+| check | why |
+|---|---|
+| `check_arc_status_contract` | audits `arc_054.log`, which carries no `HEARTBEAT SELF-VERIFY: ok` before its marker. Banked evidence, not rewritten (directive 6). ARC 055's own log carries the line, so ARC 056 measures PASS. |
+| `check_ibgateway_service` | `127.0.0.1:4002` — no gateway on this box. Environmental, standing. |
+| `check_monitor_tui` | `scripts/monitor.py` — the operator-deprecated MON-1 trio (D3.113). Standing. |
+| `check_uncalled_entry_points` | the ratchet. **It did NOT move in this arc** — every new public entry point on `stopwatch.py`, `StopWatchDriver`, `RecordedVenue` and `SenderThread` has a call site. |
+| `check_untracked_attribution` | `downloads/Pinokio-8.0.40-arm64.dmg`, the operator's file. This arc's own new artifacts are gone from the list because they are committed. |
+
+`check_stop_maintenance` is PASS at the merged tree on all four arms, and `check_hot_path_purity` is
+PASS with ARM 3c over the new poll.
