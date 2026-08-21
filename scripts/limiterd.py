@@ -130,11 +130,11 @@ import signal
 import sys
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
-from typing import Any, Final
+from typing import Any, Final, cast
 
 import risk_config
 from nixrisk.completions import (
@@ -151,6 +151,16 @@ from nixrisk.fills import (
     IocRemainder,
     LimiterFillSink,
 )
+
+# ARC 054. I11's onset SELECTION, IMPORTED AND CALLED — never re-implemented and
+# never edited. `flatten.py` is byte-identical across this arc and that is
+# asserted with `git hash-object`, not claimed (see the ARC 054 block below).
+from nixrisk.flatten import (
+    BrokerFlattenPort,
+    OrderRole,
+    PendingEntry,
+    ProtectiveFlatten,
+)
 from nixrisk.join import production_origins
 from nixrisk.loop import (
     CONFIG_MODULE,
@@ -166,7 +176,14 @@ from nixrisk.picture import FinancialPictureBook
 from nixrisk.positions import PositionOriginWriter
 from nixrisk.recovery import RecoveryError
 from nixrisk.reservations import ReservationLedger
-from nixrisk.seam import EventKind, EventRow, ProposedOrder, Side, StopMode
+from nixrisk.seam import (
+    EventKind,
+    EventRow,
+    ProposedOrder,
+    Side,
+    StopMode,
+    TerminalPath,
+)
 from nixrisk.stops import StopBook
 from nixrisk.wal import Plane1Wal, WalError
 from nixsentinel.heartbeat import DEFAULT_HEARTBEAT_NAME, HeartbeatPublisher
@@ -1013,7 +1030,7 @@ class LoopHandler:
 # the loop's per-item callback and nothing else calls it; a second method added
 # to clear a threshold would widen a surface whose narrowness is the point.
 # pylint: disable=too-few-public-methods
-class CommandHandler:
+class CommandHandler:  # pylint: disable=too-many-instance-attributes
     """Turns one `RawCommand` into one reply file. NEVER RAISES.
 
     Fail-closed and contained (directive 4, and `nixrisk/loop.py`'s own
@@ -1023,14 +1040,16 @@ class CommandHandler:
     Sentinel watching, so an unparsable file is answered, not fatal.
     """
 
-    # R0913/R0917 refused with a reason: SEVEN parameters and six of them are
-    # COLLABORATORS this process owns and hands in — the loop, the outbox, §11.3's
-    # ledger, §5:322's dispatcher, §4's fill path and §4's timeout poller — plus
-    # one §12A ceiling read at boot. Bundling them into a config object would put
-    # a container between this handler and the objects whose ABSENCE it reports
-    # differently from their emptiness (`_picture()`'s `None`-vs-0.0 argument, and
-    # check contract rule 10 underneath it), and every one is optional precisely
-    # so that difference stays visible.
+    # R0913/R0917 refused with a reason: every parameter but the last is a
+    # COLLABORATOR this process owns and hands in — the loop, the outbox, §11.3's
+    # ledger, §5:322's dispatcher, §4's fill path, §4's timeout poller, §3:173's
+    # onset watch and D3.443's pending-entry book — plus one §12A ceiling read at
+    # boot. Bundling them into a config object would put a container between this
+    # handler and the objects whose ABSENCE it reports differently from their
+    # emptiness (`_picture()`'s `None`-vs-0.0 argument, and check contract rule 10
+    # underneath it), and every one is optional precisely so that difference stays
+    # visible. The count is stated as a rule rather than a number because a number
+    # here goes stale the moment the next collaborator lands (directive 3).
     def __init__(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self,
         loop: LimiterLoop,
@@ -1039,6 +1058,8 @@ class CommandHandler:
         dispatcher: CompletionDispatcher | None = None,
         fills: FillPath | None = None,
         timeouts: PendingTimeoutPoller | None = None,
+        onset: OnsetWatch | None = None,
+        book: PendingEntryBook | None = None,
         signal_max_age_s: float | None = None,
     ) -> None:
         self._loop = loop
@@ -1055,6 +1076,13 @@ class CommandHandler:
         #: an empty stop book, because *no fill path* and *a fill path holding
         #: nothing* are two readings (check contract rule 10).
         self._fills = fills
+        #: ARC 054. §3:173's onset watch and D3.443's pending-entry book, both
+        #: optional on the same argument and for the same reason: `onset: null`
+        #: says *this build cannot be told about an onset*, which is a different
+        #: fact from *no onset arrived*, and the entries that survive the two are
+        #: loose for different reasons.
+        self._onset = onset
+        self._book = book
         #: ARC 053. §4's pending-timeout poller, optional on the same argument:
         #: `timeouts: null` says *this build does not poll* and is a different
         #: fact from a poller that has run and found nothing due.
@@ -1384,6 +1412,14 @@ class CommandHandler:
             # readings, and the zombie this arc exists to kill lives in the gap
             # between them.
             "timeouts": None if self._timeouts is None else self._timeouts.record(),
+            # ARC 054. §3:173's onset sweep as the RUNNING process reports it,
+            # and the pending-entry set it sweeps — both ENUMERATED, for the
+            # reason `fills` is: the safety question is *did the sweep reach
+            # every one of these and leave the exits alone*, and no pair of
+            # totals can answer it. `None` where absent, so *this build has no
+            # onset surface* stays distinguishable from *no onset arrived*.
+            "onset": None if self._onset is None else self._onset.record(),
+            "pending_entries": None if self._book is None else self._book.record(),
         }
 
     # -- reply plumbing -----------------------------------------------------
@@ -1842,6 +1878,498 @@ class PendingTimeoutPoller:
         }
 
 
+# ===========================================================================
+#  ARC 054 — §3:173's ONSET SWEEP: THE DAEMON CANCELS, AND IT CANCELS ALL.
+#
+#  THE SAFETY SPINE OF THIS ARC, stated where the code is. §3:172-174 is ONE
+#  sentence: *"Blackout/HALT onset => Limiter cancels all pending ENTRY orders
+#  (exits untouched) — no order may fill inside a window it was not approved
+#  for."* It has TWO halves and they fail in opposite directions:
+#
+#  COMPLETE. Every in-scope pending ENTRY must reach the venue as a cancel. An
+#  entry the sweep never sees is an entry that FILLS inside a window §3:174 says
+#  it was never approved for, with §3's reservation covering a position nobody
+#  authorised. That is why `PendingEntryBook` below derives its set from the
+#  daemon's OWN order state rather than taking a hand-written list: a list is
+#  complete on the day it is written and silently incomplete on every day after.
+#
+#  SELECTIVE. Only entries. A pending exit and a protective stop are UNTOUCHED
+#  (§3:173, §14) — cancelling a stop inside a blackout leaves a REAL position
+#  unprotected inside the window, which is the live bug ARC 045 measured, and it
+#  must not reappear one layer up. This daemon does not re-decide that: the
+#  selection is `flatten.ProtectiveFlatten._classify_for_onset`'s, proven at
+#  ARC 045, and `flatten.py`/`blackout.py` are byte-identical across this arc
+#  (asserted with `git hash-object`, not claimed). The whole change is that
+#  something with a pid now CALLS it.
+#
+#  WHY THE ENUMERATION HAD TO BE BUILT FIRST (D3.443, D3.349 lineage). Both
+#  onset call sites in shipped code — `blackout.py:_fire_onset` and
+#  `halt.py:_sweep_pending_entries` — iterate a `PendingEntriesPort`, and the
+#  census at ARC 054 / S1 found FIVE `def pending_entries` in the tree: two
+#  Protocol declarations and three test doubles. ZERO production producers. The
+#  sweep's input was a docstring promise, so no running process could invoke it
+#  even where one was constructed — and none was: `HaltFlag` and
+#  `BlackoutEvaluator` have no production construction site at all.
+#
+#  WHY THE DAEMON DETECTS THE EDGE ITSELF, AND WHAT THAT DOES NOT CLAIM.
+#  `BlackoutEvaluator._observe_edge` is §6.1's real per-symbol detector and
+#  `HaltFlag.set` is §12.5's real global one, and both already fire the sweep on
+#  the 0->1 edge only. Neither is constructible here: the first needs §6.4's
+#  window cache and the vendored calendar (this process has no poller and no
+#  calendar), and the second needs §12.5's cooldown floors, a marker and a
+#  Plane-2 emitter — a HALT-flag lifecycle this daemon does not have. So the
+#  ONSET ARRIVES FROM OUTSIDE, as a declared state, and `OnsetWatch` holds the
+#  prior state and fires on the transition. What is proven here is the DISPATCH:
+#  an onset transition reaching this process cancels every in-scope pending
+#  entry and leaves the exits alone. What is NOT claimed is that this process
+#  DETECTS a blackout window or DECLARES a HALT; both are named debt.
+# ===========================================================================
+
+#: ARC 054. §3:173's onset state, read where `completions/` and `status/` are
+#: read and for the same reason (see the module docstring): there is no bus in
+#: this tree, and an onset path that needed one could not be driven by the
+#: out-of-process gate that has to prove the DAEMON sweeps rather than the
+#: library. ONE file holding the WHOLE state rather than a queue of events,
+#: because an edge is a comparison between two states and a queue of edges
+#: would be the producer's opinion about a transition instead of this process's
+#: own measurement of one.
+ONSET_DIR: Final[str] = "onset"
+ONSET_STATE_NAME: Final[str] = "state.json"
+
+
+@dataclass(frozen=True)
+class InFlightOnly:
+    """An order holding §4:208's lock with NO reservation. DELIBERATELY role-less.
+
+    ARC 054. `pending_entries()` is COMPLETE over the daemon's whole order state,
+    and that state has two records, not one: §11.3's reservation ledger (the
+    money) and §4:208's one-in-flight lock (the registry). An order can hold the
+    lock without holding a reservation — `reserve` and the in-flight take are two
+    commands and nothing forces their order — and such an order can still FILL.
+    Omitting it would make the enumeration silently incomplete; declaring it an
+    ENTRY would be a claim this process cannot support, because the money record
+    that §3 admits an order by (*"approve => TAKE RESERVATION"*) has nothing for
+    it.
+
+    So it is handed over carrying NO `role` attribute and NO `symbol`, which is
+    not an oversight: `_classify_for_onset` reads `getattr(entry, "role", None)`
+    and then asks the ledger, finds nothing, and buckets it `unclassified` with a
+    reason that names it — which makes `OnsetCancellation.complete` False and the
+    §12.10:753 sweep field report `partial` rather than claiming a clean sweep.
+    A fixed list of kinds that meets a kind it does not know must say
+    CANNOT-MEASURE, never PASS (the I2/D3.440 lesson, applied to an enumeration).
+    """
+
+    client_order_id: str
+    strategy_id: str
+
+
+class PendingEntryBook:
+    """ARC 054 / D3.443. The production `pending_entries()`. COMPLETE BY DERIVATION.
+
+    Satisfies `blackout.PendingEntriesPort` and `halt.PendingEntriesPort` — one
+    book for both onsets, which is the shape those two ports were deliberately
+    given (*"§3:173 is ONE sentence covering blackout and HALT, and two
+    incompatible port shapes would guarantee two books"*).
+
+    THE DERIVATION, and why it is a derivation rather than a list
+    ------------------------------------------------------------
+    §3's pipeline is *"approve => TAKE RESERVATION (proposed margin)"*, so the
+    set of orders this process has approved and not yet resolved is EXACTLY the
+    TAKEN set of §11.3's ledger — the same set `Σ reservations` is derived from,
+    the same set `OrderOutcomes.due_for_status_query` reads, and the same set
+    `_classify_for_onset` admits an order by. Every terminal path removes an
+    order from it: `on_cancel`, `on_reject`, §4's fill conversion, §4's
+    pending-timeout release, and the onset release itself. An order absent from
+    it is therefore either never approved or already over, and neither is
+    pending.
+
+    The lock record is added to that (see `InFlightOnly`) so the book is complete
+    over BOTH of the daemon's order records rather than over the convenient one.
+
+    Nothing is cached. A private copy of the pending set would be a second home
+    for a fact §11.3 already owns, and the two could disagree at exactly the
+    instant the disagreement leaves an entry working inside a window.
+    """
+
+    def __init__(
+        self,
+        reservations: ReservationLedger,
+        approvals: ApprovedOrderBook,
+        loop: LimiterLoop,
+    ) -> None:
+        self._reservations = reservations
+        self._approvals = approvals
+        self._loop = loop
+        #: Observables, for the reason every counter in this file is one: a
+        #: component that cannot say what it did can only be believed.
+        self.enumerations = 0
+        self.last_reserved = 0
+        self.last_in_flight_only = 0
+
+    def pending_entries(self) -> tuple[object, ...]:
+        """Every pending ENTRY order this process holds. DERIVED on every call."""
+        self.enumerations += 1
+        entries: list[object] = []
+        held: set[str] = set()
+        for reservation in self._reservations.outstanding():
+            coid = str(reservation.client_order_id)
+            held.add(coid)
+            # The declared role is ENTRY only where this process's OWN approval
+            # book holds a `ProposedOrder` for the id — §3's entry proposal, and
+            # the only order kind that reaches `ApprovedOrderBook`. A declared
+            # role can only ever EXCLUDE an order from the sweep (see
+            # `_classify_for_onset`), never admit one, so declaring it where it
+            # is provable and withholding it where it is not costs the sweep
+            # nothing and misleads it nowhere.
+            if self._approvals.order_for(coid) is None:
+                entries.append(
+                    InFlightOnly(
+                        client_order_id=coid, strategy_id=str(reservation.strategy_id)
+                    )
+                )
+                continue
+            entries.append(
+                PendingEntry(
+                    client_order_id=coid,
+                    strategy_id=str(reservation.strategy_id),
+                    symbol=str(reservation.symbol),
+                    role=OrderRole.ENTRY,
+                )
+            )
+        self.last_reserved = len(held)
+        in_flight_only = [
+            InFlightOnly(client_order_id=coid, strategy_id=strategy_id)
+            for strategy_id, coid in self._loop.in_flight_holders()
+            if coid not in held
+        ]
+        self.last_in_flight_only = len(in_flight_only)
+        entries.extend(in_flight_only)
+        return tuple(entries)
+
+    def record(self) -> dict[str, Any]:
+        """The out-of-process evidence block: the SET, not merely its size.
+
+        The pending-entry set is enumerated rather than counted because the
+        question a gate has to answer is *did the sweep reach every one of these*,
+        and two totals that happen to match cannot answer it.
+        """
+        entries = self.pending_entries()
+        return {
+            "enumerations": self.enumerations,
+            "reserved": self.last_reserved,
+            "in_flight_only": self.last_in_flight_only,
+            "entries": [
+                {
+                    # `getattr` throughout, and not because the fields are in
+                    # doubt: `pending_entries()` returns `object` deliberately —
+                    # `InFlightOnly` carries no `role` and no `symbol`, which is
+                    # the whole mechanism by which `_classify_for_onset` is left
+                    # to decide. A reader that assumed the wider shape would be
+                    # asserting the narrower one back.
+                    "client_order_id": getattr(entry, "client_order_id", None),
+                    "strategy_id": getattr(entry, "strategy_id", None),
+                    "symbol": getattr(entry, "symbol", None),
+                    "role": getattr(getattr(entry, "role", None), "value", None),
+                }
+                for entry in entries
+            ],
+        }
+
+
+# R0903 (too-few-public-methods): TWO verbs and both are §4 fan-out surfaces the
+# protective path needs to EXIST before it can be constructed. Neither is on
+# §3:173's onset path, which calls `cancel_order` and nothing else.
+# pylint: disable=too-few-public-methods
+class UnwiredExitSinks:
+    """§4's `closed` notify and Scoring hand-off. NOT WIRED — both RAISE.
+
+    ARC 054. `flatten.ProtectiveFlatten` requires a `StrategyExitSink` and a
+    `ScoringSink` with no defaults, and its constructor says why: *"a protective
+    executor that silently defaulted a sink would fan out into a black hole"*.
+    This daemon has no strategy FSM channel and no Scoring process to hand a
+    realized figure to, so the honest object is one that REFUSES rather than one
+    that absorbs.
+
+    Both verbs raise, and the raise is the point. §3:173's onset sweep never
+    reaches either — it issues `cancel_order` and releases reservations — so a
+    call landing here means the PROTECTIVE-EXIT path fired, which ARC 054 did not
+    wire and CHECK-DEBT records as ARC C's (D3.453 / D3.372 / D3.469). A no-op
+    stub would let that path run and report a close nobody was told about; this
+    one stops it loudly at the boundary.
+    """
+
+    def on_closed(
+        self, trade_id: str, strategy_id: str, reason: str, *, hard_reset: bool
+    ) -> None:
+        """§4 fan-out (a). NOT WIRED in this daemon — raises."""
+        raise NotImplementedError(
+            f"{SITE}: §4's `closed` notify for trade {trade_id!r} "
+            f"(strategy {strategy_id!r}, reason {reason!r}, hard_reset="
+            f"{hard_reset}) has NO channel in this process. ARC 054 wired §3:173's "
+            "onset entry-cancel, which never reaches this sink; the protective-exit "
+            "path that does is ARC C's (CHECK-DEBT D3.453/D3.372/D3.469). Refusing "
+            "loudly rather than absorbing a close the owning FSM would never hear"
+        )
+
+    # too-many-arguments: the §4 fan-out payload, keyword-only, as the port
+    # declares it. Trimming one would change the port, not this stub.
+    def book_realized(  # pylint: disable=too-many-arguments
+        self,
+        *,
+        closed_trades: tuple[str, ...],
+        realized_delta: float,
+        confirmed_balance: float,
+        ts: float,
+    ) -> None:
+        """§4 fan-out (d). NOT WIRED in this daemon — raises."""
+        raise NotImplementedError(
+            f"{SITE}: §4's realized hand-off for {list(closed_trades)!r} "
+            f"(delta {realized_delta}, confirmed balance {confirmed_balance}, ts "
+            f"{ts}) has NO Scoring process to reach. Same reason as `on_closed`: "
+            "ARC 054 wired the onset entry-cancel, not the protective exit"
+        )
+
+
+class OnsetWatch:  # pylint: disable=too-many-instance-attributes
+    """ARC 054. §3:173's onset, detected on the EDGE and dispatched to I11's sweep.
+
+    EDGE-TRIGGERED, and that is a property of this object rather than of the
+    producer. `state.json` declares the CURRENT state — which symbols are in a
+    blackout window and whether HALT is up — and this class holds the PRIOR state
+    and fires only on a `False -> True` transition, per symbol for blackout
+    (§6.1 windows are per-symbol off the live calendar) and once globally for
+    HALT (§12.5 stops every strategy and every symbol). A tick that re-reads the
+    same declared state does NOT re-sweep. A `True -> False` transition re-arms,
+    so a second entry into the same window fires again.
+
+    IDEMPOTENT IF IT DOES RE-FIRE, and that is not left to chance either: a
+    re-fire hands the sweep the pending set as it is THEN, and the entries the
+    first sweep cancelled are no longer in it — their reservations were released
+    under the onset cause, so `outstanding()` no longer holds them. The second
+    sweep therefore cancels nothing and releases nothing. It cannot double-release:
+    §11.3's ledger refuses a second release of the same id, and the refusal lands
+    on `OnsetCancellation.refusals` rather than raising.
+
+    WHAT THIS DOES NOT CLAIM: that a blackout window or a HALT was DETECTED here.
+    §6.1's detector is `blackout.BlackoutEvaluator` (needs §6.4's window cache and
+    the vendored calendar) and §12.5's is `halt.HaltFlag` (needs the cooldown
+    floors, the marker and a Plane-2 emitter); neither is constructible in this
+    process today and both are CHECK-DEBT. This object is the DISPATCH, and the
+    dispatch is what I1 is about.
+
+    AN UNREADABLE STATE FILE PRODUCES NO EDGE IN EITHER DIRECTION. It is counted
+    and its reason is published (check contract rule 11), and the prior state
+    stands. Inventing a clear from an unreadable file would silently disarm the
+    watch; inventing an onset from one would sweep every tick against a symbol
+    nobody named. Neither is a reading of the file.
+    """
+
+    def __init__(
+        self,
+        directory: Path,
+        book: PendingEntryBook,
+        sweep: ProtectiveFlatten,
+        cancels: RecordedCancels,
+        fills: FillPath,
+    ) -> None:
+        self.directory = directory
+        self._book = book
+        self._sweep = sweep
+        #: §4's live protective state — every armed synthetic stop and every §3
+        #: position row. Held here so THIS record can state §3:173's second half
+        #: (*"exits untouched"*) as a MEASUREMENT taken across the sweep rather
+        #: than as an absence a reader has to infer from another block. A safety
+        #: property nobody recorded either side of the event is not proven, and
+        #: the one this sweep is most obliged not to break is the one whose
+        #: violation looks exactly like nothing happening.
+        self._fills = fills
+        #: The SAME `RecordedCancels` the executor above holds as its broker,
+        #: held here too so this record can publish the venue messages the sweep
+        #: produced WITHOUT reaching into the executor's private state. It is a
+        #: SECOND instance from the one `IocRemainder` uses, deliberately: §4's
+        #: partial-fill remainder cancel and §3:173's onset entry-cancel are two
+        #: different facts, and one list over both could not tell a gate which
+        #: path issued a given message.
+        self._cancels = cancels
+        #: The PRIOR declared state — what an edge is measured against.
+        self._blackout: set[str] = set()
+        self._halted = False
+        #: Observables.
+        self.polls = 0
+        self.unreadable = 0
+        self.last_error = ""
+        self.blackout_onsets = 0
+        self.halt_onsets = 0
+        self.re_entries = 0
+        #: Every sweep this watch dispatched, in order, as the executor reported
+        #: it. Enumerated and not counted: *which* entries were cancelled and
+        #: which were excluded, and under which bucket, is the whole safety
+        #: question, and a count cannot answer it.
+        self.sweeps: list[dict[str, Any]] = []
+
+    def _read(self) -> tuple[set[str], bool] | None:
+        """The declared state, or `None` when it cannot be read. Never a guess."""
+        path = self.directory / ONSET_STATE_NAME
+        try:
+            raw = json.loads(path.read_text())
+        except FileNotFoundError:
+            # NOT an error: nothing has declared an onset. This is the boot state
+            # and it is a real reading of the surface, not a failure to take one.
+            return set(), False
+        except (OSError, ValueError) as exc:
+            self.unreadable += 1
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            return None
+        if not isinstance(raw, dict):
+            self.unreadable += 1
+            self.last_error = f"onset state is {type(raw).__name__}, not an object"
+            return None
+        declared = raw.get("blackout")
+        symbols = {
+            str(symbol)
+            for symbol in (declared if isinstance(declared, list) else ())
+            if str(symbol)
+        }
+        return symbols, bool(raw.get("halt"))
+
+    def poll(self) -> int:
+        """Read the declared state, fire on every EDGE, return how many fired."""
+        self.polls += 1
+        state = self._read()
+        if state is None:
+            return 0
+        symbols, halted = state
+        fired = 0
+        # HALT FIRST, and the order is deliberate: §12.5's HALT is GLOBAL and a
+        # blackout is one symbol's window, so a tick that declares both should
+        # resolve the wider scope first and leave the narrower one nothing to do.
+        # Measured either way and it is idempotent (see the class docstring); the
+        # order is chosen so the Plane-1 record reads in the order §3 means.
+        if halted and not self._halted:
+            self._dispatch(TerminalPath.HALT_ONSET, None)
+            self.halt_onsets += 1
+            fired += 1
+        for symbol in sorted(symbols - self._blackout):
+            self._dispatch(TerminalPath.BLACKOUT_ONSET, symbol)
+            self.blackout_onsets += 1
+            fired += 1
+        self.re_entries += len(self._blackout - symbols)
+        self._blackout = symbols
+        self._halted = halted
+        return fired
+
+    def _protective(self) -> list[dict[str, Any]]:
+        """Every armed protective stop, by the order it protects, with its level.
+
+        ENUMERATED, not counted: §14's question is *does a stop still exist for
+        this open position and is it still at the price §4's conversion put it*,
+        and a total cannot answer either half.
+        """
+        return [
+            {
+                "client_order_id": stop.client_order_id,
+                "symbol": stop.symbol,
+                "level": stop.level,
+            }
+            for stop in self._fills.stops.stops()
+        ]
+
+    def _dispatch(self, cause: TerminalPath, scope: str | None) -> None:
+        """§3:173's sweep, over THIS process's pending-entry book, scoped.
+
+        `scope=None` is GLOBAL (HALT stops every strategy and every symbol,
+        §12.5); a symbol is THAT SYMBOL ONLY (§6.1 windows are per-symbol). The
+        scope is the executor's argument and NOT a filter applied here, which is
+        ARC 045's measured repair: filtering on the handed object's `symbol`
+        silently drops an entry that carries none, while the executor scopes off
+        `Reservation.symbol`, which always exists.
+        """
+        pending = self._book.pending_entries()
+        protective_before = self._protective()
+        # `cast`, and the cast IS the statement: `cancel_entries_on_onset`
+        # annotates `Sequence[PendingEntry]` and its body reads every field with
+        # `getattr` because ARC 045 measured that the annotation was a promise
+        # nothing checked (`blackout.PendingEntriesPort` and
+        # `halt.PendingEntriesPort` both declare `Sequence[object]`). This book
+        # hands over `InFlightOnly` ON PURPOSE — an order the money record cannot
+        # vouch for must reach `_classify_for_onset` and be REFUSED there, loudly,
+        # rather than be dropped here to satisfy a type. Silencing the checker at
+        # the one call site is honest; narrowing the book to please it would
+        # re-create the silent omission D3.443 exists to close.
+        outcome = self._sweep.cancel_entries_on_onset(
+            cause, cast(Sequence[PendingEntry], pending), scope=scope
+        )
+        self.sweeps.append(
+            {
+                "cause": cause.value,
+                "scope": scope,
+                # §3:173's SECOND half, measured on BOTH sides of the one call
+                # that could break it. A protective stop that is in `before` and
+                # not in `after` is a REAL position left unprotected inside the
+                # window (§14) — the ARC 045 live bug, at the daemon boundary.
+                "protective_before": protective_before,
+                "protective_after": self._protective(),
+                # THE ENUMERATION THE SWEEP WAS HANDED — the completeness claim's
+                # left-hand side. A gate compares it to the order state and to
+                # what was cancelled; all three must agree or an entry is loose.
+                "handed": [
+                    str(getattr(entry, "client_order_id", "<unnamed>"))
+                    for entry in pending
+                ],
+                "cancelled": list(outcome.cancelled),
+                "released": [res.reservation_id for res in outcome.released],
+                "refusals": [
+                    getattr(ref, "reason", str(ref)) for ref in outcome.refusals
+                ],
+                "failures": [list(pair) for pair in outcome.failures],
+                "protected": [list(pair) for pair in outcome.protected],
+                "out_of_scope": [list(pair) for pair in outcome.out_of_scope],
+                "unclassified": [list(pair) for pair in outcome.unclassified],
+                "complete": bool(outcome.complete),
+            }
+        )
+
+    def before(self, inner: Callable[[int], object]) -> Callable[[int], object]:
+        """Compose the poll into the tick, AHEAD of the ingress reads.
+
+        Same composition `Plane1Booker.before` and `PendingTimeoutPoller.before`
+        use, and the position in the order is the decision: the onset poll runs
+        BEFORE this tick's commands are read, so a `reserve` arriving in the same
+        tick as a declared onset is taken AFTER the sweep and is refused by the
+        gate rather than swept by it. §3:174 is about orders that may fill inside
+        the window; an order approved after the onset is a §3 branch-0 question,
+        not a sweep question, and conflating them would let the sweep look like a
+        gate.
+        """
+
+        def _outer(tick: int) -> object:
+            self.poll()
+            return inner(tick)
+
+        return _outer
+
+    def record(self) -> dict[str, Any]:
+        """The out-of-process evidence block. `check_limiter_daemon_dispatch` reads it."""
+        return {
+            "dir": str(self.directory),
+            "polls": self.polls,
+            "unreadable": self.unreadable,
+            "last_error": self.last_error,
+            "blackout_onsets": self.blackout_onsets,
+            "halt_onsets": self.halt_onsets,
+            "re_entries": self.re_entries,
+            "blackout_now": sorted(self._blackout),
+            "halted_now": self._halted,
+            "sweeps": list(self.sweeps),
+            "cancels_recorded": list(self._sweep_cancels()),
+        }
+
+    def _sweep_cancels(self) -> tuple[str, ...]:
+        """Every cancel THIS sweep's broker recorded — the venue-message record."""
+        return tuple(self._cancels.issued)
+
+
 def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
     """Serialise into a sibling temp file and `os.replace` it into place.
 
@@ -1878,6 +2406,8 @@ def _runtime_record(  # pylint: disable=too-many-arguments,too-many-positional-a
     fills: FillPath | None = None,
     feedback: OpenFeedback | None = None,
     timeouts: PendingTimeoutPoller | None = None,
+    onset: OnsetWatch | None = None,
+    book: PendingEntryBook | None = None,
     signal_max_age_s: float | None = None,
 ) -> dict[str, Any]:
     """`limiter.runtime.json`'s content, at boot and again at clean stop.
@@ -1945,6 +2475,18 @@ def _runtime_record(  # pylint: disable=too-many-arguments,too-many-positional-a
         #: exist — check contract rule 10, applied to the one guarantee this arc
         #: is most obliged not to overstate.
         "timeouts": None if timeouts is None else timeouts.record(),
+        #: ARC 054. §3:173's onset sweep, and the pending-entry book it sweeps.
+        #: `None` rather than zeroed counters where either is absent, for the
+        #: reason `timeouts` is `None`: a `blackout_onsets: 0` published by a
+        #: process that has no onset watch would read as *no onset arrived* when
+        #: the truth is *no onset could arrive*, and check contract rule 10
+        #: forbids certifying a safety property whose subject is unavailable.
+        "onset": None if onset is None else onset.record(),
+        #: D3.443's enumeration, published as the SET. It is the left-hand side
+        #: of the completeness claim: a gate compares this to what the sweep was
+        #: handed and to what it cancelled, and an entry present here and absent
+        #: from the cancels is the exact defect §3:174 names.
+        "pending_entries": None if book is None else book.record(),
         #: ARC 053 / D3.463. The signal-age ceiling this process booted with, in
         #: the record an out-of-process reader opens. `null` means UNBOUNDED and
         #: says so, because *no ceiling* and *a ceiling of zero* are opposite
@@ -1966,6 +2508,8 @@ def _stop_record(  # pylint: disable=too-many-arguments,too-many-positional-argu
     fills: FillPath | None = None,
     feedback: OpenFeedback | None = None,
     timeouts: PendingTimeoutPoller | None = None,
+    onset: OnsetWatch | None = None,
+    book: PendingEntryBook | None = None,
     signal_max_age_s: float | None = None,
     malformed: tuple[str, ...] = (),
 ) -> dict[str, Any]:
@@ -1980,6 +2524,8 @@ def _stop_record(  # pylint: disable=too-many-arguments,too-many-positional-argu
         fills=fills,
         feedback=feedback,
         timeouts=timeouts,
+        onset=onset,
+        book=book,
         signal_max_age_s=signal_max_age_s,
     )
     # ARC 046. The completions the ingress read and the PARSE refused, so
@@ -2226,12 +2772,17 @@ def main(argv: list[str] | None = None) -> int:
         # query against a directory that does not exist would answer `unknown`
         # for a reason that has nothing to do with the venue.
         status_dir = runtime_dir / STATUS_DIR
+        # ARC 054. Created at boot for the reason `status/` is: an onset state
+        # read against a directory that does not exist would count as unreadable
+        # for a reason that has nothing to do with whether a window opened.
+        onset_dir = runtime_dir / ONSET_DIR
         for directory in (
             runtime_dir,
             inbox_dir,
             outbox_dir,
             completions_dir,
             status_dir,
+            onset_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
         publisher = HeartbeatPublisher(runtime_dir / HEARTBEAT_NAME)
@@ -2304,6 +2855,44 @@ def main(argv: list[str] | None = None) -> int:
         # boot-loaded and restart-only, and a ceiling re-read per command would
         # let an edit change what the running process approves without a restart.
         signal_max_age_s = signal_max_age_from_config()
+        # ARC 054. §3:173's onset sweep, held by the PROCESS.
+        #
+        # `PendingEntryBook` is D3.443's missing production `pending_entries()`,
+        # and it is handed the THREE records the daemon's order state actually
+        # lives in — §11.3's ledger, the approval book and §4:208's lock — rather
+        # than a fourth of its own. `ProtectiveFlatten` is I11's proven executor,
+        # CONSTRUCTED here and NOT modified: `nixrisk/flatten.py` is byte-identical
+        # across this arc, asserted with `git hash-object`. It shares the ONE
+        # `ReservationLedger` and the ONE `FinancialPictureBook` above for the
+        # reason `FillPath` shares them — §3's Σ is one number, and a sweep that
+        # released capital in a private book would leave the number every capital
+        # rule reads untouched.
+        #
+        # Its broker is a `RecordedCancels` and NOT a broker: §3:173's sweep calls
+        # `cancel_order` and nothing else (`cancel_entries_on_onset`'s own
+        # docstring: *"It never calls `flatten`"*), and there is no vendor
+        # integration in this tree to send one on. A SECOND instance from the one
+        # `IocRemainder` holds, so §4's remainder cancel and §3:173's onset cancel
+        # stay two readable facts.
+        onset_cancels = RecordedCancels()
+        pending_book = PendingEntryBook(reservations, fills.approvals, loop)
+        onset_sweep = ProtectiveFlatten(
+            # `cast`, and again the cast is the statement: `BrokerFlattenPort`
+            # declares `flatten` AND `cancel_order`, and this object has only
+            # `cancel_order` DELIBERATELY. §3:173's sweep issues cancels and never
+            # flattens (`cancel_entries_on_onset`: *"It never calls `flatten`"*),
+            # and ARC 054 did not wire the protective-exit path — so a broker here
+            # that could flatten would be authority this arc withheld. The missing
+            # verb is the guarantee, not an oversight.
+            broker=cast(BrokerFlattenPort, onset_cancels),
+            ledger=reservations,
+            picture=fills.picture,
+            strategy=UnwiredExitSinks(),
+            plane1=wal,
+            scoring=UnwiredExitSinks(),
+            clock=time.time,
+        )
+        onset = OnsetWatch(onset_dir, pending_book, onset_sweep, onset_cancels, fills)
     except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
         print(
             f"{SITE}: refusing to boot the Limiter: {type(exc).__name__}: {exc}",
@@ -2348,7 +2937,15 @@ def main(argv: list[str] | None = None) -> int:
         # terminal completion sitting in this tick's directory resolves its order
         # before the poll would ask the venue about it, so the daemon does not
         # spend a §4 query on an order whose answer is already on disk.
-        ingress=booker.before(timeouts.before(_read_both)),
+        # ARC 054: and §3:173's onset poll runs FIRST inside the tick, ahead of
+        # the ingress reads. The resulting order is
+        #   poll onset -> book firings -> read commands -> read completions
+        #   -> poll overdue
+        # and the onset's position is the decision `OnsetWatch.before` records:
+        # a `reserve` arriving in the same tick as a declared onset is taken
+        # AFTER the sweep, so §3's branch-0 gate answers it rather than the
+        # sweep pretending to.
+        ingress=onset.before(booker.before(timeouts.before(_read_both))),
         handler=LoopHandler(
             CommandHandler(
                 loop,
@@ -2357,6 +2954,8 @@ def main(argv: list[str] | None = None) -> int:
                 dispatcher,
                 fills,
                 timeouts,
+                onset,
+                pending_book,
                 signal_max_age_s,
             ),
             completion_handler,
@@ -2377,6 +2976,8 @@ def main(argv: list[str] | None = None) -> int:
             fills=fills,
             feedback=feedback,
             timeouts=timeouts,
+            onset=onset,
+            book=pending_book,
             signal_max_age_s=signal_max_age_s,
         ),
     )
@@ -2404,6 +3005,8 @@ def main(argv: list[str] | None = None) -> int:
             fills=fills,
             feedback=feedback,
             timeouts=timeouts,
+            onset=onset,
+            book=pending_book,
             signal_max_age_s=signal_max_age_s,
             malformed=tuple(completion_handler.malformed),
         ),

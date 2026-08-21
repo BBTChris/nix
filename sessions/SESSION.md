@@ -7843,3 +7843,170 @@ the running daemon still has no protective-exit path at all.
 
 **BADGE: Limiter STAYS RED. Count STAYS 11/12. No board redraw. I1 path-progress: 4 of ~6 wired.
 Next: I1 ARC B (onset, needs `pending_entries()` — D3.443).**
+
+---
+
+## ARC 054 — I1 ARC B: onset dispatch. `pending_entries()` built, the daemon's onset sweep wired.
+
+**TIER: INTERIOR. Predecessor tip DERIVED, not assumed: `git rev-parse HEAD` = `24da438`** (the brief
+said "≈ 9e92a38"; that was ARC 053's fix commit, one behind its own write-back). Everything below is
+frozen and diffed against `24da438`.
+
+**BASELINE MEASURED FIRST, and it was NOT what the brief predicted.** `verify.py` at `24da438`:
+`93 passed | 4 failed | 3 cannot measure | 0 skipped`, exit 1 — not the `94|4|2|0|0` the brief
+recorded for ARC 053's close. The single row of difference is `check_arc_status_contract`, which is
+**CANNOT-MEASURE**: *"`arc_053.log` — no ARC-completed marker in log: run did not reach close-out"*.
+The ARC 052 "the marker tees to the log" fix did not take effect for ARC 053's own log. This is the
+D3.464 shape recurring, and it is why this arc's baseline is stated from the instrument rather than
+carried forward from the previous arc's report.
+
+### S1 — BOTH GAPS REPRODUCED ON THE LIVE LOOP
+
+**Gap 1 — no production `pending_entries()` (D3.443/D3.349).** Census: `grep -rn "def pending_entries"`
+over the whole tree returns FIVE sites — two Protocol declarations (`blackout.py:466`, `halt.py:424`)
+and three test/check doubles. **ZERO production producers.** And the two shipped call sites
+(`blackout.py:1067`, `halt.py:1067`) are both guarded on a `sweep`/`pending` pair that **nothing in
+production constructs**: `grep 'HaltFlag(\|BlackoutEvaluator('` over `scripts/` minus tests returns
+nothing.
+
+**Gap 2 — no onset dispatch at all.** A real `limiterd` was booted and staged with four gate-approved
+pending entries across **two symbols and two strategies** (ES×2 strat-A, NQ×1 strat-B) plus one ES
+entry driven to a confirmed fill, giving a REAL open position `TRD-…-arc054-strat-A` with an ARMED
+PROTECTIVE STOP at 4998.0 (= 5000.0 − 8 × 0.25). Non-vacuity: Σ reservations 7000.0 over 3 TAKEN,
+Σ open margin 700.0. Then both onsets were driven every way a client could reach the process:
+
+* `blackout_onset` command → *"unknown verb 'blackout_onset'; this build serves ['register', 'go',
+  'status', 'resolve', 'reserve']"*
+* `halt` command → the same refusal
+* signal files written into `onset/` → **both still present, unconsumed**
+
+**Result: committed 7000.0 → 7000.0, outstanding 3 → 3, `cancels_recorded` empty.** All three pending
+entries survived both onsets and were still working inside a window §3:174 says no order may fill in.
+
+### S2 — THE ENUMERATION, THEN THE SWEEP. `flatten.py` and `blackout.py` NEVER TOUCHED.
+
+`limiterd.PendingEntryBook.pending_entries()` is D3.443's production producer and it is **COMPLETE BY
+DERIVATION**, not a list: one entry per OUTSTANDING reservation in §11.3's ledger — the same TAKEN set
+`Σ reservations`, `due_for_status_query` and `_classify_for_onset`'s own admission test read, and the
+set every terminal path removes an order from — **plus** one per holder of §4:208's in-flight lock
+that holds no reservation. That second source is the load-bearing half: such an order can still fill,
+so omitting it would make the book silently incomplete, and calling it an ENTRY would be a claim the
+money record cannot support. It is handed over as `limiterd.InFlightOnly`, deliberately carrying no
+`role` and no `symbol`, so **I11's own `_classify_for_onset` decides** — finds no reservation, buckets
+it `unclassified`, and `OnsetCancellation.complete` goes False.
+
+`limiterd.OnsetWatch` is the dispatch: it reads `DIR/onset/state.json` on the loop's own tick, holds
+the prior state, and fires **once per `False → True` transition** — per symbol for blackout
+(`scope=<symbol>`), once globally for HALT (`scope=None`). It composes into the tick AHEAD of the
+ingress reads (`onset.before(booker.before(timeouts.before(_read_both)))`), so a `reserve` arriving in
+the same tick as an onset is answered by §3's branch-0 gate rather than swept.
+
+The daemon now CONSTRUCTS a real `flatten.ProtectiveFlatten` over the process's one `ReservationLedger`
+and one `FinancialPictureBook`. Its broker is a `RecordedCancels` with exactly one verb — measured,
+`hasattr(broker, "flatten")` is **False** — so §3:173's sweep cannot flatten anything even in
+principle. Its §4 fan-out sinks are `UnwiredExitSinks`, whose `on_closed` and `book_realized` both
+**RAISE** naming ARC C, so the protective-exit path this arc did not wire cannot run silently.
+
+**FREEZE HELD, proven with `git hash-object` against `24da438`:** `flatten.py`, `blackout.py`,
+`outcomes.py`, `reservations.py`, `fills.py`, `halt.py`, `stops.py`, `picture.py`, `positions.py`,
+`join.py`, `execution.py`, `completions.py`, `loop.py`, `wal.py`, `freshness.py`, `seam.py`,
+`gate.py`, `degraded.py`, `recovery.py`, `session.py`, `projection.py`, `realized.py`,
+`broker_seam.py` — all 23 byte-identical. The whole diff is three files plus this ledger.
+
+### S3 — THE DAEMON DOES IT. BOTH ONSET TYPES, WATCHED PAST THE TICK.
+
+**BLACKOUT ONSET (per-symbol, ES).** Handed all four pending entries, `scope='ES'`. Cancelled
+`es-1, es-2` — **every ES entry, none survives**. `nq-1, nq-2` landed on `out_of_scope` with the
+executor's own reason and were **still pending afterwards** — the scope is real, not decorative.
+Reservations RSV-1/RSV-2 released on the 044 path: **committed 7500.0 → 2500.0**. `complete=True`.
+The protective stop `es-fill` stayed armed **at 4998.0** and the open position stayed open.
+
+**EDGE-TRIGGERED.** 61 further polls inside the same declared blackout: `blackout_onsets` still 1,
+one sweep, committed unchanged.
+
+**HALT ONSET (global).** `scope=None`, cancelled `nq-1, nq-2`, **committed 2500.0 → 0.0, outstanding
+0**. Every pending entry across every symbol gone. The protective stop still armed at 4998.0.
+
+**RE-ENTRY — the answer to *prove which*: EDGE-TRIGGERED **AND** IDEMPOTENT.** Cleared, re-declared:
+a third sweep fired with `handed=[] cancelled=[] released=[] refusals=[]`. It cannot double-release —
+§11.3's ledger refuses a second release and the refusal lands on `refusals` rather than raising.
+
+**COMPLETENESS, THE ABSENCE PROOF.** In every sweep the accounting closes: `handed` == `cancelled` ∪
+`out_of_scope` ∪ `protected` ∪ `unclassified`, with nothing unaccounted.
+
+**THE CANNOT-MEASURE ARM IS LIVE (S3b).** A `go` taking §4:208's lock for `c-lock-only` with no
+reservation, beside a reserved `c-reserved`: the enumeration listed BOTH (`role: null, symbol: null`
+for the lock-holder), the sweep cancelled `c-reserved` and put `c-lock-only` on `unclassified` with a
+reason naming it — **`complete: false`**. An enumeration that meets an order kind it cannot classify
+says *I do not know*, never *clean sweep*.
+
+### S4 — THE GATE. CENSUS FIRST, THEN ONE OWNER.
+
+The DISPATCH belongs to `check_limiter_daemon_dispatch` (046) and the SELECTION already lives in
+`check_flatten` ARM 3b (045). Doctrine C.9 forbids a second instrument over a subject the suite
+already drives, so **no new gate was built** and `check_flatten` was not touched: the onset arm went
+into the dispatch's owner, and `flatten.py` was added to that gate's declared SUBJECTS so a plant in
+`_classify_for_onset` reddens it.
+
+The arm declares the onset from OUTSIDE the process — never by calling the sweep, which would prove
+the library ARC 045 already proved and nothing about whether anything with a pid invokes it.
+
+**DEMONSTRATED FAIL — four plants, each exit 1, each naming its site:**
+
+* **PLANT A (no sweep)** — dispatch removed, counter left. *"NO SWEEP. The daemon COUNTED a ES
+  blackout onset and booked no sweep … `['cdd-onset-a1', 'cdd-onset-a2']` are still pending ENTRY
+  orders with 3600.0 committed … WORKING inside the ES blackout window they were never approved for"*
+* **PLANT B (incomplete enumeration)** — *"INCOMPLETE ENUMERATION: `['cdd-onset-a2']` hold OUTSTANDING
+  §3 reservations … and `pending_entries()` does not list them"*
+* **PLANT B2 (the omission its own report HIDES)** — the pre-check defeated by construction; still
+  caught four ways, including *"SURVIVED THE SWEEP: `['cdd-onset-a2']`"* and the money-record
+  backstop, committed 3600.0 → 2700.0 against an expected 1800.0. **Σ over the ledger's TAKEN set is
+  a number `pending_entries()` cannot edit**, which is what makes this catch possible at all.
+* **PLANT C (over-broad — the dangerous one)** — in TWO forms. Cancelling protective orders at the
+  venue is caught by the no-resend census before anything is driven (*"REACHES venue-placement
+  verb(s) `['cancel_order']`"*). The form §12.1's SYNTHETIC stop actually takes — `StopBook.forget`,
+  invisible to that census — is caught by the driven arm: *"the blackout_onset sweep CHANGED the
+  protective book across its own call: before `{'cdd-fill-1': 4998.0}`, after `{}`. The OPEN
+  position(s) `{'TRD-00000004-check-daemon-dispatch': 'ES'}` were left unprotected inside the
+  window"*.
+
+Plants removed ⇒ **exit 0**, and the green SAYS what it watched, because *the stops did not move* is a
+negative property nobody can read off an absence: `*** PROTECTIVE BOOK UNCHANGED across both onsets:
+{'cdd-fill-1': 4998.0} -> {'cdd-fill-1': 4998.0} ***`.
+
+**FOUND AND FIXED, NOT CARRIED — a defect in the gate's own instrument.** `Drive` wrote its command,
+completion and status files with `Path.write_text` (create, then fill) while the daemon scans those
+directories every 0.02 s. MEASURED here: the daemon read `cdd0012.json` **EMPTY** and answered *is not
+valid JSON*, after which every field of that `status` reply was absent and the FILL arm reported a
+conversion that had in fact happened. A gate that goes red on its own write race is a gate whose red
+means nothing — and the new onset state file is read on EVERY tick, so the new arm was the most
+exposed of all. All four writers now go through one `os.replace`.
+
+### CLOSE-OUT
+
+**Derived reverse-dependency closure + the D3.444 by-detection backstop: 442 tests, all green.**
+26 (the gate's own suite, +5 new controls) · 52 (`test_check_order_path_bans` +
+`test_check_uncalled_entry_points`, run explicitly) · 187 (everything importing or naming `limiterd`,
+the gate, or parsing `CHECK-DEBT.md`) · 177 (the by-detection backstop over the NEW structural import
+edge `limiterd → nixrisk.flatten`: flatten, halt, exit-integration, ARC 038-A's gate wall, ARC 044's
+terminality, reservations, two-phase).
+
+**Ratchet: it did NOT move, and that is the honest reading rather than a miss.**
+`check_uncalled_entry_points` judged **1210** entry points against **1203** before — all SEVEN new
+public surfaces CALLED — with UNCALLED unchanged at **171** and GATE-ONLY at **53**. The brief
+predicted a shrink as I11's selection symbols became daemon-called; they were never on that list to
+drop, because `cancel_entries_on_onset` already had shipped callers in `blackout.py` and `halt.py`.
+What it lacked was a process, and a process is not a call site the AST can see.
+
+**CHECK-DEBT: D3.443 DISCHARGED. D3.442 shrank a third time and is restated. D3.470/471/472 opened,
+all three stated at the moment they were created.** ARC TOTAL **413**, read off
+`check_derived_claims`'s `derived:ledger_rows` probe (413 of 484 rows) — RED against the stale 411
+inside the same edit that staled it, GREEN after.
+
+**RESIDUAL, EXPLICITLY NOT CLAIMED.** The daemon DISPATCHES an onset; it does not DETECT one
+(D3.470). No green here may be read as *the daemon knows when a window opens*. **I1 is NOT
+discharged**: only the PROTECTIVE FLATTEN remains (ARC C — D3.453/D3.372/D3.469), then ARC D's
+convergence gate.
+
+**BADGE: Limiter STAYS RED. Count STAYS 11/12. No board redraw. I1 path-progress: 5 of 6 wired
+(cancel · fill · reject · pending-timeout · onset). D3.442 restated: only protective flatten owed.**

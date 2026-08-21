@@ -155,6 +155,13 @@ from typing import Any, Final
 
 import _preamble  # noqa: F401  pylint: disable=unused-import,wrong-import-order
 
+# ARC 054. The daemon's OWN spellings for §3:173's onset surface, IMPORTED for
+# the same reason and under the same argument as the line above: a second copy of
+# the directory name here could drift from the one the process opens, and the
+# gate would then declare an onset into a path nothing reads and read the silence
+# as a defect. Importing two `Final[str]` constants is not driving the library.
+from limiterd import ONSET_DIR, ONSET_STATE_NAME
+
 # The WIRED-PATH DECLARATION, imported rather than spelled (directive 3). This is
 # not the import the process-not-library argument forbids: the subject is still
 # the running daemon, and this is a constant tuple naming which paths this build
@@ -212,6 +219,15 @@ SUBJECTS: tuple[str, ...] = (
     # edited none of it — `outcomes.py` is byte-identical and that is asserted
     # with `git hash-object`, not claimed.
     "scripts/nixrisk/outcomes.py",
+    # ARC 054. I11's onset SELECTION, which the daemon now CALLS. Declared for
+    # the reason `fills.py` and `outcomes.py` are: the property measured here is
+    # *the running Limiter sweeps its pending entries on onset and leaves the
+    # exits alone*, and a plant in `_classify_for_onset` must redden this gate.
+    # It does NOT duplicate `check_flatten` ARM 3b (doctrine C.9): that arm
+    # measures WHICH orders the selection admits; this one measures whether
+    # anything with a pid ever invokes it. `flatten.py` is byte-identical across
+    # this arc and that is asserted with `git hash-object`, not claimed.
+    "scripts/nixrisk/flatten.py",
 )
 
 NAME = "check_limiter_daemon_dispatch"
@@ -290,6 +306,33 @@ TIMEOUT_RESERVATIONS: Final[int] = 2
 #: One query proves nothing about the second — §0a, and the resend this arm
 #: exists to refuse would most plausibly appear on a retry, not a first look.
 FURTHER_QUERIES: Final[int] = 20
+
+# -- ARC 054, the ONSET arm. §3:172-174: *"Blackout/HALT onset => Limiter cancels
+# all pending ENTRY orders (exits untouched) — no order may fill inside a window
+# it was not approved for."* TWO symbols and TWO strategies, deliberately: a
+# per-symbol blackout that cancelled everything and a per-symbol blackout that
+# cancelled the right things are indistinguishable with one symbol in the book,
+# and §6.1's windows are per-symbol off the live calendar. Its own ids and its
+# own margin for the reason every other arm's are its own.
+ONSET_BLACKOUT_SYMBOL: Final[str] = FILL_SYMBOL
+ONSET_OTHER_SYMBOL: Final[str] = "NQ"
+ONSET_STRATEGY_B: Final[str] = "check-daemon-dispatch-onset-b"
+ONSET_IN_SCOPE: Final[tuple[str, ...]] = ("cdd-onset-a1", "cdd-onset-a2")
+ONSET_OUT_OF_SCOPE: Final[tuple[str, ...]] = ("cdd-onset-b1", "cdd-onset-b2")
+ONSET_QTY: Final[int] = 6
+ONSET_MARGIN_PER_CONTRACT: Final[float] = 150.0
+EXPECT_ONSET_EACH: Final[float] = ONSET_QTY * ONSET_MARGIN_PER_CONTRACT
+#: How many reservations the onset arm takes, and therefore how many further
+#: terminal releases the stop record must show. DERIVED into `_arm_stop_record`'s
+#: expectation rather than written there as a literal.
+ONSET_RESERVATIONS: Final[int] = len(ONSET_IN_SCOPE) + len(ONSET_OUT_OF_SCOPE)
+#: The two onset causes, by the seam's OWN spellings — never re-spelled here.
+CAUSE_BLACKOUT: Final[str] = "blackout_onset"
+CAUSE_HALT: Final[str] = "halt_onset"
+#: How many further ticks the arm watches inside the SAME declared blackout
+#: before it will say the sweep is edge-triggered. One tick proves nothing: a
+#: sweep that re-fired every tick would look identical after one look.
+EDGE_SETTLE_S: Final[float] = 1.5
 
 
 #: ARC 053 / D3.463. Every `reserve` this gate sends now carries a signal
@@ -384,12 +427,35 @@ class Drive:
             time.sleep(0.05)
         raise Cannot(f"limiterd wrote no runtime record within {BOOT_TIMEOUT_S}s")
 
+    @staticmethod
+    def _atomically(path: Path, payload: dict[str, Any]) -> Path:
+        """Write one JSON file the daemon may be reading on its own tick.
+
+        ARC 054, MEASURED. Every writer below used `Path.write_text`, which
+        creates the file and then fills it, and the daemon scans its directories
+        every `DRIVE_TICK_S` (0.02s). The window between the two is real: a run
+        of this gate had the daemon read `cdd0012.json` EMPTY and answer
+        *"is not valid JSON: JSONDecodeError('Expecting value: line 1 column
+        1')"*, after which every field of that `status` reply was absent and the
+        FILL arm reported a conversion that had in fact happened. A gate that
+        goes red on its own write race is a gate whose red means nothing, and the
+        onset surface below is read on EVERY tick, so it is the most exposed of
+        all. `os.replace` inside the same directory is atomic, and the daemon's
+        scanners only ever pick up `*.json`, so the temp name is invisible to it.
+        """
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".partial")
+        tmp.write_text(json.dumps(payload))
+        os.replace(tmp, path)
+        return path
+
     def cmd(self, verb: str, **fields: object) -> dict[str, Any]:
         """Send one command file; return the daemon's own reply."""
         self._n += 1
         cid = f"cdd{self._n:04d}"
-        (self.dir / "inbox" / f"{cid}.json").write_text(
-            json.dumps({"schema": 1, "id": cid, "verb": verb, **fields})
+        self._atomically(
+            self.dir / "inbox" / f"{cid}.json",
+            {"schema": 1, "id": cid, "verb": verb, **fields},
         )
         reply = self.dir / "outbox" / f"{cid}.reply.json"
         deadline = time.time() + REPLY_TIMEOUT_S
@@ -410,9 +476,9 @@ class Drive:
 
     def push(self, name: str, **fields: object) -> Path:
         """THE STUB BROKER: an exec report where the §5:323 sender surfaces one."""
-        path = self.dir / "completions" / f"{name}.json"
-        path.write_text(json.dumps({"schema": 1, **fields}))
-        return path
+        return self._atomically(
+            self.dir / "completions" / f"{name}.json", {"schema": 1, **fields}
+        )
 
     def answer(self, client_order_id: str, state: str, **fields: object) -> Path:
         """ARC 053. THE STUB BROKER'S §4 STATUS ANSWER, where the daemon reads one.
@@ -423,10 +489,27 @@ class Drive:
         an exec report. An order with NO file here is answered `unknown`, which
         is the seam's own spelling for *this surface has no record of the id*.
         """
-        path = self.dir / "status" / f"{client_order_id}.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"state": state, **fields}))
-        return path
+        return self._atomically(
+            self.dir / "status" / f"{client_order_id}.json",
+            {"state": state, **fields},
+        )
+
+    def declare_onset(
+        self, *, halt: bool = False, blackout: list[str] | None = None
+    ) -> Path:
+        """ARC 054. THE ONSET, DECLARED FROM OUTSIDE THE PROCESS.
+
+        A file, not a call, and that is the whole point of this arm: the daemon
+        reads `DIR/onset/state.json` on its own tick and computes the EDGE
+        itself. A gate that called `cancel_entries_on_onset` directly would prove
+        `nixrisk/flatten.py`, which `check_flatten` ARM 3b already proves (ARC
+        045) — and would prove nothing at all about whether anything with a pid
+        ever invokes it, which is the gap I1 names.
+        """
+        return self._atomically(
+            self.dir / ONSET_DIR / ONSET_STATE_NAME,
+            {"halt": bool(halt), "blackout": list(blackout or ())},
+        )
 
     def reserve(self, client_order_id: str, qty: int, margin: float, **fields: object):
         """One `reserve`, always carrying a FRESH signal instant (D3.463)."""
@@ -2187,6 +2270,615 @@ def _arm_no_resend_census(
     return findings, unclassifiable
 
 
+# ==========================================================================
+# ARC 054 — THE ONSET ARM. §3:172-174, DRIVEN THROUGH THE LOOP'S OWN DETECTION.
+#
+# The subject is the DAEMON'S DISPATCH, not I11's selection. `check_flatten`
+# ARM 3b already owns the selection (ARC 045) and doctrine C.9 forbids a second
+# instrument over a subject the suite already drives, so nothing below re-tests
+# which orders `_classify_for_onset` admits. What is tested here is the three
+# things only a running process can be wrong about:
+#
+#   1. that an onset transition reaching this process SWEEPS AT ALL, driven via
+#      the loop's own edge detection and never by a direct call from the gate;
+#   2. that the enumeration it sweeps over is COMPLETE — measured against the
+#      set of orders THIS GATE reserved and never saw resolved, which is an
+#      order-state truth independent of `pending_entries()` itself, plus Σ over
+#      the TAKEN set as the money-record backstop;
+#   3. that it is SELECTIVE — every armed protective stop is at the same level
+#      after the sweep as before it, on BOTH onset types. This is the half whose
+#      violation looks like nothing happening, which is why it is measured on
+#      both sides of the call rather than inferred from an absence.
+# ==========================================================================
+
+
+def _onset_pending(status: dict[str, Any]) -> set[str]:
+    """The client_order_ids the daemon's own enumeration currently holds."""
+    block = status.get("pending_entries") or {}
+    return {
+        str(row.get("client_order_id"))
+        for row in (block.get("entries") or [])
+        if row.get("client_order_id")
+    }
+
+
+def _onset_stops(status: dict[str, Any]) -> dict[str, float]:
+    """Every armed protective stop, by the order it protects, with its level."""
+    fills = status.get("fills") or {}
+    return {
+        str(stop.get("client_order_id")): stop.get("level")
+        for stop in (fills.get("stops") or [])
+    }
+
+
+def _onset_open_rows(status: dict[str, Any]) -> dict[str, str]:
+    """`client_order_id -> trade_id` for every OPEN §3 position row.
+
+    Joined through the stop book rather than guessed: a stop is keyed by the
+    entry order it protects, and a position row carries the trade. Naming the
+    POSITION an unprotected stop belongs to is what makes PLANT C's finding
+    actionable instead of merely alarming.
+    """
+    fills = status.get("fills") or {}
+    return {
+        str(row.get("trade_id")): str(row.get("symbol"))
+        for row in (fills.get("positions") or [])
+        if row.get("state") == "open"
+    }
+
+
+def _onset_sweeps(status: dict[str, Any], cause: str) -> list[dict[str, Any]]:
+    """Every sweep the daemon booked under `cause`, in order."""
+    onset = status.get("onset") or {}
+    return [row for row in (onset.get("sweeps") or []) if row.get("cause") == cause]
+
+
+def _onset_bucketed(sweep: dict[str, Any]) -> set[str]:
+    """Every id the sweep ACCOUNTED FOR — cancelled or in a named exclusion."""
+    ids = set(sweep.get("cancelled") or [])
+    for bucket in ("protected", "out_of_scope", "unclassified", "failures"):
+        ids |= {str(pair[0]) for pair in (sweep.get(bucket) or []) if pair}
+    return ids
+
+
+# too-many-locals: the staging function resolves ONE named thing per way this
+# arm could look healthy while measuring nothing — the pre-onset status, the
+# stop book, the open rows, the committed figure before and after, the expected
+# figure, the order state and the enumeration. Check contract rule 11 makes the
+# REASON the assertion, so each has to survive to be named in one.
+def _onset_stage(  # pylint: disable=too-many-locals
+    drive: Drive, seen: dict[str, Any]
+) -> tuple[list[tuple[str, str]], list[str], dict[str, Any]]:
+    """Stage the book and prove it is real. Returns `(findings, blind, state)`.
+
+    Split out of `_arm_onset` so the arm that JUDGES a sweep reads apart from
+    the arm that BUILDS one to judge — the same split `_fill_non_vacuity`
+    makes, and for the same reason: every condition here is a way the onset
+    arm could look healthy while measuring nothing (§7.12 #8).
+    """
+    findings: list[tuple[str, str]] = []
+    unclassifiable: list[str] = []
+
+    # -- NON-VACUITY 1: a REAL protective subject must already exist. ---------
+    # "Exits untouched" measured against an empty stop book is a sentence about
+    # nothing. If nothing is armed, the SELECTIVE half is UNMEASURED and says so
+    # (check contract rule 10) — it is never quietly passed.
+    before_stage = drive.cmd("status")
+    state: dict[str, Any] = {}
+    state["stops_before"] = _onset_stops(before_stage)
+    state["open_rows"] = _onset_open_rows(before_stage)
+    if not state["stops_before"]:
+        unclassifiable.append(
+            f"{LIMITERD_FILE}: no protective stop is armed at onset time, so "
+            "§3:173's *exits untouched* half had NO subject to be measured "
+            "against — the sweep's selectivity is UNMEASURED in this run, not "
+            "proven (WIRED_EVENTS=" + f"{list(WIRED)})"
+        )
+
+    # -- STAGE: pending entries across TWO symbols and TWO strategies. --------
+    drive.cmd("register", strategy_id=ONSET_STRATEGY_B)
+    committed_before = before_stage.get("committed")
+    for coid in ONSET_IN_SCOPE:
+        drive.reserve(
+            coid,
+            ONSET_QTY,
+            ONSET_MARGIN_PER_CONTRACT,
+            symbol=ONSET_BLACKOUT_SYMBOL,
+        )
+    for coid in ONSET_OUT_OF_SCOPE:
+        drive.cmd(
+            "reserve",
+            strategy_id=ONSET_STRATEGY_B,
+            client_order_id=coid,
+            symbol=ONSET_OTHER_SYMBOL,
+            side="long",
+            qty=ONSET_QTY,
+            margin_per_contract=ONSET_MARGIN_PER_CONTRACT,
+            stop_ticks=8,
+            stop_mode="fixed",
+            signal_ts=_fresh_signal_ts(),
+        )
+    staged = state["staged"] = drive.cmd("status")
+    seen["onset_committed_after_take"] = staged.get("committed")
+    # -- NON-VACUITY 2: the entries are GENUINELY PENDING, by the MONEY record
+    # and not by the enumeration this arm is about to test. Σ over the TAKEN set
+    # is the ledger's, and it is what makes a later "swept" mean something.
+    expect_taken = round(
+        float(committed_before or 0.0) + ONSET_RESERVATIONS * EXPECT_ONSET_EACH, 6
+    )
+    if round(float(staged.get("committed") or 0.0), 6) != expect_taken:
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"NON-VACUITY: staging {ONSET_RESERVATIONS} pending entries at "
+                    f"{EXPECT_ONSET_EACH} each moved committed "
+                    f"{committed_before} -> {staged.get('committed')}, not to "
+                    f"{expect_taken} — nothing about a sweep can be measured "
+                    "against a book this arm did not actually fill"
+                ),
+            )
+        )
+        return findings, unclassifiable, state
+    order_state = set(ONSET_IN_SCOPE) | set(ONSET_OUT_OF_SCOPE)
+    enumerated = _onset_pending(staged)
+    seen["onset_order_state"] = sorted(order_state)
+    seen["onset_enumerated"] = sorted(enumerated)
+    # -- COMPLETENESS, FIRST HALF: what the daemon's own enumeration holds must
+    # contain every order this gate reserved and never saw resolved. Measured
+    # BEFORE any onset, so an incomplete producer is named as such rather than
+    # discovered later as a survivor whose cause is ambiguous.
+    missing = sorted(order_state - enumerated)
+    if missing:
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"INCOMPLETE ENUMERATION: {missing} hold OUTSTANDING §3 "
+                    f"reservations in this process (committed {staged.get('committed')} "
+                    f"over {staged.get('outstanding')} taken) and `pending_entries()` "
+                    f"does not list them — it returned {sorted(enumerated)}. §3:173's "
+                    "sweep iterates exactly this enumeration, so an order missing from "
+                    "it is an order the sweep will NEVER cancel and that can still fill "
+                    "inside a window it was not approved for (§3:174)"
+                ),
+            )
+        )
+        return findings, unclassifiable, state
+    return findings, unclassifiable, state
+
+
+# too-many-locals: the same argument as `_onset_stage` — the sweep, the status
+# before and after, the survivor sets in both directions, the expected release
+# figure and the two poll counts that decide edge-vs-level. Each is one
+# separately-reported finding.
+def _onset_blackout(  # pylint: disable=too-many-locals
+    drive: Drive, seen: dict[str, Any], state: dict[str, Any]
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """The PER-SYMBOL half: declare, watch, judge, and prove it is edge-driven."""
+    findings: list[tuple[str, str]] = []
+    unclassifiable: list[str] = []
+    staged = state["staged"]
+    open_rows = state["open_rows"]
+    order_state = set(ONSET_IN_SCOPE) | set(ONSET_OUT_OF_SCOPE)
+    # ================= BLACKOUT ONSET — PER-SYMBOL =========================
+    # DECLARED FROM OUTSIDE THE PROCESS, into the surface the loop reads on its
+    # own tick. The gate never calls the sweep: that would prove the library,
+    # which ARC 045 already proved, and not the daemon, which is the whole gap.
+    drive.declare_onset(blackout=[ONSET_BLACKOUT_SYMBOL])
+    try:
+        drive.watch(
+            lambda s: ((s.get("onset") or {}).get("blackout_onsets") or 0) > 0,
+            f"the daemon to detect the {ONSET_BLACKOUT_SYMBOL} blackout onset",
+        )
+    except _Missed as miss:
+        onset = miss.status.get("onset")
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"NO SWEEP. A blackout onset for {ONSET_BLACKOUT_SYMBOL} was "
+                    f"declared at {drive.dir / ONSET_DIR / ONSET_STATE_NAME} and the "
+                    f"daemon never dispatched one within {WATCH_HORIZON_S}s "
+                    f"(onset block: {json.dumps(onset)[:400]}). "
+                    f"{sorted(order_state)} are still PENDING with "
+                    f"{miss.status.get('committed')} committed against them, and "
+                    f"{list(ONSET_IN_SCOPE)} are working inside the "
+                    f"{ONSET_BLACKOUT_SYMBOL} window they were never approved for "
+                    "(§3:172-174, §15 C4)"
+                ),
+            )
+        )
+        return findings, unclassifiable
+    # Watch PAST the tick: a sweep that lands a tick later is still a sweep, and
+    # the state this arm judges is the settled one.
+    time.sleep(EDGE_SETTLE_S)
+    after_blackout = drive.cmd("status")
+    sweeps = _onset_sweeps(after_blackout, CAUSE_BLACKOUT)
+    if not sweeps:
+        unswept = sorted(_onset_pending(after_blackout) & set(ONSET_IN_SCOPE))
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"NO SWEEP. The daemon COUNTED a {ONSET_BLACKOUT_SYMBOL} blackout "
+                    f"onset and booked no sweep under {CAUSE_BLACKOUT!r}: "
+                    f"{json.dumps(after_blackout.get('onset'))[:300]}. "
+                    f"{unswept} are still pending ENTRY orders with "
+                    f"{after_blackout.get('committed')} committed over "
+                    f"{after_blackout.get('outstanding')} TAKEN reservation(s), and "
+                    f"they are WORKING inside the {ONSET_BLACKOUT_SYMBOL} blackout "
+                    "window they were never approved for — §3:172-174, §15 C4. A "
+                    "counter that advanced while nothing was cancelled is the worst "
+                    "of the three: it reads, to anything downstream, like a sweep"
+                ),
+            )
+        )
+        return findings, unclassifiable
+    sweep = sweeps[-1]
+    seen["onset_blackout_sweep"] = sweep
+    findings += _onset_judge_sweep(
+        sweep,
+        cause=CAUSE_BLACKOUT,
+        expect_scope=ONSET_BLACKOUT_SYMBOL,
+        must_cancel=set(ONSET_IN_SCOPE),
+        must_not_cancel=set(ONSET_OUT_OF_SCOPE),
+        open_rows=open_rows,
+    )
+    # SCOPE, read off the daemon's own enumeration rather than off the sweep's
+    # report: the other symbol's entries must still be PENDING afterwards.
+    survivors = _onset_pending(after_blackout)
+    still_in_scope = sorted(set(ONSET_IN_SCOPE) & survivors)
+    if still_in_scope:
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"SURVIVED THE SWEEP: {still_in_scope} are still pending ENTRY "
+                    f"orders after the {ONSET_BLACKOUT_SYMBOL} blackout onset "
+                    f"(committed {after_blackout.get('committed')}). §3:172 cancels "
+                    "ALL pending entries on onset; a survivor can fill inside the "
+                    f"{ONSET_BLACKOUT_SYMBOL} window it was not approved for (§3:174)"
+                ),
+            )
+        )
+    dropped_out_of_scope = sorted(set(ONSET_OUT_OF_SCOPE) - survivors)
+    if dropped_out_of_scope:
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"OVER-BROAD SCOPE: {dropped_out_of_scope} are "
+                    f"{ONSET_OTHER_SYMBOL} entries and a {ONSET_BLACKOUT_SYMBOL} "
+                    "blackout cancelled them. §6.1's windows are PER-SYMBOL off the "
+                    "live calendar, so this cancelled gate-approved orders in a "
+                    "symbol that is not in any window"
+                ),
+            )
+        )
+    # THE 044 RELEASE, as the money record moved it.
+    expect_after = round(
+        float(staged.get("committed") or 0.0) - len(ONSET_IN_SCOPE) * EXPECT_ONSET_EACH,
+        6,
+    )
+    seen["onset_committed_after_blackout"] = after_blackout.get("committed")
+    if round(float(after_blackout.get("committed") or 0.0), 6) != expect_after:
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"the blackout onset moved committed {staged.get('committed')} -> "
+                    f"{after_blackout.get('committed')}, not to {expect_after}. §3:150-152 "
+                    "releases each cancelled entry's reservation under the onset's OWN "
+                    "cause (SPEC-A7); the sweep reported released="
+                    f"{sweep.get('released')}"
+                ),
+            )
+        )
+    if findings:
+        return findings, unclassifiable
+
+    # -- EDGE-TRIGGERED: further ticks inside the SAME declared blackout. -----
+    polls_before = (after_blackout.get("onset") or {}).get("polls")
+    time.sleep(EDGE_SETTLE_S)
+    settled = drive.cmd("status")
+    polls_after = (settled.get("onset") or {}).get("polls")
+    seen["onset_edge"] = {
+        "polls_before": polls_before,
+        "polls_after": polls_after,
+        "blackout_onsets": (settled.get("onset") or {}).get("blackout_onsets"),
+        "sweeps": len((settled.get("onset") or {}).get("sweeps") or []),
+    }
+    if (polls_after or 0) <= (polls_before or 0):
+        unclassifiable.append(
+            f"{LIMITERD_FILE}: the onset poll did not advance past "
+            f"{polls_before} while the blackout stayed declared, so whether the "
+            "sweep is EDGE-triggered or level-triggered was not measured"
+        )
+    elif len(_onset_sweeps(settled, CAUSE_BLACKOUT)) != len(sweeps):
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"NOT EDGE-TRIGGERED: the {ONSET_BLACKOUT_SYMBOL} blackout stayed "
+                    f"declared and unchanged across {polls_after} polls and the daemon "
+                    f"booked {len(_onset_sweeps(settled, CAUSE_BLACKOUT))} sweeps where "
+                    f"{len(sweeps)} was the onset. §3:172's onset is the ENTRY into the "
+                    "window, not the window; a sweep on every tick re-enters §11.3's "
+                    "ledger and §9's WAL once per tick for a transition that happened once"
+                ),
+            )
+        )
+
+    return findings, unclassifiable
+
+
+# too-many-locals: the same argument as `_onset_stage` and `_onset_blackout` —
+# the sweep, the settled status, the residue, the stop book on both sides and
+# the two exclusion sets. Each is one separately-reported finding, and merging
+# any pair would merge two defects into one sentence naming neither.
+def _onset_halt(  # pylint: disable=too-many-locals
+    drive: Drive, seen: dict[str, Any], state: dict[str, Any]
+) -> list[tuple[str, str]]:
+    """The GLOBAL half, plus the absence proof and the selectivity assertion."""
+    findings: list[tuple[str, str]] = []
+    unclassifiable: list[str] = []
+    open_rows = state["open_rows"]
+    stops_before = state["stops_before"]
+    # ================= HALT ONSET — GLOBAL ==================================
+    drive.declare_onset(halt=True, blackout=[ONSET_BLACKOUT_SYMBOL])
+    try:
+        drive.watch(
+            lambda s: ((s.get("onset") or {}).get("halt_onsets") or 0) > 0,
+            "the daemon to detect the global HALT onset",
+        )
+    except _Missed as miss:
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    "NO SWEEP ON HALT. A global HALT onset was declared and the daemon "
+                    f"never dispatched one within {WATCH_HORIZON_S}s (onset block: "
+                    f"{json.dumps(miss.status.get('onset'))[:400]}). "
+                    f"{sorted(set(ONSET_OUT_OF_SCOPE))} are still PENDING with "
+                    f"{miss.status.get('committed')} committed against them, inside a "
+                    "HALT that stops every strategy and every symbol (§12.5, §3:172)"
+                ),
+            )
+        )
+        return findings
+    time.sleep(EDGE_SETTLE_S)
+    after_halt = drive.cmd("status")
+    halt_sweeps = _onset_sweeps(after_halt, CAUSE_HALT)
+    if not halt_sweeps:
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    "the daemon counted a HALT onset but booked NO sweep under "
+                    f"{CAUSE_HALT!r}: {json.dumps(after_halt.get('onset'))[:400]}"
+                ),
+            )
+        )
+        return findings
+    halt_sweep = halt_sweeps[-1]
+    seen["onset_halt_sweep"] = halt_sweep
+    findings += _onset_judge_sweep(
+        halt_sweep,
+        cause=CAUSE_HALT,
+        expect_scope=None,
+        must_cancel=set(ONSET_OUT_OF_SCOPE),
+        must_not_cancel=set(),
+        open_rows=open_rows,
+    )
+    # -- COMPLETENESS, THE ABSENCE PROOF. A GLOBAL onset leaves NOTHING pending:
+    # Σ over the TAKEN set is the ledger's own number and is derived from a
+    # record `pending_entries()` cannot edit, so a residue here is exactly an
+    # entry the enumeration never handed over. This is the one assertion that
+    # catches an incomplete producer whose omission the enumeration also hides.
+    seen["onset_committed_after_halt"] = after_halt.get("committed")
+    seen["onset_outstanding_after_halt"] = after_halt.get("outstanding")
+    residue = _onset_pending(after_halt)
+    if round(float(after_halt.get("committed") or 0.0), 6) != 0.0 or residue:
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"INCOMPLETE SWEEP ON GLOBAL HALT: committed "
+                    f"{after_halt.get('committed')} over "
+                    f"{after_halt.get('outstanding')} TAKEN reservation(s) survive a "
+                    f"HALT onset, and the enumeration still lists {sorted(residue)}. "
+                    "§12.5's HALT is global and §3:172 cancels ALL pending entries on "
+                    "onset, so every one of these is a gate-approved order still "
+                    "working inside a state no order may fill in (§3:174). Σ over the "
+                    "TAKEN set is the LEDGER's number, not the enumeration's — a "
+                    "residue here is an entry `pending_entries()` never handed over"
+                ),
+            )
+        )
+
+    # -- SELECTIVE, ACROSS BOTH ONSETS. The stop book must be byte-for-byte the
+    # same object it was before any of this: same orders, same levels.
+    stops_after = _onset_stops(after_halt)
+    seen["onset_stops_before"] = stops_before
+    seen["onset_stops_after"] = stops_after
+    if stops_before and stops_after != stops_before:
+        lost = sorted(set(stops_before) - set(stops_after))
+        moved = sorted(
+            coid
+            for coid in set(stops_before) & set(stops_after)
+            if stops_after[coid] != stops_before[coid]
+        )
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"UNPROTECTED POSITION. §3:173 leaves exits UNTOUCHED and §14 gives "
+                    f"the protective path zero delivery dependency, and the onset sweep "
+                    f"changed the stop book: lost {lost}, moved {moved} "
+                    f"(before {stops_before}, after {stops_after}). The OPEN position(s) "
+                    f"{open_rows} are live at the venue with no protective stop this "
+                    "process can point at — cancelling a stop inside a window is the "
+                    "one thing an onset must never do"
+                ),
+            )
+        )
+    # ...and no venue message the sweep produced may NAME a protective order.
+    onset_cancels = set((after_halt.get("onset") or {}).get("cancels_recorded") or [])
+    protective_cancelled = sorted(onset_cancels & set(stops_before))
+    if protective_cancelled:
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"the onset sweep issued a venue CANCEL naming protective "
+                    f"order(s) {protective_cancelled}, which protect the OPEN "
+                    f"position(s) {open_rows}. §3:173 cancels pending ENTRIES only"
+                ),
+            )
+        )
+
+    del unclassifiable
+    return findings
+
+
+def _arm_onset(
+    drive: Drive, seen: dict[str, Any]
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """§3:173's onset sweep, DRIVEN. Returns `(findings, unclassifiable)`.
+
+    Three steps, and the order is the argument: stage and prove the book is
+    real, then the PER-SYMBOL onset (which must be narrow), then the GLOBAL
+    one (which must be total). Running global-first would leave the per-symbol
+    arm nothing to be narrow about.
+    """
+    findings, unclassifiable, state = _onset_stage(drive, seen)
+    if findings:
+        return findings, unclassifiable
+    findings, blind = _onset_blackout(drive, seen, state)
+    unclassifiable += blind
+    if findings:
+        return findings, unclassifiable
+    return _onset_halt(drive, seen, state), unclassifiable
+
+
+# too-many-locals: SIX named sets and their derived differences, and each name is
+# one distinguishable defect this function must report separately — handed,
+# cancelled, accounted, unaccounted, invented, not-cancelled, wrongly-cancelled,
+# plus the protective book on both sides. Check contract rule 11 makes the REASON
+# the assertion, so collapsing two of them would merge two findings into one
+# sentence that names neither precisely.
+def _onset_judge_sweep(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+    sweep: dict[str, Any],
+    *,
+    cause: str,
+    expect_scope: str | None,
+    must_cancel: set[str],
+    must_not_cancel: set[str],
+    open_rows: dict[str, str],
+) -> list[tuple[str, str]]:
+    """One sweep, judged: scope, completeness BY DERIVATION, and selectivity.
+
+    COMPLETENESS BY DERIVATION means the accounting closes: every id the sweep
+    was HANDED is either cancelled or in a NAMED exclusion bucket, and nothing it
+    cancelled was absent from what it was handed. An id that falls out of that
+    equation is an order the sweep neither cancelled nor refused to cancel, which
+    is the one state §3:174 has no answer for.
+    """
+    findings: list[tuple[str, str]] = []
+    if sweep.get("scope") != expect_scope:
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"the {cause} sweep ran with scope={sweep.get('scope')!r}, not "
+                    f"{expect_scope!r}. `None` is GLOBAL (§12.5's HALT stops every "
+                    "strategy and every symbol) and a symbol is THAT SYMBOL ONLY "
+                    "(§6.1's windows are per-symbol off the live calendar); the two "
+                    "cancel different books"
+                ),
+            )
+        )
+    handed = {str(coid) for coid in (sweep.get("handed") or [])}
+    cancelled = {str(coid) for coid in (sweep.get("cancelled") or [])}
+    accounted = _onset_bucketed(sweep)
+    unaccounted = sorted(handed - accounted)
+    if unaccounted:
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"the {cause} sweep was handed {sorted(handed)} and accounted for "
+                    f"{sorted(accounted)}: {unaccounted} were neither cancelled nor "
+                    "placed in a named exclusion bucket. §3:172 cancels ALL pending "
+                    "entries and every exclusion must SAY WHY; an order that is "
+                    "neither is one nothing can prove is not working inside the window"
+                ),
+            )
+        )
+    invented = sorted(cancelled - handed)
+    if invented:
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"the {cause} sweep cancelled {invented}, which it was never "
+                    f"handed ({sorted(handed)}). A cancel outside the enumeration is a "
+                    "venue message about an order this process cannot say is an entry"
+                ),
+            )
+        )
+    not_cancelled = sorted(must_cancel - cancelled)
+    if not_cancelled:
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"the {cause} sweep did NOT cancel {not_cancelled} "
+                    f"(cancelled={sorted(cancelled)}, protected={sweep.get('protected')}, "
+                    f"out_of_scope={sweep.get('out_of_scope')}, "
+                    f"unclassified={sweep.get('unclassified')}). Each is a gate-approved "
+                    "pending ENTRY in scope, and each can now fill inside a window it "
+                    "was not approved for (§3:174)"
+                ),
+            )
+        )
+    wrongly = sorted(must_not_cancel & cancelled)
+    if wrongly:
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"the {cause} sweep cancelled {wrongly}, which are out of its "
+                    f"scope ({expect_scope!r}). §6.1's windows are per-symbol"
+                ),
+            )
+        )
+    # THE SAFETY HALF, MEASURED ON BOTH SIDES OF THE ONE CALL THAT COULD BREAK IT.
+    before = {
+        row["client_order_id"]: row["level"]
+        for row in (sweep.get("protective_before") or [])
+    }
+    after = {
+        row["client_order_id"]: row["level"]
+        for row in (sweep.get("protective_after") or [])
+    }
+    if before != after:
+        findings.append(
+            (
+                LIMITERD_FILE,
+                (
+                    f"the {cause} sweep CHANGED the protective book across its own "
+                    f"call: before {before}, after {after}. The OPEN position(s) "
+                    f"{open_rows} were left unprotected inside the window — §3:173 "
+                    "leaves exits untouched and §14 makes the protective path the one "
+                    "thing that must survive an onset"
+                ),
+            )
+        )
+    return findings
+
+
 def _arm_stop_record(record: dict[str, Any]) -> list[tuple[str, str]]:
     """The daemon's OWN stop record. §7.12 #5: whose dedup actually stopped it?"""
     findings: list[tuple[str, str]] = []
@@ -2212,8 +2904,16 @@ def _arm_stop_record(record: dict[str, Any]) -> list[tuple[str, str]]:
     # releases both — one when the venue answers `cancelled` on the first query,
     # one when the arm finally answers the order it deliberately held. Both
     # timeout releases are the POLL's, and §3 counts them the same as a push.
+    # ARC 054 extends the same DERIVATION again rather than editing a literal:
+    # the onset arm takes ONSET_RESERVATIONS and releases every one of them under
+    # its own onset cause (SPEC-A7), which §3 counts as a terminal release like
+    # any other.
     expect_released = (
-        int(HAS_CANCEL) + int(HAS_FILL) + int(HAS_REJECT) + TIMEOUT_RESERVATIONS
+        int(HAS_CANCEL)
+        + int(HAS_FILL)
+        + int(HAS_REJECT)
+        + TIMEOUT_RESERVATIONS
+        + ONSET_RESERVATIONS
     )
     if res.get("released") != expect_released:
         findings.append(
@@ -2288,6 +2988,45 @@ def _evidence(seen: dict[str, Any], record: dict[str, Any]) -> str:
         f"refused={res.get('refused')}; WIRED_EVENTS={list(WIRED)}"
         + _fill_evidence(seen)
         + _resolution_evidence(seen)
+        + _onset_evidence(seen)
+    )
+
+
+def _onset_evidence(seen: dict[str, Any]) -> str:
+    """ARC 054's arm, in the verdict line — on PASS as well as on FAIL.
+
+    Printed green because §3:173's SELECTIVE half is a NEGATIVE property (*the
+    stops did not move*) and nobody can read a negative off an absence: a gate
+    whose green does not say which stops it watched has not told the operator
+    what it watched them for.
+    """
+    if "onset_blackout_sweep" not in seen:
+        return "; ONSET ARM: NOT RUN"
+    blackout = seen.get("onset_blackout_sweep") or {}
+    halt = seen.get("onset_halt_sweep") or {}
+    edge = seen.get("onset_edge") or {}
+    return (
+        f"; ONSET ARM: reserved {ONSET_RESERVATIONS} pending entries across "
+        f"{ONSET_BLACKOUT_SYMBOL}/{ONSET_OTHER_SYMBOL} and two strategies at "
+        f"{EXPECT_ONSET_EACH} each (committed -> "
+        f"{seen.get('onset_committed_after_take')}); "
+        f"`pending_entries()` enumerated {seen.get('onset_enumerated')} against an "
+        f"order state of {seen.get('onset_order_state')}. "
+        f"A {ONSET_BLACKOUT_SYMBOL} BLACKOUT onset declared OUT OF PROCESS was "
+        f"detected by the loop's own tick and swept scope="
+        f"{blackout.get('scope')!r}: handed {blackout.get('handed')}, CANCELLED "
+        f"{blackout.get('cancelled')}, out_of_scope "
+        f"{[pair[0] for pair in (blackout.get('out_of_scope') or [])]}, released "
+        f"{blackout.get('released')}, complete={blackout.get('complete')} "
+        f"(committed -> {seen.get('onset_committed_after_blackout')}); it stayed "
+        f"declared across {edge.get('polls_after')} polls and fired "
+        f"{edge.get('blackout_onsets')} time(s) — EDGE-triggered. "
+        f"A GLOBAL HALT onset then swept scope={halt.get('scope')!r}: CANCELLED "
+        f"{halt.get('cancelled')}, complete={halt.get('complete')}, leaving "
+        f"committed {seen.get('onset_committed_after_halt')} over "
+        f"{seen.get('onset_outstanding_after_halt')} TAKEN. "
+        f"*** PROTECTIVE BOOK UNCHANGED across both onsets: "
+        f"{seen.get('onset_stops_before')} -> {seen.get('onset_stops_after')} ***"
     )
 
 
@@ -2442,6 +3181,15 @@ def _drive_every_arm(
         findings += _arm_pending_timeout(drive, seen)
     if not findings and HAS_REJECT:
         findings += _arm_reject(drive, seen)
+    # ARC 054. The ONSET arm runs LAST, and for the reason the two ARC 053 arms
+    # run late, sharpened: a global HALT onset releases EVERY outstanding
+    # reservation in the process, so any arm running after it would assert
+    # against a ledger this one emptied. It is also the only arm that stages a
+    # second strategy, and §4:266-268 keys Limiter state to a registration.
+    if not findings:
+        onset_findings, onset_blind = _arm_onset(drive, seen)
+        findings += onset_findings
+        unclassifiable += onset_blind
     return findings, unclassifiable
 
 

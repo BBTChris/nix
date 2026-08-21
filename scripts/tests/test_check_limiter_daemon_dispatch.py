@@ -68,6 +68,12 @@ FILLS = "scripts/nixrisk/fills.py"
 #: plant in either handler must redden it, which it cannot do unless the file is
 #: declared. This arc edited none of it.
 OUTCOMES = "scripts/nixrisk/outcomes.py"
+#: ARC 054. I11's onset SELECTION, which the daemon now CALLS on both onset
+#: paths. A subject of the gate for the reason `FILLS` and `OUTCOMES` are, and
+#: NOT a duplicate of `check_flatten` ARM 3b (doctrine C.9): that arm measures
+#: which orders the selection admits, this gate measures whether anything with a
+#: pid ever invokes it. This arc edited none of it.
+FLATTEN = "scripts/nixrisk/flatten.py"
 
 
 def _ctx(home: Path) -> Context:
@@ -117,11 +123,13 @@ def test_NON_VACUITY_the_SHIPPED_daemon_PASSES_and_the_evidence_names_the_drive(
     assert "duplicates=1" in result.evidence
     # ARC 047 made it TWO — one RELEASED by the cancel arm, one CONVERTED by the
     # fill arm, and §3 makes a fill a terminal release too (*"released on: fill
-    # (converts to open-margin)"*). ARC 053 makes it FIVE: the reject arm
-    # releases one and the pending-timeout arm takes two and releases both. The
-    # literal moves because the DRIVE does, and the gate derives the same figure
-    # from which arms this build can run rather than carrying it as a constant.
-    assert "released=5" in result.evidence
+    # (converts to open-margin)"*). ARC 053 made it FIVE: the reject arm
+    # releases one and the pending-timeout arm takes two and releases both.
+    # ARC 054 makes it NINE: the onset arm takes four and every one of them is
+    # released under its own onset cause (SPEC-A7). The literal moves because the
+    # DRIVE does, and the gate derives the same figure from which arms this build
+    # can run rather than carrying it as a constant.
+    assert f"released={5 + gate.ONSET_RESERVATIONS}" in result.evidence
     # ARC 053 — the two RESOLUTION paths, and the negative property, in the
     # evidence of a PASS. A green that does not say it covered them is a green
     # whose scope a reader cannot see.
@@ -375,7 +383,7 @@ def test_the_gate_DECLARES_the_subprocess_and_the_temp_write_it_actually_makes()
     assert gate.CORRECTABLE is False
     assert gate.NON_CORRECTABLE_REASON
     assert not gate.DEPENDS_ON
-    assert set(gate.SUBJECTS) == {LIMITERD, COMPLETIONS, FILLS, OUTCOMES}
+    assert set(gate.SUBJECTS) == {LIMITERD, COMPLETIONS, FILLS, OUTCOMES, FLATTEN}
 
 
 # ---------------------------------------------------------------------------
@@ -447,8 +455,8 @@ def test_PLANT_053B_a_daemon_whose_POLL_NEVER_RUNS_FAILS_naming_the_ZOMBIE(
     _perturb(
         home,
         LIMITERD,
-        "        ingress=booker.before(timeouts.before(_read_both)),",
-        "        ingress=booker.before(_read_both),  # PLANT 053B: poll unhooked",
+        "        ingress=onset.before(booker.before(timeouts.before(_read_both))),",
+        "        ingress=onset.before(booker.before(_read_both)),  # PLANT 053B",
     )
     result = gate.run(Mode.VERIFY, _ctx(home))
     assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
@@ -599,3 +607,181 @@ def test_RULE_4_the_SAME_blind_arm_ALONE_is_CANNOT_MEASURE_not_a_PASS(
     result = gate.run(Mode.VERIFY, _ctx(home))
     assert result.status is Status.CANNOT_MEASURE, result.detail
     assert "roster could not be derived" in result.detail
+
+
+# ===========================================================================
+# ARC 054 — §3:173's ONSET SWEEP, at the DAEMON.
+#
+# Four plants over TWO halves of one sentence, and the halves fail in opposite
+# directions. PLANT 054A and 054B are INCOMPLETENESS: an entry the sweep never
+# reaches stays working at the venue and fills inside a window §3:174 says it
+# was never approved for. PLANT 054C is OVER-BREADTH, and it is the one that
+# costs a position: cancelling or disarming a protective order inside a window
+# leaves a REAL open position with nothing under it (§14). ARC 045 measured that
+# bug in the library; these controls exist so it cannot reappear one layer up.
+#
+# PLANT 054B2 is not a duplicate of 054B. 054B's omission is visible in the
+# daemon's own published enumeration, so the gate's pre-check catches it before
+# anything is swept. 054B2 hides the omission behind a COMPLETE-looking report —
+# the failure mode a gate that trusted the enumeration's self-description would
+# pass — and it must still fail, because Σ over the ledger's TAKEN set is a
+# number `pending_entries()` cannot edit.
+# ===========================================================================
+
+
+def test_PLANT_054A_a_daemon_that_DETECTS_an_onset_and_NEVER_SWEEPS_FAILS(
+    tmp_path: Path,
+):
+    """PLANT 054A: the onset dispatch removed, the COUNTER left in place — the
+    pre-ARC-054 daemon with a counter bolted on. It is the worst of the three
+    because everything downstream reads it as a sweep: `blackout_onsets` and
+    `halt_onsets` advance, and not one entry is cancelled."""
+    home = _population(tmp_path)
+    _perturb(
+        home,
+        LIMITERD,
+        """        if halted and not self._halted:
+            self._dispatch(TerminalPath.HALT_ONSET, None)
+            self.halt_onsets += 1
+            fired += 1
+        for symbol in sorted(symbols - self._blackout):
+            self._dispatch(TerminalPath.BLACKOUT_ONSET, symbol)
+            self.blackout_onsets += 1
+            fired += 1""",
+        """        if halted and not self._halted:
+            self.halt_onsets += 1        # PLANT 054A: dispatch removed
+            fired += 1
+        for symbol in sorted(symbols - self._blackout):
+            self.blackout_onsets += 1    # PLANT 054A: dispatch removed
+            fired += 1""",
+    )
+    result = gate.run(Mode.VERIFY, _ctx(home))
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
+    assert LIMITERD in result.site
+    # THE REASON: no sweep, the SURVIVORS named, and the window they can fill in.
+    assert "NO SWEEP" in result.detail
+    assert "cdd-onset-a1" in result.detail
+    assert "still pending ENTRY orders" in result.detail
+    assert "blackout window they were never approved for" in result.detail
+    assert '"sweeps": []' in result.detail
+    # ...and the capital is demonstrably still committed against them.
+    assert "still TAKEN at process exit" in result.detail
+
+
+def test_PLANT_054B_an_INCOMPLETE_pending_entries_FAILS_naming_the_MISSED_entry(
+    tmp_path: Path,
+):
+    """PLANT 054B: `pending_entries()` drops one order that holds an OUTSTANDING
+    §3 reservation. The sweep iterates exactly this enumeration, so the omitted
+    order is one no onset can ever cancel — D3.443's whole reason for existing."""
+    home = _population(tmp_path)
+    _perturb(
+        home,
+        LIMITERD,
+        """            entries.append(
+                PendingEntry(
+                    client_order_id=coid,""",
+        """            if coid.endswith("a2"):   # PLANT 054B
+                continue
+            entries.append(
+                PendingEntry(
+                    client_order_id=coid,""",
+    )
+    result = gate.run(Mode.VERIFY, _ctx(home))
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
+    assert LIMITERD in result.site
+    # THE REASON: the MISSED entry, by name, against the order state it is in.
+    assert "INCOMPLETE ENUMERATION" in result.detail
+    assert "cdd-onset-a2" in result.detail
+    assert "hold OUTSTANDING" in result.detail
+    assert "the sweep will NEVER cancel" in result.detail
+    # NOT the no-sweep reading: the dispatch is intact, the book is not.
+    assert "NO SWEEP" not in result.detail
+
+
+def test_PLANT_054B2_an_omission_the_ENUMERATIONS_OWN_REPORT_HIDES_still_FAILS(
+    tmp_path: Path,
+):
+    """PLANT 054B2: the same omission, plus a `record()` that reports the
+    COMPLETE set — so the daemon's published enumeration says nothing is
+    missing. The pre-check is defeated by construction and the gate must still
+    fail, on Σ over the LEDGER's TAKEN set and on the survivor itself."""
+    home = _population(tmp_path)
+    _perturb(
+        home,
+        LIMITERD,
+        """            entries.append(
+                PendingEntry(
+                    client_order_id=coid,""",
+        """            if coid.endswith("a2"):   # PLANT 054B2
+                continue
+            entries.append(
+                PendingEntry(
+                    client_order_id=coid,""",
+    )
+    _perturb(
+        home,
+        LIMITERD,
+        """        entries = self.pending_entries()
+        return {
+            "enumerations": self.enumerations,""",
+        """        entries = tuple(   # PLANT 054B2: the report HIDES the omission
+            PendingEntry(str(r.client_order_id), str(r.strategy_id), str(r.symbol),
+                         role=OrderRole.ENTRY)
+            for r in self._reservations.outstanding()
+        )
+        return {
+            "enumerations": self.enumerations,""",
+    )
+    result = gate.run(Mode.VERIFY, _ctx(home))
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
+    assert LIMITERD in result.site
+    # THE REASON: the enumeration LOOKED complete, and the money record disagreed.
+    assert "INCOMPLETE ENUMERATION" not in result.detail
+    assert "SURVIVED THE SWEEP" in result.detail
+    assert "cdd-onset-a2" in result.detail
+    assert "did NOT cancel" in result.detail
+
+
+def test_PLANT_054C_a_sweep_that_UNPROTECTS_a_LIVE_POSITION_FAILS(tmp_path: Path):
+    """PLANT 054C — THE DANGEROUS ONE. The daemon's onset dispatch disarms every
+    protective stop alongside its entry sweep.
+
+    Disarming is the form over-breadth actually takes here: §12.1 keeps stops
+    SYNTHETIC, `StopBook` reaches no broker, so there is no venue message to
+    intercept and `forget` IS the act of unprotecting a live position. It is also
+    invisible to the no-resend census — `forget` is not a placement verb — which
+    is precisely why this control is the driven arm's and not the census's."""
+    home = _population(tmp_path)
+    _perturb(
+        home,
+        LIMITERD,
+        """        pending = self._book.pending_entries()
+        protective_before = self._protective()""",
+        """        pending = self._book.pending_entries()
+        protective_before = self._protective()
+        for _stop in list(self._fills.stops.stops()):   # PLANT 054C
+            self._fills.stops.forget(_stop.client_order_id)""",
+    )
+    result = gate.run(Mode.VERIFY, _ctx(home))
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail
+    assert LIMITERD in result.site
+    # THE REASON: the protective book moved, and the POSITION it left bare.
+    assert "CHANGED the protective book" in result.detail
+    assert "left unprotected inside the window" in result.detail
+    assert "cdd-fill-1" in result.detail
+    assert "TRD-" in result.detail
+    # NOT an incompleteness reading: every entry was still swept correctly.
+    assert "did NOT cancel" not in result.detail
+
+
+def test_the_SHIPPED_daemon_still_PASSES_after_every_ARC_054_plant(tmp_path: Path):
+    """The same real, unperturbed population still PASSES after all four onset
+    plants — the plants, not the fixture, cause the failures."""
+    result = gate.run(Mode.VERIFY, _ctx(_population(tmp_path)))
+    assert result.status is Status.PASS, f"{result.status}: {result.detail}"
+    # AND the green SAYS what it watched: a negative property nobody can read
+    # off an absence (check contract v2 rule 11).
+    assert "ONSET ARM" in (result.evidence or "")
+    assert "PROTECTIVE BOOK UNCHANGED" in (result.evidence or "")
+    assert "EDGE-triggered" in (result.evidence or "")
