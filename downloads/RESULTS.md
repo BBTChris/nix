@@ -132,7 +132,17 @@ D3.104's overdue-work case carried, not paid.
   `arc_047.log` and this `[??]` over `arc_049.log` are the same defect from its two sides.
 * **PREDICTED: `91 | 4 | 2 | 0 | 1`** — +1 for the new gate file, +1/-1 for
   `check_arc_status_contract` flipping to PASS under the patch. 97 -> 98 checks.
-* **RE-MEASURED: appended below at the close-out, forward-only.**
+* **RE-MEASURED at `67ce36f`: `91 | 4 | 2 | 0 | 1`, exit 1. PREDICTION HIT.**
+  `check_two_phase_entry` `[ok]` (new gate file, 97 -> 98 checks) and
+  `check_arc_status_contract` `[ok]` against `arc_048.log` — CANNOT_MEASURE at the baseline, PASS
+  now, and the verdict NAMES the arc: `AUDITED ARC 048 (arc_048.log): arc=048 pulses=9 teardowns=1
+  wd_pid=434005`. Set beside ARC 048's own line, that naming is the whole D3.455 fix: 048 was green
+  over `arc_047.log` with nothing saying so.
+  Standing and untouched: gateway down (1 FAIL + 2 CANNOT-MEASURE), `check_monitor_tui` ARM3 stale
+  pin, `check_uncalled_entry_points` at a byte-identical 54/25, the `.dmg`. Coverage GUARDED at
+  8 exclusions -> ARC 050.
+  **The prediction departed from the brief's and said so BEFORE the run**: the brief assumed both
+  changes extend existing gates; no gate owned this property, so it is +1 for a new file.
 
 ## BADGE
 

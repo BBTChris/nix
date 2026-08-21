@@ -7139,3 +7139,35 @@ and it is deliberate:** it is D3.455's own named discharge, and it is already in
 `check_uncalled_entry_points` did NOT move: 54 measured / 25 rendered, identical to baseline.
 Lint scoped to changed files only (ruff clean). Tripwires run explicitly:
 `test_check_order_path_bans` + `test_check_uncalled_entry_points` + the ARC 038 I4 suite — 78 passed.
+
+### ARC 049 — THE FINAL MEASUREMENT: `91 | 4 | 2 | 0 | 1` at `67ce36f`. **PREDICTION HIT.**
+
+Re-measured on the merged tree after the write-back commit, against the MEASURED baseline
+`89 | 4 | 3 | 0 | 1` at `e6835fb`. The predicted delta was **+2 passed, −1 cannot-measure**, and both
+halves landed for the reasons stated before the run:
+
+* `check_two_phase_entry` **`[ok]`** — a NEW gate file, so `passed` moves. 97 → 98 registered checks.
+* `check_arc_status_contract` **`[ok]` against `/home/bbt/nix/scratchpad/arc_logs/arc_048.log`** —
+  CANNOT_MEASURE at the baseline, PASS now, and the D3.455 patch is why. Set beside ARC 048's line in
+  this file, the difference is the whole point: 048 recorded `[ok]` over `arc_047.log` with nothing in
+  the verdict saying so. **This arc's verdict NAMES the arc it audited** — `AUDITED ARC 048
+  (arc_048.log): arc=048 pulses=9 teardowns=1 wd_pid=434005` — and `arc_049.log`, the running arc's
+  own log and the newest file in the directory, is excluded by name rather than silently chosen.
+
+**The prediction departed from the brief's and said so before the run.** The brief predicted `passed`
+unchanged on the reasoning that both gate changes EXTEND existing gates. That premise was false —
+censused across all 98 gates, no instrument owned §4's OPEN-setter discipline — so the delta was
++1 for a new file, and the arithmetic was stated against the measured baseline rather than adjusted
+afterwards to fit.
+
+Standing, unchanged from baseline and untouched by this arc: `check_ibgateway_service` FAIL with
+`check_ibgateway_config` / `check_observed_resource_claims` CANNOT-MEASURE (the gateway is down — not
+a misconfiguration, §4.1); `check_monitor_tui` FAIL (ARM3 stale pin); `check_uncalled_entry_points`
+FAIL at 54 measured / 25 rendered, byte-identical baseline — it moved during the arc and was moved
+back, see the `.keys` note above; `check_untracked_attribution` FAIL on
+`downloads/Pinokio-8.0.40-arm64.dmg`, still present, an operator artifact this arc neither created
+nor deleted. `check_artifact_gate_coverage` GUARDED with its eight exclusions now reading
+`-> ARC 050`, the re-point made BEFORE this file named ARC 049 complete.
+
+**Badge: I4 DISCHARGED. Clean `{I2, I3, I4, I5, I6, I7, I8, I10, I11} = 9/12`, open = 3
+(`I1`, `I9`, `I12`). Limiter STAYS RED. Ledger 403, derived.**
