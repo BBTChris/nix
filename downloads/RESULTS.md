@@ -1,185 +1,116 @@
-# ARC 051 RESULTS — I12 input freshness (cc -> claude.ai)
+# ARC 052 — RESULTS (TOOLING/PREP; no invariant flip)
 
-## 2026-08-21 — ARC 051: I12 input freshness — never act on a stale, out-of-order or half-built input
+**Predecessor DERIVED `9a96eab` · write-back `143af34` · re-measure banked on top.**
+**Count STAYS 11/12 (open: I1). Limiter STAYS RED. No board redraw.**
 
-**TIER = INTERIOR. Limiter STAYS RED. I12 DISCHARGED: clean 10/12 -> 11/12, open = 1 (`I1`).**
-Predecessor tip DERIVED as **`652f9e5`**, not the brief's approximate `ffd6b69` — `ffd6b69` is 050's
-series-row commit and `652f9e5` is its final-measurement commit one further on. Every freeze and diff
-in this arc is against `652f9e5`.
+## Verify tuple
 
-### The baseline was MEASURED, and it refuted the number the brief carried
+| | passed | failed | cannot-measure | skipped | guarded |
+|---|---|---|---|---|---|
+| baseline, measured at `9a96eab` FIRST | 92 | 5 | 2 | 0 | 1 |
+| **predicted before the run** | 94 | 4 | 2 | 0 | 0 |
+| **measured at the merged tree** | **94** | **4** | **2** | **0** | **0** |
 
-`verify.py` at `652f9e5`, before a line changed: **`91 passed | 4 failed | 3 cannot measure |
-0 skipped | 1 guarded`, exit 1** — not 050's closing `92|4|2|0|1`. The mover is a real finding and it
-is this arc's D3.464: **`check_arc_status_contract` went PASS -> CANNOT-MEASURE with nothing in the
-tree changing**, because its subject `scratchpad/arc_logs/arc_050.log` carries no
-`**** ARC completed ****` line — `grep -c` returns **0** — while the log's last beat is 100% at
-`HEAD 652f9e5`. The marker was printed to the chat and never passed through the `tee`. It cannot be
-repaired retroactively (banked evidence, directive 6), so ARC 051's own log carries it and ARC 052
-will read PASS. This is D3.455's neighbour one layer up: 050 taught the check to exclude the RUNNING
-arc's log and name the previous one, which is precisely why 050's gap is visible from here.
-**Memory #19 again: the carried figure was wrong and the measurement said so in the first minute.**
+**PREDICTION HIT.** Registered check count unchanged at **100** — this arc added tests and a ruling,
+not gates.
 
-### The ownership census, taken BEFORE the gate was written (the I4/I9 lesson)
+**The baseline did not match the brief** (`92 | 4 | 3 | 0 | 1` was expected). One cannot-measure had
+become a FAIL with nothing in the tree changed. Finding out why produced D3.465.
 
-Four gates touch freshness and **every one of them owns exactly ONE FILE**: `check_staleness` ->
-`freshness.py` + `staleness.config.json`; `check_picture_atomicity` -> `picture.py`;
-`check_allocator_mirror` -> `nixalloc/mirror.py`; `check_limiter_gate` -> `gate.py`. **None owns the
-RELATION I12 names** — *an input added to the gate tomorrow with no freshness check*. That input
-would sit inside `gate.py` (invisible to `check_staleness`), would not move dispatch order
-(`check_limiter_gate` stays green), and would touch neither mirror. D3.392 is the standing proof that
-this blind spot is real and not theoretical: the Limiter's margin cap read no stop distance for three
-arcs while `check_allocator_caps` stayed green, *"because its `SUBJECTS` is `nixalloc/caps.py` ...
-`gate.py` is not in scope, so both facts were invisible to it by construction."* **Verdict: a NEW
-gate file, `passed +1`.** Predicted before the run; measured after.
+## TASK 1 — the tax was already paid for its own subject; this arc MEASURED it
 
-### S1 — REPRODUCED, and I12 is MET IN CODE (the I3/I4/I9 pattern)
+Seven I1-tail daemon files enumerated and all seven found ALREADY in `.testmondata`'s `file_fp`
+(`scope=401 known_in_fp=390 UNCOVERED=11`, none of the eleven a tail file). **No coverage test was
+added because none was owed.** Per-file no-op commit, tree reset to `9a96eab` each time:
 
-Twelve arms driven on real objects at the library level, all twelve holding, non-vacuity first:
-
-| driven | result |
-|---|---|
-| every configured feed stamped 100 ms ago | `GatePass.evaluate` -> **APPROVE**, all 10 rules in `evaluated` |
-| `price` 900 000 ms old (threshold 2 000, deadline 3 750) | **DENY at `data_staleness`**, reason names the key and both numbers |
-| `price` 2 500 ms old — INSIDE the retry window | state `STALE`, `blocked=False`, gate **APPROVE** — §6.4's ladder runs BEFORE the halt and no second retry is added |
-| `price` never observed | state `EMPTY`, **DENY** — stale-until-proven-fresh (§17) |
-| older instant / same instant lower `source_seq` / exact duplicate | **3 discarded, `admitted` unchanged, held stamp did not move** (§6.4b, V27) |
-| a 900 s-old stamp admitted under `margin:NQ` | `margin:ES` unmoved — per-key isolation |
-| a late poll arriving AFTER the feed went silent | `observe` -> **False**, gate still **DENY** — a late packet cannot refresh its own age (§0a, watched past the tick) |
-| mirror mid-rebuild, then delta-only | `tradable()` **False** both times, naming `('tbl.financial_picture',)` (§12.7, V31) |
-| the SNAPSHOT lands | `tradable()` **True** — the act side, so this is a refusal and not a habit |
-| that snapshot aged 900 s past a 5 s ceiling | `tradable()` **False** again |
-| `seq=1` replayed after `seq=2` | `applied` unchanged, `out_of_order=1`, mirrored version still 8 |
-| net-liq mark `(10_000_000.0, fresh=False)` | **DENY at `survival_headroom`** — a comfortable NUMBER with a dead stamp is still refused |
-| §12.3: a source stamp 60 s AHEAD of local; a skew observation 900 s old | both **block**; a fresh in-spec observation clears |
-
-### S2 — EMPTY BY DESIGN, and proved so
-
-No subject was edited. **Eighteen files byte-identical by `git hash-object`**, including all three
-subjects: `freshness.py` `5466041a`, `gate.py` `69eef09f`, `picture.py` `dcbb5a67`, plus
-`pollers.py`, `calendar_seam.py`, `nixbus/statebus.py`, `nixalloc/mirror.py`, `seam.py`, the fill
-path (`fills.py`, `stops.py`), the exit path (`flatten.py`), the two-phase state (`positions.py`,
-`projection.py`), I2's `outcomes.py`/`reservations.py`, the hot-path files (`loop.py`, `wal.py`) and
-`risks/staleness.config.json`. `CORRECTABLE=False` means this in practice as well as in the
-declaration. **The arc's work is the gate.**
-
-### S4 — `checks/check_input_freshness.py`, and the input set is DERIVED, not transcribed
-
-Everything the census judges is read off the shipped AST, in four derivations held against each
-other, so the arc that adds the seventh port cannot silently outrun it:
-
-1. **PORT TYPES** — every `class X(Protocol)` in `gate.py`, with each verb's RETURN annotation.
-   Measured: **5**. The annotation is what classifies: `tuple[float, bool]` is a `(value, fresh)`
-   pair the rule must branch on; `tuple[bool, str]` is §11.1's `(blocked, reason)` flag.
-2. **INPUTS** — every parameter of `default_manifest`, `GatePass.__init__` and every `evaluate`.
-   Measured: **15**, each landing in exactly one bucket — 6 flag ports, 1 fresh-pair, 1 stamped
-   snapshot, 1 in-process proposal, 1 per-pass clock read, 3 §12A knobs, 2 structural.
-3. **STAMP FIELDS** — attributes that FRESHNESS-REFUSAL SITES read, a site being derived as *a
-   function that calls a clock and subtracts an attribute from it*. Measured: **16**, and
-   `published_ts` resolves to `nixrisk/picture.py:707:tradable` and `nixalloc/mirror.py:339:snapshot`
-   — two modules, neither of them named in the check.
-4. **CLOCK-SOURCED FIELDS** — keywords anywhere in shipped code whose value expression contains a
-   clock call. This is what finds `signal_ts`.
-
-**A field that is clock-sourced but is NOT a stamp field is a time quantity on a gate input nothing
-gates on**, and the derivation found exactly one: **`ProposedOrder.signal_ts`** (D3.463). It is
-admitted BY NAME in a one-way ratchet with its reasoning — §6.4b scopes its guard to *"ALL
-venue-sourced state"* and a GO is strategy-sourced; §4:210-212 bounds admission -> feedback on the
-loop's own monotonic tick clock, a different quantity; the frozen spec never says whether signal age
-should bound entry. The sharper half is in the daemon: `limiterd.py:1168` is
-`signal_ts=float(raw.get("signal_ts") or time.time())`, so **an ABSENT signal instant is silently
-dated NOW.** Not called clean, not called a defect, not silently absorbed — recorded, with the
-architect ruling named as the discharge. A SECOND ungated time field is a FAIL.
-
-### The gate is BOUND — four plants, and the rule-4 ordering TESTED rather than reasoned about
-
-`scripts/tests/test_check_input_freshness.py`, 9 tests, all passing, every plant on a COPY:
-
-* **PLANT A** — `StalenessFlagPort.read` stops reporting its blocking feeds: **exit 1**,
-  `THE GATE SIZED ON A STALE INPUT`, naming `price`, the age, both thresholds and the ignored key.
-* **PLANT B** — the monotonic discard removed: **exit 1**, `THE HELD VALUE REGRESSED`, §6.4b named.
-* **PLANT C** — `PictureMirror.picture` stops refusing an incomplete mirror: **exit 1**,
-  `A DELTA COMPLETED THE MIRROR`, §12.7 named.
-* **PLANT D** — a new gate input the census cannot classify (`venue_feed: VenueFeedPort = None`,
-  added compatibly so nothing raises): **exit 2**, `UNCLASSIFIABLE GATE INPUT`, naming it. Never PASS.
-* **PLANT A + PLANT D TOGETHER** — a FAIL on one arm and a CANNOT_MEASURE on another,
-  simultaneously: **exit 1. FAIL WINS.** Check contract rule 4, and the ordering four consecutive
-  gate first-drafts got wrong (045, 049, 050 x2). It is now a test, not an argument.
-* **Denial-by-construction control** — a port that blocks every reading: **exit 1**,
-  `NON-VACUITY FAILED`. Freshness achieved by refusing everything is safe and useless, and the gate
-  says so.
-* Plants removed on the SAME tree: **exit 0**. A home with no `nixrisk`: **exit 2**, §17 named.
-
-Every assertion is on the REASON, never the exit code alone (rule 11). Registry: hand-added to
-`level-0`, then `verify.py --optimize --commit` reported *"derived plan is identical to the live
-registry"* and INSTALLED — the derivation agreed with the hand-add rather than being trusted.
-
-### Close-out
-
-**(b)** Derived closure by detection (D3.444 — the import graph is blind to subprocess callers):
-**184 passed, 0 failed** over 11 modules, `--basetemp=/var/tmp/arc051_pt` OUTSIDE the tree (D3.462).
-`test_picture.py` and `test_statebus.py` are uncollectable under `.venv-dev` for the PRE-EXISTING
-`import zmq` reason ARC 047 recorded; `scripts/nixbus/` is byte-identical this arc and both their
-gates pass under `verify.py`. Tripwire guard honoured: `test_check_order_path_bans` and
-`test_check_uncalled_entry_points` run EXPLICITLY (52 passed). Lint scoped to the two CHANGED files,
-never `ruff .`. **(c)** The gate is bound from all four plants plus the rule-4 plant-both.
-**(d)** CHECK-DEBT reconciled: D3.463 and D3.464 appended and the **ARC 051 series row written at
-410, re-derived WHOLE off `check_derived_claims`'s `derived:ledger_rows`** — read off the instrument,
-not 408 plus arithmetic. `check_derived_claims` exit 0. `uncalled_entry_points_baseline.json`
-UNMOVED. The `check_artifact_gate_coverage` guard re-pointed **ARC 051 -> ARC 052** (8 exclusions,
-still GUARDED, ceiling-exempt) because a completed owner is Cannot-measure and cannot outlive itself.
-
-### RESIDUAL — explicitly NOT claimed
-
-* The **flatten-open half** of §6.4 (STALE_PRICE producer) — **D3.453 = I1 ARC C**. I12 proves
-  stale => deny (halt new entries); flattening an already-open position on stale is the capstone.
-* **V32** one-version cross-table coherence is the atomic-snapshot property and belongs to
-  `check_picture_atomicity`. It intersects here only in that both read `FinancialPicture.version`,
-  and it is not re-litigated.
-* D3.372, D3.458, D3.450, D3.104 (8 exclusions, now 6 arcs re-pointed — the pay-down is overdue),
-  D3.428, D3.434, D3.438-D3.464, D3.359/360/361/363 — standing named debt.
-* `downloads/Pinokio-8.0.40-arm64.dmg` is still untracked and `check_untracked_attribution` still
-  FAILs on it. It is a user's file in a user's directory and it is not cc's to delete.
-
-### BADGE — Limiter STAYS RED, and this was the LAST point-fix
-
-**clean = `{I2, I3, I4, I5, I6, I7, I8, I9, I10, I11, I12}` = 11/12, open = 1: `I1`**, the
-daemon-wiring capstone. **After this arc the only thing between the Limiter and a green badge is the
-I1 tail plus the greening close-out.**
-
-**Recommended next, BEFORE ARC A** (pre-pay-the-tax): a consolidation arc — cover the
-`limiterd.py`-class daemon files under testmon, pay down D3.104's 8 exclusions (six arcs re-pointed
-is a ceiling being walked, not a debt being held), and finalize the ARC C flatten-producer plan.
-
-### POST-WRITE-BACK RE-MEASURE — banked BEFORE the marker
-
-Measured at **`6d26c2f`**, the commit that carries this arc's write-back, on the MERGED tree:
-
-```
-92 passed | 4 failed | 3 cannot measure | 0 skipped | 1 guarded          exit 1
-```
-
-**PREDICTION HIT, on every axis, and the prediction was stated before the gate was written:**
-
-| axis | predicted | measured |
+| file | before (ARC 046, banked) | after (ARC 052, measured) |
 |---|---|---|
-| `passed` | **91 -> 92** (a NEW gate file, from the ownership census, not an extension) | **92** — `[ok] check_input_freshness` |
-| `failed` | 4, unchanged | 4 — `check_ibgateway_service`, `check_monitor_tui`, `check_uncalled_entry_points`, `check_untracked_attribution` |
-| `cannot measure` | **3, unchanged — `check_arc_status_contract` STAYS CANNOT-MEASURE** | 3, and it does: *"ARC 050: no ARC-completed marker in log"* |
-| `guarded` | 1, re-pointed | 1 — `EXCLUDED -> ARC 052` on all eight |
+| `scripts/limiterd.py` | **43m47s**, `full-escalated(SCOPE-BLIND:changed-but-uncovered:limiterd.py)` | **3s**, `mode=incremental MEASURED-PASS` |
+| `nixrisk/completions.py` · `fills.py` · `fill_seam.py` · `freshness.py` · `gate.py` | — | **2s each**, `mode=incremental MEASURED-PASS` |
+| `nixrisk/flatten.py` | — | **3s**, `mode=incremental MEASURED-PASS` |
 
-**The brief predicted `check_arc_status_contract` would PASS at both baseline and re-measure. It
-does neither, and that was said here BEFORE the run rather than explained after it.** Its subject is
-`scratchpad/arc_logs/arc_050.log`, which is banked evidence of a completed run; directive 6 forbids
-rewriting it, so no action inside ARC 051 can turn it green. D3.464 records the mechanism and names
-the two possible discharges. ARC 051's own log carries the marker, so ARC 052 reads PASS.
+**Non-vacuity:** the same probe on an uncovered file returns `SCOPE-BLIND … exit 2` — the probe can
+still see the tax. **No file still escalates. The pre-pay did not FAIL for any of the seven.**
 
-`check_untracked_attribution` stays red on `downloads/Pinokio-8.0.40-arm64.dmg`. It is a user's file
-in a user's directory and deleting it is not cc's call; it is named here rather than quietly cleared.
+Opened while measuring: **D3.466** (eleven files still unfingerprinted; a NEW module inherits this on
+its first commit unless `pytest --testmon` is run once before committing it — the cheap workaround,
+measured) and **D3.467** (`runtime_gate.py`'s `SELECTOR-BROKEN`/`NOTHING-SELECTED` arms are
+unreachable: `selected` counts a test that skips unconditionally, so `selected == 0` is never true).
 
-`check_uncalled_entry_points` is unmoved — `checks/uncalled_entry_points_baseline.json` is
-byte-identical and the new gate added no public entry point to the shipped packages.
+## TASK 2 — D3.104 RESOLVED. All 8 dispositions named.
 
-**Registered checks 99 -> 100.** `verify.py --optimize --commit` reported *"derived plan is identical
-to the live registry"* against the hand-added `level-0` entry, so the registration is a derivation
-that agreed rather than an edit that was trusted.
+Not another re-point. The owner had walked `ARC 030 → … → 052`, the last six consecutive close-outs,
+each recording it was *"arc-boundary maintenance, not progress"*. **The finding: this was never
+overdue work — it is a debt with no payer.** All eight are `scripts/nixverify/*`, each with a
+dedicated test module, and doctrine C.9 forbids the second instrument a gate over them would be.
+
+**Disposition for all eight: PERMANENT under `CHECK-A11`** — no owner, no known-red marker, so no
+re-point is possible next arc or ever. Per artifact, and what each now measures:
+
+| artifact | witnesses (resolved every run) | witnessed property |
+|---|---|---|
+| `nixverify/actuation.py` | `test_actuation.py`, `test_check_standalone_nonvacuity.py` | flag parsing, the measure-only default, CORRECTABLE/`validate_result` mapping |
+| `nixverify/contract.py` | `test_contract.py` | `CheckResult`/`Status`/`Mode`, `validate_result`, the `completed_arcs`/`guard_owner_defect` owner algebra |
+| `nixverify/engine.py` | `test_engine.py`, `test_cli.py`, `test_status_contract.py` | block ordering, resource disjointness, `ON_FAIL` halting, status precedence |
+| `nixverify/gitenv.py` | `test_gitenv_hostile.py`, `test_check_git_env_scrub.py`, `test_harness_git_isolation.py` | the `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE` scrub, driven hostile |
+| `nixverify/loader.py` | `test_loader.py`, `test_runner_coverage.py` | AST-only reading of `DEPENDS_ON`/`RESOURCES`/`ON_FAIL`, the shadowed-`run` adapter |
+| `nixverify/optimize.py` | `test_optimize.py` | cycles, orphans both directions, undeclared deps, non-disjoint blocks ⇒ no plan written |
+| `nixverify/registry.py` | `test_registry.py`, `test_check_name_coherence.py` | `registry.json` as master plan; parse, block membership, `--commit` |
+| `nixverify/render.py` | `test_render.py`, `test_nix_status.py`, `test_stream_progress.py` | presentation only, and that it never enters the journal |
+
+**Nothing was greened by measuring less.** Before this arc the claim *"pytest measures it"* lived
+only in prose nobody read; now `covered_by` is resolved on every run in both directions, with this
+gate's own test module refused by name (it names every baseline path, so counting it would make the
+arm vacuous for every entry at once). The one-way ratchet is untouched and was re-planted.
+
+**Result: `check_artifact_gate_coverage` GUARDED → PASS**, all eight enumerated in `evidence` on
+every run. Nine can-fail plants demonstrated live against the real baseline and restored
+(`sha256` identical, control re-passes); ten banked as tests.
+
+## TASK 3 — D3.464 fixed, shown both ways; D3.465 found and fixed beside it
+
+```
+(A) MARKER REFUSED while no teardown line names cc's watchdog      -> exit 2, nothing written
+(B) completed-arc log WITHOUT the marker  -> [CANNOT-MEASURE] no ARC-completed marker in log
+(C) `arc_heartbeat.sh marker`             -> prints AND tees; grep -c 'ARC completed' = 1
+(D) completed-arc log WITH the marker     -> [PASS] arc_status_contract arc=999 pulses=2 teardowns=1
+```
+
+**D3.465, the baseline anomaly:** `arc_051.log` carried the marker AND the teardown, in the right
+order, and the gate read `FAIL teardowns=0`. `CLAUDE.md` tells cc to prove the teardown *while
+disclaiming* `[watchdogd]`; the reader's kernel-thread veto is line-scoped and discarded the whole
+line — **obeying the contract was the way to fail the gate that checks it**. It also reported
+`wd_pid=165`, the kernel thread's pid, as cc's. Repaired on both sides: the reader now requires
+POSITIVE identification (strictly stronger — a teardown naming nothing used to pass and now FAILs)
+and the emitter puts the disclaimer on its own line. Banked logs not retouched (directive 6).
+
+## TASK 4 — recon delivered
+
+`downloads/arc_c_flatten_recon.md` (654 lines). **`limiterd.py` imports no `gate`, `flatten`,
+`freshness` or `session` — the running daemon has no protective-exit path at all.**
+`session.py::SessionFlattener` is ARC C's template; `flatten.py::ProtectiveFlatten` is complete and
+wire-free; ARC C adds no `OrderRole`/trigger enum member, which is why `check_uncalled_entry_points`
+is blind to both gaps. **Correction for the architect: the `go` verb never carries `signal_ts`** — it
+enters only via `reserve` — so ARC A's "reject a stale GO" is "reject a stale RESERVE" in this build,
+or `COMMAND_SCHEMA` must bump. Est. ARC C: ~4 classes, ~15 methods, 1 module, 1 new gate, 7 extended.
+
+## Freeze
+
+Every invariant subject byte-identical to `9a96eab` by `git hash-object`. Declared additions to the
+brief's diff list: `docs/CHECK-CONTRACT-AMENDMENTS.md`, `CLAUDE.md`, `CLAUDE-CHANGELOG.md` — rule 13
+makes them a precondition of `CHECK-A11` binding at all.
+
+## Ledger
+
+**410 open of 479 rows**, re-derived whole off `check_derived_claims` (`derived:ledger_rows=410` =
+`stated:series_table_latest_row=410`). +0 net: three opened (D3.465/466/467), three discharged
+(D3.104/464/465).
+
+## Left for the operator
+
+`downloads/Pinokio-8.0.40-arm64.dmg` is still untracked and still the sole subject of
+`check_untracked_attribution`'s FAIL. It is a third-party macOS installer on a headless Ubuntu box —
+not project work, and not something this arc will delete on an operator's behalf. **It needs a
+provenance ruling: delete it, or `.gitignore` it with a written reason.**
+
+**Next: I1 ARC A** (reject + timeout + the D3.463 `signal_ts` fix — see the recon's §4 correction).

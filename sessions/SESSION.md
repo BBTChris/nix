@@ -7538,3 +7538,160 @@ byte-identical and the new gate added no public entry point to the shipped packa
 **Registered checks 99 -> 100.** `verify.py --optimize --commit` reported *"derived plan is identical
 to the live registry"* against the hand-added `level-0` entry, so the registration is a derivation
 that agreed rather than an edit that was trusted.
+
+---
+
+## ARC 052 — CONSOLIDATION / pre-pay before the I1 tail (TOOLING/PREP, no invariant flip)
+
+**Tier: TOOLING/PREP. NO INVARIANT DISCHARGED. Count STAYS 11/12 (open: I1). Limiter badge STAYS
+RED. No board redraw.** Predecessor tip **DERIVED**: `git rev-parse HEAD` = `9a96eab` (the brief's
+`≈6d26c2f` is ARC 051's mid-arc commit, not its tip). Write-back `143af34`.
+
+### Baseline, measured FIRST — and it did not match the brief
+
+`verify.py` at `9a96eab`: **`92 passed | 5 failed | 2 cannot measure | 0 skipped | 1 guarded`**. ARC
+051 closed on `92 | 4 | 3 | 0 | 1`. One cannot-measure had become a FAIL with nothing in the tree
+changed, and finding out why became this arc's fourth discharge — see D3.465 below.
+
+### TASK 1 (PRIMARY) — the tax was ALREADY PAID for its own subject; this arc MEASURED that
+
+Enumerated the seven files the I1 tail A–D touches — `scripts/limiterd.py`,
+`nixrisk/{completions,fills,fill_seam,flatten,freshness,gate}.py` — and differenced `git ls-files
+'*.py'` against `.testmondata`'s `file_fp`: **`scope=401 known_in_fp=390 UNCOVERED=11`, and not one
+of the eleven is a tail file.** ARC 046's S4.4 had already fingerprinted `limiterd.py`.
+
+So **no coverage test was added, because none was owed** — and the deliverable was always the proof,
+not the files. Per-file, no-op change → `git commit` → wall time, tree reset to `9a96eab` each time:
+
+| file | ARC 046 measured | ARC 052 measured |
+|---|---|---|
+| `scripts/limiterd.py` | **43m47s** `mode=full-escalated(SCOPE-BLIND:changed-but-uncovered:scripts/limiterd.py)` | **3s** `mode=incremental SELECTED=1 MEASURED-PASS` |
+| `nixrisk/completions.py` | — | **2s** `mode=incremental … MEASURED-PASS` |
+| `nixrisk/fills.py` | — | **2s** |
+| `nixrisk/fill_seam.py` | — | **2s** |
+| `nixrisk/flatten.py` | — | **3s** |
+| `nixrisk/freshness.py` | — | **2s** |
+| `nixrisk/gate.py` | — | **2s** |
+
+**NON-VACUITY, because "everything was fast" is what a broken probe also reports.** The identical
+probe on an uncovered file (`scripts/nixverify/__init__.py`), run under
+`NIX_RUNTIME_GATE=noescalate` so the taxonomy is visible without paying 44 minutes:
+`RUNTIME-GATE verdict: SCOPE-BLIND - changed-but-uncovered:scripts/nixverify/__init__.py`, exit 2 —
+on the default path, the full non-incremental run. The probe can still see the tax; the seven files
+do not have it.
+
+Two findings came out of measuring, neither of them looked for. **D3.466:** eleven tracked `.py`
+files still have no fingerprint (three are the deprecated MON-1 trio, two are crucible generators
+outside the runtime venv by design, six are live infrastructure that owes a minimal test) — and a
+NEW module inherits this on its first commit, so ARC A–D each pay one escalated commit per new file
+unless they run `pytest --testmon` once before committing it. **D3.467:** `runtime_gate.py`'s
+`SELECTOR-BROKEN` and `NOTHING-SELECTED` arms are UNREACHABLE on this box — `selected` is JUnit's
+`tests` attribute, which counts skipped tests, and `test_crucible_calendar_gen.py` skips
+unconditionally on every run, so `selected == 0` is never true. `SCOPE-BLIND` still fires; the
+corrupted-`fsha` drift arm D2.13 was built for currently cannot.
+
+### TASK 2 — D3.104 DISCHARGED after twenty-two arcs, by CHECK-A11
+
+The eight `gate_coverage_baseline.json` exclusions had been re-pointed `ARC 030 → 032 → 033 → 035 →
+036 → 037 → 039 → 040 → 043 → 046 → 049 → 052`, the last six consecutive close-outs, each recording
+in the JSON's own justification that the bump was *"arc-boundary maintenance, not progress"*.
+
+**The finding is that this was never overdue work. It was a debt with no payer.** All eight are
+`scripts/nixverify/*`; measured, every one has a dedicated test module driving it (`test_actuation`,
+`test_contract`, `test_engine`, `test_gitenv_hostile`, `test_loader`, `test_optimize`,
+`test_registry`, `test_render`). Doctrine C.9 forbids the second instrument a `checks/check_*.py`
+over them would be — which `CHECK-A9` had already ruled for two of the eight without anyone drawing
+the conclusion for the other six. Owner-liveness was demanding a name for work that does not exist,
+and doctrine B.3 calls that furniture.
+
+**`CHECK-A11`** (recorded in `docs/CHECK-CONTRACT-AMENDMENTS.md`, written into `CLAUDE.md` rule 14
+per check-contract rule 13, changelogged): an exclusion declares exactly one of **TEMPORARY**
+(unchanged — holding state, live owner) or **PERMANENT** (no owner, no known-red marker, does not
+hold the verdict GUARDED).
+
+**What the permanent class PAYS, and why this is a tightening rather than a green.** A temporary
+exclusion is checked for SHAPE: a non-empty justification and a live owner. Nobody ever checked
+whether the sentence *"measured by pytest"* inside those 5,000-character justifications was true —
+the string is prose and the gate read it as prose. `CHECK-A11` requires the claim to be a LIST OF
+FILES (`covered_by`) and resolves it every run, both directions: a missing witness FAILs, a witness
+that exists but does not name the artifact FAILs (the CHECK-DEBT RULE OF RECORD's disguise case),
+an empty list FAILs, and **this gate's own test module is refused by name** — it names every
+baseline path, so counting it would make the arm vacuous for every entry at once.
+
+**Ratchet untouched and re-planted:** a well-formed PERMANENT entry added silently is still refused
+as an unadmitted growth past the committed high-water mark; an artifact that acquires a real gate is
+still a stale-baseline FAIL. **Verdict moved GUARDED → PASS, and all eight are enumerated in
+`evidence` on every run** — a permanent accept that stops being printed is the hole this ruling
+would otherwise open, and the gate's own test asserts against it by name.
+
+Nine can-fail plants taken live against the real baseline and restored (`sha256` identical, control
+re-passes): no witness · witness vanished · witness aimed at another subject · self-test module as
+the only witness · owner present on a permanent entry · amendment absent / free prose / `SPEC-A11` /
+`CHECK-A` · both dispositions true · neither true · silent permanent addition. Ten banked as tests.
+
+### TASK 3 — D3.464 DISCHARGED, and D3.465 opened and discharged beside it
+
+**D3.464** (the marker never reached the log): `scripts/arc_heartbeat.sh` gained a **`marker`** verb
+that PRINTS AND TEES in one call — no path through it shows the operator a marker the log did not
+get — and a **`teardown`** verb. `marker` FAILS CLOSED: exit 2, `MARKER REFUSED`, nothing written,
+while the arc's log holds no teardown line naming cc's own watchdog. Demonstrated both ways on a
+throwaway log written entirely by the emitter: without the marker → `CANNOT-MEASURE … no
+ARC-completed marker in log`; with it → `[PASS] arc_status_contract arc=999 pulses=2 teardowns=1`.
+This does **not** make §16.4 checkable — `CHECK-A10`'s residual stands, the report's token order is
+still enforced by reading; what lands in the log is the separate fact that the run reached close-out.
+
+**D3.465** — the arc's own baseline anomaly, and the more interesting half. `arc_051.log` carries
+BOTH the marker and a teardown line, in the right order, and the gate read `FAIL … teardowns=0`.
+`CLAUDE.md` tells cc to prove the teardown *while disclaiming* the root-owned `[watchdogd]`; cc
+wrote both on ONE line; the reader's kernel-thread veto is line-scoped and took the whole line.
+**Obeying the contract was the way to fail the gate that checks it.** The same line fed `RE_WD_PID`,
+so the verdict reported `wd_pid=165` — the kernel thread's pid, presented as cc's.
+
+Repaired on both sides, each standing alone: the READER now requires POSITIVE identification of cc's
+watchdog (`RE_OWN_WD` — a process name, never a bare pid, since `[watchdogd] pid 165` carries one),
+which is **strictly stronger** — a bare `WATCHDOG TEARDOWN: confirmed dead` naming nothing used to
+pass and now FAILs — while the original property survives (a teardown written only about the kernel
+thread still FAILs). The EMITTER puts the disclaimer on its own line. `arc_050.log`/`arc_051.log`
+are NOT retouched (directive 6). Six new self-test plants; eight new pytest cases, four of which
+drive the real emitter as a subprocess and feed the gate the file it produced.
+
+### TASK 4 — ARC C recon
+
+`downloads/arc_c_flatten_recon.md`, 654 lines, read-only. Headline: `limiterd.py` imports neither
+`nixrisk.gate`, `nixrisk.flatten`, `nixrisk.freshness` nor `nixrisk.session` — the running daemon
+has no protective-exit path at all. `session.py::SessionFlattener` is the template ARC C should
+copy; `flatten.py::ProtectiveFlatten` is complete and wire-free; ARC C adds no `OrderRole`/trigger
+enum member, which is exactly why `check_uncalled_entry_points` is blind to both gaps. D3.463
+confirmed at `limiterd.py:1168` **with a correction worth the architect's attention: the `go` verb
+never carries `signal_ts`** — the stamp enters only via `reserve` — so "reject a stale GO" in this
+build means "reject a stale RESERVE", or `COMMAND_SCHEMA` must bump. ARC A's edit sites named
+(`CommandHandler._reserve`, `check_input_freshness._ACCEPTED_UNGATED`) and shown disjoint from ARC C.
+
+### FREEZE — held
+
+Every invariant subject byte-identical to `9a96eab` by `git hash-object`: `fills.py`,
+`fill_seam.py`, `flatten.py`, `positions.py`, `projection.py`, `loop.py`, `wal.py`, `freshness.py`,
+`gate.py`, `outcomes.py`, `reservations.py`, `seam.py`, `plane1_sink.py`, `picture.py`,
+`limiterd.py`, `completions.py`, and all of `scripts/nixalloc/`. **Declared additions to the brief's
+diff list, with reason:** `docs/CHECK-CONTRACT-AMENDMENTS.md`, `CLAUDE.md` and `CLAUDE-CHANGELOG.md`
+— check-contract rule 13 makes them a precondition of `CHECK-A11` binding at all, and a
+verdict-deciding rule that is not written there does not bind. Task 1 added NO test file, measured.
+
+### POST-WRITE-BACK RE-MEASURE — PREDICTION HIT
+
+Predicted before the run, off the measured baseline: **94 | 4 | 2 | 0 | 0**.
+Measured at `143af34`: **`94 passed | 4 failed | 2 cannot measure | 0 skipped` (0 guarded), exit 1.**
+`check_artifact_gate_coverage` `[ok]`; `check_arc_status_contract` `[ok]` naming `arc_051.log`.
+Registered check count unchanged at **100** (`derived:checks_glob` = `derived:registry_json`), as
+predicted — this arc added tests and a ruling, not gates. Residual four FAILs are all pre-existing
+and none is this arc's subject: `check_ibgateway_service` (gateway down), `check_monitor_tui` (stale
+known-red pin), `check_uncalled_entry_points`, `check_untracked_attribution`
+(`downloads/Pinokio-8.0.40-arm64.dmg` — **left in place deliberately: it is a third-party macOS
+installer, not project work, and deleting an operator's file is not this arc's call. It needs an
+operator ruling on provenance, which is what the gate is asking for**).
+
+CHECK-DEBT re-derived whole off `check_derived_claims`: **410 open of 479 rows**, series row written
+and agreeing (`derived:ledger_rows=410`, `stated:series_table_latest_row=410`). Three opened
+(D3.465, D3.466, D3.467), three discharged (D3.104, D3.464, D3.465).
+
+**BADGE: Limiter STAYS RED. Count STAYS 11/12. No board redraw. Next: I1 ARC A.**
