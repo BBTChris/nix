@@ -213,6 +213,36 @@ class ProposedOrder:
     it knows the fill, so a distance survives slippage and an absolute price does
     not. Conversion to a price happens once the fill is confirmed — and that
     conversion is explicitly NOT in this arc.
+
+    ------------------------------------------------------------------------
+    ARC 056 / D3.474 — `trail_ticks`, the SECOND distance a trailing stop needs
+    ------------------------------------------------------------------------
+    §4:190-196 gives a TRAILING stop **two** distances: `initial_distance`,
+    where the stop first sits at the fill, and a separate `trail_distance`, the
+    gap maintained behind the high-water mark. `stop_ticks` is the first — it is
+    the risk distance §7:476 sized against. The second had NO field here, and
+    that omission was not cosmetic: `nixrisk.stops.StopBook.arm` fails closed on
+    a trailing order with no trail distance (it will not invent `trail =
+    initial`, because §4:187 makes the trail the STRATEGY's per-signal choice),
+    so **this build could not arm a trailing stop at all** — measured on a live
+    `limiterd` at ARC 055/S3-B and again at ARC 056/S1: the reservation was
+    taken and committed, the fill was refused whole, the position never opened
+    and the reservation leaked. CHECK-DEBT D3.474.
+
+    The field is ADDITIVE and defaulted to `None`, so every existing
+    construction site and every FIXED order is unchanged — a fixed stop has no
+    trail and `arm` ignores this field for one. It is NOT a new invention at the
+    trust boundary either: `docs/nix_strategy_contract_v1.1.md`:175 already
+    declares the GO's stop object as `{"mode":"trailing","initial_ticks":N,
+    "trail_ticks":M}` at `contract_rev 1.1.0`, and :475 requires both to be ints
+    ≥ 1. The distance existed on the wire and was DROPPED in the projection into
+    this type; this field is that projection restored, not a contract change.
+
+    `None` means *the strategy sent no trail distance*, and it stays a distinct
+    reading from any integer on purpose. A default of `0`, or of `stop_ticks`,
+    would make every malformed trailing order look armable and would put the
+    stop at a distance nobody chose — the failure §4:187 assigns to the strategy
+    and §15 C3 denies.
     """
 
     client_order_id: str
@@ -224,6 +254,10 @@ class ProposedOrder:
     stop_ticks: int
     stop_mode: StopMode
     signal_ts: float
+    #: §4:190-196's trail distance, in ticks. `None` for a FIXED order and for a
+    #: TRAILING order whose GO carried none — the latter is DENIED at `arm`
+    #: (§15 C3), never defaulted. Last and defaulted so the field is additive.
+    trail_ticks: int | None = None
 
     @property
     def proposed_margin(self) -> float:

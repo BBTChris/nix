@@ -127,7 +127,24 @@ _WRITE_FIRST_BLOCK = (
     "        steps.append(FillStep.RELEASE_REMAINDER)"
 )
 
+# ARC 056 / ARM TRAILING (D3.474). Each anchor is exact source text.
+_TRAIL_SOURCE = (
+    "        ticks = trail_ticks if trail_ticks is not None else order.trail_ticks"
+)
+_ARM_LEVEL = "        level = fill_price - sign * initial * tick"
+_UNARMABLE_RAISE = (
+    "            raise self._release_unarmable(order, report, exc) from exc"
+)
+_UNARMABLE_RELEASE = (
+    "            sigma = self._remainder.release_remainder(\n"
+    "                order.client_order_id,\n"
+    "                filled_qty=report.cumulative_qty,\n"
+    "                requested_qty=order.qty,\n"
+    "            )"
+)
+
 _FILLS = "scripts/nixrisk/fills.py"
+_STOPS = "scripts/nixrisk/stops.py"
 _JOIN = "scripts/nixrisk/join.py"
 _CAPS = "scripts/nixalloc/caps.py"
 _SEAM = "scripts/nixrisk/fill_seam.py"
@@ -633,6 +650,107 @@ def test_an_ABSENT_CAP_CONFIG_is_CANNOT_MEASURE_not_an_UNPRICED_PASS(
 
     assert result.status is Status.CANNOT_MEASURE, result
     assert "allocator_caps.config.json" in result.detail, result.detail
+
+
+# ==========================================================================
+# ARM TRAILING (ARC 056 / D3.474) — three plants, one per declared property
+# ==========================================================================
+
+
+def test_D3_474_TRAIL_NOT_THREADED_reddens_and_NAMES_the_refused_trailing_order(
+    home: Path,
+) -> None:
+    """PLANT A — the defect this arc fixed, planted back exactly as it was.
+
+    `arm` stops consulting `order.trail_ticks`, which is precisely the state of
+    the tree at `d3ff4a0`: the ONLY production caller passes no explicit
+    distance, so every trailing conversion is denied, the fill is refused whole
+    and no trailing position can ever open. A gate that stayed green here would
+    be green over a build whose entire loss-cutting mechanism is inoperative.
+    """
+    _plant(home, _STOPS, _TRAIL_SOURCE, "        ticks = trail_ticks")
+
+    result = _run(home)
+
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert "arc056-trailing-armed" in result.detail, result.detail
+    assert "D3.474" in result.detail, result.detail
+    assert "trail" in result.detail.lower(), result.detail
+
+
+def test_an_ARM_REFUSAL_THAT_DOES_NOT_RELEASE_reddens_and_NAMES_the_LEAK(
+    home: Path,
+) -> None:
+    """PLANT B — I2's safety net. The refusal escapes before step 2, as it did.
+
+    THE PLANT THAT MATTERS MOST in this arm, because its damage is silent: the
+    fill is refused either way, so a reader watching only the refusal sees no
+    difference. What differs is that §3's reservation reaches NO terminal event —
+    Σ overstates committed margin permanently and that capital can never be
+    redeployed. Measured live at `d3ff4a0`: `committed` held at 1000.0 through
+    the refusal, forever.
+    """
+    _plant(home, _FILLS, _UNARMABLE_RAISE, "            raise")
+
+    result = _run(home)
+
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert "arc056-trailing-no-trail" in result.detail, result.detail
+    assert "LEAKS it" in result.detail, result.detail
+    assert "I2" in result.detail, result.detail
+
+
+def test_a_DOUBLE_RELEASE_ON_THE_REFUSAL_PATH_reddens_too(home: Path) -> None:
+    """PLANT B's OTHER DIRECTION (check contract rule 4: plant BOTH).
+
+    §0a's discipline: `_trailing_refusal_defects` would look identical after
+    PLANT B alone if it only ever asked *did Σ fall*. I2 is *EXACTLY one*
+    terminal release, and a path that released TWICE breaks it as surely as one
+    that released none — it decrements Σ twice for one commitment, which reads as
+    free capital. The ledger books the second as a refusal rather than absorbing
+    it, and this gate reads that refusal.
+    """
+    _plant(
+        home,
+        _FILLS,
+        _UNARMABLE_RELEASE,
+        _UNARMABLE_RELEASE
+        + "\n            self._remainder.release_remainder(  # planted: twice\n"
+        "                order.client_order_id,\n"
+        "                filled_qty=report.cumulative_qty,\n"
+        "                requested_qty=order.qty,\n"
+        "            )",
+    )
+
+    result = _run(home)
+
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert "arc056-trailing-no-trail" in result.detail, result.detail
+    assert "not a leak, a double" in result.detail, result.detail
+
+
+def test_a_TRAILING_STOP_ARMED_AT_THE_TRAIL_DISTANCE_reddens_and_cites_SPEC(
+    home: Path,
+) -> None:
+    """PLANT C — §4:190-196's anchor. Armed at the trail gap, not the initial stop.
+
+    The plant is written so a FIXED stop is UNAFFECTED (`trail` is 0 for one, so
+    the expression falls through to `initial`), which is what makes the red
+    attributable to the trailing anchor rather than to every stop in the drive.
+    """
+    _plant(
+        home,
+        _STOPS,
+        _ARM_LEVEL,
+        "        level = fill_price - sign * (trail or initial) * tick",
+    )
+
+    result = _run(home)
+
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert "arc056-trailing-armed" in result.detail, result.detail
+    assert "§4:190-196" in result.detail, result.detail
+    assert "the TRAIL distance's level" in result.detail, result.detail
 
 
 # ==========================================================================

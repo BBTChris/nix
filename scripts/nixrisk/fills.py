@@ -35,6 +35,17 @@ THE ORDER IS THE SAFETY PROPERTY, AND IT IS RECORDED AS IT HAPPENS
    (§3), so the released capital and the published position land under ONE
    version stamp.
 
+**ARC 056 / D3.474 — WHAT HAPPENS WHEN STEP 1 IS DENIED.** §4's conversion can
+refuse (no trail distance, no tick size, a second arm, a bad fill price), and
+before ARC 056 that refusal escaped `on_fill` BEFORE step 2, so the reservation
+taken at approval reached NO terminal event and leaked — measured live: Σ held at
+the order's margin forever. The refusal now runs step 2 and ONLY step 2: the
+reservation is released over §3's `TerminalPath.FILL` (the fill really happened),
+the unfilled remainder is IOC-cancelled (an order this Limiter cannot protect
+must not stay working), step 3 is NOT reached so no position is published, and
+`UnarmableFill` carries the original refusal outward. Fail closed in both
+directions at once — no leak AND no unprotected open. See `UnarmableFill`.
+
 The arm MUST precede the write because `PositionOriginWriter` REFUSES a fill with
 no armed stop — a defaulted distance would price a real position at zero dollar
 risk, make the correlation bucket read emptier than it is, and ADMIT MORE. The
@@ -206,6 +217,51 @@ class InvalidRemainder(FillError):
     meaningless — §4's remainder is `requested − filled`, and a zero requested
     size makes every fill an over-fill. Denied at the boundary, loudly, rather
     than producing a cancel for a quantity nobody ordered.
+    """
+
+
+class UnarmableFill(FillError):
+    """§4's conversion refused this fill's stop, so NO position was opened.
+
+    ARC 056 / D3.474. A DISTINCT type from every refusal above, and the
+    distinction is §18's: those say *this fill does not belong to an approval* or
+    *these quantities are not a possible fill*, and this one says *the fill is
+    real and the stop for it could not be converted*. The three lead to different
+    operator actions and an exception whose name blurs them is the shared-
+    namespace defect §18 exists to close.
+
+    WHAT THIS PATH GUARANTEES, and it is the whole reason it exists. §4 converts
+    the stop at the confirmed fill, and if that conversion is denied the position
+    would be UNPROTECTED — the hazard §14 resolves toward FLAT and I11 guards. So
+    the cascade fails CLOSED in both directions at once:
+
+    * **No position is opened.** `OriginWritePort.on_fill` is not reached, so
+      §3's row is never published and nothing downstream sees an open position
+      this process cannot protect.
+    * **The reservation is RELEASED, exactly once.** Before this arc the raise
+      escaped `on_fill` BEFORE step 2, so §3's *taken at approval* had no
+      terminal event at all: the reservation stayed committed forever, Σ was
+      permanently overstated by that order's margin, and the capital was
+      unrecoverable without a restart. Measured on a live daemon at ARC 056/S1 —
+      `committed` held at 1000.0 and `outstanding` at 1 through the refusal.
+      I2's invariant is *every reservation reaches exactly ONE terminal release*,
+      and a leak breaks it just as surely as a double does.
+
+    The release goes through the SAME `RemainderPort.release_remainder` the
+    success path uses, over §3's `TerminalPath.FILL`, and that is deliberate on
+    both counts. It is the same terminal path because the FILL REALLY HAPPENED —
+    §3:151 releases on fill and the venue's execution is not undone by this
+    process's inability to convert a stop, so booking it as a cancel would put a
+    cause in §9's record of money truth that nothing caused. It is the same VERB
+    because that verb also IOC-cancels the unfilled remainder, and an order this
+    Limiter cannot protect must not be left working at the venue.
+
+    **What it does NOT do is flatten.** The filled quantity is a real position at
+    the broker with no synthetic stop behind it. §14 makes execution of any
+    flatten Limiter-only and `nixrisk.flatten` owns it; this handler raises so
+    the daemon boundary sees a REFUSED dispatch naming the unprotected position,
+    exactly as `completions.py`'s §7.12 guard 6 requires. The residual is named,
+    not closed here: CHECK-DEBT D3.475.
     """
 
 
@@ -507,6 +563,24 @@ class CumulativeDisagreement:
 # record of what this handler armed (§4 converts ONCE and `StopArmPort` has no
 # reader, so the handler must remember), three counters and the disagreement
 # log. Dropping a counter would remove a measurement from a gate's verdict.
+@dataclasses.dataclass(frozen=True)
+class UnarmableRefusal:
+    """One fill §4's conversion refused, and what became of its reservation.
+
+    ARC 056 / D3.474. `release` is a SENTENCE and not a boolean because the two
+    failure modes an operator must distinguish — *the capital came back* and
+    *the release itself failed, so it did not* — are not the same fact negated,
+    and a `False` here would read as the first while meaning the second.
+    """
+
+    client_order_id: str
+    exec_id: str
+    symbol: str
+    stop_mode: str
+    refusal: str
+    release: str
+
+
 class FillHandler:  # pylint: disable=too-many-instance-attributes
     """One confirmed fill → armed stop, released remainder, published §3 row.
 
@@ -544,6 +618,11 @@ class FillHandler:  # pylint: disable=too-many-instance-attributes
         self.handled = 0
         self.conversions = 0
         self.re_arms_declined = 0
+        #: ARC 056 / D3.474. Fills whose stop §4 refused to convert. Counted AND
+        #: enumerated: a count says how often it happened, `unarmable()` says to
+        #: which order and whether its capital came back.
+        self.arm_refusals = 0
+        self._unarmable: list[UnarmableRefusal] = []
         self._disagreements: list[CumulativeDisagreement] = []
 
     # -- the event surface --------------------------------------------------
@@ -559,7 +638,19 @@ class FillHandler:  # pylint: disable=too-many-instance-attributes
         order = self._approved(report)
         steps: list[FillStep] = []
 
-        armed, converted = self._arm(order, report)
+        try:
+            armed, converted = self._arm(order, report)
+        except Exception as exc:  # pylint: disable=broad-except
+            # ARC 056 / D3.474. EVERY failure to convert, not a named subset.
+            # `StopArmPort` is a structural Protocol — this module does not import
+            # `nixrisk.stops` and must not, or the seam's whole point is lost — so
+            # the refusals it can raise are not a set this file can enumerate.
+            # Catching the base and RE-RAISING is not absorption: nothing is
+            # swallowed, the original is chained, and its own sentence is carried
+            # into the reason (check contract v2 rule 11). Narrowing this to a
+            # type list would mean an unlisted refusal leaked the reservation
+            # again, which is the defect, not a stricter version of the fix.
+            raise self._release_unarmable(order, report, exc) from exc
         if converted:
             steps.append(FillStep.ARM_STOP)
 
@@ -627,6 +718,74 @@ class FillHandler:  # pylint: disable=too-many-instance-attributes
         self._armed[order.client_order_id] = state
         self.conversions += 1
         return state, True
+
+    def _release_unarmable(
+        self, order: ProposedOrder, report: ExecutionReport, exc: BaseException
+    ) -> UnarmableFill:
+        """§4's conversion was denied: release ONCE, open nothing, RETURN the raise.
+
+        Returns the exception for `on_fill` to raise rather than raising it here,
+        so the `raise` that ends the cascade is visible at the cascade's own call
+        site. A helper that raised would leave `on_fill` reading as though it
+        might continue past a denied conversion — and continuing is precisely the
+        unprotected open this method exists to prevent.
+
+        EXACTLY ONCE is the property, and it is the LEDGER's to enforce, not this
+        method's. `IocRemainder.release_remainder` goes through
+        `ReservationLedger.resolve`, which books a duplicate as a `Refusal`
+        rather than decrementing Σ twice (ARC 044 / I2). So the worst case if
+        this path ever ran twice for one order is a recorded refusal and an
+        unchanged Σ — never a double release. What it must not do is release
+        ZERO times, which is what happened before this arc.
+
+        The release is attempted even though the raise is certain: an order whose
+        stop cannot be converted has still consumed a reservation, and leaving it
+        committed to make the failure "clean" is the leak. If the release ITSELF
+        fails, that failure is chained onto the same raise rather than replacing
+        it — two things went wrong and an operator needs both.
+        """
+        self.arm_refusals += 1
+        released: str
+        try:
+            sigma = self._remainder.release_remainder(
+                order.client_order_id,
+                filled_qty=report.cumulative_qty,
+                requested_qty=order.qty,
+            )
+            released = f"RELEASED (§3 TerminalPath.FILL); Σ reservations now {sigma}"
+        except Exception as release_exc:  # pylint: disable=broad-except  # noqa: BLE001
+            released = (
+                f"NOT RELEASED — the release itself failed with "
+                f"{type(release_exc).__name__}: {release_exc}. THE RESERVATION IS "
+                "LEAKED and Σ overstates committed margin by this order's margin"
+            )
+        self._unarmable.append(
+            UnarmableRefusal(
+                client_order_id=order.client_order_id,
+                exec_id=report.exec_id,
+                symbol=report.symbol,
+                stop_mode=order.stop_mode.value,
+                refusal=f"{type(exc).__name__}: {exc}",
+                release=released,
+            )
+        )
+        return UnarmableFill(
+            f"fill {report.order_id}/{report.exec_id} in {report.symbol!r}: §4's "
+            f"stop conversion was REFUSED for a {order.stop_mode.value} order — "
+            f"{type(exc).__name__}: {exc}. NO position was opened (§3's row was "
+            f"not published) and the reservation was {released}. The filled "
+            "quantity is a real position at the venue with NO synthetic stop "
+            "behind it; §14 makes the flatten Limiter-only and this handler does "
+            "not fire one (CHECK-DEBT D3.475)"
+        )
+
+    def unarmable(self) -> tuple[UnarmableRefusal, ...]:
+        """Every fill whose stop could not be converted, in arrival order.
+
+        ENUMERATED rather than counted, for `FillPath.record`'s own reason: *was
+        this order's capital returned* cannot be answered from a total.
+        """
+        return tuple(self._unarmable)
 
     def _note_disagreement(self, report: ExecutionReport, ledger_filled: int) -> None:
         """Book a venue-vs-ledger cumulative disagreement. See the module docstring."""

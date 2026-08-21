@@ -83,6 +83,29 @@ THE EIGHT ARMS
 * **ARM REFUSAL.** A fill for an order this Limiter never approved is refused
   LOUDLY by both the handler and the sink, and the message NAMES the order — never
   a bare exception type, never a silently reconstructed distance.
+* **ARM TRAILING (ARC 056 / D3.474).** The §4:190-196 mode, and the fill path's
+  behaviour when its conversion is DENIED. Three properties of one drive, for the
+  reason the eight above are one property: they are facts about a single motion.
+
+  1. A TRAILING order carrying §4's second distance ARMS — a `StopState` appears
+     that was not there before the fill, in TRAILING mode, and §3's row is
+     published. This is the D3.474 defect's negation: at `d3ff4a0` the conversion
+     was denied and the position never opened.
+  2. The armed LEVEL is `fill ∓ INITIAL × tick` — the same anchor as a fixed stop
+     — and `trail_distance_ticks` is the GO's trail. §4:190-196 has a trailing
+     stop *hold at the initial level until the trail would sit tighter*, so a
+     stop armed at the TRAIL distance is at a level the strategy did not choose
+     and fires on noise the initial distance exists to absorb. Both figures are
+     computed HERE from what this gate sent, never read back and compared against
+     themselves.
+  3. A trailing order with NO trail distance is refused, AND ITS RESERVATION IS
+     RELEASED — exactly once, no position published, no stop in the book. This is
+     I2's safety net over the new path and it is the half that costs money if it
+     rots: at `d3ff4a0` the refusal escaped before step 2 and the reservation
+     leaked (measured live, ARC 056/S1 — Σ held at the order's margin with no
+     terminal event, forever). Σ is read off the REAL `ReservationLedger` before
+     and after, `refused_releases` must stay 0 (a double would book one), and the
+     released record must name the order.
 
 ------------------------------------------------------------------------------
 WHAT THIS GATE CANNOT PROVE, stated rather than implied
@@ -137,6 +160,19 @@ has its own gates), and it proves nothing about §9's `filled` Plane-1 row, whic
    *Closed:* `_population_defect` requires at least `MIN_PARTIAL_ORDERS` orders
    whose filled quantity is strictly below their requested quantity, and the
    published size is compared against the FILLED figure specifically.
+6b. **ARC 056. The trailing arm "passes" because nothing trailing was driven**,
+   or because the refusal case refused for the WRONG reason — a typo'd symbol
+   would also raise, release nothing, and look like a denied conversion.
+   *Closed three ways, none of them a PASS:* `MIN_TRAILING_ARMS` is a floor read
+   off what the drive actually armed; the refusal's own sentence must name the
+   trail distance (check contract v2 rule 11 — the REASON is the assertion, and
+   an exception type is a shared namespace); and the two trailing drives differ
+   ONLY in whether `trail_ticks` is present, so the refusal cannot be attributed
+   to anything else in the row.
+6c. **ARC 056. The reservation "was released" because it was never taken**, so Σ
+   fell from zero to zero. *Closed:* Σ is required to be strictly positive after
+   the approval and to fall by EXACTLY that order's margin, both read from the
+   real ledger's own `total_reserved()`, and `outstanding` must go 1 -> 0.
 7. **`isinstance` against a `runtime_checkable` Protocol passes on method NAMES
    alone**, so a class whose parameters have drifted satisfies the port and fails
    at the call. *Closed:* `_signature_defect` compares parameter names in order,
@@ -172,7 +208,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
-from typing import Any, NamedTuple
+from typing import Any, Final, NamedTuple
 
 import _preamble  # noqa: F401  pylint: disable=unused-import,wrong-import-order
 from nixverify.contract import CheckResult, Context, Mode, Status
@@ -343,6 +379,30 @@ MIN_CONFORMANCE_PAIRS = 2
 #: IS A NUMBER; SEVERAL ANSWERS AT SEVERAL DISTANCES IS PRICING** — a cap that
 #: returns the same count whatever the stop distance is not consuming it.
 MIN_DISTINCT_CAP_ANSWERS = 2
+#: ARC 056 / ARM TRAILING. Trailing stops the drive ARMED through the shipped
+#: fill path. One is enough to be non-vacuous here and two would be theatre: the
+#: property is *a trailing conversion happens at all*, which at `d3ff4a0` it did
+#: not, and the second trailing drive in this arm is the REFUSAL case, which by
+#: construction arms nothing. Doctrine C.4 forbids a floor at today's figure for
+#: a number that can grow; this one cannot — it is 1 of 2 fixed drives.
+MIN_TRAILING_ARMS = 1
+
+# --------------------------------------------------------------------------
+# ARM TRAILING's own row (ARC 056 / D3.474). Deliberately NOT in `_ORDERS`:
+# every arm above reads that population and several assert over ALL of it, so a
+# trailing member would change what eight arms measure in order to add a ninth.
+# `TRAIL_TICKS` is strictly less than `TRAIL_STOP_TICKS` because that is the
+# ordinary case and the one that makes the level assertion discriminating — with
+# the two equal, arming at the trail distance and arming at the initial distance
+# produce the SAME level and PLANT C could not fail.
+# --------------------------------------------------------------------------
+TRAIL_SYMBOL: Final[str] = "ES"
+TRAIL_QTY: Final[int] = 2
+TRAIL_STOP_TICKS: Final[int] = 8
+TRAIL_TICKS: Final[int] = 3
+TRAIL_FILL_PRICE: Final[float] = 5000.0
+TRAIL_ARMED: Final[str] = "arc056-trailing-armed"
+TRAIL_MALFORMED: Final[str] = "arc056-trailing-no-trail"
 
 
 class Finding(NamedTuple):
@@ -408,6 +468,14 @@ class Tally:  # pylint: disable=too-many-instance-attributes
     #: reader of this green most needs, so it is measured, never typed.
     sink_verbs: int = 0
     seam_verbs: int = 0
+    #: ARM TRAILING (ARC 056). Trailing stops ARMED by a fill, the level and
+    #: trail gap the winning drive produced, the margin the refusal path proved
+    #: returned, and the refusal's own sentence. All read off the drive.
+    trailing_arms: int = 0
+    trailing_level: float = 0.0
+    trailing_trail_ticks: int = 0
+    trailing_released: float = 0.0
+    trailing_refusal: str = ""
 
 
 # R0902 refused with a reason: fifteen attributes, and every one is a
@@ -1713,6 +1781,285 @@ def _refuses(drive_it: Any, site: str, must_name: str) -> list[Finding]:
 # ==========================================================================
 
 
+def _trailing_order(loaded: Loaded, coid: str, trail: int | None) -> Any:
+    """One TRAILING `ProposedOrder`. The ONLY difference between the two is `trail`.
+
+    Held identical in every other field on purpose: a refusal this gate attributes
+    to a missing trail distance must not be attributable to a different symbol, a
+    different size or a different distance (§7.12 note 6b).
+    """
+    seam = loaded.seam
+    return seam.ProposedOrder(
+        client_order_id=coid,
+        strategy_id="arc056",
+        symbol=TRAIL_SYMBOL,
+        side=seam.Side.LONG,
+        qty=TRAIL_QTY,
+        margin_per_contract=_MARGIN[TRAIL_SYMBOL],
+        stop_ticks=TRAIL_STOP_TICKS,
+        stop_mode=seam.StopMode.TRAILING,
+        signal_ts=1000.0,
+        trail_ticks=trail,
+    )
+
+
+def _drive_trailing(drive: Drive, order: Any) -> tuple[Any, BaseException | None]:
+    """Approve, then fill, ONE trailing order through the shipped sink.
+
+    Returns `(sigma_after_approval, the raise or None)`. The fill is driven
+    through `LimiterFillSink` — the production entry point — never through
+    `FillHandler.on_fill`, for `_feed`'s own reason.
+    """
+    drive.approvals.record(order)
+    drive.origins.record(order)
+    drive.reservations.take(order, 1000.0)
+    sigma = drive.reservations.total_reserved()
+    try:
+        drive.sink.on_fill(
+            order.client_order_id,
+            f"x-{order.client_order_id}",
+            TRAIL_SYMBOL,
+            TRAIL_QTY,
+            TRAIL_FILL_PRICE,
+            TRAIL_QTY,
+        )
+    except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
+        return sigma, exc
+    return sigma, None
+
+
+def _trailing_armed_defects(drive: Drive, tally: Tally) -> list[Finding]:
+    """ARM TRAILING 1 + 2: a trailing order ARMS, at the INITIAL level (§4:190-196)."""
+    site = f"{HANDLER}:FillHandler.on_fill[{TRAIL_ARMED}]"
+    order = _trailing_order(drive.loaded, TRAIL_ARMED, TRAIL_TICKS)
+    before = drive.stops.get(TRAIL_ARMED)
+    sigma, raised = _drive_trailing(drive, order)
+    if before is not None:
+        return [
+            Finding(
+                site,
+                f"NON-VACUITY: a stop is ALREADY armed for {TRAIL_ARMED!r} before "
+                "any fill was driven — §4 converts at the CONFIRMED fill and "
+                "nowhere else, so every assertion below would be about a stop "
+                "this drive did not cause",
+            )
+        ]
+    if raised is not None:
+        return [
+            Finding(
+                site,
+                f"D3.474: driving a confirmed fill for a TRAILING order carrying "
+                f"trail_ticks={TRAIL_TICKS} raised {type(raised).__name__}: "
+                f"{raised}. §4:190-196's trailing mode is the strategy's entire "
+                "loss-cutting mechanism; a fill path that refuses it cannot open a "
+                "trailing position at all, and Σ was "
+                f"{sigma} at the approval",
+            )
+        ]
+    state = drive.stops.get(TRAIL_ARMED)
+    if state is None:
+        return [
+            Finding(
+                site,
+                f"the fill for {TRAIL_ARMED!r} returned normally and NO stop is in "
+                "the book — §4 converts at the confirmed fill, and a fill that "
+                "opens a position without arming one is the unprotected position "
+                "§14 resolves toward FLAT",
+            )
+        ]
+    findings: list[Finding] = []
+    if state.mode is not drive.loaded.seam.StopMode.TRAILING:
+        findings.append(
+            Finding(
+                site,
+                f"the stop armed for {TRAIL_ARMED!r} is in mode {state.mode!r}; the "
+                "order is TRAILING and §4:187 makes the mode the STRATEGY's "
+                "per-signal choice, not a value the fill path may substitute",
+            )
+        )
+    # §4:190-196 COMPUTED HERE from what this gate sent — never read back.
+    expect_level = TRAIL_FILL_PRICE - TRAIL_STOP_TICKS * _TICKS[TRAIL_SYMBOL]
+    if abs(float(state.level) - expect_level) > 1e-9:
+        trail_level = TRAIL_FILL_PRICE - TRAIL_TICKS * _TICKS[TRAIL_SYMBOL]
+        findings.append(
+            Finding(
+                site,
+                f"the trailing stop for {TRAIL_ARMED!r} is armed at {state.level!r}; "
+                f"§4:190-196 anchors it at the INITIAL distance — {TRAIL_FILL_PRICE} "
+                f"- {TRAIL_STOP_TICKS} x {_TICKS[TRAIL_SYMBOL]} = {expect_level} — "
+                "and has it HOLD there until the trail would sit tighter. "
+                + (
+                    f"{state.level!r} is the TRAIL distance's level ({trail_level}): "
+                    "arming there puts the stop at a level the strategy did not "
+                    "choose for this fill and fires it on the noise the initial "
+                    "distance exists to absorb"
+                    if abs(float(state.level) - trail_level) <= 1e-9
+                    else "the armed level matches neither distance"
+                ),
+            )
+        )
+    if int(state.trail_distance_ticks) != TRAIL_TICKS:
+        findings.append(
+            Finding(
+                site,
+                f"the stop for {TRAIL_ARMED!r} records "
+                f"trail_distance_ticks={state.trail_distance_ticks!r}; the order "
+                f"carried trail_ticks={TRAIL_TICKS}. §4:190-196's ratchet keeps "
+                "THAT gap behind the high-water mark, so a stop holding a "
+                "different one trails at a distance nobody chose",
+            )
+        )
+    if drive.writer.writes < 1:
+        findings.append(
+            Finding(
+                site,
+                f"the trailing fill for {TRAIL_ARMED!r} armed a stop but published "
+                f"NO §3 row (writes={drive.writer.writes!r}) — §3's position table "
+                "is what every consumer reads, and a protected position nothing "
+                "published is invisible to the correlation cap that must price it",
+            )
+        )
+    if not findings:
+        tally.trailing_arms += 1
+        tally.trailing_level = float(state.level)
+        tally.trailing_trail_ticks = int(state.trail_distance_ticks)
+    return findings
+
+
+def _trailing_refusal_defects(drive: Drive, tally: Tally) -> list[Finding]:
+    """ARM TRAILING 3: a malformed trailing fill refuses AND releases exactly once."""
+    site = f"{HANDLER}:FillHandler._release_unarmable[{TRAIL_MALFORMED}]"
+    order = _trailing_order(drive.loaded, TRAIL_MALFORMED, None)
+    margin = float(order.proposed_margin)
+    sigma_before, raised = _drive_trailing(drive, order)
+    sigma_after = float(drive.reservations.total_reserved())
+    outstanding = len(drive.reservations.outstanding())
+    findings: list[Finding] = []
+    # §7.12 note 6c: Σ must have been strictly positive, or "it was released"
+    # is a statement about a reservation that was never taken.
+    if sigma_before < margin - 1e-9:
+        return [
+            Finding(
+                site,
+                f"NON-VACUITY: Σ reservations was {sigma_before!r} after approving "
+                f"{TRAIL_MALFORMED!r}, which does not cover that order's own margin "
+                f"{margin!r} — nothing was committed, so a later fall to zero would "
+                "measure nothing",
+            )
+        ]
+    if raised is None:
+        findings.append(
+            Finding(
+                site,
+                "a TRAILING order carrying NO trail distance was FILLED and the "
+                "cascade returned normally. §4:190-196 needs a second distance and "
+                "§4:187 makes it the strategy's per-signal choice; a path that "
+                "proceeds without one has either invented a trail nobody chose or "
+                "opened a position with no stop behind it",
+            )
+        )
+    else:
+        # Check contract v2 rule 11: the REASON is the assertion. An exception
+        # TYPE is a shared namespace — a typo'd symbol raises here too.
+        why = f"{type(raised).__name__}: {raised}"
+        if "trail" not in why.lower():
+            findings.append(
+                Finding(
+                    site,
+                    f"the refusal for {TRAIL_MALFORMED!r} does not name the trail "
+                    f"distance: {why!r}. This gate cannot tell a denied trailing "
+                    "conversion from an unrelated raise, so the release below "
+                    "would be credited to a refusal that may be about something "
+                    "else entirely",
+                )
+            )
+    if abs(sigma_before - sigma_after - margin) > 1e-9:
+        findings.append(
+            Finding(
+                site,
+                f"D3.474 / I2: the arm refusal for {TRAIL_MALFORMED!r} left Σ "
+                f"reservations at {sigma_after!r} (it was {sigma_before!r}; the "
+                f"order committed {margin!r}). §3's reservation is taken at "
+                "approval and reaches EXACTLY ONE terminal release; a refusal that "
+                "releases nothing LEAKS it — Σ overstates committed margin "
+                "permanently and the capital cannot be redeployed without a "
+                "restart. Measured live at `d3ff4a0`: committed held at 1000.0",
+            )
+        )
+    if outstanding:
+        findings.append(
+            Finding(
+                site,
+                f"{outstanding} reservation(s) still OUTSTANDING after the arm "
+                f"refusal for {TRAIL_MALFORMED!r} — the ledger's own count, not a "
+                "derived one",
+            )
+        )
+    if drive.remainder.refused_releases:
+        findings.append(
+            Finding(
+                site,
+                f"the ledger REFUSED {drive.remainder.refused_releases!r} "
+                "release(s) during the arm-refusal path — a refused release is a "
+                "SECOND terminal event for one reservation, which is I2's other "
+                "failure: not a leak, a double",
+            )
+        )
+    if drive.stops.get(TRAIL_MALFORMED) is not None:
+        findings.append(
+            Finding(
+                site,
+                f"a stop IS in the book for {TRAIL_MALFORMED!r} after its "
+                "conversion was denied — the denial did not deny",
+            )
+        )
+    published = [
+        row
+        for row in drive.book.current().positions
+        if getattr(row, "trade_id", "")
+        == drive.origins.origin_for_order(TRAIL_MALFORMED).trade_id
+    ]
+    if published:
+        findings.append(
+            Finding(
+                site,
+                f"§3 published a position row for {TRAIL_MALFORMED!r} whose stop "
+                "conversion was DENIED: an UNPROTECTED position (§4, §12.1) that "
+                "§14 resolves toward FLAT, published as though it were protected",
+            )
+        )
+    refusals = drive.handler.unarmable()
+    named = [rec for rec in refusals if rec.client_order_id == TRAIL_MALFORMED]
+    if not named:
+        findings.append(
+            Finding(
+                site,
+                f"the handler records no unarmable refusal for {TRAIL_MALFORMED!r} "
+                f"(it holds {[r.client_order_id for r in refusals]!r}) — an "
+                "operator reading this process cannot see which order's capital "
+                "was returned, only that Σ moved",
+            )
+        )
+    if not findings:
+        tally.trailing_released = margin
+        tally.trailing_refusal = named[0].refusal[:120] if named else ""
+    return findings
+
+
+def trailing_defects(loaded: Loaded, tally: Tally) -> list[Finding]:
+    """ARM TRAILING, on ONE fresh rig. `(armed drive, refusal drive)` share it.
+
+    One rig for both, deliberately: the refusal case's Σ assertion is sharper
+    when the ledger is NOT empty — a fall to zero could be an emptying, while a
+    fall by exactly one order's margin from a ledger still holding another's
+    cannot be.
+    """
+    drive = _build(loaded)
+    findings = _trailing_armed_defects(drive, tally)
+    findings += _trailing_refusal_defects(drive, tally)
+    return findings
+
+
 def _floor_refusal(tally: Tally) -> CheckResult | None:
     """`debug.md` §7.12: a run that reached nothing reports so, never PASS."""
     floors = (
@@ -1726,6 +2073,11 @@ def _floor_refusal(tally: Tally) -> CheckResult | None:
             "Σ step(s) proven to fall by exactly one reserved margin",
         ),
         (tally.conformance_pairs, MIN_CONFORMANCE_PAIRS, "class->port pair(s) driven"),
+        (
+            tally.trailing_arms,
+            MIN_TRAILING_ARMS,
+            "TRAILING stop(s) armed BY a confirmed fill (§4:190-196)",
+        ),
         (
             len(set(tally.cap_answers)),
             MIN_DISTINCT_CAP_ANSWERS,
@@ -1764,6 +2116,12 @@ def _evidence(tally: Tally) -> str:
         f"exactly the reserved margin, {tally.sigma_returned:.2f} of margin proven "
         f"returned, every figure read from the real ReservationLedger's own "
         f"total_reserved/outstanding/released plus an fsum re-scan computed here. "
+        f"§4:190-196: {tally.trailing_arms} TRAILING stop(s) armed BY the fill at "
+        f"level {tally.trailing_level} holding a "
+        f"{tally.trailing_trail_ticks}-tick trail gap, and a trailing order with "
+        f"NO trail distance refused with {tally.trailing_released:.2f} of margin "
+        f"proven RELEASED (§3 exactly-one terminal) and no row published "
+        f"[{tally.trailing_refusal}]. "
         "UNBOUND: nothing here proves a live broker event reaches this handler — "
         f"LimiterFillSink carries {tally.sink_verbs} of "
         f"{BROKER_SEAM}'s OrderEventSink's {tally.seam_verbs} verb(s), so it "
@@ -1843,6 +2201,9 @@ def _measure(  # pylint: disable=too-many-return-statements,too-many-locals
         return [], None, sink_refusal
     defects += sink_errs
     defects += refusal_defects(drive)
+    # ARM TRAILING on its own fresh rig — see `trailing_defects`. Last, so a
+    # failure here cannot be confused for one of the eight arms above.
+    defects += trailing_defects(loaded, tally)
     return defects, tally, ""
 
 

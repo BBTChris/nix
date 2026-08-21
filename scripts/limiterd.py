@@ -642,10 +642,19 @@ class FillPath:  # pylint: disable=too-many-instance-attributes
       it — *"a member lands here ONLY when the machinery that emits it exists"* —
       and adding one is a frozen-seam edit outside this arc's authority.
       CHECK-DEBT D3.434, named rather than skipped.
-    * **It does not maintain the stop.** §4's trailing ratchet is
-      `StopBook.maintain`, driven by the price tick, and this daemon has no price
-      feed. A FIXED stop is static forever and is therefore fully served; a
-      TRAILING stop is ARMED here and never ratcheted, which is named debt.
+    * **It maintains the stop, as of ARC 055.** §4's trailing ratchet is
+      `StopBook.maintain`, driven by `StopWatchDriver` off the §5:322 price
+      poll. A TRAILING stop armed here is ratcheted by every price the `price`
+      verb publishes and fires ONE protective flatten on breach. What this
+      daemon still has no CAPTURE feed for is the price itself — it arrives over
+      the command ingress, which is CHECK-DEBT D3.473 and is not this line.
+
+      ARC 056 / D3.474: until this arc a trailing stop could not be armed at
+      all. `ProposedOrder` carried no trail distance, so `StopBook.arm` denied
+      every trailing conversion, the fill was refused whole and the reservation
+      leaked. The order now carries `trail_ticks` from the GO and the cascade
+      runs; a trailing order that STILL carries none is refused with its
+      reservation released — see `nixrisk/fills.py`'s `UnarmableFill`.
     * **It refreshes no balance.** §6.4b's event-driven balance refresh is not
       wired; see `--account-balance`.
 
@@ -790,6 +799,12 @@ class FillPath:  # pylint: disable=too-many-instance-attributes
                     "side": st.side.value,
                     "mode": st.mode.value,
                     "initial_distance_ticks": st.initial_distance_ticks,
+                    # ARC 056 / D3.474. §4:190-196's SECOND distance, published
+                    # because it is the only thing that distinguishes a trailing
+                    # stop that will actually trail from one armed with a zero
+                    # gap — which ratchets to the high-water mark itself and
+                    # stops out on the first adverse tick. `0` for a FIXED stop.
+                    "trail_distance_ticks": st.trail_distance_ticks,
                     "anchor": st.anchor,
                     "level": st.level,
                     "activated": st.activated,
@@ -824,6 +839,28 @@ class FillPath:  # pylint: disable=too-many-instance-attributes
                     "filled_qty": rec.filled_qty,
                 }
                 for rec in self.writer.unstopped()
+            ],
+            # ARC 056 / D3.474. Fills whose STOP COULD NOT BE CONVERTED at all —
+            # a different condition from `unstopped` above and reported
+            # separately for §18's reason. `unstopped` is the WRITER refusing to
+            # publish a row for a fill with no stop in the book; this is the
+            # CONVERSION itself being denied one step earlier, and each entry
+            # says in its own sentence whether that order's reservation came
+            # back. A non-empty list with a `release` that does not begin
+            # RELEASED is the reservation-leak condition, published where an
+            # outside reader can act on it rather than inferred from a Σ that
+            # will not come down.
+            "arm_refusals": self.handler.arm_refusals,
+            "unarmable": [
+                {
+                    "client_order_id": rec.client_order_id,
+                    "exec_id": rec.exec_id,
+                    "symbol": rec.symbol,
+                    "stop_mode": rec.stop_mode,
+                    "refusal": rec.refusal,
+                    "release": rec.release,
+                }
+                for rec in self.handler.unarmable()
             ],
             "tick_size": dict(self.tick_size),
         }
@@ -1423,6 +1460,29 @@ class CommandHandler:  # pylint: disable=too-many-instance-attributes
                 stop_ticks=int(raw.get("stop_ticks") or 0),
                 stop_mode=StopMode(str(raw.get("stop_mode") or StopMode.FIXED.value)),
                 signal_ts=float(raw["signal_ts"]),
+                # ARC 056 / D3.474. §4:190-196's SECOND distance, which a
+                # trailing stop needs and a fixed one has no use for.
+                #
+                # ABSENT MEANS ABSENT — `None`, never a number. Every other
+                # numeric field above coalesces a missing value to zero, and
+                # that is right for them because zero qty and zero margin are
+                # refused downstream on their own terms. A trail distance is
+                # different: `or 0` would turn a GO that sent no trail into one
+                # that sent an invalid trail, and the two refusals are not the
+                # same sentence — `_valid_distance` would report "0 is not a
+                # whole number of ticks" for a field the strategy never sent.
+                # The same reasoning ARC 053 applied to `signal_ts` one field up.
+                #
+                # NOT DEFAULTED FROM `stop_ticks` either. §4:187 makes the trail
+                # the STRATEGY's per-signal choice and
+                # `nix_strategy_contract_v1.1.md`:175 already carries it on the
+                # GO, so a value invented here would be this daemon making a
+                # risk decision the strategy is the authority for — and it would
+                # make every malformed trailing order look armed, which is the
+                # one outcome worse than refusing it.
+                trail_ticks=(
+                    None if raw.get("trail_ticks") is None else int(raw["trail_ticks"])
+                ),
             )
         except (TypeError, ValueError) as exc:
             return self._refuse(
@@ -1479,8 +1539,13 @@ class CommandHandler:  # pylint: disable=too-many-instance-attributes
                     "converts the SIZER's stop distance and there is no held "
                     "order to convert from. Resolve or cancel it",
                 )
+            trail = (
+                ""
+                if order.trail_ticks is None
+                else f", trail_ticks={order.trail_ticks}"
+            )
             approved = (
-                f"; the order is HELD (stop_ticks={order.stop_ticks}, "
+                f"; the order is HELD (stop_ticks={order.stop_ticks}{trail}, "
                 f"{order.stop_mode.value}) and trade "
                 f"{self._trade_id_for(client_order_id)!r} is minted, so a §2A "
                 "on_fill for it can arm a stop and open a position"

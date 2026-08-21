@@ -71,21 +71,46 @@ structural guarantee, not a discipline, and `test_stops.py` asserts the
 constructor takes no logging collaborator so the guarantee cannot rot into one.
 
 ------------------------------------------------------------------------------
-A SEAM GAP, REPORTED RATHER THAN PAPERED OVER — the trailing second distance
+THE SEAM GAP, CLOSED — the trailing second distance (ARC 056 / D3.474)
 ------------------------------------------------------------------------------
-`ProposedOrder` (frozen) carries a SINGLE `stop_ticks`, but §4 gives a trailing
-stop TWO distances and `StopState` has fields for both. `stop_ticks` is the risk
-distance the Allocator sized against (§4:129, `(stop_ticks + slippage_pad) ×
-tick_value`), i.e. the INITIAL distance; the trailing `trail_distance` has no
-field on the frozen `ProposedOrder` — the GO's second distance was dropped in the
-projection. The seam is frozen and was not edited. `arm` therefore takes the
-trail distance as an explicit `trail_ticks` argument, defaulted to `None`, and a
-TRAILING order armed without it is DENIED (fail closed) rather than having a trail
-distance invented from the initial one — inventing `trail = initial` would be a
-policy choice the strategy is supposed to make per signal (§4:187), not this
-module. A FIXED order ignores `trail_ticks` entirely. This gap is an integration
-finding for the arc integrator to route (extend the contract / GO projection to
-carry `trail_distance`); it is named here so it cannot become invisible.
+§4 gives a trailing stop TWO distances and `StopState` has fields for both.
+`stop_ticks` is the risk distance the Allocator sized against (§4:129,
+`(stop_ticks + slippage_pad) × tick_value`), i.e. the INITIAL distance. The
+second — `trail_distance` — had NO field on `ProposedOrder`: the GO's second
+distance was dropped in the projection, though
+`docs/nix_strategy_contract_v1.1.md`:175 carries it on the wire.
+
+ARC 029 reported that gap rather than papering over it, and `arm` took the trail
+distance as an explicit `trail_ticks` argument so a caller who HAD one could
+pass it. **No caller had one.** `fills.py` — the only production caller of `arm`
+— called `arm(report.price, order)`, so every trailing fill in this build was
+denied and the position never opened (measured live, ARC 055/S3-B and ARC
+056/S1; CHECK-DEBT D3.474).
+
+ARC 056 closes it at the source: `ProposedOrder` now carries `trail_ticks`, and
+`arm` reads the order's own field when the caller passes none. **The explicit
+argument is kept and still WINS where it is given**, so nothing that already
+passes one changes behaviour; what changes is that an order carrying its own
+trail distance no longer needs a caller to thread it, which is why
+`fill_seam.StopArmPort` — frozen at `FILL_SEAM_REV 1.0.0`, `arm(fill_price,
+order)`, two arguments — did not have to be widened to make trailing work.
+
+What did NOT change is the refusal. A TRAILING order with no trail distance from
+EITHER source is still DENIED (fail closed) rather than having one invented from
+the initial distance: `trail = initial` would be a policy choice the strategy
+makes per signal (§4:187), not this module. A FIXED order ignores both sources.
+
+WHERE A TRAILING STOP IS ARMED, AND WHY IT IS NOT THE TRAIL DISTANCE
+------------------------------------------------------------------------------
+Stated because it is the one thing a reader is most likely to get backwards:
+a trailing stop is armed at `fill ∓ INITIAL × tick`, exactly like a fixed one —
+NOT at `fill ∓ trail × tick`. §4:190-196 is explicit that the stop *"holds at
+the initial level until price advances far enough that the trail distance would
+sit tighter"*. Arming at the trail distance would place the stop at a level the
+strategy did not choose for the fill — tighter than intended whenever
+`trail < initial`, which is the ordinary case — and would fire on noise the
+initial distance exists to absorb. `_ratchet` is the only thing that ever moves
+`level` to a trail-derived value, and only once that value is TIGHTER.
 
 Tick size is a different matter and is legitimately config: the price value of
 one tick is an instrument constant (a contract spec, boot-loaded, restart-only),
@@ -247,10 +272,15 @@ class StopBook:
     ) -> StopState:
         """Convert distance → price ONCE, at the confirmed fill (§4, A1).
 
-        `trail_ticks` carries the trailing stop's second distance, which the
-        frozen `ProposedOrder` cannot express (see the module docstring). It is
-        ignored for a FIXED order and REQUIRED for a TRAILING one; a trailing arm
-        without it is denied rather than having a trail distance invented.
+        `trail_ticks` carries the trailing stop's second distance. It is
+        ignored for a FIXED order and REQUIRED for a TRAILING one, from EITHER
+        this argument or `order.trail_ticks` (ARC 056 / D3.474 — the argument
+        wins where both are present); a trailing arm with neither is denied
+        rather than having a trail distance invented. See the module docstring.
+
+        The stop is anchored at `fill ∓ INITIAL × tick` in BOTH modes — §4:190-196
+        has a trailing stop hold at the initial level until the trail would sit
+        tighter, and `_ratchet` is the only thing that moves it there.
         """
         if not math.isfinite(fill_price) or fill_price <= 0.0:
             raise InvalidStopIntent(
@@ -354,20 +384,33 @@ class StopBook:
     def _trail_distance(self, order: ProposedOrder, trail_ticks: int | None) -> int:
         """The trailing second distance, or 0 for a fixed stop.
 
-        FIXED ignores `trail_ticks` (a fixed stop has no trail). TRAILING requires
-        it and validates it exactly like the initial distance — see the module
-        docstring on why it cannot be defaulted from the initial distance.
+        FIXED ignores both sources (a fixed stop has no trail). TRAILING requires
+        one of them and validates it exactly like the initial distance — see the
+        module docstring on why it cannot be defaulted from the initial distance.
+
+        TWO SOURCES, ONE PRECEDENCE, AND IT IS DECLARED RATHER THAN INCIDENTAL.
+        The explicit argument WINS over `order.trail_ticks`. A caller that went
+        to the trouble of passing a distance is answering the question directly,
+        and the order is what that caller most likely built; silently preferring
+        the field would make an explicit argument a no-op, which is worse than
+        either rule. `field_used` in the refusal below names which source was
+        consulted, so a denial can never be read as *the caller passed nothing*
+        when what happened is *the order carried nothing*.
         """
         if order.stop_mode is not StopMode.TRAILING:
             return 0
-        if trail_ticks is None:
+        source = "trail_ticks" if trail_ticks is not None else "order.trail_ticks"
+        ticks = trail_ticks if trail_ticks is not None else order.trail_ticks
+        if ticks is None:
             raise InvalidStopIntent(
-                f"{order.client_order_id}: a trailing stop needs a trail distance, "
-                "which the frozen ProposedOrder does not carry; arm() was called "
-                "without trail_ticks. Denying rather than inventing trail=initial — "
-                "the strategy chooses the trail per signal (§4:187)"
+                f"{order.client_order_id}: a trailing stop needs a trail distance "
+                "(§4:190-196's second distance) and NEITHER arm(trail_ticks=...) "
+                "nor ProposedOrder.trail_ticks carried one. Denying rather than "
+                "inventing trail=initial — the strategy chooses the trail per "
+                "signal (§4:187), and a GO that sent none is malformed against "
+                "nix_strategy_contract_v1.1.md:475"
             )
-        return _valid_distance(order.client_order_id, trail_ticks, "trail_ticks")
+        return _valid_distance(order.client_order_id, ticks, source)
 
     @staticmethod
     def _ratchet(state: StopState, price: float, tick: float) -> StopState | None:

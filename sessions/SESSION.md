@@ -8196,3 +8196,152 @@ The five reds are the standing set, unchanged by this arc:
 
 `check_stop_maintenance` is PASS at the merged tree on all four arms, and `check_hot_path_purity` is
 PASS with ARM 3c over the new poll.
+
+---
+
+## ARC 056 — D3.474: make trailing stops arm (the strategy's core loss-cutting)
+
+**TIER = INTERIOR — FUNCTIONAL FIX.** Limiter badge STAYS RED. Invariant count STAYS **11/12** (open:
+I1). This discharges **D3.474**; it does NOT flip an invariant. It RE-OPENS the frozen subjects of
+**I2** (reservation release) and **I4** (two-phase fill) and re-proves both.
+
+**Predecessor derived, not assumed.** The brief said `≈ 4601a06`; `git rev-parse HEAD` returned
+**`d3ff4a0`** (ARC 055's re-measure write-back). Everything below is frozen and diffed against that.
+
+**Baseline MEASURED first (memory #19): `94 passed | 4 failed | 3 cannot-measure | 0 skipped`** at
+`d3ff4a0`. The brief predicted `~95|4|2|0` on the expectation that `check_arc_status_contract` would
+clear to PASS auditing `arc_055.log`. **It did not, and the miss is a finding:** that log carries no
+`**** ARC completed ****` marker — ARC 055 printed the marker to the chat and not into its own log,
+which is the 054 gap one layer over. This arc's marker goes INTO `arc_056.log`.
+
+### S1 — D3.474 reproduced live, against a working control
+
+A real `limiterd`, a FIXED stop first so "trailing refuses" is measured against a path that works:
+
+| step | `committed` | `outstanding` | stop | position |
+|---|---|---|---|---|
+| boot | 0.0 | 0 | — | — |
+| FIXED reserve | 1000.0 | 1 | — | — |
+| FIXED fill | **0.0** | **0** | armed @ 4998.0 = `5000 - 8 x 0.25` | **OPEN** |
+| TRAILING reserve | 1000.0 | 1 | — | — |
+| TRAILING fill | **1000.0** | **1 — THE LEAK** | **none** | **not opened** |
+
+`delivered` rose 1 -> 2 while `handled`, `conversions`, `releases` and `writes` ALL stayed at 1.
+
+**The trail source was TRACED, not invented.** `docs/nix_strategy_contract_v1.1.md`:175 already
+declares the GO's stop object as `{"mode":"trailing","initial_ticks":N,"trail_ticks":M}` at
+`contract_rev 1.1.0`, with :475 requiring both int >= 1. The distance was on the wire and was dropped
+in the projection into `ProposedOrder`. **There is therefore NO strategy-contract-v1.2 implication** —
+the field exists; the Nix-side projection lost it.
+
+### S2 — the fix, and one architect ruling corrected against the spec
+
+Four edits, and the frozen fill seam was NOT widened:
+
+* `nixrisk/seam.py` — `ProposedOrder.trail_ticks: int | None = None`. Additive, defaulted, LAST, so
+  all 54 construction sites in the tree are unchanged and every FIXED order is untouched.
+* `limiterd.py` — the `reserve` verb carries it from the command payload. **`None`, never `or 0`**:
+  a GO that sent no trail and a GO that sent an invalid one are different refusals (the reasoning
+  ARC 053 applied to `signal_ts` one field up), and it is NOT defaulted from `stop_ticks`.
+* `nixrisk/stops.py` — `arm` reads `order.trail_ticks` when the caller passes none (the explicit
+  argument still wins). **This is why `fill_seam.StopArmPort` — `FILL_SEAM_REV 1.0.0`,
+  `arm(fill_price, order)` — did not have to be widened and is byte-identical.**
+* `nixrisk/fills.py` — a denied conversion now runs step 2 and ONLY step 2: the reservation is
+  released over §3's `TerminalPath.FILL` through the SAME `release_remainder` the success path uses,
+  step 3 is never reached so no position is published, and `UnarmableFill` carries the original
+  refusal outward. Fail closed in BOTH directions at once: no leak AND no unprotected open.
+
+**THE RULING THIS ARC DID NOT APPLY, because the brief invited the correction.** The brief said
+`StopBook.arm` should anchor a trailing stop at `price -/+ trail_ticks x tick_size`. **§4:190-196
+says otherwise** — a trailing stop is anchored at `fill +/- initial_distance` and HOLDS there until
+the trail would sit tighter. Anchoring at the trail distance puts the stop at a level the strategy
+did not choose (tighter than intended whenever `trail < initial`, the ordinary case) and fires it on
+the noise the initial distance exists to absorb. `stops.py` already had this right; the only gap was
+that nothing fed it a trail distance. PLANT C was restated accordingly.
+
+### S3 — end to end on the daemon, and I2 + I4 re-proven
+
+**A. THE FULL TRAILING LOSS-CUT.** `reserve(trailing, trail_ticks=4)` -> 1000.0 committed -> fill ->
+stop ARMED at **4998.0** (the INITIAL distance) holding `trail_distance_ticks=4` -> `committed`
+1000.0 -> 0.0, `outstanding` 1 -> 0, position **OPEN** -> 12 ticks of advance ratcheted `level`
+**4999.25 -> 5002.0**, monotonically non-decreasing, `activated` latched -> a breach of the
+**TRAILED** level fired **EXACTLY ONE** protective flatten: `fires=1 sends=1 breaches=1
+executed=[true]` across 125 polls and 8 further ticks past the level, `refusals=[]`. The firing names
+**5002.0**, not the armed 4998.0.
+
+**B. FIXED UNREGRESSED.** Identical to ARC 047/055: armed 4998.0, mode fixed,
+`trail_distance_ticks=0`, `committed` 1000.0 -> 0.0, position OPEN.
+
+**C. I2 RE-PROVEN ON THE NEW PATH.** A malformed trailing order (trailing, no trail distance):
+reserve accepted, 1000.0 committed -> fill -> the arm refused, NAMED (`InvalidStopIntent ... a
+trailing stop needs a trail distance`) -> **reservation RELEASED EXACTLY ONCE** (`committed` 1000.0
+-> 0.0, `outstanding` 1 -> 0, delta exactly 1000.0), `refused_releases=0` (no double), **no stop in
+the book, no position published** (`writes` 2 not 3, `conversions` 2 not 3, `handled` 2 while
+`delivered` 3). Held across a settle past the tick. Three reservations, three releases.
+
+**I4 RE-PROVEN.** No stop and no §3 row precede the confirmed fill in either drive; OPEN appears only
+after it.
+
+### S4 — the gate: EXTENDED, not added
+
+Census: the arm belongs to `check_fill_handler` (a fill calls `arm`), and doctrine C.9 forbids a
+second instrument over a subject it already drives. **Extended per rule 8 — NO new gate, no count
+move.** ARM TRAILING carries three properties of one drive and is **BOUND from four plants**, each
+`exit 1` naming its site:
+
+* **PLANT A** — `arm` stops consulting `order.trail_ticks` (D3.474 reproduced exactly): the trailing
+  fill refuses, the position never opens. Names the order and D3.474.
+* **PLANT B** — the arm refusal does not release: the reservation LEAKS. Names the order, `LEAKS it`,
+  and I2.
+* **PLANT B'** — the refusal releases TWICE (check contract rule 4: plant BOTH directions). Names the
+  order and `not a leak, a double`.
+* **PLANT C** — the stop armed at the trail distance instead of the initial one. Names the order and
+  §4:190-196. Written so a FIXED stop is unaffected, which is what makes the red attributable.
+
+Plants removed -> PASS. 31/31 in `test_check_fill_handler.py`.
+
+**THE NO-REGRESSION PROOF** — at the merged tree: `check_reservation_lifecycle` (I2) **PASS**,
+`check_two_phase_entry` (I4) **PASS**, `check_stop_maintenance` (ARC 055's C1 gate) **PASS**,
+`check_limiter_daemon_dispatch` **PASS**, `check_origin_write` **PASS**, `check_order_path_bans`
+(tripwire) **PASS**. `check_uncalled_entry_points` measured **55 rows before and 55 after** — this
+arc added ZERO new uncalled surface, and `uncalled_entry_points_baseline.json` is byte-identical.
+
+### FREEZE — asserted against `d3ff4a0` with `git hash-object`
+
+Diff is exactly six files plus `docs/CHECK-DEBT.md`: `nixrisk/seam.py` (+`trail_ticks`),
+`nixrisk/stops.py` (`arm` sources the trail), `nixrisk/fills.py` (the refusal release),
+`limiterd.py` (the `reserve` thread + the evidence block), `check_fill_handler.py` (ARM TRAILING),
+`test_check_fill_handler.py` (the four plants). Byte-identical, proven not claimed:
+`stopwatch.py`, `flatten.py`, `positions.py`, `projection.py`, `outcomes.py`, `reservations.py`,
+`completions.py`, `fill_seam.py`, `freshness.py`, `execution.py`, `picture.py`, `join.py`,
+`gate.py`, `nixalloc/sizing.py`, `uncalled_entry_points_baseline.json`,
+`gate_coverage_baseline.json`, `registry.json`. **C1's stop-wiring in `limiterd.py` is untouched**:
+the five hunks are all in `FillPath` and `CommandHandler._reserve`, and the only line in the whole
+diff naming `StopWatch` is a docstring.
+
+### Close-out
+
+**(b)** DERIVED reverse-dependency closure: 121 files reach the six changed ones by import. The
+**D3.444 by-detection backstop** found **20 more** that NAME a changed symbol and are import-blind —
+including `check_reservation_lifecycle` and `check_two_phase_entry` themselves, which is exactly the
+class D3.444 named. 1436 of 1438 tests in the union PASS. The two failures were run against a clean
+`git worktree` at `d3ff4a0` and are BOTH inherited: `test_PLANT_053B` fails identically there
+(anchor drift from ARC 055 — **D3.477**), and `test_check_plane1_hot_path`'s p99 assertion failed
+once in three runs at the TIP and passed three of three in the merged tree, so it is measuring the
+machine (recorded, not silently re-run).
+
+**(c)** The gate BOUND from all four plants; I2's and I4's gates shown PASS at the merged tree.
+
+**(d)** `docs/CHECK-DEBT.md`: **D3.474 DISCHARGED**; **D3.475** (an un-armable fill leaves a real
+venue position with no stop and this process does not flatten it — routed to ARC C2), **D3.476**
+(`nixalloc/sizing.py` still carries no trail distance and is not wired into `limiterd`), **D3.477**
+(the drifted 053B plant anchor) OPENED. ARC-TOTAL **416**, re-derived whole by
+`check_derived_claims`'s `derived:ledger_rows` over the merged tree — read off the instrument, not
+414 plus arithmetic (which would have said 417). `check_derived_claims` PASS.
+
+### Residual — explicitly NOT claimed
+
+I1 is NOT discharged. C2 (D3.453/372/469) and D (completions + convergence) remain; count stays
+11/12 and the Limiter badge stays RED. D3.473 (the ring is command-fed), D3.470, D3.468 unchanged.
+No green here may be read as *the Limiter is receiving real prices* or *a live broker event reaches
+this handler*.
