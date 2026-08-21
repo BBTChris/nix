@@ -7505,3 +7505,36 @@ I1 tail plus the greening close-out.**
 **Recommended next, BEFORE ARC A** (pre-pay-the-tax): a consolidation arc — cover the
 `limiterd.py`-class daemon files under testmon, pay down D3.104's 8 exclusions (six arcs re-pointed
 is a ceiling being walked, not a debt being held), and finalize the ARC C flatten-producer plan.
+
+### POST-WRITE-BACK RE-MEASURE — banked BEFORE the marker
+
+Measured at **`6d26c2f`**, the commit that carries this arc's write-back, on the MERGED tree:
+
+```
+92 passed | 4 failed | 3 cannot measure | 0 skipped | 1 guarded          exit 1
+```
+
+**PREDICTION HIT, on every axis, and the prediction was stated before the gate was written:**
+
+| axis | predicted | measured |
+|---|---|---|
+| `passed` | **91 -> 92** (a NEW gate file, from the ownership census, not an extension) | **92** — `[ok] check_input_freshness` |
+| `failed` | 4, unchanged | 4 — `check_ibgateway_service`, `check_monitor_tui`, `check_uncalled_entry_points`, `check_untracked_attribution` |
+| `cannot measure` | **3, unchanged — `check_arc_status_contract` STAYS CANNOT-MEASURE** | 3, and it does: *"ARC 050: no ARC-completed marker in log"* |
+| `guarded` | 1, re-pointed | 1 — `EXCLUDED -> ARC 052` on all eight |
+
+**The brief predicted `check_arc_status_contract` would PASS at both baseline and re-measure. It
+does neither, and that was said here BEFORE the run rather than explained after it.** Its subject is
+`scratchpad/arc_logs/arc_050.log`, which is banked evidence of a completed run; directive 6 forbids
+rewriting it, so no action inside ARC 051 can turn it green. D3.464 records the mechanism and names
+the two possible discharges. ARC 051's own log carries the marker, so ARC 052 reads PASS.
+
+`check_untracked_attribution` stays red on `downloads/Pinokio-8.0.40-arm64.dmg`. It is a user's file
+in a user's directory and deleting it is not cc's call; it is named here rather than quietly cleared.
+
+`check_uncalled_entry_points` is unmoved — `checks/uncalled_entry_points_baseline.json` is
+byte-identical and the new gate added no public entry point to the shipped packages.
+
+**Registered checks 99 -> 100.** `verify.py --optimize --commit` reported *"derived plan is identical
+to the live registry"* against the hand-added `level-0` entry, so the registration is a derivation
+that agreed rather than an edit that was trusted.
