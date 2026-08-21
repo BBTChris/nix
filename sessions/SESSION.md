@@ -7695,3 +7695,151 @@ and agreeing (`derived:ledger_rows=410`, `stated:series_table_latest_row=410`). 
 (D3.465, D3.466, D3.467), three discharged (D3.104, D3.464, D3.465).
 
 **BADGE: Limiter STAYS RED. Count STAYS 11/12. No board redraw. Next: I1 ARC A.**
+
+---
+
+## ARC 053 — I1 ARC A: reject + pending-timeout dispatch, and §4's no-resend rule (INTERIOR)
+
+**Tier: INTERIOR. I1 slice 3 of the four-arc daemon capstone. NO INVARIANT DISCHARGED — the count
+STAYS 11/12 (open: I1), the Limiter badge STAYS RED, no board redraw. I1 flips only at ARC D's
+convergence gate.** Predecessor tip **DERIVED**: `1f5a1e6` (the brief's `≈143af34` is 052's work
+commit, not its tip). Write-back `a7e1fcf`, correction `9e92a38`.
+
+### Baseline
+
+`verify.py` at `1f5a1e6`: **`94 passed | 4 failed | 2 cannot measure | 0 skipped | 0 guarded`**, and
+`check_arc_status_contract` `[ok]` naming `arc_052.log` — the first independent confirmation that ARC
+052's D3.464/D3.465 repair survives an arc boundary.
+
+### S1 — both gaps reproduced RED on the live daemon
+
+* **REJECT.** A reservation taken (`committed 0 → 500.0`), a §2A `on_reject` written into the
+  completions directory, and the daemon's own record showing it **arrived** — `consumed=1 seen=1
+  last_event='on_reject' last_source='…/completions/rej.json'` — then `last_disposition='unwired'`
+  and `committed 500.0 → 500.0`, `outstanding 1 → 1`. The non-vacuity matters: *the loop never got
+  it* and *the loop got it and told nobody* are the two readings ARC 046 split `consumed` from `seen`
+  to keep apart, and this is the second.
+* **PENDING-TIMEOUT.** A reservation left alone past §12A:830's 2000 ms deadline while the loop
+  ticked **11 → 312 (301 ticks over 6.0 s, 3× the deadline)**. The status record had no `timeouts`
+  key at all: there was no poll in the daemon to be slow.
+
+### S2 — both wired
+
+**REJECT is the cheap half and reuses the ARC 046 mechanism whole.** `WIRED_EVENTS` gains
+`on_reject`, `OutcomesPort` gains the verb, and `_dispatch_reject` is a **literal mirror** of
+`_dispatch_cancel` — not factored — for the reason `outcomes.py` gives above its own three `resolve`
+sites: two literal dispatch sites are two independently plantable ones, and PLANT 053A must not be
+able to hide behind a working cancel. **`rejects_dispatched` had to be added in the same edit:**
+`_finish` counted every non-fill dispatch as a cancel, so the moment `on_reject` became wired a
+reject would have incremented the cancel counter — the exact defect that counter set exists to
+prevent, arrived at by a new event rather than by anyone editing it.
+
+**PENDING-TIMEOUT is a POLL, and `StatusQueryPort` already existed** (`outcomes.py:177`, ARC 044) —
+the brief's "new port" was already built and unwired, the I1 shape exactly. What this arc added is
+`DirectoryStatusQuery` (one verb, one file read, `DIR/status/<id>.json`, absent ⇒ the seam's own
+`unknown`) and `PendingTimeoutPoller`, composed onto the loop's ingress the way `Plane1Booker` is.
+**The poll runs AFTER the reads inside the same tick** — so a terminal completion sitting in this
+tick's directory resolves its order before the poll would ask the venue about it, and no §4 query is
+spent on an order whose answer is already on disk.
+
+### §4's NO-RESEND RULE — proven twice, and it is this arc's centre
+
+A poll that resends puts a **second live order at the venue while the first is still working**: a
+double fill on one signal, with §3 holding one reservation for both.
+
+* **DRIVEN:** 666 polls, 698 queries, **`resends=0`**, and `committed` held constant at 1600.0 across
+  **32 further queries** of an `indeterminate` order. That last number is the assertion, not the
+  counter: a second live order needs a second reservation, so `committed` is what would have moved.
+* **STRUCTURAL:** an AST reachability census from `PendingTimeoutPoller.poll_due` closes over 14
+  functions and 39 distinct calls across `limiterd.py` + `outcomes.py` and reaches **none** of the
+  eight venue-placement verbs, which are **derived** from `broker_seam.ORDER_PORT_VERBS` (that file's
+  own comment: *"the roster is the authority, not the docstrings"*) minus `query_order_status`.
+  It runs **before anything is driven**, because driving a build that can resend would itself be the
+  act the census exists to refuse.
+
+Driving alone could not settle this — it proves the daemon did not resend on the run watched, never
+that no input would make it. The census cannot prove the daemon runs. Hence both.
+
+### The deviation I did not implement — D3.469
+
+**The brief specified `filled` → the 047 fill cascade, and the seam cannot support it.**
+`broker_seam.OrderStatus` carries four fields (`client_order_id`, `terminal`, `state`,
+`cumulative_qty`); §2A:75's `on_fill` needs six, and `exec_id`, `symbol` and `price` are not among
+them. Driving the cascade from a status answer would mean **inventing execution data** and would
+create a **second conversion site** where §4 converts once, at the confirmed fill. So `filled` is
+HELD — counted separately from the still-working hold, because *held because working* and *held
+because the venue says it filled and the exec report has not arrived* are two operational facts — and
+conversion stays the exec-report path's. The residual is real and is **D3.469**: if the exec report
+is genuinely lost, nothing converts that reservation. Recorded, not papered over.
+
+### D3.463 DISCHARGED — signal-freshness on RESERVE
+
+The ARC 052 recon had already corrected the question: `signal_ts` enters through `reserve` and
+nothing else, so this is *reject a stale reserve*. Both halves of `check_input_freshness`'s own
+derivation moved: the `or time.time()` fallback is gone (an absent instant is now a **refused**
+reserve, not one dated at arrival — §17), and `limiterd.signal_age_refusal` reads a clock and
+subtracts `order.signal_ts`, which is that gate's own definition of a stamp field. **Measured:** the
+gate moved `ProposedOrder` into *"snapshot — carries a stamp field a refusal site reads"*, naming
+`scripts/limiterd.py:signal_age_refusal`, and `ungated_accepted` is now `[]`. `_ACCEPTED_UNGATED` was
+shrunk to `{}` — an entry admitting a field that is now gated is the STALE PIN `check_monitor_tui`
+reports on its own list. Driven both directions: past-ceiling DENIED naming its age and the ceiling,
+absent-`signal_ts` DENIED naming §17, neither taking capital, and inside-ceiling still ACCEPTED.
+
+### S4 — the gate extended, three plants, and rule 4
+
+`check_limiter_daemon_dispatch` gained the reject arm, the pending-timeout arm and the no-resend
+census — **no new file, no count move** (rule 8 / C.9). **21/21 tests green**, including:
+`053A` reject left unwired ⇒ FAIL naming the drained-but-unreleased leak; `053B` poll unhooked from
+the tick ⇒ FAIL naming `ZOMBIE ORDER` / `NOTHING POLLED IT` / `polls=0`; `053C` the poll resends ⇒
+the census names `place_order` and the `SECOND LIVE ORDER`. Plus the **rule-4 plant-both** control (a
+found defect plus a blind arm ⇒ FAIL, with the blind arm still named as `ALSO UNMEASURED`) and two
+vacuity refusals — an underivable ban list and an unreachable closure are CANNOT_MEASURE, never a
+pass, because `calls & banned` over an empty `banned` is empty for every build including one that
+resends on every tick.
+
+Two arms had to be re-aimed rather than left: the reject arm's first §7.12 guard asserted the two
+per-path counters *differ*, which is nonsense (one cancel and one reject are both legitimately 1);
+and both driven arms were switched from `watch` (which raises a generic timeout) to `settle` (which
+returns the last status so the arm can name the absence) — a broken instrument and the defect it was
+built to find must not read alike, which is this gate's own PLANT C lesson.
+
+### Two instruments caught their own staleness before the first commit
+
+`test_completions.py`'s UNWIRED parameter list is a **literal**, not a comprehension, and it went red
+the moment `WIRED_EVENTS` grew — which is exactly what a literal is kept for. And mypy found the
+`_Outcomes` stub missing `on_reject` after the protocol gained it: a stand-in that does not grow with
+the protocol stops standing in for the thing under test.
+
+### FREEZE — held
+
+Byte-identical to `1f5a1e6` by `git hash-object`: `outcomes.py`, `reservations.py`, `fills.py`,
+`fill_seam.py`, `flatten.py`, `positions.py`, `projection.py`, `loop.py`, `wal.py`, `freshness.py`,
+`gate.py`, `seam.py`, `plane1_sink.py`, `picture.py`, `nixalloc/mirror.py`. **The freshness files did
+not need the brief's exception** — the D3.463 refusal lives in `limiterd.py`, not in `freshness.py`.
+Declared additions to the brief's diff list: `checks/check_input_freshness.py` (the ratchet shrink
+the fix causes), `risks/limiter.config.json` (the ceiling), `checks/uncalled_entry_points_baseline.json`
+(the two handler rows dropping off, which the brief asked to be named), `scripts/tests/test_completions.py`.
+
+### POST-WRITE-BACK RE-MEASURE — PREDICTION MISSED, then reached
+
+Predicted `94 | 4 | 2 | 0 | 0`. First measurement at `a7e1fcf`: **`93 | 5 | 2 | 0 | 0`** — one FAIL I
+caused. `check_risks_data_only`: *"`signal_max_age_ms`: has no `_derivations` entry — a knob with no
+stated origin has its semantics settled HERE, which is exactly the second authority `risks/` may not
+become."* The knob's whole argument was written and written into the wrong object: `_meta` describes
+the file, `_derivations` is where a value states where it came from, and for a declared Nix addition
+that origin statement is the only thing between an addition and a second authority. **The miss is the
+finding:** I ran `check_input_freshness`, `check_derived_claims` and the daemon-dispatch gate against
+the new knob and never ran the gate whose subject *is* the config file. Moved verbatim (`9e92a38`),
+re-measured: **`94 passed | 4 failed | 2 cannot measure | 0 skipped` (0 guarded), exit 1 — the
+predicted tuple.** `check_limiter_daemon_dispatch`, `check_input_freshness`, `check_risks_data_only`,
+`check_derived_claims` and `check_arc_status_contract` all `[ok]`. The four residual FAILs are
+pre-existing and none is this arc's subject.
+
+CHECK-DEBT re-derived whole: **411 open of 481 rows** (`derived:ledger_rows` = `stated:series_table_latest_row`).
+D3.463 discharged; D3.468 and D3.469 opened; **D3.442 shrank for the second time and is restated,
+not removed** — the daemon now invokes four of §3's paths (cancel 046, fill 047, reject 053,
+pending-timeout 053), and **onset (ARC B) and the protective-flatten producers (ARC C) remain owed**;
+the running daemon still has no protective-exit path at all.
+
+**BADGE: Limiter STAYS RED. Count STAYS 11/12. No board redraw. I1 path-progress: 4 of ~6 wired.
+Next: I1 ARC B (onset, needs `pending_entries()` — D3.443).**
