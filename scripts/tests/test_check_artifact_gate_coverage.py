@@ -467,8 +467,14 @@ def test_the_REAL_baselines_owner_is_a_single_arc_AND_THE_GATE_AGREES_WITH_THE_R
     # teeth — the assertion below still fails if EVERY bucket is empty, which
     # is the state where it genuinely has nothing to measure.
     owners = {path: row["owner"] for path, row in payload["artifacts"].items()}
+    # ARC 052 / CHECK-A11: a PERMANENT exclusion carries NO owner — that is the
+    # ruling's whole content, and the gate's own shape arm FAILS if one is
+    # present. Including it here would assert the furniture the ruling removed.
+    # The TEMPORARY class is unchanged and still judged.
     exclusion_owners = {
-        path: row["owner"] for path, row in payload.get("exclusions", {}).items()
+        path: row["owner"]
+        for path, row in payload.get("exclusions", {}).items()
+        if not row.get("permanent")
     }
     all_owners = {**owners, **exclusion_owners}
     # path -> which bucket it came from, precomputed rather than decided inline
@@ -479,9 +485,35 @@ def test_the_REAL_baselines_owner_is_a_single_arc_AND_THE_GATE_AGREES_WITH_THE_R
         **dict.fromkeys(owners, "artifacts"),
         **dict.fromkeys(exclusion_owners, "exclusions"),
     }
-    assert all_owners, (
-        "the real baseline holds no owner-bearing rows in EITHER bucket; this "
-        "control has no subject"
+    # ARC 052 / CHECK-A11 — THE POPULATION CAN NOW LEGITIMATELY BE EMPTY, and
+    # this assertion is RE-AIMED rather than deleted or weakened to `>= 0`.
+    #
+    # It used to read `assert all_owners`, and it fired here for a real reason:
+    # every accepted path in the real baseline is now a PERMANENT exclusion, and
+    # a permanent exclusion carries no owner, so there is nothing left for the
+    # owner-SHAPE rule to judge. Passing over an empty population would be the
+    # vacuous green §7.12 exists to refuse; failing over it would be asserting
+    # that the D3.104 discharge is a defect. Neither is true.
+    #
+    # What is asserted instead is the property that actually has to hold in every
+    # world: EVERY accepted path is accounted for by exactly one recognised
+    # disposition — an owner-bearing row/temporary exclusion, or a permanent
+    # exclusion with witnesses. An entry that is neither is the shape this
+    # control was always about, and it is now caught whichever bucket it hides in.
+    permanent_paths = {
+        path
+        for path, row in payload.get("exclusions", {}).items()
+        if row.get("permanent")
+    }
+    accepted = set(payload["artifacts"]) | set(payload.get("exclusions", {}))
+    assert accepted, (
+        "the real baseline accepts NOTHING in either bucket; this control has no "
+        "subject at all"
+    )
+    unaccounted = accepted - set(all_owners) - permanent_paths
+    assert not unaccounted, (
+        "accepted path(s) hold neither an owner nor a permanent disposition — "
+        f"an entry with no disposition is a suppression entry: {unaccounted}"
     )
     completed, error = completed_arcs(REPO)
     assert not error, error
@@ -976,7 +1008,7 @@ _CHECK_A9_PAIR = {
 _AUTHORIZED_EXCLUSIONS = _CHECK_A8_THIRTEEN | _CHECK_A9_PAIR
 
 
-def test_the_REAL_TREES_THIRTEEN_ceiling_tripped_artifacts_are_the_D3104_EXCLUSION() -> (
+def test_the_REAL_TREES_THIRTEEN_ceiling_tripped_artifacts_are_the_D3104_EXCLUSION() -> (  # pylint: disable=too-many-locals
     None
 ):
     """The D3.104 disposition, banked so it cannot quietly stop being true.
@@ -1067,10 +1099,34 @@ def test_the_REAL_TREES_THIRTEEN_ceiling_tripped_artifacts_are_the_D3104_EXCLUSI
             # arbitrary set an author widened the exclusion with.
             assert moves > GUARD_REOWN_CEILING, (path, lineage)
             assert reowning_defect(lineage) != "", (path, lineage)
-        # The one rule lifted is the ceiling. Everything else is still live.
-        assert guard_owner_defect(entry["owner"], completed) == "", (path, entry)
-        assert entry.get("temporary") is True, (path, entry)
+        # The one rule lifted is the ceiling. Everything else is still live —
+        # and from ARC 052 "everything else" depends on WHICH disposition the
+        # entry holds. CHECK-A11 split the bucket in two:
+        #   TEMPORARY — a holding state, owner must be a LIVE arc (unchanged);
+        #   PERMANENT — a ratified accept, owner must be EMPTY (there is no arc
+        #     that can pay: doctrine C.9 forbids a second instrument over a
+        #     subject the suite already drives), and in exchange it must name
+        #     WITNESSES the gate re-measures on every run.
+        # Both keep the justification, and both stay inside the one-way ratchet.
         assert entry.get("justification", "").strip(), (path, entry)
+        if entry.get("permanent"):
+            assert entry.get("temporary") is not True, (path, entry)
+            assert not entry.get("owner", "").strip(), (path, entry)
+            assert re.fullmatch(r"CHECK-A\d+", entry.get("amendment", "")), (
+                path,
+                entry,
+            )
+            witnesses = [
+                name
+                for name in entry.get("covered_by", ())
+                if name != gate._SELF_TEST_MODULE  # pylint: disable=protected-access
+            ]
+            assert witnesses, (path, entry)
+            for name in witnesses:
+                assert (REPO / "scripts" / "tests" / name).is_file(), (path, name)
+        else:
+            assert guard_owner_defect(entry["owner"], completed) == "", (path, entry)
+            assert entry.get("temporary") is True, (path, entry)
 
     # Stage 3 integration (ARC 030) re-pointed four legacy `artifacts` rows off
     # the arc IN FLIGHT before this arc's own close-out could strand them
@@ -1103,15 +1159,37 @@ def test_the_REAL_TREES_THIRTEEN_ceiling_tripped_artifacts_are_the_D3104_EXCLUSI
         moves = len(gate._row_lineage(history, path)) - 1
         assert moves <= GUARD_REOWN_CEILING, (path, moves)
 
-    # With the one over-ceiling row discharged, the gate's honest verdict on the
-    # real tree is GUARDED again: five `artifacts` rows and eight declared
-    # CHECK-A8/CHECK-A9 exclusions remain, every one owned by a LIVE arc. The
-    # accepted-set SIZE did not move when CHECK-A9 landed (13 before, 13 after) —
-    # `Baseline.uncovered` folds both buckets, so the ruling re-classified two
-    # artifacts and grew nothing, which is why the high-water mark never saw it.
+    # ARC 052 / CHECK-A11 — THE REAL TREE'S HONEST VERDICT IS NOW PASS, and the
+    # assertion is REPLACED rather than relaxed. Until this arc the eight
+    # nixverify exclusions held the verdict GUARDED and the guard named an owner
+    # arc; the owner was walked 030 -> ... -> 052 across six-plus close-outs
+    # because owner-liveness demanded a name and no arc could ever pay it
+    # (doctrine C.9 forbids a second instrument over a pytest-driven subject).
+    # CHECK-A11 names that fact: a permanent exclusion has no discharging arc, so
+    # it holds no known-red marker and cannot hold the verdict guarded.
+    #
+    # WHAT REPLACES THE TEETH. "GUARDED with an owner" was this control's proof
+    # that the accept was still being READ. The stronger form is asserted here
+    # instead: every permanent exclusion must be NAMED IN THE EVIDENCE of the
+    # passing verdict. A PASS that stops naming them is the suppression list this
+    # ruling would otherwise have created, and this assertion is what refuses it.
     result = _run(REPO)
-    assert result.status is Status.GUARDED, result
-    assert result.guard_owner, "a GUARDED verdict with no owner is unattributable"
+    assert result.status is Status.PASS, result
+    permanent = [
+        path
+        for path, entry in working.get("exclusions", {}).items()
+        if entry.get("permanent")
+    ]
+    assert permanent, (
+        "the real baseline holds no PERMANENT exclusion; if CHECK-A11's "
+        "population was emptied by real coverage this control has no subject "
+        "and must be re-aimed, not deleted"
+    )
+    for path in permanent:
+        assert path in result.evidence, (
+            f"{path} is a permanent accept that the PASSING verdict does not name "
+            f"— an accept nobody reads is a suppression entry: {result.evidence}"
+        )
 
 
 # ===========================================================================
@@ -1638,7 +1716,9 @@ def test_PLANT_an_exclusion_not_marked_TEMPORARY_FAILS_naming_it(repo: Path) -> 
     result = _run(repo)
     assert result.status is Status.FAIL_NEEDS_OPERATOR, result
     assert f"{gate.BASELINE}:exclusions:{victim}:temporary" in result.site, result.site
-    assert "`temporary` is not true" in result.detail, result.detail
+    assert "exactly one of `temporary` and `permanent` must be true" in result.detail, (
+        result.detail
+    )
 
 
 def test_an_exclusion_owned_by_a_COMPLETED_arc_DEFERS_while_ASSIGNING_one_now_FAILS(
@@ -1741,3 +1821,259 @@ def test_an_EXCLUSION_ESCAPES_the_ceiling_that_the_SAME_lineage_as_a_ROW_would_T
     assert as_exclusions.status is Status.GUARDED, as_exclusions
     assert "RE-OWNED" not in as_exclusions.detail, as_exclusions.detail
     assert "EXCLUDED" in as_exclusions.detail, as_exclusions.detail
+
+
+# ===========================================================================
+# ARC 052 (Task 2) — CHECK-A11, THE PERMANENT DISPOSITION. ARCHITECT RULING
+# against CHECK-DEBT D3.104.
+#
+# WHAT THE RULING CHANGED, in one sentence: an exclusion may now say it is
+# PERMANENT instead of TEMPORARY, and a permanent one carries no owner — because
+# there is no arc that can discharge it (doctrine C.9 forbids a second instrument
+# over a subject the suite already drives) and an owner that cannot pay is no
+# owner wearing a name (doctrine B.3). Six consecutive arcs re-pointed that field
+# 030 -> ... -> 052 and no artifact was closer to being gated at the end of the
+# walk than at the start; the ruling names the fact instead of restating it.
+#
+# §7.12, asked of this section: **what would have to be true for CHECK-A11 to
+# "work" while measuring LESS than the class it replaces?** That is the whole
+# hazard — a permanent accept is, structurally, a suppression list. Three answers
+# and the control for each:
+#
+#   1. The permanent entry could name no witness at all, and the gate would be
+#      trusting a 5,000-character justification string exactly as the temporary
+#      class did. -> `covered_by` is required and EMPTY IS A FAIL.
+#   2. It could name a witness that does not exist, or one that exists and says
+#      nothing about this artifact — the CHECK-DEBT RULE OF RECORD's disguise
+#      case, where question 1 ("does the control exist?") returns a reassuring
+#      answer and question 2 ("is it AIMED?") was never asked. -> every witness
+#      is resolved against `_named_by_tests`, both existence and aim, EVERY RUN.
+#   3. It could name THIS GATE'S OWN test module, which names every path in the
+#      baseline because that is what a test of a baseline reader does — making
+#      the arm simultaneously vacuous for every entry. -> refused by name.
+#
+# Every test below PERTURBS one entry and requires the gate to go non-green
+# NAMING THAT ENTRY. None of them counts fields.
+# ===========================================================================
+
+
+#: A witness module the fixture tree can actually resolve. `_named_by_tests`
+#: reads `scripts/tests/*.py` under the HOME being judged, and the fixture repo
+#: ships none, so a permanent-exclusion test must plant its own witness — which
+#: is also what makes "the witness vanished" plantable below.
+def _plant_witness(home: Path, name: str, names_path: str | None) -> None:
+    """Write a fixture test module that does (or does NOT) name `names_path`."""
+    tests = home / gate._TEST_DIR  # pylint: disable=protected-access
+    tests.mkdir(parents=True, exist_ok=True)
+    body = f'SUBJECT = "{names_path}"\n' if names_path else "SUBJECT = None\n"
+    (tests / name).write_text(body, encoding="utf-8")
+
+
+def _make_permanent(home: Path, path: str, witnesses: list[str]) -> None:
+    """Move one row into a WELL-FORMED permanent exclusion, witnesses and all."""
+    _move_to_exclusions(
+        home,
+        [path],
+        commit=False,
+        owner="",
+        temporary=False,
+        permanent=True,
+        amendment="CHECK-A11",
+        covered_by=witnesses,
+    )
+
+
+@pytest.fixture
+def permanent_repo(repo: Path) -> tuple[Path, str]:
+    """The healthy CHECK-A11 state every plant below perturbs: one permanent
+    exclusion, one real witness that names it, nothing else changed."""
+    victim = min(_read_baseline(repo)["artifacts"])
+    _plant_witness(repo, "test_fixture_witness.py", victim)
+    _make_permanent(repo, victim, ["test_fixture_witness.py"])
+    return repo, victim
+
+
+def test_CONTROL_a_well_formed_PERMANENT_exclusion_does_not_hold_the_verdict_GUARDED(
+    permanent_repo: tuple[Path, str],
+) -> None:
+    """Step 1 of §5.1. A permanent accept names no discharging arc, so it holds
+    no known-red marker — and it is NAMED in the evidence of the verdict it does
+    not guard, which is the control that keeps it from becoming invisible."""
+    home, victim = permanent_repo
+    result = _run(home)
+    # The fixture keeps 24 ordinary owner-bearing rows, so the verdict is still
+    # GUARDED — by THOSE. The property under test is that the permanent entry
+    # contributes NOTHING to the guard: it prints no `EXCLUDED ->` marker line,
+    # because a marker that names no discharging arc cannot be read. Asserting
+    # PASS here would be asserting the fixture's row population, not the ruling.
+    assert result.status is Status.GUARDED, result
+    assert f"{victim} EXCLUDED" not in result.detail, result.detail
+    # ...and it is named in the EVIDENCE of every run regardless of verdict, which
+    # is the whole control against a permanent accept becoming invisible.
+    assert victim in result.evidence, result.evidence
+    assert "PERMANENT exclusion(s) (CHECK-A11" in result.evidence, result.evidence
+
+    # Now the END STATE — every accepted path a witnessed permanent exclusion,
+    # which is exactly the real tree after ARC 052. The rows are MOVED, never
+    # dropped: emptying `artifacts` would leave 24 artifacts uncovered and
+    # unadmitted, and the ratchet would (correctly) FAIL on the regression. The
+    # honest verdict once every accept is witnessed and none names a discharging
+    # arc is PASS with no guard owner.
+    rest = sorted(_read_baseline(home)["artifacts"])
+    _plant_witness(home, "test_fixture_witness_all.py", None)
+    (home / gate._TEST_DIR / "test_fixture_witness_all.py").write_text(  # pylint: disable=protected-access
+        "SUBJECTS = (\n" + "".join(f'    "{path}",\n' for path in rest) + ")\n",
+        encoding="utf-8",
+    )
+    for path in rest:
+        _make_permanent(home, path, ["test_fixture_witness_all.py"])
+    alone = _run(home)
+    assert alone.status is Status.PASS, alone
+    assert not alone.guard_owner, alone
+    for path in [victim, *rest]:
+        assert path in alone.evidence, (path, alone.evidence)
+
+
+def test_PLANT_a_PERMANENT_exclusion_with_NO_witness_FAILS_naming_it(
+    permanent_repo: tuple[Path, str],
+) -> None:
+    """Hazard 1: a permanent accept resting on prose alone."""
+    home, victim = permanent_repo
+    payload = _read_baseline(home)
+    payload["exclusions"][victim]["covered_by"] = []
+    _save_baseline(home, payload)
+
+    result = _run(home)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert f"{gate.BASELINE}:exclusions:{victim}:covered_by" in result.site, result.site
+    assert "declares no witness" in result.detail, result.detail
+
+
+def test_PLANT_a_witness_that_VANISHED_FAILS_naming_the_witness(
+    permanent_repo: tuple[Path, str],
+) -> None:
+    """Hazard 2a: the claim rotted. The file the accept rests on is gone."""
+    home, _victim = permanent_repo
+    (home / gate._TEST_DIR / "test_fixture_witness.py").unlink()  # pylint: disable=protected-access
+
+    result = _run(home)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert "test_fixture_witness.py" in result.site, result.site
+    assert "does not name" in result.detail, result.detail
+
+
+def test_PLANT_a_witness_that_EXISTS_but_names_a_DIFFERENT_subject_FAILS(
+    permanent_repo: tuple[Path, str],
+) -> None:
+    """Hazard 2b — the RULE OF RECORD's disguise case, and the reason `covered_by`
+    is resolved rather than counted: the witness is present, is real, runs, and
+    measures somebody else's artifact. Question 1 answers reassuringly; only
+    question 2 (*is it AIMED at this residual?*) catches it."""
+    home, victim = permanent_repo
+    _plant_witness(home, "test_fixture_witness.py", "scripts/module_24.py")
+
+    result = _run(home)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert "test_fixture_witness.py" in result.site, result.site
+    assert victim in result.detail, result.detail
+
+
+def test_PLANT_this_gates_OWN_test_module_as_the_only_witness_FAILS(
+    permanent_repo: tuple[Path, str],
+) -> None:
+    """Hazard 3: self-reference is not coverage. This gate's own test module
+    names every baseline path, so accepting it would make the arm vacuous for
+    every entry at once — the one failure mode a coverage control must not have."""
+    home, victim = permanent_repo
+    _plant_witness(home, gate._SELF_TEST_MODULE, victim)  # pylint: disable=protected-access
+    payload = _read_baseline(home)
+    payload["exclusions"][victim]["covered_by"] = [gate._SELF_TEST_MODULE]  # pylint: disable=protected-access
+    _save_baseline(home, payload)
+
+    result = _run(home)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert f"{gate.BASELINE}:exclusions:{victim}:covered_by" in result.site, result.site
+    assert "own test module" in result.detail, result.detail
+
+
+def test_PLANT_a_PERMANENT_exclusion_that_still_carries_an_OWNER_FAILS(
+    permanent_repo: tuple[Path, str],
+) -> None:
+    """The furniture the ruling removed, refused rather than tolerated: an owner
+    on a permanent entry is an arc named to pay a debt that has no payer."""
+    home, victim = permanent_repo
+    payload = _read_baseline(home)
+    payload["exclusions"][victim]["owner"] = _FIXTURE_LIVE_ARC
+    _save_baseline(home, payload)
+
+    result = _run(home)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert f"{gate.BASELINE}:exclusions:{victim}:owner" in result.site, result.site
+    assert "NO future arc to discharge it" in result.detail, result.detail
+
+
+@pytest.mark.parametrize(
+    "amendment", ["", "the architect said so", "SPEC-A11", "CHECK-A"]
+)
+def test_PLANT_a_PERMANENT_exclusion_with_an_UNRECORDED_amendment_FAILS(
+    permanent_repo: tuple[Path, str], amendment: str
+) -> None:
+    """Check contract rule 13 — a rule that decides a verdict is recorded or it
+    does not bind. `SPEC-A11` is in the list on purpose: the two ledgers are
+    numbered independently and their ranges OVERLAP, so a bare amendment number
+    once named two different rulings (CLAUDE.md, Naming)."""
+    home, victim = permanent_repo
+    payload = _read_baseline(home)
+    payload["exclusions"][victim]["amendment"] = amendment
+    _save_baseline(home, payload)
+
+    result = _run(home)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert f"{gate.BASELINE}:exclusions:{victim}:amendment" in result.site, result.site
+    assert "not a recorded CHECK-A<n> id" in result.detail, result.detail
+
+
+def test_PLANT_an_exclusion_claiming_BOTH_dispositions_FAILS(
+    permanent_repo: tuple[Path, str],
+) -> None:
+    """Exactly one disposition. Both-true is how an entry would claim the
+    temporary class's ceiling exemption AND the permanent class's owner
+    exemption at the same time, holding neither obligation."""
+    home, victim = permanent_repo
+    payload = _read_baseline(home)
+    payload["exclusions"][victim]["temporary"] = True
+    _save_baseline(home, payload)
+
+    result = _run(home)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert f"{gate.BASELINE}:exclusions:{victim}:temporary" in result.site, result.site
+    assert "exactly one of" in result.detail, result.detail
+
+
+def test_the_ONE_WAY_RATCHET_still_refuses_a_SILENT_PERMANENT_addition(
+    permanent_repo: tuple[Path, str],
+) -> None:
+    """THE LOAD-BEARING ONE. If the permanent class escaped the ratchet it would
+    be a way to add accepted paths quietly, which is precisely the suppression
+    hole the whole file exists to refuse. It does not: `Baseline.uncovered` folds
+    exclusions in, so a well-formed permanent entry added with no `admitted` arc
+    is still an unadmitted growth past the committed high-water mark."""
+    home, _victim = permanent_repo
+    newcomer = "scripts/module_new_arc052.py"
+    (home / newcomer).write_text("q = 9\n", encoding="utf-8")
+    _git(home, "add", "-A")
+    _plant_witness(home, "test_fixture_witness_two.py", newcomer)
+    payload = _read_baseline(home)
+    payload["exclusions"][newcomer] = _exclusion(
+        owner="",
+        temporary=False,
+        permanent=True,
+        amendment="CHECK-A11",
+        covered_by=["test_fixture_witness_two.py"],
+    )
+    _save_baseline(home, payload)
+
+    result = _run(home)
+    assert result.status is Status.FAIL_NEEDS_OPERATOR, result
+    assert newcomer in result.detail, result.detail
+    assert "ADDED to the accepted-uncovered set" in result.detail, result.detail

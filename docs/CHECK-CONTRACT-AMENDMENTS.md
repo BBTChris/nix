@@ -835,3 +835,105 @@ the REPORT.
 
 None. This amendment has no holding state and no instance to discharge: it is a standing rule, not a
 temporary authorisation. It is revocable by the architect like every ruling in this ledger.
+
+---
+
+## CHECK-A11 — the PERMANENT disposition: an exclusion with no discharging arc, and a coverage claim that is measured (ARC 052 / D3.104)
+
+| field | value |
+|---|---|
+| origin | Architect ruling on **CHECK-DEBT D3.104**, issued to ARC 052 in the arc brief (*"give it a PERMANENT documented disposition … NOT another per-arc re-point"*), recorded here in the same arc |
+| status | **LIVE, and explicitly NOT a holding mechanism** — that is the entire content of the ruling. It is the first amendment in this ledger with no exit condition, because the thing it authorises has no future work attached to it |
+| governs | `check_artifact_gate_coverage` — adds a verdict-deciding classification, so it is written into the check contract (`CLAUDE.md` rule 14) and recorded here, per **check-contract rule 13** |
+| enumerated paths | **NOT restated here.** The live instance is `checks/gate_coverage_baseline.json`'s own `exclusions[*].permanent`, and the gate reads the JSON, never this table. CHECK-A8's row learned this the expensive way: it said "owned by ARC 030" for five arcs while the owner walked three re-ownings past it (directive 3) |
+
+### What fired
+
+`CHECK-A8` moved thirteen ceiling-exhausted artifacts out of the guard into a declared, **temporary**
+exclusion; `CHECK-A9` moved two more on doctrine-C.9 grounds. Both rulings required the exclusion to
+be owned by a **LIVE** arc, and `_exclusion_deferrals` enforces it: a completed owner takes the gate
+GUARDED → CANNOT_MEASURE. So every arc had to bump the field before its own write-back named it
+complete, or ship a light blue it did not earn.
+
+**Measured, and it is the whole argument for this amendment.** The `owner` field on those entries was
+walked `ARC 030 → 032 → 033 → 035 → 036 → 037 → 039 → 040 → 043 → 046 → 049 → 052` — the last six of
+them consecutive close-outs, each one recording in the JSON's own justification that it was
+*"arc-boundary maintenance, not progress"*. At the end of that walk not one of the eight was closer to
+being gated than at the start, and the reason is structural rather than anybody's neglect: **the work
+the owner names does not exist.** All eight are `scripts/nixverify/*` — the verify machinery — and
+every one is already driven hard by pytest. A `checks/check_*.py` over them would be the SECOND
+INSTRUMENT doctrine C.9 forbids, which `CHECK-A9` already ruled for two of the eight. So there is no
+arc that can pay, and doctrine B.3 has the name for an owner in that position: **furniture**.
+
+D3.104's row is not a debt that went unpaid for six arcs. It is a debt whose payer does not exist,
+recorded once per arc as if it did.
+
+### The rule
+
+An entry in `exclusions` declares **exactly one** of two dispositions:
+
+* **`temporary: true`** — unchanged from `CHECK-A8`/`CHECK-A9`. A holding state, owned by a LIVE arc,
+  which expires into CANNOT_MEASURE when that arc completes without discharging it.
+* **`permanent: true`** — a ratified accept. It names **no owner** (a non-empty `owner` is a FAIL),
+  it holds no known-red marker, and it therefore **does not hold the verdict GUARDED**: a marker that
+  names no discharging arc is not a weaker guard, it is a guard that cannot be read, and treating it
+  as one is what produced the walk above. It must name the recorded `CHECK-A<n>` that authorises it.
+
+Both keep everything else: the written per-entry justification, §0g at assignment where an owner
+exists, and — the load-bearing one — the **one-way ratchet**. `Baseline.uncovered` still folds both
+buckets, so a silent permanent addition is still an unadmitted growth past the committed high-water
+mark, and an artifact that ACQUIRES a real gate is still a stale-baseline FAIL.
+
+### What the permanent class PAYS for its exemption, and why this measures MORE than the class it replaces
+
+This is the part that keeps `permanent` from being a suppression list wearing a schema.
+
+A temporary exclusion is checked for **shape**: a non-empty justification string and a live owner.
+Nobody ever checked whether the sentence *"measured by pytest"* inside those five-thousand-character
+justifications was **true**, and for six arcs nobody could have — the string is prose and the gate
+read it as prose. The exemption is granted on exactly that claim.
+
+`CHECK-A11` requires the claim to be a **list of files** (`covered_by`) and checks the list against
+the tree on every run, in both directions the row arm has always checked:
+
+1. **empty `covered_by` is a FAIL** — a permanent accept with no named witness is the suppression
+   entry §7.12 rule 3 names;
+2. **a witness that does not exist is a FAIL** — the claim has rotted;
+3. **a witness that exists but does not name the artifact is a FAIL** — this is the CHECK-DEBT RULE
+   OF RECORD's disguise case, where question 1 (*does the control exist?*) answers reassuringly and
+   question 2 (*is it AIMED at this residual?*) was never asked;
+4. **this gate's own test module is refused as a witness by name** — it names every path in the
+   baseline, because that is what a test of a baseline reader does, so counting it would make the arm
+   vacuous for every entry simultaneously. That is the one failure mode a coverage control must not
+   have.
+
+So the trade is exact: the permanent class gives up the owner field, which measured nothing and cost
+an edit every arc, and acquires a coverage control the temporary class never had. **Nothing was
+greened by measuring less.**
+
+### The verdict this moves, stated before it was taken
+
+`check_artifact_gate_coverage` was GUARDED with `guard_owner = ARC 052` and eight `EXCLUDED ->`
+marker lines. With all eight permanent and `artifacts` empty it is **PASS** — and the eight are
+enumerated in `evidence` on **every** run, pass or fail, which is the control that replaces the guard
+line. A permanent accept that stops being printed is the hole this amendment would otherwise open,
+and the gate's own test asserts against it by name.
+
+### Can-fail, demonstrated
+
+Every arm above was planted against the real baseline and restored (`sha256` identical, control
+re-passes), and each plant is banked as a test in
+`scripts/tests/test_check_artifact_gate_coverage.py`: no witness; witness vanished; witness aimed at
+another subject; self-test module as the only witness; owner present on a permanent entry; amendment
+absent / free prose / `SPEC-A11` / `CHECK-A`; both dispositions true; neither true; and a well-formed
+permanent entry added silently, which the ratchet refuses as an unadmitted growth.
+
+`SPEC-A11` is in that list deliberately. The two ledgers are numbered independently and their ranges
+OVERLAP (`CLAUDE.md`, Naming), so an amendment id is accepted only with **this** ledger's prefix.
+
+### Exit
+
+**None, and that is the ruling.** Unlike `CHECK-A8` and `CHECK-A9`, this amendment has no holding
+state to discharge and names no arc that will empty it. It is revocable by the architect like every
+ruling here — and it self-revokes per artifact the moment one acquires a real gate, because the
+ratchet reads that as a stale baseline and goes red.

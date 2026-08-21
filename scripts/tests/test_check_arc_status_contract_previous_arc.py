@@ -28,6 +28,8 @@ Rule 11 throughout: every assertion reads the REASON, never the status alone.
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -83,8 +85,6 @@ def _home(tmp_path: Path, running: str, logs: dict[str, tuple[str, float]]) -> P
     for arc, (body, age) in logs.items():
         path = directory / f"arc_{arc}.log"
         path.write_text(body.format(arc=arc), encoding="utf-8")
-        import os  # pylint: disable=import-outside-toplevel
-
         os.utime(path, (now - age, now - age))
     return home
 
@@ -227,3 +227,223 @@ def test_the_running_arc_id_is_READ_not_assumed(tmp_path, arc) -> None:
     result = _run(home)
     assert result.status is Status.PASS, f"{result.status}: {result.detail}"
     assert "AUDITED ARC 040" in result.evidence, result.evidence
+
+
+# ===========================================================================
+# ARC 052 — D3.464 (the marker never reached the log) and D3.465 (the log's
+# teardown line was unreadable to the gate). Two defects on the same seam,
+# both measured at `9a96eab`, and the pair is why they are tested together:
+#
+#   * `arc_050.log` carries NO marker. The run reached close-out and printed it
+#     to the CHAT; this file's subject is a LOG, so the gate read
+#     CANNOT-MEASURE — correctly, about evidence that was never written.
+#   * `arc_051.log` carries the marker AND a teardown line, in the right order,
+#     and the gate read FAIL with `teardowns=0`. `CLAUDE.md` instructs cc to
+#     prove the teardown while disclaiming the root-owned `[watchdogd]`, cc
+#     wrote both on ONE line, and the reader's kernel-thread veto was
+#     line-scoped. The instrument was refusing the exact sentence the
+#     instructions told the operator to produce.
+#
+# The repairs are on opposite sides and each stands alone: the READER now asks
+# for a positive cc-watchdog signature instead of vetoing on a mention (strictly
+# stronger — a teardown that identifies nothing used to pass and no longer
+# does), and the EMITTER gained `teardown` and `marker` verbs, so the marker
+# cannot be shown to the operator without landing in the log.
+#
+# §7.12, asked here: what would have to be true for these tests to pass while
+# measuring nothing? The emitter tests could assert on strings this file also
+# writes. They do not — every one of them runs `scripts/arc_heartbeat.sh` as a
+# subprocess and then feeds the FILE IT PRODUCED to the gate. The two sides are
+# only ever joined through the artifact.
+# ===========================================================================
+
+HEARTBEAT = REPO / "scripts" / "arc_heartbeat.sh"
+
+#: `arc_051.log`'s teardown line, reduced to its shape: the claim about cc's own
+#: watchdog and the disclaimer about the kernel thread, on ONE line. This is the
+#: string that measured `teardowns=0` at `9a96eab`.
+DISCLAIMING_TEARDOWN = (
+    "WATCHDOG TEARDOWN: confirmed dead (no arc_heartbeat/arc_watchdog process "
+    "owned by cc is alive; ps -eo pid,ppid,user,args matched cc's own signature "
+    "and found none). The root-owned kernel thread [watchdogd] pid 165 is "
+    "present, is NOT cc's, cannot be killed, and is NOT a leak."
+)
+
+
+def _emit(scratch: Path, verb: str, *args: str) -> subprocess.CompletedProcess[str]:
+    """Run the REAL emitter against a throwaway scratch dir."""
+    return subprocess.run(
+        # Invoked by the script's OWN absolute path, not `bash <path>`: a bare
+        # interpreter name is a PATH lookup (bandit B607), and the shebang
+        # already names the interpreter the shipped emitter runs under.
+        [str(HEARTBEAT), verb, *args],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+        cwd=str(REPO),
+        env={
+            **os.environ,
+            "NIX_SCRATCH": str(scratch),
+            "ARC_PROGRESS": str(scratch / "arc_progress.txt"),
+            "ARC_HB_STATE": str(scratch / ".hb"),
+            "ARC_LOG_DIR": str(scratch / "arc_logs"),
+        },
+    )
+
+
+def _emitter_scratch(tmp_path: Path, arc: str = "999") -> Path:
+    scratch = tmp_path / "scratch"
+    (scratch / "arc_logs").mkdir(parents=True)
+    now = int(time.time())
+    (scratch / "arc_progress.txt").write_text(
+        f"arc={arc}\nstart={now}\nts={now}\nstage=1\ntotal=2\nop=t\npct=50\n",
+        encoding="utf-8",
+    )
+    return scratch
+
+
+# --- D3.465: the READER ------------------------------------------------------
+
+
+def test_D3465_a_teardown_that_DISCLAIMS_watchdogd_ON_THE_SAME_LINE_is_COUNTED() -> (
+    None
+):
+    """The regression that was LIVE at 9a96eab, pinned by its real shape."""
+    log = COMPLETE.format(arc="051").replace(
+        "WATCHDOG TEARDOWN: confirmed dead (pid 434005 / arc_heartbeat)",
+        DISCLAIMING_TEARDOWN,
+    )
+    verdict, reasons, facts = gate.audit_log(log)
+    assert verdict == gate.PASS, (reasons, facts)
+    assert facts["teardown_confirmations"] == 1, facts
+
+
+def test_D3465_a_teardown_that_NAMES_NO_PROCESS_now_FAILS_and_says_why() -> None:
+    """The STRENGTHENING, not a softening: the pre-D3.465 rule accepted this.
+
+    `not KERNEL_WD.search(line)` was a proxy for "this is about cc's watchdog",
+    and a bare confirmation satisfies the proxy while identifying nothing. The
+    reason string must name the diagnosis, not merely the absence — rule 11.
+    """
+    log = COMPLETE.format(arc="051").replace(
+        "WATCHDOG TEARDOWN: confirmed dead (pid 434005 / arc_heartbeat)",
+        "WATCHDOG TEARDOWN: confirmed dead",
+    )
+    verdict, reasons, facts = gate.audit_log(log)
+    assert verdict == gate.FAIL, (reasons, facts)
+    assert any("none NAMES cc's own watchdog" in r for r in reasons), reasons
+
+
+def test_D3465_a_teardown_written_ONLY_about_the_kernel_thread_still_FAILS() -> None:
+    """The property the old veto existed for survives the repair."""
+    log = COMPLETE.format(arc="051").replace(
+        "WATCHDOG TEARDOWN: confirmed dead (pid 434005 / arc_heartbeat)",
+        "WATCHDOG TEARDOWN: confirmed dead [watchdogd] kernel thread",
+    )
+    verdict, reasons, _ = gate.audit_log(log)
+    assert verdict == gate.FAIL, reasons
+    assert any("cc's own watchdog" in r for r in reasons), reasons
+
+
+def test_D3465_the_reported_watchdog_pid_is_CCS_never_the_kernel_threads() -> None:
+    """`wd_pid=165` was the kernel thread's, read out of a disclaimer clause and
+    reported as cc's — confidently wrong about the one number a reader acts on."""
+    _v, _r, clean = gate.audit_log(COMPLETE.format(arc="051"))
+    assert clean["watchdog_pid"] == 434005, clean
+
+    log = COMPLETE.format(arc="051").replace(
+        "WATCHDOG TEARDOWN: confirmed dead (pid 434005 / arc_heartbeat)",
+        DISCLAIMING_TEARDOWN,
+    )
+    _v2, _r2, disclaimed = gate.audit_log(log)
+    assert disclaimed["watchdog_pid"] != 165, disclaimed
+
+
+def test_the_drop_ins_OWN_SELFTEST_is_green() -> None:
+    """The CLI's `--selftest` carries every planted arm; a red one here means a
+    repair above broke a property an earlier arc banked."""
+    done = subprocess.run(
+        [
+            sys.executable,
+            str(REPO / "checks" / "check_arc_status_contract.py"),
+            "--selftest",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "=== SELF-TEST PASS ===" in done.stdout, done.stdout
+
+
+# --- D3.464: the EMITTER -----------------------------------------------------
+
+
+def test_D3464_the_marker_verb_PRINTS_AND_RECORDS_in_one_call(tmp_path) -> None:
+    """THE ROW'S NAMED DISCHARGE. `arc_050.log` lost its marker because printing
+    it and logging it were two acts and only one happened. Here there is one
+    act: the operator's line and the log entry come out of the same call."""
+    scratch = _emitter_scratch(tmp_path)
+    _emit(scratch, "selfcheck")
+    _emit(scratch, "teardown")
+
+    done = _emit(scratch, "marker")
+    assert done.returncode == 0, done.stderr
+    assert "**** ARC completed ****" in done.stdout, done.stdout
+    log = (scratch / "arc_logs" / "arc_999.log").read_text(encoding="utf-8")
+    assert log.count("**** ARC completed ****") == 1, log
+
+
+def test_D3464_the_marker_REFUSES_when_no_teardown_names_ccs_watchdog(
+    tmp_path,
+) -> None:
+    """Fail closed. The marker certifies a torn-down state (CHECK-A10 / §16.4);
+    issuing it before the instrument is proven dead is the defect the gate would
+    otherwise have to catch one arc later."""
+    scratch = _emitter_scratch(tmp_path)
+    _emit(scratch, "selfcheck")
+
+    done = _emit(scratch, "marker")
+    assert done.returncode == 2, done
+    assert "**** ARC completed ****" not in done.stdout, done.stdout
+    log = (scratch / "arc_logs" / "arc_999.log").read_text(encoding="utf-8")
+    assert "ARC completed" not in log, log
+    assert "MARKER REFUSED" in done.stderr, done.stderr
+
+
+def test_D3464_the_teardown_verb_puts_the_watchdogd_DISCLAIMER_ON_ITS_OWN_LINE(
+    tmp_path,
+) -> None:
+    """The emitter-side half of D3.465. Both repairs are independent, and this
+    one keeps the two facts — *cc's watchdog is dead* and *the kernel thread is
+    not cc's* — from ever sharing a line again."""
+    scratch = _emitter_scratch(tmp_path)
+    _emit(scratch, "teardown")
+    lines = (
+        (scratch / "arc_logs" / "arc_999.log").read_text(encoding="utf-8").splitlines()
+    )
+    claim = [ln for ln in lines if "WATCHDOG TEARDOWN" in ln]
+    assert len(claim) == 1, lines
+    assert "[watchdogd]" not in claim[0], claim[0]
+    assert any("[watchdogd]" in ln and "WATCHDOG TEARDOWN" not in ln for ln in lines)
+
+
+def test_D3464_END_TO_END_a_log_written_ONLY_by_the_emitter_is_a_PASS(
+    tmp_path,
+) -> None:
+    """The two sides joined through the artifact and nothing else: the emitter
+    writes the file, the gate reads the file, and no string is shared by this
+    test with either of them except the verdict."""
+    scratch = _emitter_scratch(tmp_path, arc="777")
+    _emit(scratch, "selfcheck")
+    _emit(scratch, "pulse")
+    _emit(scratch, "teardown", "--pid", "424242")
+    _emit(scratch, "marker")
+
+    text = (scratch / "arc_logs" / "arc_777.log").read_text(encoding="utf-8")
+    verdict, reasons, facts = gate.audit_log(text)
+    assert verdict == gate.PASS, (reasons, text)
+    assert facts["teardown_confirmations"] == 1, facts
+    assert facts["watchdog_pid"] == 424242, facts

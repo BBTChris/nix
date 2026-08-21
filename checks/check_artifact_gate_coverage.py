@@ -297,9 +297,32 @@ class Exclusion:
     #: Why this artifact is excluded rather than a ceiling-guarded row. Required,
     #: non-empty — the ruling requires each entry to carry its own case.
     justification: str = ""
-    #: The exclusion is a HOLDING state, never a permanent accept. Required True;
-    #: a permanent exclusion is a different ruling, not this arm.
+    #: The exclusion is a HOLDING state. Exactly ONE of `temporary` and
+    #: `permanent` is true — see `_exclusion_shape_defects`. Until ARC 052 this
+    #: was required True, because a permanent exclusion was "a different ruling,
+    #: not this arm". CHECK-A11 IS THAT RULING; the field is now one half of a
+    #: two-valued disposition rather than a constant.
     temporary: bool = False
+    #: ARC 052, CHECK-A11 — the PERMANENT disposition. True means: there is no
+    #: future arc that will gate this artifact, because a `checks/check_*.py`
+    #: over it would be the SECOND INSTRUMENT doctrine C.9 forbids over a subject
+    #: the test suite already drives. A permanent exclusion is exempt from the
+    #: owner-liveness read rule and from §0g assignment — an owner that cannot
+    #: pay is no owner wearing a name (doctrine B.3), and six consecutive arcs of
+    #: re-pointing `owner` 030 -> ... -> 052 is that furniture being carried.
+    #: In exchange it acquires a control the temporary class never had: its
+    #: coverage claim is MEASURED on every run (`_exclusion_coverage_defects`).
+    permanent: bool = False
+    #: The recorded `CHECK-A<n>` amendment that authorises a PERMANENT
+    #: disposition. Required non-empty when `permanent`; check contract rule 13
+    #: — a rule that decides a verdict is recorded, or it does not bind.
+    amendment: str = ""
+    #: The test modules under `scripts/tests/` that MEASURE this artifact.
+    #: Required non-empty when `permanent`, and each entry is verified to exist
+    #: AND to name the artifact. This is what stops the permanent class being a
+    #: suppression list: a named module that vanishes, is renamed, or stops
+    #: mentioning the artifact takes the gate RED.
+    covered_by: tuple[str, ...] = ()
     #: The arc that admitted this path to the accepted set, for the ratchet. A
     #: RECEIPT, backward-looking — a completed arc is the normal value.
     admitted: str = ""
@@ -415,6 +438,13 @@ def _parse_v2(payload: dict, where: str) -> Baseline:
             owner=str(entry.get("owner", "")),
             justification=str(entry.get("justification", "")),
             temporary=entry.get("temporary") is True,
+            permanent=entry.get("permanent") is True,
+            amendment=str(entry.get("amendment", "")),
+            covered_by=tuple(
+                str(name)
+                for name in entry.get("covered_by", ())
+                if isinstance(name, str)
+            ),
             admitted=str(entry.get("admitted", "")),
         )
     return Baseline(rows=rows, exclusions=exclusions, schema=2)
@@ -717,6 +747,16 @@ def _ratchet_defects(
 #: the ARTIFACT set (a test is not a settable artifact, it IS the measurement) —
 #: which is exactly why they are the population searched here.
 _TEST_DIR = "scripts/tests"
+#: CHECK-A11 (ARC 052). A permanent exclusion must name the recorded amendment
+#: that authorises it. Matched against the ledger's own id shape — the ledger is
+#: `docs/CHECK-CONTRACT-AMENDMENTS.md` and the risk ledger's `SPEC-A<n>` ids are
+#: deliberately NOT accepted here: the two ranges overlap (CLAUDE.md, Naming), so
+#: a bare "AMENDMENT 6" once named two different rulings.
+_AMENDMENT_RE = re.compile(r"CHECK-A\d+")
+#: THIS GATE'S OWN TEST MODULE. It names every path in the baseline because that
+#: is what a test of a baseline reader does, so it can never be a witness for any
+#: of them — see `_exclusion_coverage_defects`.
+_SELF_TEST_MODULE = "test_check_artifact_gate_coverage.py"
 
 
 def _importable_name(path: str) -> str:
@@ -979,18 +1019,122 @@ def _exclusion_shape_defects(baseline: Baseline) -> list[tuple[str, str]]:
                     ),
                 )
             )
-        if not ex.temporary:
+        if ex.temporary == ex.permanent:
             defects.append(
                 (
                     f"{site}:temporary",
                     (
-                        "`temporary` is not true — the D3.104 exclusion is a "
-                        "HOLDING state owned by ARC 030, not a permanent accept. "
-                        "A permanent exclusion is a separate architect ruling, "
-                        "not this bucket"
+                        "exactly one of `temporary` and `permanent` must be true, "
+                        f"and this entry declares temporary={ex.temporary} "
+                        f"permanent={ex.permanent}. An exclusion that will not say "
+                        "which disposition it holds is the suppression entry the "
+                        "ratchet exists to refuse; the TEMPORARY class is a holding "
+                        "state owned by a live arc, the PERMANENT class (CHECK-A11) "
+                        "is a ratified accept whose coverage is measured every run"
                     ),
                 )
             )
+        if ex.permanent and not _AMENDMENT_RE.fullmatch(ex.amendment.strip()):
+            defects.append(
+                (
+                    f"{site}:amendment",
+                    (
+                        f"`permanent` is true but `amendment` is "
+                        f"{ex.amendment.strip()!r}, not a recorded CHECK-A<n> id. "
+                        "Check contract rule 13: a rule that decides a verdict is "
+                        "written in CLAUDE.md and recorded in "
+                        "docs/CHECK-CONTRACT-AMENDMENTS.md, or it does not bind — "
+                        "and a permanent accept decides this gate's verdict"
+                    ),
+                )
+            )
+        if ex.permanent and ex.owner.strip():
+            defects.append(
+                (
+                    f"{site}:owner",
+                    (
+                        f"`permanent` is true but `owner` is {ex.owner.strip()!r}. "
+                        "A permanent exclusion has NO future arc to discharge it — "
+                        "that is what permanent means — so an owner here is an arc "
+                        "that cannot pay, which doctrine B.3 calls furniture. It is "
+                        "also the exact field whose per-arc re-pointing (030 -> ... "
+                        "-> 052, six consecutive arcs) D3.104 records as a ceiling "
+                        "walked rather than a debt held. Leave it empty"
+                    ),
+                )
+            )
+    return defects
+
+
+def _exclusion_coverage_defects(
+    baseline: Baseline, named: dict[str, list[str]]
+) -> list[tuple[str, str]]:
+    """A PERMANENT exclusion's coverage claim, MEASURED — CHECK-A11, ARC 052.
+
+    THIS ARM IS THE PRICE OF THE PERMANENT CLASS, and it is why CHECK-A11
+    measures MORE than the temporary class it replaces rather than less. A
+    temporary exclusion is checked for SHAPE only: a non-empty justification
+    string and a live owner. Nobody ever checked that the sentence "measured by
+    pytest" in those 5,000-character justifications was true, and for six arcs
+    nobody could have — the string is prose and the gate reads it as prose.
+
+    `covered_by` turns that sentence into a list of files, and this arm checks
+    the list against the tree, in both directions the row arm already checks
+    (`_coverage_defects`):
+
+    * a named module that does not exist is a FAIL — the claim has rotted;
+    * a named module that exists but does not mention the artifact is a FAIL —
+      the claim was aimed at the wrong subject (the CHECK-DEBT RULE OF RECORD:
+      *a control that measures the wrong thing is not weaker evidence than one
+      that measures nothing, it is the same evidence wearing a better disguise*);
+    * an empty `covered_by` is a FAIL — a permanent accept with no named witness
+      is exactly the suppression list §7.12 rule 3 names.
+
+    **SELF-REFERENCE IS NOT COVERAGE.** This gate's OWN test module names every
+    path in the baseline, because that is what a test of a baseline reader does.
+    Counting it would make this arm vacuous for every entry simultaneously, which
+    is the one failure mode a coverage control must not have, so it is refused by
+    name.
+    """
+    defects: list[tuple[str, str]] = []
+    for path, ex in sorted(baseline.exclusions.items()):
+        if not ex.permanent:
+            continue
+        site = f"{BASELINE}:exclusions:{path}:covered_by"
+        witnesses = [
+            name for name in ex.covered_by if name.strip() != _SELF_TEST_MODULE
+        ]
+        if not witnesses:
+            defects.append(
+                (
+                    site,
+                    (
+                        "a PERMANENT exclusion (CHECK-A11) declares no witness "
+                        f"under {_TEST_DIR}/ other than this gate's own test "
+                        f"module ({_SELF_TEST_MODULE}, which names every baseline "
+                        "path and so proves nothing about any of them). A "
+                        "permanent accept with no named witness is a suppression "
+                        "entry"
+                    ),
+                )
+            )
+            continue
+        hits = set(named.get(path, []))
+        for name in witnesses:
+            rel = f"{_TEST_DIR}/{name.strip()}"
+            if rel not in hits:
+                defects.append(
+                    (
+                        f"{site}:{name.strip()}",
+                        (
+                            f"declared witness {rel} does not name {path} or its "
+                            f"importable name {_importable_name(path)!r} — either "
+                            "the module is gone, was renamed, or has stopped "
+                            "measuring this artifact. A permanent accept rests on "
+                            "this list, so the list is checked, not taken"
+                        ),
+                    )
+                )
     return defects
 
 
@@ -1010,6 +1154,11 @@ def _exclusion_assignment_defects(
     """
     defects: list[tuple[str, str]] = []
     for path, ex in sorted(baseline.exclusions.items()):
+        # CHECK-A11: a PERMANENT exclusion has no owner to assign. Its own shape
+        # arm refuses a non-empty `owner`, so there is nothing here to judge and
+        # judging it anyway would demand the furniture this ruling removed.
+        if ex.permanent:
+            continue
         if path in head and head[path] == ex.owner.strip():
             continue
         defect = guard_owner_assignment_defect(ex.owner, completed, live)
@@ -1033,7 +1182,12 @@ def _exclusion_deferrals(
     return [
         (f"{BASELINE}:exclusions:{path}:owner", defect)
         for path, ex in sorted(baseline.exclusions.items())
-        if (defect := guard_owner_defect(ex.owner, completed))
+        # CHECK-A11: owner-liveness is the control that keeps a HOLDING state from
+        # outliving its owner. A permanent exclusion is not a holding state, and
+        # applying the rule to it is what produced the six-arc re-pointing walk
+        # D3.104 records. It keeps every OTHER rule, and gains a measured coverage
+        # claim (`_exclusion_coverage_defects`) the temporary class never had.
+        if not ex.permanent and (defect := guard_owner_defect(ex.owner, completed))
     ]
 
 
@@ -1156,6 +1310,11 @@ def _evidence_for(state: Measured) -> str:
         state.named,
     )
     unnamed = sorted(path for path in baseline.uncovered if not named.get(path))
+    # CHECK-A11: a permanent exclusion no longer holds the verdict GUARDED, so it
+    # would be invisible on the summary line unless it is printed here. It is
+    # printed here on EVERY run, pass or fail — an accept that stops being read is
+    # the suppression list, whatever the schema calls it.
+    permanent = sorted(path for path, ex in baseline.exclusions.items() if ex.permanent)
     return (
         f"{len(artifacts)} tracked artifact(s); {len(declared)} declared subject(s); "
         f"{len(uncovered)} uncovered; baseline schema v{baseline.schema} accepts "
@@ -1167,7 +1326,9 @@ def _evidence_for(state: Measured) -> str:
         f"{len(history.revisions)} committed revision(s)"
         f"{' (history TRUNCATED — a lower bound)' if history.truncated else ''}; "
         f"{len(unnamed)} accepted artifact(s) named by NOTHING under {_TEST_DIR}/ "
-        f"({', '.join(unnamed) or 'none'}). "
+        f"({', '.join(unnamed) or 'none'}); "
+        f"{len(permanent)} PERMANENT exclusion(s) (CHECK-A11, no discharging arc, "
+        f"coverage re-measured every run): {', '.join(permanent) or 'none'}. "
         "UNBOUND (D3.10): proves an artifact is NAMED by a check — and, per row, "
         "MENTIONED by a test — never that it is MEASURED by either. Do not read "
         "this verdict as coverage."
@@ -1225,6 +1386,7 @@ def run(  # pylint: disable=unused-argument,too-many-locals,too-many-return-stat
         _assignment_defects(baseline, _head_owners(history), completed, live)
     )
     defects.extend(_exclusion_shape_defects(baseline))
+    defects.extend(_exclusion_coverage_defects(baseline, named))
     defects.extend(
         _exclusion_assignment_defects(
             baseline, _head_exclusion_owners(history), completed, live
@@ -1253,7 +1415,17 @@ def run(  # pylint: disable=unused-argument,too-many-locals,too-many-return-stat
             detail=_render(deferrals),
         )
 
-    if baseline.rows or baseline.exclusions:
+    # CHECK-A11 (ARC 052). GUARDED is "measured subject + known-red marker naming
+    # the DISCHARGING ARC" (check contract rule 4). A permanent exclusion names no
+    # discharging arc, because there is none: doctrine C.9 forbids a second
+    # instrument over a subject the suite already drives, so there is no future
+    # gate to owe. A marker with no owner is not a weaker guard, it is a guard
+    # that cannot be read — which is exactly how the owner field came to be walked
+    # forward six arcs. So permanent exclusions do NOT hold the verdict guarded;
+    # they are enumerated in `evidence` on every run and their coverage claim is
+    # re-measured on every run, and both of those are new this arc.
+    held = [path for path, ex in baseline.exclusions.items() if not ex.permanent]
+    if baseline.rows or held:
         # AMENDMENT 1: measured subject, known-red marker, named owner — now one
         # marker per artifact, with `guard_owner` holding the arc that owes
         # soonest because the field can hold only one (see `_guard_of_record`).
@@ -1272,6 +1444,7 @@ def run(  # pylint: disable=unused-argument,too-many-locals,too-many-return-stat
             f"{path} EXCLUDED -> {ex.owner.strip()} "
             "(CHECK-A8/CHECK-A9 holding state, ceiling-exempt, temporary)"
             for path, ex in sorted(baseline.exclusions.items())
+            if not ex.permanent
         ]
         return CheckResult(
             name=NAME,

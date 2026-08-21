@@ -413,3 +413,27 @@ ARC 045 emitted a false `STALL WARNING` against a run that was moving. Documenta
 parser, which is the authority (directive 3: the format lives in the code, not in prose).
 Not fixed here, recorded instead: `arc_heartbeat.sh`'s OWN header comment (line 16) still shows the
 joined form — same defect, but the file is outside ARC 046's declared freeze. CHECK-DEBT row filed.
+
+## ARC 052 (2026-08-21) — check contract rule 14: the PERMANENT disposition (`CHECK-A11`)
+
+Rule 14 previously required every declared exclusion to be **owned by a LIVE arc** and to **declare
+itself temporary**. Both clauses are kept for the temporary class and are now one half of a
+two-valued disposition; the other half is `CHECK-A11`'s **permanent** class, which names no owner.
+
+**Why the edit, measured rather than argued:** `gate_coverage_baseline.json`'s eight exclusion owners
+were walked `ARC 030 → 032 → 033 → 035 → 036 → 037 → 039 → 040 → 043 → 046 → 049 → 052`, the last six
+of them consecutive close-outs, each one recording in the JSON's own justification that the bump was
+*"arc-boundary maintenance, not progress"*. The owner-liveness rule was demanding a name for work
+that does not exist: all eight are `scripts/nixverify/*` driven by pytest, and doctrine C.9 forbids
+the second instrument a `checks/check_*.py` over them would be. D3.104 was not an unpaid debt; it was
+a debt with no payer, recorded once per arc as if it had one.
+
+**What was added, not removed:** the permanent class must name `covered_by` witnesses that the gate
+RESOLVES on every run — existence and aim, in both directions, with this gate's own test module
+refused by name. Until this arc the claim "pytest measures it" lived only in a prose justification and
+nothing read it. The one-way ratchet is untouched: a silent permanent addition is still an unadmitted
+growth, and an artifact that acquires a real gate is still a stale-baseline FAIL.
+
+Ruling recorded in full at `docs/CHECK-CONTRACT-AMENDMENTS.md` § `CHECK-A11`, per check-contract
+rule 13. Measured effect on the tree: `check_artifact_gate_coverage` GUARDED → PASS, with all eight
+permanent exclusions enumerated in `evidence` on every run.

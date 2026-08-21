@@ -10,6 +10,8 @@
 #   pulse    -> the ONE-LINE ticker. Emit at ~5-min cadence WITHIN a stage.
 #   banner   -> the boxed multi-line banner. Emit ONLY at a stage transition.
 #   selfcheck-> emit one pulse and confirm it was produced (watchdog self-verify).
+#   teardown -> the WATCHDOG TEARDOWN line, in the form the reader can actually see.
+#   marker   -> the completion marker, PRINTED AND RECORDED in ONE call (D3.464).
 #
 # State/inputs (Status Contract, D3.244 class):
 #   Reads the progress file (default $NIX_SCRATCH/arc_progress.txt), key=value lines:
@@ -36,16 +38,17 @@ BAR_W=8                                # progress-bar cells
 FILL='#'; EMPTY='-'                    # ASCII bar — box-drawing chars misrender/fold
 
 # ---- arg overrides (all optional; file supplies the rest) --------------------
-o_arc=""; o_stage=""; o_total=""; o_op=""; o_pct=""; o_name=""
+o_arc=""; o_stage=""; o_total=""; o_op=""; o_pct=""; o_name=""; o_pid=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    pulse|banner|selfcheck) CMD="$1"; shift;;
+    pulse|banner|selfcheck|teardown|marker) CMD="$1"; shift;;
     --arc)   o_arc="$2";   shift 2;;
     --stage) o_stage="$2"; shift 2;;
     --total) o_total="$2"; shift 2;;
     --op)    o_op="$2";    shift 2;;
     --pct)   o_pct="$2";   shift 2;;
     --name)  o_name="$2";  shift 2;;   # short stage name, banner only
+    --pid)   o_pid="$2";   shift 2;;   # cc's own watchdog pid, teardown only
     --progress) PROG="$2"; shift 2;;
     --state)    STATE="$2"; shift 2;;
     *) shift;;
@@ -182,6 +185,81 @@ emit_banner() {
   printf '%s\n' "$rule"
 }
 
+# ---- D3.464 / D3.465: THE TEARDOWN LINE AND THE MARKER, EMITTED BY THE SCRIPT
+#
+# TWO DEFECTS, ONE CAUSE — cc hand-formatted the two lines that close an arc, and
+# a format that lives in cc's memory drifts (the whole reason this file exists).
+#
+# D3.464, MEASURED ARC 051: `arc_050.log` carries NO `**** ARC completed ****`.
+#   The run reached close-out and printed the marker to the CHAT; the log is
+#   written by this script and the marker never passed through it, so
+#   `check_arc_status_contract` read CANNOT-MEASURE ("run did not reach
+#   close-out") on a run that had. `marker` below closes it the small way the
+#   debt row named: the marker cannot be emitted without landing in the log,
+#   because printing it and recording it are the same call.
+#
+# D3.465, MEASURED ARC 052 at 9a96eab: `arc_051.log` carries BOTH the marker and
+#   a teardown line, and the gate still read FAIL with `teardowns=0`. `CLAUDE.md`
+#   tells cc to prove the teardown while disclaiming the root-owned kernel thread
+#   `[watchdogd]`, and cc wrote both on ONE line; the reader's kernel-thread veto
+#   is line-scoped, so the disclaimer took the whole line out. The contract's own
+#   prescribed sentence was unreadable by the gate that checks it. Repaired on
+#   BOTH sides and each repair stands alone: the reader now requires a POSITIVE
+#   cc-watchdog signature instead of vetoing on a mention (see the check), and
+#   this emitter puts the disclaimer on its OWN line so the two facts never share
+#   one.
+#
+# `marker` FAILS CLOSED. It refuses to print if this arc's log holds no teardown
+# line carrying cc's own signature, and prints a named refusal instead. The
+# marker is a certificate over a state (§16.4 / CHECK-A10); a certificate issued
+# before the instrument was proven dead is the thing the gate exists to catch,
+# and the emitter is the last place it can be caught cheaply.
+WD_SIG_TEXT="arc_heartbeat"          # cc's OWN watchdog signature, positive ID
+KERNEL_WD_NOTE="The root-owned kernel thread [watchdogd] is NOT cc's, cannot be killed, and is NOT a leak."
+
+# WHAT `teardown` DOES NOT DO, and why the omission is deliberate: it does NOT
+# scan for cc's watchdog. This file is the source of truth for the FORMAT, not
+# for the fact — its own header says cc calls it and never re-invents the format,
+# and detection is a different job. An in-emitter scan was written and MEASURED
+# ARC 052: `pgrep -af arc_heartbeat` matches the shell that is invoking this very
+# script, and under a tool harness it also matches a SIBLING wrapper whose command
+# line merely names the script, so the arm reported WATCHDOG STILL ALIVE against
+# its own caller. A detector that fires on its own invocation is worse than no
+# detector, because its false positive is loud and looks authoritative.
+#
+# So cc performs the scan (`ps -eo pid,ppid,user,args` matched to cc's OWN
+# signature, ignoring the root-owned `[watchdogd]`, exactly as `CLAUDE.md` says)
+# and calls this to render the sentence. `check_arc_status_contract --live` keeps
+# the independent process check, on the reader's side, where it belongs.
+
+emit_teardown() {
+  local pid="${o_pid:-}"
+  if [ -n "$pid" ]; then
+    printf 'WATCHDOG TEARDOWN: confirmed dead (pid %s / %s)\n' "$pid" "$WD_SIG_TEXT"
+  else
+    printf 'WATCHDOG TEARDOWN: confirmed dead (no %s process owned by cc is alive; cc matched its own signature with ps -eo pid,ppid,user,args and found none)\n' "$WD_SIG_TEXT"
+  fi
+  # SEPARATE LINE, and that is the D3.465 repair on this side: the disclaimer is
+  # a fact about a DIFFERENT process and must not share a line with the claim.
+  printf '%s\n' "$KERNEL_WD_NOTE"
+}
+
+emit_marker() {
+  local log="$ARC_LOG_DIR/arc_${arc}.log"
+  if [ -z "$arc" ]; then
+    printf 'MARKER REFUSED: no arc id in %s — a marker filed under no arc certifies nothing\n' "$PROG" >&2
+    return 2
+  fi
+  if ! grep -q "WATCHDOG TEARDOWN: confirmed.*$WD_SIG_TEXT" "$log" 2>/dev/null; then
+    printf 'MARKER REFUSED: %s holds no teardown line naming the watchdog signature %s that cc runs its own watchdog under.\n' "$log" "$WD_SIG_TEXT" >&2
+    printf 'Run: scripts/arc_heartbeat.sh teardown   (the marker certifies a torn-down state; it cannot precede the proof)\n' >&2
+    return 2
+  fi
+  # PRINTED AND RECORDED IN ONE CALL. This is D3.464 closed: there is no path
+  # through this function that shows the operator a marker the log did not get.
+  printf '**** ARC completed ****\n' | record
+}
+
 # ---- D3.455: THE EMITTER WRITES ITS OWN LOG --------------------------------
 # ARC 048 ran the emitter from kickoff and never redirected it, so
 # `check_arc_status_contract` audited a COMPLETED arc's log while a different
@@ -211,5 +289,7 @@ case "$CMD" in
       exit 2
     fi
     ;;
-  *) printf 'usage: arc_heartbeat.sh {pulse|banner|selfcheck} [--arc N --stage k --total T --op S --pct P --name S]\n' >&2; exit 2;;
+  teardown) emit_teardown | record;;
+  marker)   emit_marker;;
+  *) printf 'usage: arc_heartbeat.sh {pulse|banner|selfcheck|teardown|marker} [--arc N --stage k --total T --op S --pct P --name S --pid N]\n' >&2; exit 2;;
 esac

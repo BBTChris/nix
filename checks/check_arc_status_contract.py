@@ -47,6 +47,29 @@ RE_WD_PID = re.compile(r"watchdog.*?pid[=\s:]+(?P<pid>\d+)", re.IGNORECASE)
 # cc's own watchdog signature for the live scan; kernel thread is excluded separately.
 WD_SIG = os.environ.get("ARC_WD_SIG", r"arc_heartbeat|NIX_ARC_WATCHDOG")
 KERNEL_WD = re.compile(r"\[watchdogd\]|(?:^|\s)watchdogd(?:\s|$)")
+#: D3.465, ARC 052 — POSITIVE IDENTIFICATION OF CC'S OWN WATCHDOG.
+#:
+#: The teardown arm used to accept any `WATCHDOG TEARDOWN: confirmed…` line that
+#: did NOT mention the kernel thread. That veto is LINE-SCOPED, and `CLAUDE.md`
+#: instructs cc to prove the teardown *while disclaiming* `[watchdogd]` — so the
+#: contract's own prescribed sentence names the kernel thread, and the veto threw
+#: the whole line away. MEASURED at `9a96eab`: `arc_051.log` carries both a
+#: teardown line and the marker, in the right order, and this gate read
+#: `teardowns=0` and FAILED. The instrument was refusing the exact evidence the
+#: instructions told the operator to produce.
+#:
+#: The repair is not to soften the veto — it is to ask for the thing the veto was
+#: a proxy for. A teardown line counts when it POSITIVELY names cc's own watchdog.
+#: That is strictly STRONGER than "does not say watchdogd": the old rule accepted
+#: a bare `WATCHDOG TEARDOWN: confirmed dead` that identified nothing, and this
+#: one does not. The self-test's PLANT E — a teardown written only about the
+#: kernel thread — still FAILs, now because it never names cc's watchdog rather
+#: than because of where a substring fell.
+#:
+#: A BARE PID IS NOT ACCEPTED AS THE SIGNATURE, deliberately: `[watchdogd] pid 165`
+#: carries a pid, and admitting pids would let the kernel thread identify itself
+#: as cc's. The signature is the process NAME cc's watchdog runs under.
+RE_OWN_WD = re.compile(r"arc_heartbeat|arc_watchdog|NIX_ARC_WATCHDOG", re.IGNORECASE)
 
 
 def _read(path: str) -> str:
@@ -99,12 +122,27 @@ def audit_log(text: str, min_pulses: int = 1):
     teardown_lines = [
         ln
         for ln in before.splitlines()
-        if RE_TEARDN.search(ln) and not KERNEL_WD.search(ln)
+        # D3.465: POSITIVE identification, not the absence of a substring. See
+        # `RE_OWN_WD` above for the measurement that forced this.
+        if RE_TEARDN.search(ln) and RE_OWN_WD.search(ln)
     ]
     facts["teardown_confirmations"] = len(teardown_lines)
     if not teardown_lines:
+        # NAME WHAT WAS SEEN, not only what was missing (doctrine C.2). A log that
+        # holds a teardown sentence which identifies nothing is a different defect
+        # from one that holds no teardown sentence at all, and telling the operator
+        # which of the two they have is the difference between a fixable verdict
+        # and a puzzle.
+        unattributed = sum(1 for ln in before.splitlines() if RE_TEARDN.search(ln))
         reasons.append(
             "no watchdog-teardown confirmation for cc's own watchdog before marker"
+            + (
+                f" ({unattributed} teardown line(s) present but none NAMES cc's own "
+                f"watchdog: emit them with `scripts/arc_heartbeat.sh teardown`, which "
+                f"puts the [watchdogd] disclaimer on its own line — D3.465)"
+                if unattributed
+                else ""
+            )
         )
 
     # (3) LEAK IN LOG — a 'still alive' line AFTER the marker for cc's own watchdog.
@@ -118,9 +156,19 @@ def audit_log(text: str, min_pulses: int = 1):
             f"cc watchdog reported alive after marker: {leak_lines[0].strip()!r}"
         )
 
-    # derive self-reported watchdog pid (for the optional --live arm)
-    mpid = RE_WD_PID.search(text)
-    facts["watchdog_pid"] = int(mpid.group("pid")) if mpid else None
+    # Derive the self-reported watchdog pid (for the optional --live arm) FROM A
+    # LINE THAT NAMES CC'S OWN WATCHDOG. Scanning the whole text matched
+    # `[watchdogd] pid 165` in the disclaimer clause and reported the kernel
+    # thread's pid as cc's — confidently wrong about the one number a reader would
+    # act on. Measured on `arc_051.log` at 9a96eab: `wd_pid=165`.
+    facts["watchdog_pid"] = None
+    for line in text.splitlines():
+        if not RE_OWN_WD.search(line) or KERNEL_WD.search(line):
+            continue
+        mpid = RE_WD_PID.search(line)
+        if mpid:
+            facts["watchdog_pid"] = int(mpid.group("pid"))
+            break
 
     return (FAIL if reasons else PASS), reasons, facts
 
@@ -255,6 +303,51 @@ def _selftest() -> int:  # pylint: disable=too-many-locals
         "WATCHDOG TEARDOWN: confirmed dead [watchdogd] kernel thread",
     )
     check("teardown only for kernel thread -> FAIL", plant_e, FAIL)
+
+    # PLANT F, D3.465 — THE REGRESSION THAT WAS LIVE IN THE TREE. `CLAUDE.md`
+    # tells cc to prove the teardown *and* disclaim the kernel thread, and cc
+    # wrote both on one line. The old line-scoped veto discarded it, so a log
+    # that satisfied the contract exactly read `teardowns=0` and FAILED. This
+    # case is the shape of `arc_051.log` at 9a96eab, reduced to one line.
+    plant_f = _CLEAN.replace(
+        "WATCHDOG TEARDOWN: confirmed dead (pid 3941502 / arc_heartbeat)",
+        "WATCHDOG TEARDOWN: confirmed dead (no arc_heartbeat process owned by cc "
+        "is alive). The root-owned kernel thread [watchdogd] pid 165 is present, "
+        "is NOT cc's, cannot be killed, and is NOT a leak.",
+    )
+    check("teardown that DISCLAIMS [watchdogd] on the same line -> PASS", plant_f, PASS)
+
+    # PLANT G — the strengthening, stated as a plant so it cannot be lost. The
+    # OLD rule ("does not mention watchdogd") accepted a teardown sentence that
+    # identified NO process at all. Positive identification refuses it.
+    plant_g = _CLEAN.replace(
+        "WATCHDOG TEARDOWN: confirmed dead (pid 3941502 / arc_heartbeat)",
+        "WATCHDOG TEARDOWN: confirmed dead",
+    )
+    check("teardown naming NO process -> FAIL (was accepted pre-D3.465)", plant_g, FAIL)
+
+    # PLANT H — the pid must be derived from cc's OWN line. `wd_pid=165` was the
+    # kernel thread's, read out of the disclaimer clause and reported as cc's.
+    _okh, facts_h = check("pid derivation: clean log", _CLEAN, PASS)
+    cases.append(
+        (
+            "watchdog pid is cc's (3941502), never the kernel thread's (165)",
+            facts_h.get("watchdog_pid") == 3941502,
+            facts_h.get("watchdog_pid"),
+            3941502,
+            [],
+        )
+    )
+    _oki, facts_i = check("pid derivation: disclaimer present", plant_f, PASS)
+    cases.append(
+        (
+            "a disclaimed [watchdogd] pid is NOT adopted as cc's",
+            facts_i.get("watchdog_pid") != 165,
+            facts_i.get("watchdog_pid"),
+            "not 165",
+            [],
+        )
+    )
 
     print("=== SELF-TEST ===")
     allok = True
