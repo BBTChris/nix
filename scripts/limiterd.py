@@ -124,6 +124,7 @@ this program to look healthy while proving nothing?
 from __future__ import annotations
 
 import argparse
+import enum
 import json
 import math
 import os
@@ -134,16 +135,19 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from types import FrameType
 from typing import Any, Final, cast
 
 import risk_config
+from nixrisk.calendar_seam import CacheState, FreshnessStamp
 from nixrisk.completions import (
     CompletionDispatcher,
     DispatchResult,
     Disposition,
     MalformedCompletion,
+    SenderCompletion,
     parse_completion,
 )
 from nixrisk.execution import ExecutionLedger
@@ -164,6 +168,11 @@ from nixrisk.flatten import (
     PendingEntry,
     ProtectiveFlatten,
 )
+
+# ARC 057 / I1 ARC C2. §6.4's staleness DETECTOR (051), IMPORTED AND CALLED —
+# never re-implemented and never edited. `freshness.py` is byte-identical
+# across this arc and that is asserted with `git hash-object`, not claimed.
+from nixrisk.freshness import FreshnessTracker, StalenessPolicy
 from nixrisk.join import production_origins
 from nixrisk.loop import (
     CONFIG_MODULE,
@@ -183,6 +192,7 @@ from nixrisk.seam import (
     EventKind,
     EventRow,
     FlattenTrigger,
+    PositionState,
     ProposedOrder,
     Side,
     StopMode,
@@ -1030,8 +1040,15 @@ class CompletionHandler:
         self,
         dispatcher: CompletionDispatcher,
         feedback: OpenFeedback | None = None,
+        uncertainty: UncertaintyDriver | None = None,
     ) -> None:
         self._dispatcher = dispatcher
+        #: ARC 057 / I1 ARC C2. OPTIONAL for `feedback`'s reason: every reader
+        #: written against the ARC 046/047 constructor still builds this handler,
+        #: and a build without it dispatches the fill and produces no §14
+        #: uncertainty flatten — which `record()` reports as `uncertainty: null`
+        #: rather than as zero firings.
+        self._uncertainty = uncertainty
         #: ARC 047. Optional so every reader written against the ARC 046
         #: constructor still builds this handler; a build without it dispatches
         #: the fill and pushes no §4:203-206 outcome, which `record()` below
@@ -1060,6 +1077,16 @@ class CompletionHandler:
             self._refuse(item, str(exc))
             return
         result = self._dispatcher.dispatch(completion)
+        # ARC 057 / I1 ARC C2. §14's uncertainty classification, AFTER the
+        # cascade and BEFORE the feedback push. The order is the safety
+        # property: a fill the cascade REFUSED opened no §3 row and armed no
+        # stop, so the venue is holding a position this process can neither
+        # protect (D3.475) nor account for (D3.372) — and the classifier must see
+        # the refusal before anything downstream can treat the completion as
+        # handled. The FIRE is not here: this notes and enqueues on the loop
+        # thread and §5:323's sender thread does the rest.
+        if self._uncertainty is not None:
+            self._uncertainty.note_fill_dispatch(completion, result)
         # ARC 047. §4:203-206's outcome push, AFTER the cascade and only on a
         # real dispatch. Ordered that way because the feedback asserts a trade is
         # OPEN with a stop armed, and a push that ran before the cascade — or on
@@ -1164,6 +1191,7 @@ class CommandHandler:  # pylint: disable=too-many-instance-attributes
         signal_max_age_s: float | None = None,
         prices: PriceRing | None = None,
         stopwatch: StopWatchDriver | None = None,
+        uncertainty: UncertaintyDriver | None = None,
     ) -> None:
         self._loop = loop
         self._outbox = outbox
@@ -1195,6 +1223,11 @@ class CommandHandler:  # pylint: disable=too-many-instance-attributes
         #: reader cannot mistake *unbounded* for *bounded at something*. `main`
         #: always supplies one; the default exists for the ARC 040 CLI readers.
         self._signal_max_age_s = signal_max_age_s
+        #: ARC 057 / I1 ARC C2. OPTIONAL, so a build without §14's producers
+        #: still serves the `price` verb; such a build publishes to §5:322's ring
+        #: and stamps NO freshness, which `UncertaintyWatch.record` reports as
+        #: zero observations rather than as a fresh feed.
+        self._uncertainty = uncertainty
         #: ARC 055. §5:322's price ring and the driver that polls it, both
         #: optional on the argument every collaborator above is optional on:
         #: `stops: null` says *this build cannot maintain a stop* and is a
@@ -1392,6 +1425,13 @@ class CommandHandler:  # pylint: disable=too-many-instance-attributes
             tick = self._prices.publish(symbol, price)
         except PriceRingFull as exc:
             return self._refuse(command_id, VERB_PRICE, str(exc))
+        # ARC 057 / I1 ARC C2, D3.453. The same publication, STAMPED, so §6.4's
+        # detector can age it. It runs AFTER the ring accepted the price and not
+        # before: a sixth symbol is refused above, and a freshness stamp for a
+        # price the ring rejected would make the feed look alive for a symbol no
+        # stop is being maintained on — D3.451's shape, one layer over.
+        if self._uncertainty is not None:
+            self._uncertainty.observe_price(symbol, datetime.now(UTC))
         return self._reply(
             command_id,
             VERB_PRICE,
@@ -1623,6 +1663,18 @@ class CommandHandler:  # pylint: disable=too-many-instance-attributes
             # the BROKER recorded on the other side of the send. `None` where
             # absent, for the reason every sibling above is `None` where absent.
             "stops": (None if self._stopwatch is None else self._stopwatch.record()),
+            # ARC 057 / I1 ARC C2. §14's four uncertainty producers as the
+            # RUNNING process reports them: the conditions it is accountable
+            # for (DERIVED, with the debt row that named each), what it
+            # detected, what it suppressed as already-fired, the reconciliation
+            # windows it holds, the open positions it CANNOT price, the refused
+            # fills it could not CLASSIFY, and what the BROKER recorded on the
+            # far side of every send. `None` where absent, for the reason every
+            # sibling above is `None` where absent — *this build has no §14
+            # producers* must stay distinguishable from *nothing was uncertain*.
+            "uncertainty": (
+                None if self._uncertainty is None else self._uncertainty.record()
+            ),
             "prices": (
                 None
                 if self._prices is None
@@ -1905,6 +1957,18 @@ class Plane1Booker:
 #: `*.json` status answers, one per `client_order_id`. Read-only to this process.
 STATUS_DIR: Final[str] = "status"
 
+#: ARC 057 / D3.469. §2A's `filled` state, named once. The status seam answers
+#: it and `outcomes.py` HOLDS on it (it is not in `DEAD_STATES`: §3 releases a
+#: reservation on death and a fill is not death — the fill path owns FILL), so
+#: this is the string that opens C2's bounded reconciliation window.
+FILLED_STATE: Final[str] = "filled"
+
+#: The `risks/` module carrying §6.4's per-feed stale thresholds. `CONFIG_MODULE`
+#: (imported from `nixrisk.loop`) is the LIMITER's; this is a second module this
+#: process legitimately READS and never a second authority — `freshness.py`'s
+#: `StalenessPolicy` owns every rule over these numbers.
+STALENESS_MODULE: Final[str] = "staleness"
+
 #: The seam's own spelling for *this surface has no record of the id* — NOT a
 #: statement about the venue (`broker_seam.OrderStatus.state`'s own docstring
 #: makes that distinction and it is the difference between holding a reservation
@@ -1947,6 +2011,14 @@ class DirectoryStatusQuery:
         #: What the VENUE said, per state. A query surface that cannot say what
         #: it was told can only be believed (`ReservationLedger`'s argument).
         self.answers: dict[str, int] = {}
+        #: ARC 057 / D3.469. The LAST state this surface answered PER ORDER.
+        #: `answers` above counts states across every order and cannot say which
+        #: order the `filled` belonged to, and C2's reconciliation window is
+        #: opened for ONE order — so the alternative to this two-line map is a
+        #: SECOND query per held record, which would double §4's query count and
+        #: make the daemon's own `queries` figure describe the instrument rather
+        #: than the venue.
+        self.states: dict[str, str] = {}
         self.queries = 0
         self.unreadable = 0
         self.last_error = ""
@@ -1975,6 +2047,7 @@ class DirectoryStatusQuery:
                 "releasing it and never by resending the order"
             )
         self.answers[state] = self.answers.get(state, 0) + 1
+        self.states[client_order_id] = state
         return StatusReply(client_order_id, state, terminal, cumulative)
 
     def record(self) -> dict[str, Any]:
@@ -2011,9 +2084,22 @@ class PendingTimeoutPoller:
     which this class CALLS and does not reimplement.
     """
 
-    def __init__(self, outcomes: OrderOutcomes, query: DirectoryStatusQuery) -> None:
+    def __init__(
+        self,
+        outcomes: OrderOutcomes,
+        query: DirectoryStatusQuery,
+        uncertainty: UncertaintyWatch | None = None,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
         self._outcomes = outcomes
         self._query = query
+        # ARC 057 / D3.469. OPTIONAL, so every reader written against the ARC
+        # 053 constructor still builds this poller, and `record()` below reports
+        # `reconcile: null` for such a build rather than zero windows — *this
+        # build does not hold C2's window* and *it held one and nothing was due*
+        # are two readings, and check contract rule 10 lives in the gap.
+        self._uncertainty = uncertainty
+        self._clock = clock
         self.polls = 0
         self.resolved = 0
         self.held = 0
@@ -2041,6 +2127,7 @@ class PendingTimeoutPoller:
                 "nothing here resends"
             )
             return 0
+        at = self._clock()
         for record in records:
             disposition = getattr(record.disposition, "value", "")
             if disposition == "released":
@@ -2049,14 +2136,36 @@ class PendingTimeoutPoller:
                 self.refused += 1
             else:
                 self.held += 1
+                # ARC 057 / D3.469. A HELD record whose venue answer was
+                # `filled` opens C2's BOUNDED reconciliation window. The state
+                # is read off the query surface's own per-order map rather than
+                # parsed back out of the record's sentence: a producer keyed on
+                # prose is a producer a reword silently disables.
+                if self._uncertainty is not None:
+                    self._uncertainty.note_poll_hold(
+                        record.client_order_id,
+                        self._query.states.get(record.client_order_id, ""),
+                        at,
+                    )
         return len(records)
 
     def before(self, inner: Callable[[int], object]) -> Callable[[int], object]:
-        """Wrap the loop's ingress so the poll runs AFTER the reads, same tick."""
+        """Wrap the loop's ingress so the poll runs AFTER the reads, same tick.
+
+        ARC 057: and C2's reconciliation-deadline sweep runs immediately after
+        the poll, inside the same tick and on the same thread. The order is not a
+        preference — the poll is what OPENS a window and the completion dispatch
+        earlier in this tick is what CLOSES one, so sweeping last means a window
+        an exec report closed in this tick is never judged against its deadline
+        in this tick. Sweeping first would make that outcome depend on which of
+        two same-tick events the loop happened to reach first.
+        """
 
         def _ingress(tick: int) -> object:
             taken = inner(tick)
             self.poll_due()
+            if self._uncertainty is not None:
+                self._uncertainty.sweep_reconcile(tick, self._clock())
             return taken
 
         return _ingress
@@ -2091,6 +2200,18 @@ class PendingTimeoutPoller:
             "resends": 0,
             "query": self._query.record(),
             "last_error": self.last_error,
+            #: ARC 057 / D3.469. `None` where this build holds no C2 window —
+            #: see the constructor. Not a count: an operator's question is
+            #: *which orders am I holding a filled-but-undetailed position for*.
+            "reconcile": (
+                None
+                if self._uncertainty is None
+                else {
+                    "windows_open": sorted(self._uncertainty.windows_open()),
+                    "windows_opened": self._uncertainty.windows_opened,
+                    "windows_reconciled": self._uncertainty.windows_reconciled,
+                }
+            ),
         }
 
 
@@ -2790,6 +2911,970 @@ class StopWatchDriver:  # pylint: disable=too-many-instance-attributes
         return tuple(getattr(broker, "flattened", ()))
 
 
+# ===========================================================================
+#  ARC 057 — I1 ARC C2: §14's UNCERTAINTY PRODUCERS. WHAT CANNOT BE PROTECTED
+#  IS FLATTENED.
+#
+#  THE SAFETY SPINE OF THIS ARC, stated where the code is. §14: *every
+#  uncertainty resolves toward FLAT; known state beats optimal state*. ARC 055
+#  (C1) wired the STOP protective-exit — a breached synthetic stop fires one
+#  `ProtectiveFlatten` on §5:323's sender thread. What C1 deliberately did not
+#  wire is the OTHER half of §14's sentence: the conditions under which this
+#  process holds, or the venue holds, a position it **cannot protect or cannot
+#  account for**. Four of those were detected and NAMED by prior arcs, and not
+#  one had a producer:
+#
+#   * D3.453 — an OPEN §3 row whose price feed has gone stale past §12A's
+#     `price_stale_ms`. §6.4 has two halves: BLOCK NEW ENTRIES (built — the
+#     `StalenessFlagPort` `gate.py` already dispatches) and FLATTEN WHAT IS
+#     ALREADY OPEN (this). A stop maintained against a price nobody is sending
+#     is not maintenance, and `FlattenTrigger.STALE_PRICE` was a member of the
+#     frozen vocabulary that NOTHING in this tree ever fired.
+#   * D3.372 — a confirmed fill the execution ledger INGESTED and the ORIGIN
+#     WRITE then refused (`positions.py::UntradableSymbol`, §4:198). §3's table
+#     and §12.7's mirror read FLAT over a real venue position, so §7:501 prices
+#     that exposure at ZERO and the correlation cap ADMITS MORE.
+#   * D3.469 — §4's pending-timeout poll answering `filled` on a seam
+#     (`broker_seam.OrderStatus`) that carries no `exec_id`, no `symbol` and no
+#     `price`, so the §2A:75 cascade cannot run and nothing ever converts.
+#   * D3.475 — a fill whose §4 stop conversion was REFUSED. ARC 056 closed the
+#     RESERVATION half (the capital comes back, exactly once); the VENUE half is
+#     a real position with no synthetic stop behind it.
+#
+#  ALL FOUR MEASURED ON A LIVE `limiterd` AT THIS ARC'S S1, at 5757f35, before
+#  a line of this block existed — an OPEN position with a 3.0s-silent feed
+#  (threshold 2.0s) untouched; a fill whose origin write refused leaving
+#  `positions=[]` with `write_refusals=1`; a `filled` status answer held across
+#  62 queries with the reservation still committed; and an un-armable trailing
+#  fill with `arm_refusals=1`, `committed 1000.0 -> 0.0` and no position row.
+#  Every one of them ended with the same reading: `flattened = []`.
+#
+#  THE SPLIT, AND IT IS C1's — DETECTION AND FIRING ARE DIFFERENT OBJECTS.
+#  `UncertaintyWatch` holds no broker, no executor and no Plane-1 sink, so *this
+#  object cannot send* is a property of the TYPE rather than a rule its caller is
+#  asked to keep. `UncertaintyDriver` holds §4's executor and fires — on §5:323's
+#  sender thread and never on the loop, because `ProtectiveFlatten.fire` takes
+#  the §4 arbitration lock (`request_close` -> `_arbiter`) and appends a §12.10
+#  row, and *the hot loop never blocks* (I9, a DISCHARGED invariant).
+#
+#  ONE EXECUTOR, ONE `_closed` BOOK. The driver is handed the SAME
+#  `ProtectiveFlatten` §3:173's onset sweep and C1's stop exit already share, for
+#  the reason `FillPath` shares the one ledger: §4's dual-authority arbiter
+#  decides precedence by reading and writing ONE `_closed` book, and a second
+#  executor would arbitrate against a different book — so *protective always
+#  wins* would hold twice, separately, over two halves of one truth.
+#
+#  NO RETRY, NO AUTO-RESEND, and FIRE-ONCE PER CONDITION. Every one of these
+#  conditions PERSISTS: a stale feed stays stale, an un-armable fill stays in
+#  `unarmable()`, a refused origin write is never retried. Driven naively that
+#  is one venue `flatten` per tick against one position for as long as the
+#  condition holds. So the mark is taken in the same pass that ENQUEUES, on the
+#  single loop thread, and there is no window between deciding to fire and
+#  recording that the fire was decided — C1's discipline, applied to a set of
+#  conditions rather than to a stop book.
+#
+#  WHAT THIS BLOCK DOES NOT DO. It does not RECONCILE. A flatten fired here is
+#  IN FLIGHT until ARC D reconciles it: the closing fill coming back, §12.10's
+#  `closed` row, the position closing and §3's release are D's, and the
+#  fire-once mark is what stops the next tick re-firing in the meantime.
+# ===========================================================================
+
+
+class UncertaintyCondition(enum.Enum):
+    """§14's unprotectable-position conditions. A CLOSED, DERIVED set.
+
+    Each member is a CHECK-DEBT row that named a real, measured condition under
+    which a position exists and this process can neither protect it nor account
+    for it. The set is closed here and asserted by
+    `checks/check_uncertainty_flatten.py`, which derives the daemon's producer
+    set from this enum and FAILS on a member with no producer — because the
+    defect this arc exists to prevent is not a producer that misfires, it is a
+    FIFTH condition added later with no producer at all, which is exactly the
+    shape all four of these had until this arc.
+    """
+
+    #: D3.453 / §6.4's flatten-open half.
+    STALE_OPEN = "stale_open"
+    #: D3.372 / §4:198's not-tradable fill — the origin write refused.
+    NOT_TRADABLE_FILL = "not_tradable_fill"
+    #: D3.469 / a `filled` status answer the seam cannot convert.
+    UNDETAILED_POLL_FILL = "undetailed_poll_fill"
+    #: D3.475 / §4's stop conversion refused — the VENUE half.
+    UNARMABLE_FILL = "unarmable_fill"
+
+
+#: Which CHECK-DEBT row named each condition, and which §-clause makes it a
+#: flatten. PUBLISHED in the runtime record rather than kept here alone: the
+#: gate's completeness assertion is *the daemon flattens exactly this set*, and
+#: a set an outside reader cannot read off the running process is a set the gate
+#: would have to restate — the restatement directive 3 forbids.
+UNCERTAINTY_ORIGIN: Final[dict[str, str]] = {
+    UncertaintyCondition.STALE_OPEN.value: (
+        "D3.453 — §6.4's flatten-open half: an OPEN §3 row whose price feed is "
+        "past §12A:825 price_stale_ms. §17 is stale-until-proven-fresh"
+    ),
+    UncertaintyCondition.NOT_TRADABLE_FILL.value: (
+        "D3.372 — §4:198: the execution ledger INGESTED the fill and the origin "
+        "write REFUSED it, so §3's table reads FLAT over a real venue position"
+    ),
+    UncertaintyCondition.UNDETAILED_POLL_FILL.value: (
+        "D3.469 — §4's status query answered `filled` and §2A's OrderStatus "
+        "carries no exec_id/symbol/price, so nothing converts. Held for a "
+        "BOUNDED reconciliation window, then flattened"
+    ),
+    UncertaintyCondition.UNARMABLE_FILL.value: (
+        "D3.475 — §4's stop conversion was REFUSED: a real venue position with "
+        "NO synthetic stop behind it. ARC 056 closed the reservation half"
+    ),
+}
+
+#: The §12A feed name whose threshold governs `STALE_OPEN`. Named once so the
+#: knob this producer stands on is a single word rather than a literal repeated
+#: at the observe site and the read site (`risks/staleness.config.json`'s
+#: `price_stale_ms`, read through `freshness.StalenessPolicy`).
+PRICE_FEED: Final[str] = "price"
+
+#: A DECLARED NIX ADDITION, not a §12A knob — `risks/limiter.config.json`'s
+#: `_derivations` entry carries the whole argument. No default (directive 4).
+RECONCILE_WINDOW_KEY: Final[str] = "exec_report_reconcile_ms"
+
+
+def reconcile_window_from_config(root: Path | None = None) -> float:
+    """D3.469's bounded reconciliation window, in SECONDS. No default.
+
+    How long a `filled` status answer whose exec report has not arrived is HELD
+    before §14 resolves it toward flat. It is a DECLARED NIX ADDITION for the
+    reason `signal_max_age_ms` is: §12A has `PENDING_ACK_TIMEOUT_MS` (how long
+    an order may go un-acked) and `FILL_TIMEOUT` (how long a working order may
+    take to fill) and NEITHER is this quantity — this one starts *after* the
+    venue has already said `filled`, and it bounds how long this process will
+    wait for the execution report that the venue has not yet sent.
+
+    A Limiter that invented this window would either flatten a position whose
+    exec report was merely delayed (the common case, and the reason the answer
+    is HOLD and not an immediate flatten) or hold an unaccountable filled
+    position for an interval nobody chose. So it raises rather than defaulting.
+    """
+    configs = risk_config.load_risk_configs(root)
+    return (
+        risk_config.knob(configs.modules[CONFIG_MODULE], RECONCILE_WINDOW_KEY) / 1000.0
+    )
+
+
+def staleness_policy_from_config(root: Path | None = None) -> StalenessPolicy:
+    """§6.4's per-feed thresholds, from `risks/staleness.config.json`.
+
+    CALLS `freshness.StalenessPolicy.from_values` and re-derives nothing:
+    `nixrisk/freshness.py` is byte-identical across this arc and is asserted so
+    with `git hash-object`. This function's whole content is *which module's
+    values*, because the detector is deliberately constructible without the
+    loader (see `from_values`' own docstring) and the daemon is the one caller
+    that has a validated config set in hand.
+    """
+    configs = risk_config.load_risk_configs(root)
+    return StalenessPolicy.from_values(configs.modules[STALENESS_MODULE].values)
+
+
+@dataclass(frozen=True)
+class UncertaintyFiring:
+    """One detected uncertainty, enqueued for §5:323's sender thread to FIRE.
+
+    A DECLARATION OF DETECTION, never a claim that anything was sent — the same
+    distinction `stopwatch.BreachFiring` draws and for the same reason. Carries
+    no timestamp: the sender stamps the instant it actually fires, which is the
+    instant that matters, and a clock read taken at detection would describe
+    when the loop noticed rather than when the venue was called.
+
+    `trade_id` and `strategy_id` are EMPTY STRINGS where this process holds no
+    trade<->order join for the position — the D3.372 and D3.469 cases can both
+    reach that state. An empty `trade_id` is not a missing field: it routes the
+    fire to §4's SYMBOL-only uncertainty path (`fire(symbol=..., targets=())`),
+    which `flatten.py` documents as *"a flatten sent to be safe with no known
+    trade"* — the branch §4 wrote for exactly this.
+    """
+
+    condition: UncertaintyCondition
+    #: The FIRE-ONCE key. A `client_order_id` where one exists, else a trade_id.
+    key: str
+    symbol: str
+    trade_id: str
+    strategy_id: str
+    detail: str
+    tick: int
+
+
+class UncertaintyWatch:  # pylint: disable=too-many-instance-attributes
+    # R0902: the injected detector plus the SEVEN observations an out-of-process
+    # reader judges this object by — what it scanned, what it detected per
+    # condition, what it suppressed as already-fired, the reconciliation windows
+    # it is holding, the ones a real exec report closed, and the refused fill
+    # dispatches it could NOT classify. Folding any of them behind a sub-object
+    # would put a measured fact one indirection away from the pass that produced
+    # it, which is `StopWatch`'s own argument against the same message.
+    """§14's four uncertainty conditions, DETECTED and ENQUEUED. Never fired.
+
+    Holds no broker, no executor, no Plane-1 sink and no clock of its own — see
+    the block comment above: *this object cannot send* is meant to be a property
+    of the type. Every instant it needs is passed IN by the caller that already
+    owns one, so there is no wall-clock read inside the hot-path scan.
+
+    THE STALE-OPEN SCAN IS THE ONLY PER-TICK HALF, and it is bounded by §15's
+    `O(positions <= 5)/tick`: it iterates §3's published position table, which
+    §7 scopes to five instruments, and does one `FreshnessTracker.reading` per
+    OPEN row — one dict lookup and one subtraction against a held stamp. No I/O,
+    no lock, no allocation beyond the firing it may enqueue. The other three
+    conditions are EVENT-DRIVEN and are noted at the sites that already observe
+    them (the completion dispatch and §4's pending-timeout poll), because a
+    per-tick rescan of a condition that fires once would be work §11 puts off
+    the path for no gain.
+
+    A FEED NEVER OBSERVED IS NOT FLATTENED, AND THAT NARROWING IS DELIBERATE AND
+    PUBLISHED. `FreshnessTracker.reading` answers `CacheState.EMPTY` with
+    `blocked=True` for a key nothing has ever been seen on — §17's
+    stale-until-proven-fresh, and the right answer for a GATE that is deciding
+    whether to admit new capital. It is the WRONG trigger for a flatten in THIS
+    build, because CHECK-DEBT D3.473 records that this daemon has no capture
+    feed at all: the price arrives over the command ingress or not at all, so
+    EMPTY is the state of every symbol in a build with nothing publishing, and
+    firing on it would flatten every position in the tree on the ground that the
+    feed nobody wired is not sending. That is the absence of a feed reported as a
+    position hazard, not §14 protection. So the producer fires on STALE — a feed
+    that WAS observed and has since gone quiet past §12A's threshold — and every
+    EMPTY-state open position is COUNTED and NAMED in `record()` under
+    `unpriced_positions`, where the gate and an operator read it. CHECK-DEBT
+    D3.478 owns the other half; the narrowing is visible rather than silent.
+    """
+
+    def __init__(
+        self,
+        tracker: FreshnessTracker,
+        fills: FillPath,
+        *,
+        reconcile_window_s: float,
+    ) -> None:
+        self._tracker = tracker
+        self._fills = fills
+        self._window_s = float(reconcile_window_s)
+        #: Firings detected and not yet handed across §5:323's boundary.
+        self._pending: list[UncertaintyFiring] = []
+        #: `(condition, key)` already enqueued. THE FIRE-ONCE MARK, taken in the
+        #: same pass that enqueues, on the loop thread — see the block comment.
+        self._fired: set[tuple[str, str]] = set()
+        #: `client_order_id` -> the DEADLINE its reconciliation window expires
+        #: at. D3.469's whole mechanism: present = held, absent = resolved.
+        self._windows: dict[str, float] = {}
+        #: Observables, read out of a running process by the gate.
+        self.scans = 0
+        self.detected: dict[str, int] = {c.value: 0 for c in UncertaintyCondition}
+        self.suppressed = 0
+        self.windows_opened = 0
+        #: Windows a REAL exec report closed before the deadline — D3.469's
+        #: convert branch. Counted separately from `windows_opened` because
+        #: *held and then converted* and *held and then flattened* are the two
+        #: outcomes the window exists to distinguish, and one counter over both
+        #: would hide which one this daemon is actually producing.
+        self.windows_reconciled = 0
+        #: Open positions whose feed has NEVER been observed — see the class
+        #: docstring. NAMED, not counted: which symbol is the operational fact.
+        self.unpriced: set[str] = set()
+        #: Refused fill dispatches this object could not classify into any
+        #: member of `UncertaintyCondition`. §17 and check contract rule 10: an
+        #: unclassifiable condition is CANNOT_MEASURE naming it, never a silent
+        #: pass, and the gate reads this list to decide exactly that.
+        self.unclassified: list[str] = []
+        #: The last raise the reconciliation sweep contained. See `sweep_reconcile`.
+        self.last_error = ""
+        #: The counters the fill-dispatch classifier differences against. Read
+        #: from the fill path itself rather than kept as a private tally: the
+        #: question is *did the WRITER refuse* and *did the HANDLER refuse*, and
+        #: this object's own opinion of either is not evidence.
+        self._seen_write_refusals = fills.writer.refusals
+        self._seen_arm_refusals = fills.handler.arm_refusals
+        #: C1's in-flight set, shared read-only. See `attach_stop_watch`.
+        self._stop_watch: StopWatch | None = None
+
+    # -- the price feed's own stamp -----------------------------------------
+
+    def observe_price(self, symbol: str, at: datetime) -> bool:
+        """Record that a price for `symbol` arrived at `at`. NOT the hot path.
+
+        Runs on the serial ingress, inside the `price` verb, for the reason
+        `PriceRing.publish` does: §5:322 has something else write and the tick
+        READ. `False` where §6.4b's monotonic-by-source guard discarded the
+        stamp as older than the one already held.
+
+        **`at` IS THE RECEIPT INSTANT AND NOT THE VENUE'S OWN**, because §5:322's
+        `price` command carries no source timestamp — there is no capture feed
+        and no vendor integration in this tree (D3.473), so the instant this
+        process took delivery is the only one in the room. The consequence is
+        stated rather than discovered: this measures *how long since a price
+        last reached this Limiter*, which is precisely the D3.453 condition (a
+        feed that has gone quiet), and it CANNOT see a feed that is delivering
+        stamps the venue produced long ago. That second half needs the capture
+        feed D3.473 owns; it is not silently claimed here.
+        """
+        return self._tracker.observe(
+            FreshnessStamp(feed=PRICE_FEED, as_of=at), symbol
+        )
+
+    # -- condition 1: the per-tick stale-open scan (HOT PATH) ----------------
+
+    def scan_open_positions(self, tick: int) -> int:
+        """D3.453. Every OPEN §3 row against §12A's price threshold. HOT PATH.
+
+        §15's `O(positions <= 5)/tick`: §3's published table, one
+        `FreshnessTracker.reading` per OPEN row, and an enqueue for each row
+        whose feed has gone STALE. No I/O, no lock, no clock read of this
+        object's own — the tracker holds the injected clock the detector was
+        built around, which is `freshness.py`'s own argument for injecting it.
+        """
+        self.scans += 1
+        found = 0
+        for row in self._fills.picture.current().positions:
+            if row.state is not PositionState.OPEN:
+                continue
+            reading = self._tracker.reading(PRICE_FEED, row.symbol)
+            if reading.state is CacheState.EMPTY:
+                self.unpriced.add(row.symbol)
+                continue
+            if reading.state is not CacheState.STALE:
+                continue
+            origin = self._fills.origins.origin_for_trade(row.trade_id)
+            found += self._enqueue(
+                UncertaintyFiring(
+                    condition=UncertaintyCondition.STALE_OPEN,
+                    key=row.trade_id,
+                    symbol=row.symbol,
+                    trade_id=row.trade_id,
+                    strategy_id=row.strategy_id,
+                    detail=(
+                        f"§6.4 flatten-open: trade {row.trade_id!r} is OPEN for "
+                        f"{row.size} {row.symbol} and its price feed is "
+                        f"{reading.age_ms:.0f}ms old against a "
+                        f"{reading.threshold_ms:.0f}ms threshold "
+                        f"(§12A:825 price_stale_ms). A stop maintained against "
+                        f"a price nobody is sending is not maintenance, so §14 "
+                        f"resolves this toward FLAT"
+                    ),
+                    tick=tick,
+                ),
+                order_id=None if origin is None else origin.client_order_id,
+            )
+        return found
+
+    # -- conditions 2 and 4: the refused fill dispatch -----------------------
+
+    def note_fill_dispatch(self, completion: SenderCompletion, result: Any, tick: int) -> int:
+        """D3.372 and D3.475. Classify ONE refused §2A fill dispatch.
+
+        Called from `CompletionHandler.handle` immediately after the dispatch,
+        on the loop thread, and only for a `fill` event. A DISPATCHED result is
+        not a condition: §4's cascade armed a stop and published a §3 row, so
+        the position is protected and accounted for and there is nothing for §14
+        to resolve.
+
+        THE CLASSIFICATION IS BY WHICH COUNTER MOVED, never by the exception's
+        type name. `fills.py` catches the BASE exception on the arm path
+        deliberately — `StopArmPort` is a structural Protocol and the refusals it
+        can raise are not a set that file can enumerate — so a producer keyed on
+        a type list would silently stop firing the day an unlisted refusal
+        appeared, which is the defect one layer down. `PositionOriginWriter`
+        counts its refusals and `FillHandler` counts its arm refusals, and those
+        two counters partition the cascade at exactly the two points where a
+        confirmed venue fill can leave this process holding nothing.
+
+        A REFUSED FILL THAT MOVED NEITHER COUNTER IS NOT SILENTLY DROPPED. It is
+        recorded in `unclassified`, which the gate reads and reports as
+        CANNOT_MEASURE naming the site — check contract rule 10, applied to the
+        producer set: a condition an instrument cannot classify has not been
+        shown safe, and a producer that shrugged would be a green over an
+        unprotected position.
+        """
+        write_refusals = self._fills.writer.refusals
+        arm_refusals = self._fills.handler.arm_refusals
+        wrote = write_refusals > self._seen_write_refusals
+        armed = arm_refusals > self._seen_arm_refusals
+        self._seen_write_refusals = write_refusals
+        self._seen_arm_refusals = arm_refusals
+        if getattr(result, "disposition", None) is not Disposition.REFUSED:
+            return 0
+        origin = self._fills.origins.origin_for_order(completion.client_order_id)
+        trade_id = "" if origin is None else origin.trade_id
+        strategy_id = "" if origin is None else origin.strategy_id
+        if armed:
+            condition = UncertaintyCondition.UNARMABLE_FILL
+            detail = (
+                f"§4's stop conversion was REFUSED for "
+                f"{completion.client_order_id}/{completion.exec_id} in "
+                f"{completion.symbol!r}: the venue filled "
+                f"{completion.cumulative_qty} and this process armed NO "
+                f"synthetic stop, so the quantity is open at the broker with "
+                f"nothing behind it (§12.1 makes the stop synthetic and "
+                f"Limiter-held). ARC 056 returned the reservation; §14 resolves "
+                f"the VENUE half toward FLAT"
+            )
+        elif wrote:
+            condition = UncertaintyCondition.NOT_TRADABLE_FILL
+            detail = (
+                f"the ORIGIN WRITE refused "
+                f"{completion.client_order_id}/{completion.exec_id} in "
+                f"{completion.symbol!r} (§4:198). The execution ledger has "
+                f"already INGESTED the fill — §4 makes it a fact, not a "
+                f"negotiation — so §3's position table and §12.7's mirror read "
+                f"FLAT over a real venue position, §7:501 prices that exposure "
+                f"at ZERO and the correlation cap ADMITS MORE. §14 resolves it "
+                f"toward FLAT"
+            )
+        else:
+            self.unclassified.append(
+                f"{completion.client_order_id}/{completion.exec_id} in "
+                f"{completion.symbol!r}: §4's cascade REFUSED this fill and "
+                f"NEITHER the origin writer nor the stop-arm refusal counter "
+                f"moved, so this process cannot say which of §14's conditions "
+                f"holds — writer.refusals={write_refusals} "
+                f"handler.arm_refusals={arm_refusals}. The venue has reported a "
+                f"fill and nothing here classified it: NOT flattened, NOT "
+                f"suppressed, RECORDED. Dispatch reason: "
+                f"{getattr(result, 'reason', '')!r}"
+            )
+            return 0
+        return self._enqueue(
+            UncertaintyFiring(
+                condition=condition,
+                key=completion.client_order_id,
+                symbol=completion.symbol,
+                trade_id=trade_id,
+                strategy_id=strategy_id,
+                detail=detail,
+                tick=tick,
+            ),
+            order_id=completion.client_order_id,
+        )
+
+    # -- condition 3: the BOUNDED reconciliation window ----------------------
+
+    def note_poll_hold(self, client_order_id: str, state: str, at: float) -> None:
+        """D3.469. A `filled` status answer OPENS a window; it does not flatten.
+
+        **HOLD, NOT FLATTEN, AND THE ORDER OF THOSE TWO IS THE WHOLE RULING.**
+        The venue saying `filled` while the execution report has not arrived is
+        overwhelmingly the DELAYED-BUT-VALID case: §2A's `on_fill` is a push and
+        pushes arrive late, §12.4's reconnect case makes a re-delivery expected,
+        and the exec report that converts this order normally lands within the
+        tick or two after the status answer. Flattening on the status answer
+        would kill a position whose report was merely in flight — a protective
+        exit issued against a healthy position, which is not a safe direction,
+        it is a different failure.
+
+        So the answer is a BOUNDED HOLD. The window opens once, at the first
+        `filled` answer, and the deadline is fixed then: a window re-opened on
+        every poll would never expire, because the poll re-answers `filled` on
+        every tick for as long as the order is overdue, and a deadline that
+        moves with the observation is not a deadline.
+
+        AND IT DOES NOT RE-OPEN AFTER ITS OWN FLATTEN. Nothing about this order
+        changes once §14 has resolved it: the poll keeps answering `filled` for
+        as long as the reservation is overdue, so without the fired-check below
+        a window would re-open, expire and be suppressed once per window forever
+        — `windows_opened` climbing while `detected` stood still. The fire-once
+        mark would still hold (that is what `suppressed` counts), but a counter
+        that grows without bound describes the instrument rather than the venue.
+        """
+        already_fired = (
+            UncertaintyCondition.UNDETAILED_POLL_FILL.value,
+            client_order_id,
+        ) in self._fired
+        if state != FILLED_STATE or client_order_id in self._windows or already_fired:
+            return
+        self._windows[client_order_id] = at + self._window_s
+        self.windows_opened += 1
+
+    def sweep_reconcile(self, tick: int, at: float) -> int:
+        """D3.469's two branches, decided. Exec report first -> convert; else FLAT.
+
+        Runs after §4's pending-timeout poll, inside the same tick and on the
+        loop thread, so a window closed by a completion dispatched in this tick
+        is closed before the deadline in this tick is read. Both branches are
+        taken from the SAME evidence — whether §3's published table now carries
+        a row for the trade this order opened — because that row is what *the
+        exec report arrived and converted* actually means; a counter of
+        deliveries would also move for a fill that arrived and was refused.
+
+        NEVER RAISES, AND `last_error` IS THE HALF THAT MADE THAT SAFE TO SAY.
+        MEASURED at this arc's S2b, before this containment existed: an
+        `AttributeError` raised inside this sweep — the firing was built from
+        `TradeOrigin.symbol`, and `TradeOrigin` has no such field — was
+        swallowed by the loop's own ingress containment, so the window was
+        deleted, no flatten was enqueued, and the next poll re-opened it. The
+        daemon reported `windows_opened` climbing 1 -> 2 -> 3 with
+        `detected.undetailed_poll_fill` at 0 and `suppressed` at 0: a producer
+        that had silently stopped producing, visible only because the two
+        counters disagreed. Containment WITHOUT a recorded reason is how that
+        happens, so the raise is caught HERE, named, and published — an
+        uncaught raise on the tick would kill the process §12.1:604 has the
+        Sentinel watching, and a silent one is worse than either.
+        """
+        try:
+            return self._sweep(tick, at)
+        except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
+            self.last_error = (
+                f"{SITE}: §14's reconciliation sweep raised "
+                f"{type(exc).__name__}: {exc} on tick {tick}. The sweep is "
+                f"CONTAINED and NOTHING was flattened by it on this tick; every "
+                f"window it had not yet judged is still held "
+                f"({sorted(self._windows)}). A sweep that cannot run leaves an "
+                f"unaccountable position un-flattened, which is the D3.469 "
+                f"condition unchanged; a sweep that killed the daemon would "
+                f"take every synthetic stop in this process with it"
+            )
+            return 0
+
+    def _sweep(self, tick: int, at: float) -> int:
+        """`sweep_reconcile`'s body. Separated so the containment is one frame."""
+        fired = 0
+        for client_order_id, deadline in sorted(self._windows.items()):
+            if self._converted(client_order_id):
+                del self._windows[client_order_id]
+                self.windows_reconciled += 1
+                continue
+            if at < deadline:
+                continue
+            del self._windows[client_order_id]
+            origin = self._fills.origins.origin_for_order(client_order_id)
+            fired += self._enqueue(
+                UncertaintyFiring(
+                    condition=UncertaintyCondition.UNDETAILED_POLL_FILL,
+                    key=client_order_id,
+                    # THE APPROVAL names the instrument, and it is the only
+                    # authority here that does: `seam.TradeOrigin` carries the
+                    # trade<->order join and no symbol (three fields, and the
+                    # instrument is deliberately not one of them), and §2A's
+                    # `OrderStatus` — the thing that answered `filled` — carries
+                    # no symbol either. That is the whole of D3.469.
+                    symbol=self._approved_symbol(client_order_id),
+                    trade_id="" if origin is None else origin.trade_id,
+                    strategy_id="" if origin is None else origin.strategy_id,
+                    detail=(
+                        f"§4's status query answered `filled` for "
+                        f"{client_order_id!r} and no §2A execution report "
+                        f"converted it within the {self._window_s:.3f}s "
+                        f"reconciliation window ({RECONCILE_WINDOW_KEY}). "
+                        f"§2A's OrderStatus carries no exec_id, no symbol and "
+                        f"no price, so nothing here can open the §3 row: the "
+                        f"venue holds a filled position this process cannot "
+                        f"account for, and §14 resolves it toward FLAT"
+                    ),
+                    tick=tick,
+                ),
+                order_id=client_order_id,
+            )
+        return fired
+
+    def _approved_symbol(self, client_order_id: str) -> str:
+        """The instrument this order was APPROVED in, or `""`. See `sweep_reconcile`."""
+        order = self._fills.approvals.order_for(client_order_id)
+        return "" if order is None else order.symbol
+
+    def _converted(self, client_order_id: str) -> bool:
+        """Did a real exec report open §3's row for this order? The row IS the test."""
+        origin = self._fills.origins.origin_for_order(client_order_id)
+        if origin is None:
+            return False
+        return any(
+            row.trade_id == origin.trade_id
+            for row in self._fills.picture.current().positions
+        )
+
+    # -- the boundary --------------------------------------------------------
+
+    def windows_open(self) -> tuple[str, ...]:
+        """The orders C2 is currently holding a reconciliation window for."""
+        return tuple(sorted(self._windows))
+
+    def drain(self) -> list[UncertaintyFiring]:
+        """Take the detected firings. A list swap; the caller hands them over."""
+        taken, self._pending = self._pending, []
+        return taken
+
+    def _enqueue(self, firing: UncertaintyFiring, *, order_id: str | None) -> int:
+        """Mark fire-once and enqueue, or SUPPRESS. Returns 1 or 0.
+
+        The mark is keyed on `(condition, key)` and NOT on the position alone,
+        deliberately: one position really can be both un-armable and, later,
+        stale-open, and those are two different facts about it. §4's arbiter is
+        what makes the second flatten a no-op at the venue — `request_close`
+        DROPS a redundant protective close of an already-protective trade — so
+        the belt here is fire-once per condition and the braces are the one
+        `_closed` book every executor in this process shares.
+
+        `order_id` widens the suppression to C1's IN-FLIGHT set: a position
+        whose synthetic stop has already fired a protective flatten this process
+        has not yet reconciled must not be flattened a second time under an
+        uncertainty label. The read is a set membership on the SHARED `StopWatch`
+        and costs nothing on the hot path.
+        """
+        mark = (firing.condition.value, firing.key)
+        if mark in self._fired or (order_id is not None and self._in_flight(order_id)):
+            self.suppressed += 1
+            return 0
+        self._fired.add(mark)
+        self._pending.append(firing)
+        self.detected[firing.condition.value] += 1
+        return 1
+
+    def _in_flight(self, order_id: str) -> bool:
+        """Whether C1's stop exit already has a protective flatten in flight.
+
+        Read LIVE off the shared `StopWatch` on every call rather than snapshotted
+        at wiring time: the set changes inside the tick (C1 marks at the enqueue,
+        on this same thread), and a copy taken at boot would answer a question
+        about a state that no longer exists. `in_flight()` is bounded by §7's
+        five instruments, so the membership test is O(<=5) on the hot path.
+        """
+        watch = self._stop_watch
+        return watch is not None and order_id in watch.in_flight()
+
+    def attach_stop_watch(self, watch: StopWatch) -> None:
+        """Share C1's in-flight set. READ-ONLY; this object never marks it.
+
+        Optional, and the default of `None` is the load-bearing half: a build
+        without C1's stop watch suppresses NOTHING rather than raising, which is
+        the direction that FIRES the protective exit rather than withholding it.
+        §14 is *resolve toward flat*, so the fail-safe direction for a missing
+        collaborator here is to flatten, and §4's arbiter drops a redundant
+        protective close anyway.
+        """
+        self._stop_watch = watch
+
+    # -- evidence ------------------------------------------------------------
+
+    def record(self) -> dict[str, Any]:
+        """The out-of-process evidence block. ENUMERATED wherever a name matters.
+
+        `conditions` is published as the DERIVED set with its debt origins, not
+        as a count, because the gate's completeness obligation is *the set of
+        uncertainty conditions this daemon flattens equals the set that was
+        named* — and a gate that had to restate the set in its own source would
+        go stale the moment a fifth was added, which is the exact failure mode
+        `check_flatten` ARM 6 was built to close for the trigger set.
+        """
+        return {
+            "scans": self.scans,
+            "conditions": dict(UNCERTAINTY_ORIGIN),
+            "detected": dict(self.detected),
+            "suppressed": self.suppressed,
+            "pending": len(self._pending),
+            "windows_open": sorted(self._windows),
+            "windows_opened": self.windows_opened,
+            "windows_reconciled": self.windows_reconciled,
+            "reconcile_window_s": self._window_s,
+            "unpriced_positions": sorted(self.unpriced),
+            "unclassified": list(self.unclassified),
+            "last_error": self.last_error,
+            "price_feed_observations": self._tracker.observations,
+            "price_stale_threshold_ms": self._tracker.policy.threshold_ms(PRICE_FEED),
+        }
+
+
+class UncertaintyDriver:
+    """ARC 057 / I1 ARC C2. §14's uncertainty flatten, FIRED and SENT.
+
+    TWO HALVES ON TWO THREADS, and the split is C1's, restated over a different
+    set of conditions:
+
+    * `before()` runs on the HOT LOOP. It runs `UncertaintyWatch`'s per-tick
+      stale-open scan AHEAD of the tick's own work, then — after the tick's
+      reads, dispatches and §4 poll have run — DRAINS every condition detected
+      anywhere in the tick and hands each across §5:323's boundary with an
+      unbounded `put` that never blocks the caller.
+    * `send()` runs on the SENDER THREAD. It is where `ProtectiveFlatten.fire`
+      is called, and it is there and not on the loop for C1's reason: `fire`
+      takes the §4 arbitration lock and appends a §12.10 row, and §5:323 is
+      explicit that the hot loop never blocks.
+
+    THE FIRE IS §4's OWN, UNCHANGED. `nixrisk/flatten.py` is byte-identical
+    across this arc and asserted so with `git hash-object`. Where a `trade_id`
+    exists the flatten is a TARGETED protective close through `request_close`,
+    which is §4's arbiter and the only place precedence is decided. Where none
+    does — D3.372's refused origin write and D3.469's unconvertible status
+    answer can both leave this process with no join — the fire is §4's
+    SYMBOL-ONLY uncertainty branch, which `fire` documents as *"a flatten sent
+    to be safe with no known trade"* and which records the intent so reconcile
+    can attribute whatever it turns out to have closed.
+
+    NO RETRY, NO AUTO-RESEND. A firing the sender refused or that raised is
+    RECORDED and never re-queued — §4's resend prohibition, the same one
+    `StopWatchDriver` keeps and for the same reason: a protective flatten resent
+    on a schedule nobody declared is an unbounded stream of venue orders
+    produced by a defect.
+    """
+
+    def __init__(
+        self,
+        watch: UncertaintyWatch,
+        exits: ProtectiveFlatten,
+        loop: LimiterLoop,
+    ) -> None:
+        self._watch = watch
+        self._exits = exits
+        self._loop = loop
+        #: Firings handed across the §5:323 boundary by the hot loop.
+        self.fires = 0
+        #: Firings the SENDER THREAD actually fired a protective flatten for.
+        #: Counted separately from `fires` for check contract rule 2's reason,
+        #: applied across a thread boundary: what the loop handed over and what
+        #: the sender did with it are two facts.
+        self.sends = 0
+        #: Firings the sender could not fire, with the reason. NEVER re-queued.
+        self.refusals: list[str] = []
+        #: Every flatten this driver produced, ENUMERATED. A total cannot answer
+        #: *was exactly one uncertainty flatten issued for this position*, which
+        #: is the question fire-once exists to make answerable.
+        self.actions: list[dict[str, Any]] = []
+        #: The native id of the thread the LAST send ran on. Read from INSIDE
+        #: the send, so it is the SENDER's and not the loop's — the field that
+        #: proves the send was off the hot path, compared against the loop
+        #: thread's own id by `check_uncertainty_flatten`.
+        self.sent_on_native_id: int | None = None
+
+    # -- the hot loop half ---------------------------------------------------
+
+    def before(self, inner: Callable[[int], object]) -> Callable[[int], object]:
+        """Scan FIRST, then the tick, then hand everything the tick detected.
+
+        The position of the two halves is deliberate. The SCAN runs ahead of the
+        ingress reads for `StopWatchDriver.before`'s reason — §4's protective
+        exit always wins, so a position that cannot be managed is detected
+        before this tick's commands can approve anything new against the capital
+        it is about to release. The HAND runs after `inner`, which is the whole
+        rest of the tick, so the three EVENT-DRIVEN conditions — a refused fill
+        dispatch and an expired reconciliation window, both noted while `inner`
+        runs — reach §5:323's sender in the SAME tick they were detected in
+        rather than one tick later.
+        """
+
+        def _tick(tick: int) -> object:
+            self._watch.scan_open_positions(tick)
+            taken = inner(tick)
+            self._hand()
+            return taken
+
+        return _tick
+
+    def observe_price(self, symbol: str, at: datetime) -> bool:
+        """Stamp the price feed for D3.453's scan. Delegated, NOT re-implemented.
+
+        Exposed on the driver rather than reaching past it to the watch so the
+        `price` verb has ONE collaborator to hold, the same way it already holds
+        C1's driver for the `stops` block. It is still DETECTION — this method
+        cannot fire, and the object it delegates to structurally cannot either.
+        """
+        return self._watch.observe_price(symbol, at)
+
+    def note_fill_dispatch(
+        self, completion: SenderCompletion, result: DispatchResult
+    ) -> int:
+        """D3.372 / D3.475, noted at the dispatch and HANDED IN THE SAME TICK.
+
+        Called from `CompletionHandler.handle`, which runs in the loop's DRAIN
+        and therefore AFTER `before`'s own hand-off has already run for this
+        tick. So this hands directly rather than leaving the firing for the next
+        tick's drain: `LimiterLoop.hand_to_sender` is an unbounded `put` that
+        never blocks the caller, and a protective flatten for a position the
+        venue is already holding is not work to defer by a tick for tidiness.
+        """
+        detected = self._watch.note_fill_dispatch(
+            completion, result, self._loop.tick_count
+        )
+        if detected:
+            self._hand()
+        return detected
+
+    def _hand(self) -> int:
+        """Drain and hand to the sender. HOT PATH; never blocks (§5:323)."""
+        handed = 0
+        for firing in self._watch.drain():
+            self._loop.hand_to_sender(firing)
+            self.fires += 1
+            handed += 1
+        return handed
+
+    # -- the sender-thread half ----------------------------------------------
+
+    def send(self, payload: object) -> None:
+        """Fire ONE uncertainty flatten. RUNS ON THE SENDER THREAD.
+
+        Ignores anything that is not an `UncertaintyFiring`: §5:323's queue is
+        shared with the `go` verb's handoff and with C1's `BreachFiring`, and a
+        sender that flattened on an unrecognised payload would be firing venue
+        orders off a type confusion. `StopWatchDriver.send` makes the mirror-image
+        refusal on the same queue, which is what lets both drivers read it.
+        """
+        if not isinstance(payload, UncertaintyFiring):
+            return
+        self.sent_on_native_id = threading.get_native_id()
+        symbol = payload.symbol or None
+        targets = (
+            (
+                CloseTarget(
+                    trade_id=payload.trade_id,
+                    symbol=payload.symbol,
+                    strategy_id=payload.strategy_id,
+                ),
+            )
+            if payload.trade_id
+            else ()
+        )
+        if symbol is None and not targets:
+            # Nothing to name. §4's uncertainty branch flattens a SYMBOL and the
+            # targeted branch closes a TRADE; with neither there is no venue call
+            # to make, so this is refused and NAMED rather than sent under a
+            # guessed identity — the same refusal `StopWatchDriver.send` makes
+            # for an order with no recorded join, and for the same reason.
+            self.refusals.append(
+                f"{payload.condition.value}/{payload.key}: detected on tick "
+                f"{payload.tick} and this process holds NEITHER a symbol nor a "
+                f"trade_id for it, so there is no §4 close to issue. NOT "
+                f"flattened; NOT re-queued. {payload.detail}"
+            )
+            return
+        trigger = _UNCERTAINTY_TRIGGER[payload.condition]
+        try:
+            action = self._exits.fire(
+                trigger,
+                symbol=symbol,
+                targets=targets,
+                # §14's word, and it is the word the strategy receives and §9's
+                # record keeps. `reason` overrides `fire`'s derived string for
+                # `flatten.py`'s own stated reason: a caller with a spec-named
+                # reason passes it.
+                reason=(
+                    f"protective flatten (reason={UNCERTAINTY_REASON}, "
+                    f"trigger={trigger.value}, condition={payload.condition.value})"
+                ),
+            )
+        except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
+            # CONTAINED, NEVER RE-QUEUED. This runs on §5:323's sender thread and
+            # an exception escaping it would take the thread down, and with it
+            # every later protective flatten C1 and C2 both depend on. The
+            # failure is recorded with the exception's own sentence (rule 11).
+            self.refusals.append(
+                f"{payload.condition.value}/{payload.key}: §4's executor RAISED "
+                f"{type(exc).__name__}: {exc}. NOT flattened; NOT re-queued "
+                f"(§4:240-241 forbids the resend). {payload.detail}"
+            )
+            return
+        self.sends += 1
+        self.actions.append(
+            {
+                "condition": payload.condition.value,
+                "key": payload.key,
+                "trigger": action.trigger.value,
+                "reason": UNCERTAINTY_REASON,
+                "symbol": action.symbol,
+                "trade_ids": [target.trade_id for target in action.targets],
+                "executed": [outcome.executed for outcome in action.outcomes],
+                "dropped": [
+                    outcome.dropped_reason
+                    for outcome in action.outcomes
+                    if outcome.dropped_reason
+                ],
+                "fired_ts": action.fired_ts,
+                "tick": payload.tick,
+                "detail": payload.detail,
+            }
+        )
+
+    # -- evidence ------------------------------------------------------------
+
+    def record(self) -> dict[str, Any]:
+        """What this driver did, for the out-of-process reader."""
+        block = self._watch.record()
+        block.update(
+            {
+                "fires": self.fires,
+                "sends": self.sends,
+                "refusals": list(self.refusals),
+                "actions": list(self.actions),
+                "sent_on_native_id": self.sent_on_native_id,
+                "loop_native_id": threading.get_native_id(),
+                "sender_native_id": self._loop.sender.native_id,
+                # THE BROKER'S OWN RECORD, read off the object the flatten
+                # reached — not this driver's count of what it asked for (check
+                # contract rule 2: the return value of a mutating call is not a
+                # verification, and `sends` is exactly such a value one layer up).
+                "flattened": list(self._broker_flattened()),
+            }
+        )
+        return block
+
+    def _broker_flattened(self) -> tuple[str | None, ...]:
+        """Every symbol the BROKER recorded a protective flatten for, in order."""
+        broker = getattr(self._exits, "_broker", None)
+        return tuple(getattr(broker, "flattened", ()))
+
+
+# R0903 (too-few-public-methods): ONE public verb, and it IS §5:323's sender
+# callback. A second verb here would be a second thing the sender thread can be
+# asked to do, which is the boundary this class exists to keep narrow.
+# pylint: disable=too-few-public-methods
+class ProtectiveSenders:
+    """§5:323's ONE sender callback, fanned to BOTH protective producers.
+
+    `LimiterLoop.attach` takes one `sender_send`, and from ARC 057 there are two
+    producers behind it: C1's synthetic-stop exit (`BreachFiring`) and C2's
+    §14 uncertainty flatten (`UncertaintyFiring`). This is the routing, and it
+    is an OBJECT with one verb rather than a closure for two reasons that are
+    the same reason: the send is the thing every protective exit in this process
+    passes through, so it should be a named surface an AST census can find
+    (`check_stop_maintenance` ARM 4 derives *the daemon hands the fire to
+    §5:323's sender* from the source, and `check_uncertainty_flatten` derives
+    the same for C2), and a lambda in an argument list is not one.
+
+    ROUTED BY PAYLOAD TYPE, never by a flag or a string. Each driver's `send`
+    returns immediately on a payload that is not its own frozen dataclass — see
+    `StopWatchDriver.send` and `UncertaintyDriver.send`, which make the
+    mirror-image refusal — so the queue stays the single boundary §5:322-323
+    describes and neither producer can fire on the other's firing. A dispatcher
+    that switched on a string would be a third place the two could be confused.
+
+    THE ORDER IS C1 FIRST, and it is not arbitrary. A breached synthetic stop is
+    §4's NAMED protective exit for a position that has one; an uncertainty
+    flatten is what §14 does for a position that has none. With the shared
+    `_closed` book underneath both, whichever fires first is the recorded winner
+    and the second is DROPPED by §4's arbiter as a redundant protective close
+    rather than issued twice at the venue.
+    """
+
+    def __init__(self, stops: StopWatchDriver, uncertainty: UncertaintyDriver) -> None:
+        self._stops = stops
+        self._uncertainty = uncertainty
+
+    def send(self, payload: object) -> None:
+        """RUNS ON THE SENDER THREAD. Offers one payload to each producer."""
+        self._stops.send(payload)
+        self._uncertainty.send(payload)
+
+
+#: §3:169's trigger for each condition. `STALE_PRICE` is §3's own word for the
+#: stale-feed case and CHECK-DEBT D3.453 is the row recording that NOTHING in
+#: this tree ever fired it; the other three are §3's `uncertainty`. Both are
+#: members of the FROZEN `FlattenTrigger` vocabulary — no member is added here,
+#: and `seam.py` is byte-identical across this arc.
+_UNCERTAINTY_TRIGGER: Final[dict[UncertaintyCondition, FlattenTrigger]] = {
+    UncertaintyCondition.STALE_OPEN: FlattenTrigger.STALE_PRICE,
+    UncertaintyCondition.NOT_TRADABLE_FILL: FlattenTrigger.UNCERTAINTY,
+    UncertaintyCondition.UNDETAILED_POLL_FILL: FlattenTrigger.UNCERTAINTY,
+    UncertaintyCondition.UNARMABLE_FILL: FlattenTrigger.UNCERTAINTY,
+}
+
+#: §14's word for what every one of these flattens IS, carried on the reason so
+#: §9's record keeps it. §4:301's cooldown ladder already spells it
+#: (`cooldown_min_time_s.uncertainty`), so this is the vocabulary the config
+#: files use and not a new one.
+UNCERTAINTY_REASON: Final[str] = "uncertainty"
+
+
 def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
     """Serialise into a sibling temp file and `os.replace` it into place.
 
@@ -2832,6 +3917,7 @@ def _runtime_record(  # pylint: disable=too-many-arguments,too-many-positional-a
     book: PendingEntryBook | None = None,
     signal_max_age_s: float | None = None,
     prices: PriceRing | None = None,
+    uncertainty: UncertaintyDriver | None = None,
     stopwatch: StopWatchDriver | None = None,
 ) -> dict[str, Any]:
     """`limiter.runtime.json`'s content, at boot and again at clean stop.
@@ -2960,6 +4046,7 @@ def _stop_record(  # pylint: disable=too-many-arguments,too-many-positional-argu
     book: PendingEntryBook | None = None,
     signal_max_age_s: float | None = None,
     prices: PriceRing | None = None,
+    uncertainty: UncertaintyDriver | None = None,
     stopwatch: StopWatchDriver | None = None,
     malformed: tuple[str, ...] = (),
 ) -> dict[str, Any]:
@@ -2978,6 +4065,7 @@ def _stop_record(  # pylint: disable=too-many-arguments,too-many-positional-argu
         book=book,
         signal_max_age_s=signal_max_age_s,
         prices=prices,
+        uncertainty=uncertainty,
         stopwatch=stopwatch,
     )
     # ARC 046. The completions the ingress read and the PARSE refused, so
@@ -3085,6 +4173,22 @@ def _parser() -> argparse.ArgumentParser:
             "budget; the shipped value is the one the platform ISSUES to every "
             "strategy in its REGISTER_ACK (nix_strategy_contract_v1.1.md §4.2) "
             "and production must not pass this."
+        ),
+    )
+    parser.add_argument(
+        "--reconcile-window",
+        type=float,
+        default=None,
+        help=(
+            "Seconds a `filled` status answer whose §2A execution report has "
+            "not arrived is HELD before §14 resolves it toward flat. Default: "
+            f"{RECONCILE_WINDOW_KEY} from risks/limiter.config.json, a declared "
+            "Nix addition (§12A names no such knob — PENDING_ACK_TIMEOUT_MS "
+            "bounds an un-acked order and FILL_TIMEOUT bounds a working one, "
+            "and this interval starts after the venue has already said "
+            "`filled`). Overridable so a gate can drive BOTH branches inside a "
+            "test's budget, exactly as --go-timeout is; the shipped value is "
+            "the one an operator tuned and production must not pass this."
         ),
     )
     parser.add_argument(
@@ -3301,7 +4405,6 @@ def main(argv: list[str] | None = None) -> int:
         # across this arc — asserted with `git hash-object`, not claimed — and
         # the whole change is that something with a pid now polls them.
         status_query = DirectoryStatusQuery(status_dir)
-        timeouts = PendingTimeoutPoller(outcomes, status_query)
         # ARC 053 / D3.463. Read at BOOT and refused there if unreadable, for the
         # reason every other knob in this block is: §12A's lifecycle is
         # boot-loaded and restart-only, and a ceiling re-read per command would
@@ -3369,7 +4472,47 @@ def main(argv: list[str] | None = None) -> int:
         # in a private book would trail stops no position has and leave the armed
         # ones exactly as D3.451 found them.
         prices = PriceRing()
-        stopwatch = StopWatchDriver(StopWatch(prices, fills.stops), exits, loop, fills)
+        stop_watch = StopWatch(prices, fills.stops)
+        stopwatch = StopWatchDriver(stop_watch, exits, loop, fills)
+        # ARC 057 / I1 ARC C2. §14's uncertainty producers, held by the PROCESS.
+        #
+        # `FreshnessTracker` is ARC 051's detector, CONSTRUCTED here and NOT
+        # modified: `nixrisk/freshness.py` is byte-identical across this arc,
+        # asserted with `git hash-object`. Its policy is `risks/staleness.
+        # config.json` read through the detector's own loader — §12A is the
+        # semantic authority for `price_stale_ms` and this process re-derives
+        # nothing. The clock is INJECTED because the subject is a relationship
+        # between two instants and a detector that read the wall clock
+        # internally could only be tested by waiting (`freshness.py`'s own
+        # argument, kept rather than restated).
+        #
+        # The watch is handed the ONE `FillPath` above rather than a second: §3's
+        # position table is one table, and a scan reading a private copy would
+        # flatten positions this daemon does not hold and miss the ones it does.
+        # It is handed C1's ONE `StopWatch` too — read-only — so a position whose
+        # synthetic stop has already fired an unreconciled protective flatten is
+        # not flattened a second time under an uncertainty label.
+        #
+        # The DRIVER is handed the ONE `ProtectiveFlatten` §3:173's onset sweep
+        # and C1's stop exit already share, for the reason they share it: §4's
+        # dual-authority arbiter decides precedence by reading and writing ONE
+        # `_closed` book, and a second executor would arbitrate against a
+        # different book.
+        uncertainty_watch = UncertaintyWatch(
+            FreshnessTracker(
+                staleness_policy_from_config(),
+                clock=lambda: datetime.now(UTC),
+            ),
+            fills,
+            reconcile_window_s=(
+                reconcile_window_from_config()
+                if args.reconcile_window is None
+                else float(args.reconcile_window)
+            ),
+        )
+        uncertainty_watch.attach_stop_watch(stop_watch)
+        uncertainty = UncertaintyDriver(uncertainty_watch, exits, loop)
+        timeouts = PendingTimeoutPoller(outcomes, status_query, uncertainty_watch)
     except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
         print(
             f"{SITE}: refusing to boot the Limiter: {type(exc).__name__}: {exc}",
@@ -3400,7 +4543,9 @@ def main(argv: list[str] | None = None) -> int:
     # ARC 047. The §4:203-206 outcome push needs the loop (for §4:208's lock and
     # the tick number) and the outbox, so it is built here, after both exist.
     feedback = OpenFeedback(loop, outbox_dir)
-    completion_handler = CompletionHandler(dispatcher, feedback)
+    completion_handler = CompletionHandler(dispatcher, feedback, uncertainty)
+
+    senders = ProtectiveSenders(stopwatch, uncertainty)
     loop.attach(
         # ARC 042: the booking runs FIRST inside the tick, then the inbox read.
         # `Plane1Booker.before` composes the two rather than folding the write
@@ -3432,8 +4577,20 @@ def main(argv: list[str] | None = None) -> int:
         # anything against it. The FIRE is not here — it is handed to §5:323's
         # sender thread by `sender_send` below, because it takes a lock and
         # writes a row and the hot loop never blocks (I9, §5:323).
-        ingress=stopwatch.before(
-            onset.before(booker.before(timeouts.before(_read_both)))
+        # ARC 057: and §14's uncertainty producers wrap ALL of it. The
+        # resulting order inside one tick is
+        #   scan open positions -> poll prices -> poll onset -> book firings
+        #   -> read commands -> read completions -> poll overdue
+        #   -> sweep reconciliation deadlines -> HAND every detected uncertainty
+        # and both ends of that wrapper are decisions `UncertaintyDriver.before`
+        # records. The SCAN is outermost for `StopWatchDriver.before`'s reason —
+        # §4's protective exit always wins, so a position that cannot be managed
+        # is detected before this tick's commands can approve anything new
+        # against the capital it is about to release. The HAND is last so the
+        # three EVENT-DRIVEN conditions, detected while the rest of the tick
+        # ran, reach §5:323's sender in the SAME tick.
+        ingress=uncertainty.before(
+            stopwatch.before(onset.before(booker.before(timeouts.before(_read_both))))
         ),
         handler=LoopHandler(
             CommandHandler(
@@ -3448,6 +4605,7 @@ def main(argv: list[str] | None = None) -> int:
                 signal_max_age_s,
                 prices,
                 stopwatch,
+                uncertainty,
             ),
             completion_handler,
         ).handle,
@@ -3455,7 +4613,13 @@ def main(argv: list[str] | None = None) -> int:
         # low-priority thread, never on the loop: `ProtectiveFlatten.fire` takes
         # the §4 arbitration lock and appends a §12.10 row, and *the hot loop
         # never blocks*.
-        sender_send=stopwatch.send,
+        # ARC 057: TWO producers now share §5:323's one sender. Routed by
+        # PAYLOAD TYPE and not by a flag: each `send` returns immediately on a
+        # payload that is not its own dataclass, so the queue stays the single
+        # boundary §5:322-323 describes and neither driver can fire on the
+        # other's firing. A dispatcher that switched on a string would be a
+        # third place the two could be confused.
+        sender_send=senders.send,
     )
 
     boot_ts = time.time()
@@ -3477,6 +4641,7 @@ def main(argv: list[str] | None = None) -> int:
             signal_max_age_s=signal_max_age_s,
             prices=prices,
             stopwatch=stopwatch,
+            uncertainty=uncertainty,
         ),
     )
     _install_signal_handlers(loop)
@@ -3508,6 +4673,7 @@ def main(argv: list[str] | None = None) -> int:
             signal_max_age_s=signal_max_age_s,
             prices=prices,
             stopwatch=stopwatch,
+            uncertainty=uncertainty,
             malformed=tuple(completion_handler.malformed),
         ),
     )

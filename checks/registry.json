@@ -84,6 +84,7 @@
         "check_trade_join",
         "check_two_phase_entry",
         "check_uncalled_entry_points",
+        "check_uncertainty_flatten",
         "check_untracked_attribution",
         "check_venv_lock",
         "check_verify_logging"

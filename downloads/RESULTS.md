@@ -1,165 +1,223 @@
-# ARC 056 RESULTS — D3.474 discharged: trailing stops arm, trail and fire
+# ARC 057 RESULTS — I1 ARC C2: §14's four uncertainty flatten producers
 
-**TIER = INTERIOR — FUNCTIONAL FIX.** Limiter badge **STAYS RED**. Count **STAYS 11/12** (open: I1).
-Discharges **D3.474**. Does NOT flip an invariant. RE-OPENED and RE-PROVED **I2** and **I4**.
+**TIER = INTERIOR.** Limiter badge **STAYS RED**. Count **STAYS 11/12** (open: I1). This arc does
+**NOT** discharge I1 — only **ARC D** (flatten completions + the convergence gate) remains.
+Discharges **D3.453 · D3.372 (flatten half) · D3.469 · D3.475**. Opens **D3.478 · D3.479 · D3.480 · D3.481**.
 
-**Predecessor DERIVED:** brief said `≈ 4601a06`; `git rev-parse HEAD` = **`d3ff4a0`**. Frozen against
-that.
+**Predecessor DERIVED, not assumed:** the brief said `≈ eb2e853`; `git rev-parse HEAD` = **`5757f35`**
+(eb2e853 is ARC 056's CODE commit, 5757f35 its post-write-back re-measure on top). Everything below is
+frozen and diffed against **5757f35**.
 
 ---
 
 ## THE HEADLINE
 
-**The strategy's entire loss-cutting mechanism now works end to end on the daemon.** Before this arc
-`reserve(stop_mode=trailing)` was accepted and its margin committed, the fill was then refused whole,
-the position never opened and the reservation leaked. A green 12/12 Limiter would still have refused
-every trailing entry.
+**D3.442's protective-flatten path is now FULLY WIRED.** ARC 055 (C1) gave the daemon the STOP
+protective exit — a breached synthetic stop fires one flatten. This arc gives it the other half of
+§14's sentence: the four conditions under which this process holds, or the venue holds, a position it
+**cannot protect or cannot account for**, each firing ONE `ProtectiveFlatten` with
+`reason = uncertainty` through C1's already-proven send machinery.
+
+All four detectors already existed. **Not one had a producer.** Measured on a live `limiterd` at S1,
+before a line of this arc was written — every one of them ended in the same reading, `flattened = []`:
+
+| condition | debt | the position, S1, BEFORE | S3, AFTER |
+|---|---|---|---|
+| stale open position | D3.453 | OPEN §3 row, feed silent 3.0s against a 2.0s threshold, untouched | ONE flatten, `trigger=stale_price`, `2049ms old against 2000ms` |
+| not-tradable fill | D3.372 | `write_refusals=1`, `positions=[]`, `writes=0` — §3 reads FLAT over a real venue position | ONE flatten of `MNQU6`, `trigger=uncertainty` |
+| undetailed poll fill | D3.469 | venue says `filled`, HELD across 62 queries, reservation committed forever | HOLD for a bounded window, then ONE flatten |
+| un-armable fill, venue half | D3.475 | `arm_refusals=1`, capital returned (056's half), `stops=[]`, no flatten | ONE flatten naming the order |
+
+Every "AFTER" carries `executed=[True]`, `reason=uncertainty`, and a `sent_on_native_id` equal to
+§5:323's sender thread and **not** the loop's.
 
 ---
 
-## BASELINE — MEASURED FIRST, AND THE BRIEF'S PREDICTION MISSED
+## WHAT WAS BUILT, AND WHAT WAS NOT TOUCHED
 
-`94 passed | 4 failed | 3 cannot-measure | 0 skipped` at `d3ff4a0` (exit 1).
+`scripts/limiterd.py` gains four objects and nothing else changes shape:
 
-The brief expected `~95|4|2|0`, on the expectation that `check_arc_status_contract` would clear to
-PASS auditing `arc_055.log`. **It reads CANNOT-MEASURE: that log carries no
-`**** ARC completed ****` marker.** ARC 055 printed the marker to the chat, not into its own log —
-the 054 gap, one layer over. This arc's marker is written INTO `arc_056.log`.
+* **`UncertaintyCondition`** — the CLOSED, DERIVED set of §14's four conditions. The gate reads this
+  enum by AST; it holds no copy of its own.
+* **`UncertaintyWatch`** — DETECTS and ENQUEUES. Holds no broker, no executor, no Plane-1 sink and no
+  clock, so *this object cannot send* is a property of the TYPE. Its only per-tick half is the
+  stale-open scan, bounded by §15's `O(positions ≤ 5)/tick`; the other three are event-driven at the
+  sites that already observe them.
+* **`UncertaintyDriver`** — FIRES, on §5:323's sender thread. Holds the **SAME** `ProtectiveFlatten`
+  §3:173's onset sweep and C1's stop exit already share, so §4's dual-authority arbiter keeps reading
+  and writing **ONE** `_closed` book.
+* **`ProtectiveSenders`** — `LimiterLoop.attach` takes one `sender_send` and there are now two
+  producers behind it. Routed by PAYLOAD TYPE, never by a flag: each driver's `send` returns
+  immediately on a payload that is not its own frozen dataclass.
 
-| bucket | members |
-|---|---|
-| FAIL x4 | `check_ibgateway_service` (gateway down), `check_monitor_tui` (ARM3 stale pin), `check_uncalled_entry_points` (21 rows), `check_untracked_attribution` (the `.dmg`) |
-| CANNOT-MEASURE x3 | `check_arc_status_contract`, `check_ibgateway_config`, `check_observed_resource_claims` |
+**C1 IS CALLED, NOT CHANGED — asserted with `git hash-object` against `5757f35`, not claimed.**
+`stopwatch.py` · `flatten.py` · `fills.py` · `stops.py` · `seam.py` · `freshness.py` · `outcomes.py` ·
+`reservations.py` · `positions.py` · `picture.py` · `completions.py` · `loop.py` · `execution.py` ·
+`join.py` · `calendar_seam.py` · `wal.py` — **all sixteen BYTE-IDENTICAL.** The freeze list expected
+the detection seams to appear in the diff; they do not, because the producers read them and change
+none of them.
 
----
-
-## S1 — D3.474 REPRODUCED LIVE, AGAINST A WORKING CONTROL
-
-| step | `committed` | `outstanding` | stop | position |
-|---|---|---|---|---|
-| boot | 0.0 | 0 | — | — |
-| FIXED reserve | 1000.0 | 1 | — | — |
-| FIXED fill | **0.0** | **0** | armed @ 4998.0 | **OPEN** |
-| TRAILING reserve | 1000.0 | 1 | — | — |
-| TRAILING fill | **1000.0** | **1 — THE LEAK** | **none** | **not opened** |
-
-`delivered` 1 -> 2 while `handled`/`conversions`/`releases`/`writes` ALL stayed at 1.
-
-### THE TRAIL SOURCE — TRACED, AND THE ANSWER CHANGES THE BRIEF
-
-`docs/nix_strategy_contract_v1.1.md`:175 **already** declares the GO's stop object as
-`{"mode":"trailing","initial_ticks":N,"trail_ticks":M}` at `contract_rev 1.1.0`, with :475 requiring
-both int >= 1. **The distance was on the wire and was dropped in the projection into `ProposedOrder`.**
-So: **NO strategy-contract-v1.2 implication.** Nothing was invented and no default was minted.
+**The diff is four files:** `scripts/limiterd.py`, `risks/limiter.config.json` (one new knob + its
+`_derivations` entry), `checks/registry.json` (one line), `docs/CHECK-DEBT.md` — plus two new files,
+`checks/check_uncertainty_flatten.py` and `scripts/tests/test_check_uncertainty_flatten.py`.
 
 ---
 
-## S2 — THE FIX (four edits, frozen seam NOT widened)
+## THE THREE RULINGS THIS ARC MADE, EACH STATED RATHER THAN SLIPPED IN
 
-1. `nixrisk/seam.py` — `ProposedOrder.trail_ticks: int | None = None`. Additive, defaulted, last;
-   all 54 construction sites unchanged, every FIXED order untouched.
-2. `limiterd.py` — the `reserve` verb carries it from the payload. **`None`, never `or 0`** (a GO
-   that sent no trail and one that sent an invalid trail are different refusals — ARC 053's
-   `signal_ts` reasoning, one field up), and never defaulted from `stop_ticks`.
-3. `nixrisk/stops.py` — `arm` reads `order.trail_ticks` when the caller passes none; the explicit
-   argument still wins. **This is why `fill_seam.StopArmPort` (`FILL_SEAM_REV 1.0.0`) is
-   byte-identical: the port did not have to be widened to make trailing work.**
-4. `nixrisk/fills.py` — a denied conversion runs step 2 and ONLY step 2: released over §3's
-   `TerminalPath.FILL` through the SAME verb the success path uses, step 3 never reached, no row
-   published, `UnarmableFill` carries the original refusal outward. **No leak AND no unprotected
-   open.**
+**1 — D3.469 HOLDS FIRST. It does not flatten on detection.** A `filled` status answer whose
+execution report has not arrived is overwhelmingly the *delayed-but-valid* case: §2A's `on_fill` is a
+push, pushes arrive late, and §12.4's reconnect makes a re-delivery expected. Flattening on the status
+answer kills a healthy position — not a safe direction, a **different failure**. So the answer is a
+bounded hold: `exec_report_reconcile_ms` (a DECLARED NIX ADDITION with its own `_derivations` entry —
+§12A's `PENDING_ACK_TIMEOUT_MS` bounds an un-acked order and `FILL_TIMEOUT` a working one, and
+neither is this quantity, which starts *after* the venue said `filled`). **Both branches measured**:
+the real exec report inside the window CONVERTS and no flatten fires across 8s past the deadline; the
+deadline expiring first fires exactly one. PLANT B proves the ordering is gated.
 
-### ONE ARCHITECT RULING CORRECTED — THE BRIEF INVITED IT
+**2 — A FEED NEVER OBSERVED IS NOT FLATTENED, and the narrowing is PUBLISHED.**
+`FreshnessTracker.reading` answers `CacheState.EMPTY` with `blocked=True` for a key nothing has ever
+been seen on — §17's stale-until-proven-fresh, and the right answer for a GATE deciding whether to
+admit new capital. It is the **wrong** trigger for a flatten in THIS build: D3.473 records that this
+daemon has no capture feed at all, so EMPTY is every symbol's state in a build with nothing
+publishing, and firing on it would flatten every position in the tree on the ground that the feed
+nobody wired is not sending. That is the absence of a feed reported as a position hazard. So the
+producer fires on STALE — observed, then quiet — and every EMPTY open symbol is NAMED in
+`status.uncertainty.unpriced_positions`. **CHECK-DEBT D3.478 owns the other half.**
 
-The brief said `arm` should anchor a trailing stop at `price -/+ trail_ticks x tick_size`.
-**§4:190-196 says the opposite:** a trailing stop is anchored at `fill +/- initial_distance` and
-**HOLDS there until the trail would sit tighter**. Anchoring at the trail distance places the stop at
-a level the strategy did not choose — tighter than intended whenever `trail < initial`, the ordinary
-case — and fires it on the noise the initial distance exists to absorb. `stops.py` already had it
-right; the gap was only that nothing fed it. **PLANT C was restated to the spec's property.**
-
----
-
-## S3 — PROVEN END TO END, I2 AND I4 RE-PROVEN
-
-**A. THE FULL TRAILING LOSS-CUT.** armed **4998.0** (INITIAL distance) with `trail_distance_ticks=4`
--> `committed` 1000.0 -> 0.0, `outstanding` 1 -> 0, position **OPEN** -> 12 ticks of advance ratcheted
-`level` **4999.25 -> 5002.0**, monotonically non-decreasing, `activated` latched -> a breach of the
-**TRAILED** level fired **EXACTLY ONE** protective flatten: `fires=1 sends=1 breaches=1
-executed=[true]` across 125 polls and 8 further ticks past the level, `refusals=[]`. **The firing
-names 5002.0, not the armed 4998.0.**
-
-**B. FIXED UNREGRESSED.** Identical to ARC 047/055.
-
-**C. I2 ON THE NEW PATH.** Malformed trailing -> arm refused and NAMED -> **released EXACTLY ONCE**
-(1000.0 -> 0.0, outstanding 1 -> 0), `refused_releases=0`, **no stop, no position** (`writes` 2 not 3,
-`handled` 2 while `delivered` 3). Three reservations, three releases.
-
-**I4.** No stop and no §3 row precede the confirmed fill in either drive.
+**3 — D3.372's SYMPTOM IS CLOSED; ITS ROOT IS SEPARATED, NOT CLOSED WITH IT.** The row asked for an
+architect ruling on which surface carries the condition — *publish the row anyway (with what margin
+figure?) or hand `nixrisk.flatten` an `UNCERTAINTY` trigger from this site*. The brief ruled the
+second and this is it. The daemon will still ACCEPT a `reserve`, COMMIT its margin and let the venue
+fill in a symbol §3's picture has no margin scale for. **That is now D3.480**, a row of its own, so
+the symptom's closure cannot read as the cause's.
 
 ---
 
-## S4 — THE GATE: EXTENDED, NOT ADDED (census)
+## THE GATE — `check_uncertainty_flatten`, +1 PASSED
 
-`check_fill_handler` owns *a fill calls arm*; doctrine C.9 forbids a second instrument over it.
-**Extended per rule 8 — no new gate, no count move.** ARM TRAILING, **BOUND from four plants**, each
-exit 1 naming its site: **A** trail un-threaded (D3.474 reproduced) · **B** refusal does not release
-(the leak, names I2) · **B'** refusal releases twice (rule 4's other direction) · **C** armed at the
-trail distance (§4:190-196). Plants removed -> PASS. 31/31 tests.
+**Census, run before it was written.** `check_flatten`'s `SUBJECTS` is `("nixrisk/flatten.py",)` — it
+owns the EXECUTOR as a LIBRARY and spawns no daemon. `check_stop_maintenance` owns §4:187-196's TRAIL
+and the `SYNTHETIC_STOP` breach path — a different condition class: a stop that breached is a position
+that WAS protected. `check_limiter_daemon_dispatch` owns the fill/reject/timeout DISPATCH — it
+measures that the cascade RAN, and says nothing about what §14 owes a position the cascade REFUSED.
+So the pair *daemon's uncertainty-producer set, and its completeness* is genuinely unowned, and
+doctrine C.9 is respected rather than argued around.
 
-**NO-REGRESSION PROOF (the arc's most important close-out item), at the merged tree:**
-`check_reservation_lifecycle` **PASS** · `check_two_phase_entry` **PASS** · `check_stop_maintenance`
-**PASS** · `check_limiter_daemon_dispatch` **PASS** · `check_origin_write` **PASS** ·
-`check_order_path_bans` **PASS**. `check_uncalled_entry_points`: **55 measured before, 55 after** —
-zero new uncalled surface, baseline byte-identical.
+Six arms: **1** each producer fires, driven through a real `limiterd` (never a direct call) · **2**
+fire-once across ≥20 further scans with the condition still standing · **3** D3.469's BOTH branches ·
+**4** producer completeness **BY DERIVATION** (the set read out of `limiterd.py`'s own AST and out of
+the running process; the gate holds no copy) · **5** I9 and I3 over this arc's NEW code · **6** an
+unclassifiable refused fill is CANNOT_MEASURE naming it, never PASS.
 
----
+**ARM 5, measured:** the stale-open scan over §15's worst case — five OPEN rows, all stale, all
+detected — entered only `['__main__','enum','limiterd','nixrisk.freshness','nixrisk.picture',
+'nixrisk.positions']`. No I/O root, no transport root. The send entered no banned transport root.
 
-## FREEZE — `git hash-object`, not a claim
+### DEMONSTRATED FAILS — four REAL source plants against the SHIPPED gate
 
-Diff: `seam.py`, `stops.py`, `fills.py`, `limiterd.py`, `check_fill_handler.py`,
-`test_check_fill_handler.py`, `docs/CHECK-DEBT.md`. **Byte-identical:** `stopwatch.py`, `flatten.py`,
-`positions.py`, `projection.py`, `outcomes.py`, `reservations.py`, `completions.py`, `fill_seam.py`,
-`freshness.py`, `execution.py`, `picture.py`, `join.py`, `gate.py`, `nixalloc/sizing.py`,
-`uncalled_entry_points_baseline.json`, `gate_coverage_baseline.json`, `registry.json`.
-**C1's stop-wiring untouched** — the five `limiterd.py` hunks are all in `FillPath` and
-`CommandHandler._reserve`; the only `StopWatch` line in the entire diff is a docstring.
+Each is an edit to `scripts/limiterd.py`, the gate driven against it, the file restored and its
+`sha256` compared before and after (**`5e65a1d82f726a31` both sides — IDENTICAL**).
 
----
+| plant | exit | what the gate said |
+|---|---|---|
+| **A** — a producer detects but does not fire | **1** | *UNPROTECTED POSITION. The `stale_open` condition (D3.453) was ESTABLISHED on a live daemon and NO §14 protective flatten was fired for it within 25.0s … `detected={'stale_open': 1}` `sends=0` `flattened=[]`* |
+| **B** — D3.469 flattens too eagerly | **1** | *D3.469 FIRED AT THE INSTANT ITS WINDOW OPENED … the ruling is HOLD then decide — the delayed exec report is the common case* |
+| **C** — double-flatten | **1** | *`stale_open` (D3.453) fired 3 protective flattens for ONE condition* |
+| **D** — a fifth condition with no producer | **2** | *declares uncertainty condition(s) `['orphaned_position']` that this gate has no drive for, so their producers are UNMEASURED* |
 
-## CHECK-DEBT — ARC TOTAL 416 (derived, not typed)
+**PLANT B's verdict is a correction this arc made to its own gate.** It first exited **2**, because
+the eager fire tripped a precondition raise in the establisher and a defect downgraded to
+CANNOT_MEASURE is a defect that never names itself. The raise was moved into ARM 3 as a finding; the
+reason is recorded at the site.
 
-* **D3.474 DISCHARGED.**
-* **D3.475 OPENED** — the reservation half is closed, the VENUE half is not: an un-armable fill
-  leaves a real position at the broker with no synthetic stop, and §14 makes the flatten
-  `nixrisk.flatten`'s. Named, loud in the daemon's `unarmable` block, routed to **ARC C2**.
-* **D3.476 OPENED** — `nixalloc/sizing.py` carries no trail distance and is not wired into
-  `limiterd`; named rather than half-threaded, and its hash proves it untouched.
-* **D3.477 OPENED** — `test_PLANT_053B`'s anchor drifted at ARC 055; **proven inherited** by running
-  it in a clean worktree at `d3ff4a0`, where it fails identically.
-
-416 is `derived:ledger_rows` read off `check_derived_claims` over the merged tree — **not 414 plus
-arithmetic, which would have said 417**. `check_derived_claims` PASS.
-
----
-
-## POST-WRITE-BACK RE-MEASURE — `94 | 4 | 3 | 0` at `eb2e853`. **PREDICTION MET.**
-
-Predicted before the run: `+0 / +0 / +0` on a measured baseline of `94|4|3|0` — the census said
-EXTEND the arm owner, not add a gate. Measured at the merged tree: **`94 passed | 4 failed | 3
-cannot-measure | 0 skipped`**, exit 1. Same four fails, same three cannot-measures.
-
-**Why `check_arc_status_contract` could NEVER have cleared inside this arc** (the brief did not
-account for it): the check EXCLUDES the running arc's own log by name and audits the newest of what
-remains (`check_arc_status_contract.py:483`). It therefore audits `arc_055.log` — markerless —
-whatever this arc does. It clears at **ARC 057**, auditing `arc_056.log`, **provided that log
-carries the marker** — which is why this arc's marker is written into it. The brief's `~95|4|2|0`
-was not early; it was unreachable from inside this arc.
+**Plants removed ⇒ exit 0.** 13 pytest controls in
+`scripts/tests/test_check_uncertainty_flatten.py`, including the **rule-4 plant-both** and a proof
+that the gate holds NO copy of the condition set — driven by changing the subject to a set sharing
+not one name with the shipped four, and requiring the derivation to answer with the invented names.
 
 ---
 
-## RESIDUAL — NOT CLAIMED
+## A DEFECT THIS ARC FOUND IN ITSELF, AND THE CONTROL IT ADDED
 
-**I1 is NOT discharged.** C2 (D3.453/372/469) then D (completions + convergence -> 12/12) then
-greening. Count stays 11/12, badge stays RED. D3.473/470/468 unchanged. No green here may be read as
-*the Limiter is receiving real prices* or *a live broker event reaches this handler*.
+The D3.469 sweep raised `AttributeError` — the firing was built from `TradeOrigin.symbol`, and
+`TradeOrigin` has three fields of which the instrument is deliberately not one. **The loop's own
+ingress containment swallowed it**, so the window was deleted, no flatten was enqueued, and the next
+poll re-opened it. The daemon reported `windows_opened` climbing 1 → 2 → 3 with
+`detected.undetailed_poll_fill` at **0** and `suppressed` at **0**: a producer that had silently
+stopped producing, visible only because two counters disagreed. The symbol now comes from the
+APPROVAL — the only authority in the room that holds one — and the sweep is contained **with a
+recorded `last_error`** that the gate reads as a finding. Containment without a reason is how that
+happens.
+
+---
+
+## PROCESS
+
+* Baseline **MEASURED FIRST** at `5757f35`: `95 | 4 | 2 | 0`. Memory #27's prediction **MET** —
+  `check_arc_status_contract` now PASSES auditing `arc_056.log`, clearing exactly one cannot-measure
+  from ARC 056's `94|4|3|0`.
+* `arc_heartbeat.sh` from kickoff; **both** the selfcheck line and the completion marker tee'd into
+  `scratchpad/arc_logs/arc_057.log` (the recurring D3.464 gap).
+* `--basetemp=/var/tmp/arc057_pt`, OUTSIDE `~/nix` (D3.462, project memory).
+* Lint scoped to the CHANGED files, never `ruff .` — 8 findings, all this arc's, all fixed, clean.
+* Tripwires run EXPLICITLY: `test_check_order_path_bans` + `test_check_uncalled_entry_points`.
+* **Close-out (b) — the DERIVED reverse-dependency closure + the D3.444 by-detection backstop:
+  106 modules, `2151 passed | 2 failed | 2 skipped | 2 xfailed` in 589s.** The closure is DERIVED
+  (every test module that imports OR NAMES the changed artifacts and the detectors they read — the
+  by-detection half, because the import graph is blind to a subprocess caller). **Both failures are
+  PRE-EXISTING and neither is this arc's:** `test_PLANT_053B` is **D3.477 verbatim** (its plant anchor
+  drifted at ARC 055 and the brief lists the row unchanged), and
+  `test_the_LIVE_BASELINE_accepts_EXACTLY_what_the_LIVE_TREE_measures` fails on
+  `stopwatch.py::StopWatch.forget`, which is in the `5757f35` baseline `verify.py` output taken
+  BEFORE this arc touched anything and whose file is byte-identical here.
+* **Close-out (c):** the gate BOUND from all four plants plus the rule-4 plant-both, and at the merged
+  tree `check_hot_path_purity` **PASS**, `check_flatten` **PASS**, `check_stop_maintenance` **PASS**,
+  `check_limiter_daemon_dispatch` **PASS**, `check_fill_handler` **PASS** — I9 and I3 not regressed by
+  the new per-tick scan or the new sends.
+* **Close-out (d):** CHECK-DEBT reconciled — 4 discharged, 3 opened — and the **ARC 057 series row
+  re-derived WHOLE at 415** off `check_derived_claims`'s own `derived:ledger_rows`, never 416 plus
+  arithmetic. `check_derived_claims` exit 0 (13/13 claims, 102 checks registered, 416 ledger rows).
+* `checks/registry.json`: the new gate was **hand-added and then the derivation was made to agree**
+  with it — `verify.py --optimize` refuses to derive a plan while an orphan check exists, and
+  reported *derived plan is identical to the live registry* before `--commit` installed it.
+* `check_uncalled_entry_points` **UNMOVED**: 170 uncalled, ratchet high-water 170, 21+4+3 rows,
+  *55 measured and 25 render* — identical to the baseline in every counter. The brief expected a
+  shrink; there is none, because the producers call no previously-uncalled entry point.
+
+### THE TWO REDS THIS ARC BANKED OVER, AND THE PROOF THEY ARE NOT ITS OWN
+
+The pre-commit runtime gate refused the first bank. Two of the selected tests failed, and **both
+reproduce byte-for-byte at the derived tip `5757f35` in a CLEAN GIT WORKTREE, before a line of this
+arc exists** — run there deliberately rather than argued from a diff:
+
+* `test_check_limiter_daemon_dispatch::test_PLANT_053B` — **D3.477 verbatim**, the row the brief
+  lists as unchanged: *the plant's anchor is not unique in scripts/limiterd.py (0 occurrences)*.
+* `test_check_uncalled_entry_points::test_the_LIVE_BASELINE_accepts_EXACTLY_what_the_LIVE_TREE_measures`
+  — `stopwatch.py::StopWatch.forget`, uncalled since ARC 055, and `stopwatch.py` is byte-identical
+  here. **Nothing named it, so this arc opens D3.481** rather than silencing the red: WIRE IT is
+  ARC D's work, DELETE IT removes the mechanism D needs, and ADMIT IT BY NAME would GROW a one-way
+  ratchet the gate itself calls a suppression file.
+
+Neither surfaced at ARC 056's bank because that commit ran `mode=incremental SELECTED=1`; this arc's
+change selects both. **The first commit attempt also ran a 49m23s `full-escalated
+(SCOPE-BLIND:changed-but-uncovered:...)` pass** because the two NEW files had no `.testmondata`
+fingerprint — D3.466's shape on new artifacts. Fingerprinting them took the gate to
+`mode=incremental SELECTED=11` in 8.23s, which is the ARC 052 remedy applied rather than re-derived.
+Eight further `test_check_picture_atomicity` failures in that full pass are load artifacts of a
+3631-test run — that module passes 23/23 standalone on this tree, and its gate PASSES under
+`verify.py`.
+
+---
+
+## RESIDUAL — EXPLICITLY NOT CLAIMED
+
+* **I1 is NOT discharged. The count STAYS 11/12.** Only **ARC D** remains: the closing fills coming
+  back → §12.10 `closed` rows → the position closing → §3's release, and the convergence gate that
+  flips 11/12 → 12/12. A flatten fired here is **IN FLIGHT** until D reconciles it, and the fire-once
+  mark is what stops the next tick re-firing it in the meantime.
+* **D3.478 / D3.479 / D3.480** — this arc's own three narrowings, named above.
+* **D3.476** (`nixalloc/sizing.py` has no trail distance), **D3.473 / D3.470 / D3.468** (real prices /
+  onset detection / status-directory producers), **D3.477** (the inherited drifted test) — unchanged.
+* No board redraw for the count. Tail annotation only: **all producers wired; only ARC D —
+  completions + convergence — remains.**

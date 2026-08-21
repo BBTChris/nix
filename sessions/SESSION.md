@@ -8360,3 +8360,181 @@ remains (`check_arc_status_contract.py:483`). So it audits `arc_055.log` — whi
 whatever this arc does. It clears at ARC 057, auditing `arc_056.log`, **provided that log carries
 the marker**, which is why this arc's marker is written into it. That is the structural correction to
 the brief's `~95|4|2|0`: the figure was not merely early, it was unreachable from inside this arc.
+
+---
+
+## ARC 057 — I1 ARC C2: §14's four uncertainty flatten producers (what cannot be protected is flattened)
+
+**TIER = INTERIOR.** Limiter **STAYS RED**, count **STAYS 11/12** (open: I1), **no board redraw**.
+Discharges **D3.453 · D3.372 (flatten half) · D3.469 · D3.475**; opens **D3.478 · D3.479 · D3.480 · D3.481**.
+**Predecessor DERIVED:** brief said `≈ eb2e853`; `git rev-parse HEAD` = **`5757f35`** — eb2e853 is
+ARC 056's CODE commit and 5757f35 its post-write-back re-measure on top. Frozen against 5757f35.
+
+**Baseline MEASURED FIRST: `95 | 4 | 2 | 0`.** Memory #27's prediction MET — `check_arc_status_contract`
+PASSES auditing `arc_056.log`, clearing exactly one cannot-measure from ARC 056's `94|4|3|0`. The
+four standing FAILs are unchanged and each accounted for: `check_ibgateway_service` (port 4002
+ECONNREFUSED), `check_monitor_tui` (ARM3 stale pin), `check_uncalled_entry_points` (21+ rows, already
+red at 056's bank), `check_untracked_attribution` (the `.dmg`).
+
+### THE HEADLINE
+
+**D3.442's protective-flatten path is now FULLY WIRED.** C1 (055) gave the daemon the STOP protective
+exit; this arc gives it §14's other half — the four conditions under which this process, or the venue,
+holds a position it **cannot protect or cannot account for**. All four detectors already existed and
+**not one had a producer**. Reproduced on a live `limiterd` at S1 before a line was written, and every
+one ended in the same reading: `flattened = []`.
+
+* **D3.453 stale open** — an OPEN §3 row whose feed had been silent 3.0s against a 2.0s threshold,
+  untouched. `FlattenTrigger.STALE_PRICE` was a member of the frozen vocabulary that NOTHING in this
+  tree had ever fired; the caller it lacked is now the per-tick `scan_open_positions`, which calls
+  `freshness.FreshnessTracker.reading` — the very detector D3.453 named as existing with nothing
+  joined to it.
+* **D3.372 not-tradable fill** — a venue fill in a symbol this Limiter never approved:
+  `write_refusals=1`, `positions=[]`, `writes=0`, so §3's table and §12.7's mirror read FLAT over a
+  real venue position and §7:501 priced it at zero.
+* **D3.469 undetailed poll fill** — the venue answering `filled` on a seam carrying no `exec_id`, no
+  `symbol` and no `price`: HELD across 62 queries with the reservation committed and nothing to
+  convert it.
+* **D3.475 un-armable fill, VENUE half** — `arm_refusals=1`, the capital returned (056's half),
+  `stops=[]`, `positions=[]`, and a real venue position with nothing behind it.
+
+After: each fires exactly ONE `ProtectiveFlatten`, `reason=uncertainty`, `executed=[True]`,
+`sent_on_native_id` == §5:323's sender thread and != the loop's, wire-free.
+
+### WHAT WAS BUILT — AND THE SIXTEEN FILES THAT DID NOT MOVE
+
+Four objects in `limiterd.py`: `UncertaintyCondition` (the CLOSED, DERIVED set), `UncertaintyWatch`
+(DETECTS and ENQUEUES; holds no broker, no executor, no clock, so *cannot send* is a property of the
+TYPE), `UncertaintyDriver` (FIRES, on the sender thread, holding the **SAME** `ProtectiveFlatten` the
+onset sweep and C1 already share so §4's arbiter keeps ONE `_closed` book), and `ProtectiveSenders`
+(one `sender_send`, two producers, routed by PAYLOAD TYPE — each `send` returns immediately on a
+payload that is not its own frozen dataclass).
+
+**C1 is CALLED, not changed, and it is asserted with `git hash-object` against 5757f35 rather than
+claimed:** `stopwatch.py`, `flatten.py`, `fills.py`, `stops.py`, `seam.py`, `freshness.py`,
+`outcomes.py`, `reservations.py`, `positions.py`, `picture.py`, `completions.py`, `loop.py`,
+`execution.py`, `join.py`, `calendar_seam.py`, `wal.py` — **all sixteen BYTE-IDENTICAL.** The freeze
+list expected the detection seams in the diff; they are not there, because the producers read them.
+
+### THE SHARED ARBITER, MEASURED
+
+A position both uncertainty-flattened (stale) and stop-breached (C1) resolves **ONCE**. C2 fired
+first; C1's subsequent close came back `executed=[False]` with `dropped=["trade TRD-… already
+protectively closed via 'protective flatten (reason=uncertainty, trigger=stale_price,
+condition=stale_open)'; refusing a redundant double-close"]`, and the BROKER recorded `['MESU6']` —
+one flatten, not two. One `_closed` book, proven rather than argued.
+
+### THREE RULINGS, STATED RATHER THAN SLIPPED IN
+
+**D3.469 HOLDS FIRST.** A `filled` status answer whose exec report has not arrived is overwhelmingly
+the delayed-but-valid case, and flattening on it kills a healthy position — not a safe direction, a
+different failure. The answer is a bounded window (`exec_report_reconcile_ms`, a DECLARED NIX
+ADDITION with its own `_derivations` entry: §12A's `PENDING_ACK_TIMEOUT_MS` bounds an un-acked order
+and `FILL_TIMEOUT` a working one, and neither starts *after* the venue said `filled`). Both branches
+measured: the real exec report inside the window CONVERTS with no flatten across 8s past the
+deadline; the deadline first fires exactly one.
+
+**A FEED NEVER OBSERVED IS NOT FLATTENED, and the narrowing is PUBLISHED.** `CacheState.EMPTY` is
+§17's right answer for a GATE admitting capital and the wrong trigger for a flatten in a build with
+no capture feed (D3.473) — firing on it would flatten every position in the tree on the ground that
+the feed nobody wired is not sending. Every EMPTY open symbol is NAMED in
+`status.uncertainty.unpriced_positions`; **D3.478** owns the other half.
+
+**D3.372's ROOT IS SEPARATED, NOT CLOSED WITH ITS SYMPTOM.** The daemon will still ACCEPT a
+`reserve`, COMMIT its margin and let the venue fill in a symbol §3's picture has no scale for. That is
+**D3.480**, a row of its own.
+
+### THE GATE — `check_uncertainty_flatten`, +1
+
+Census first: `check_flatten` owns the executor as a LIBRARY (`SUBJECTS = ("nixrisk/flatten.py",)`),
+`check_stop_maintenance` owns §4:187-196's trail and the `SYNTHETIC_STOP` breach (a different
+condition class — a stop that breached is a position that WAS protected), `check_limiter_daemon_dispatch`
+owns the fill/reject/timeout dispatch and says nothing about what §14 owes a REFUSED fill. The pair
+*producer set + completeness* is genuinely unowned; doctrine C.9 respected rather than argued around.
+
+Six arms. The one it exists for is **ARM 4, completeness BY DERIVATION**: the condition set is read
+out of `limiterd.py`'s own AST and out of the running process, and the gate holds no copy — a fifth
+condition added later with no producer is the exact defect, and it is the state all four of these
+were in until this arc. **ARM 5** re-proves I9 over the NEW hot-path code: the scan over §15's worst
+case (5 OPEN rows, all stale, all detected) entered only `['__main__','enum','limiterd',
+'nixrisk.freshness','nixrisk.picture','nixrisk.positions']` — no I/O root, no transport root.
+
+**BOUND from four REAL source plants** against the shipped gate, `limiterd.py` restored byte-identically
+after each (`sha256 5e65a1d82f726a31` both sides): **A** a producer that detects and does not fire →
+exit 1, *UNPROTECTED POSITION … `detected={'stale_open': 1}` `sends=0` `flattened=[]`*; **B** D3.469
+firing inside its own window → exit 1; **C** the fire-once mark dropped → exit 1, *fired 3 protective
+flattens for ONE condition*; **D** a fifth condition with no producer → exit 2 naming
+`orphaned_position`. Plants removed ⇒ exit 0. Plus 13 pytest controls including the rule-4 plant-both.
+
+**PLANT B is a correction this arc made to its own gate.** It first exited **2**: the eager fire
+tripped a precondition raise in the establisher, and a defect downgraded to CANNOT_MEASURE is a defect
+that never names itself. The raise was moved into ARM 3 as a finding, and the reason is recorded at
+the site.
+
+### A DEFECT THIS ARC FOUND IN ITSELF
+
+The D3.469 sweep raised `AttributeError` — the firing was built from `TradeOrigin.symbol`, and
+`TradeOrigin` has three fields of which the instrument is deliberately not one. **The loop's own
+ingress containment swallowed it**: the window was deleted, no flatten enqueued, the next poll
+re-opened it. The daemon showed `windows_opened` climbing 1 → 2 → 3 with `detected` at 0 and
+`suppressed` at 0 — a producer that had silently stopped producing, visible only because two counters
+disagreed. The symbol now comes from the APPROVAL (the only authority here holding one) and the sweep
+is contained **with a recorded `last_error`** the gate reads as a finding. Containment without a
+reason is how that happens.
+
+### THE TWO REDS THIS ARC BANKED OVER, AND THE PROOF THEY ARE NOT ITS OWN
+
+The pre-commit runtime gate refused the first bank. Two of the selected tests failed, and **both
+reproduce byte-for-byte at the derived tip `5757f35` in a CLEAN GIT WORKTREE, before a line of this
+arc exists** — run there deliberately rather than argued from a diff:
+
+* `test_check_limiter_daemon_dispatch::test_PLANT_053B` — **D3.477 verbatim**, the row the brief
+  lists as unchanged: *the plant's anchor is not unique in scripts/limiterd.py (0 occurrences)*.
+* `test_check_uncalled_entry_points::test_the_LIVE_BASELINE_accepts_EXACTLY_what_the_LIVE_TREE_measures`
+  — `stopwatch.py::StopWatch.forget`, uncalled since ARC 055, and `stopwatch.py` is byte-identical
+  here. **Nothing named it, so this arc opens D3.481** rather than silencing the red: WIRE IT is
+  ARC D's work, DELETE IT removes the mechanism D needs, and ADMIT IT BY NAME would GROW a one-way
+  ratchet the gate itself calls a suppression file.
+
+Neither surfaced at ARC 056's bank because that commit ran `mode=incremental SELECTED=1`; this arc's
+change selects both. **The first commit attempt also ran a 49m23s `full-escalated
+(SCOPE-BLIND:changed-but-uncovered:...)` pass** because the two NEW files had no `.testmondata`
+fingerprint — D3.466's shape on new artifacts. Fingerprinting them took the gate to
+`mode=incremental SELECTED=11` in 8.23s, which is the ARC 052 remedy applied rather than re-derived.
+Eight further `test_check_picture_atomicity` failures in that full pass are load artifacts of a
+3631-test run — that module passes 23/23 standalone on this tree, and its gate PASSES under
+`verify.py`.
+
+### RESIDUAL
+
+**I1 is NOT discharged; the count STAYS 11/12.** Only **ARC D** remains — flatten COMPLETIONS (the
+closing fills coming back → §12.10 `closed` rows → the position closing → §3's release) and the
+convergence gate that flips 11/12 → 12/12. A flatten fired here is **IN FLIGHT** until D reconciles
+it, and the fire-once mark is what stops the next tick re-firing it meanwhile.
+
+### CLOSE-OUT
+
+**(b) DERIVED reverse-dependency closure + the D3.444 by-detection backstop: 106 modules,
+`2151 passed | 2 failed | 2 skipped | 2 xfailed` in 589s**, `--basetemp=/var/tmp/arc057_pt` OUTSIDE
+the tree (D3.462). The closure is derived — every test module that imports OR NAMES the changed
+artifacts and the detectors they read, the by-detection half because the import graph is blind to a
+subprocess caller. **Both failures are PRE-EXISTING and neither is this arc's:** `test_PLANT_053B` is
+**D3.477 verbatim**, and `test_the_LIVE_BASELINE_accepts_EXACTLY_what_the_LIVE_TREE_measures` fails
+on `stopwatch.py::StopWatch.forget`, which is in the `5757f35` baseline `verify.py` output taken
+BEFORE this arc touched anything and whose file is byte-identical here. Tripwires run EXPLICITLY.
+Lint scoped to the CHANGED files — 8 findings, all this arc's, all fixed, clean.
+
+**(c)** The gate is BOUND from all four plants plus the rule-4 plant-both, and at the merged tree
+`check_hot_path_purity`, `check_flatten`, `check_stop_maintenance`, `check_limiter_daemon_dispatch`
+and `check_fill_handler` all **PASS** — I9 and I3 not regressed by the new per-tick scan or the new
+sends. `checks/registry.json` gained the gate by HAND-ADD and the derivation was then made to agree
+with it (`verify.py --optimize` refuses to derive a plan while an orphan check exists, and reported
+*derived plan is identical to the live registry* before `--commit` installed it).
+
+**(d)** CHECK-DEBT reconciled — D3.453/D3.372/D3.469/D3.475 discharged, D3.478/D3.479/D3.480/D3.481 opened —
+and the **ARC 057 series row re-derived WHOLE at 416** off `check_derived_claims`'s own
+`derived:ledger_rows`, never 416 plus arithmetic. `check_derived_claims` exit 0 (13/13 claims, 102
+checks registered, 416 ledger rows). `uncalled_entry_points_baseline.json` **UNMOVED** — 170 uncalled,
+ratchet high-water 170, 21+4+3 rows, *55 measured and 25 render*, identical to the baseline in every
+counter. The brief expected a shrink; there is none, because the producers call no previously-uncalled
+entry point.
