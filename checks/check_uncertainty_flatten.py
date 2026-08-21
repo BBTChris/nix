@@ -100,11 +100,10 @@ FALSE?
  5. **The gate drove a producer directly.** GUARDED: no condition above is
     established by calling into a producer — every one is set up by writing a
     file the daemon reads or sending a command it answers, and every verdict is
-    read out of the daemon's own status reply. The ONE in-process import is
-    ARM 5's tracer, and it measures the SHAPE of two paths (which module roots
-    they enter, how many positions the scan touches) rather than establishing
-    any condition — the same separation `check_stop_maintenance` ARM 3/ARM 4
-    keep between a library drive and a daemon drive.
+    read out of the daemon's own status reply. **This gate imports NOTHING from
+    its subject into its own interpreter**: ARM 5's tracer runs in a fresh
+    process, which is both the D3.224 lesson (*one tree per interpreter*) and a
+    measurement this gate paid for — see `_TRACE_SOURCE`.
  6. **The condition set is whatever this gate happens to list.** GUARDED: ARM 4
     DERIVES it from the subject's own AST and from the running process, and this
     file contains no hand-written copy of the set to go stale. That is
@@ -132,7 +131,6 @@ import subprocess  # nosec B404
 import sys
 import tempfile
 import time
-from datetime import UTC
 from pathlib import Path
 from typing import Any, Final
 
@@ -1162,141 +1160,209 @@ def _profile_roots(fn: Any) -> tuple[set[str], int]:
     return seen, calls
 
 
-def _trace_new_code(  # pylint: disable=too-many-locals,too-many-statements
+#: ARM 5's tracer, run in a FRESH INTERPRETER. It is a source string and not a
+#: function in this file for a MEASURED reason, recorded here rather than
+#: discovered again: this gate first traced in-process, PASSED standalone, and
+#: came back CANNOT_MEASURE under `verify.py` with
+#: `admit('price:ES') was handed FreshnessStamp, not a FreshnessStamp`.
+#: `verify.py` runs every check in ONE interpreter, several of them load their
+#: subject out of `ctx.nix_home` by explicit path rather than by name, and an
+#: `isinstance` across two module objects for the same file is False. That is
+#: D3.224's *one tree per interpreter* landing on a frozen value type. A
+#: subprocess removes the class of defect rather than working around this
+#: instance of it, and it also removes the one in-process import §7.12 #5 had to
+#: caveat: nothing this gate does now shares an interpreter with its subject.
+_TRACE_SOURCE: Final[str] = r"""
+import json, sys, tempfile, time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import limiterd as daemon
+from nixrisk.flatten import ProtectiveFlatten
+from nixrisk.freshness import FreshnessTracker, StalenessPolicy
+from nixrisk.reservations import ReservationLedger
+from nixrisk.seam import PositionRow, PositionState
+
+CFG = json.loads(sys.argv[1])
+SYMBOL, STRATEGY = CFG["symbol"], CFG["strategy"]
+QTY, MARGIN, STOP_TICKS = CFG["qty"], CFG["margin"], CFG["stop_ticks"]
+TICK_SIZE, BALANCE, MAXPOS = CFG["tick_size"], CFG["balance"], CFG["max_positions"]
+
+
+class _Venue:
+    def __init__(self):
+        self.flattened = []
+
+    def flatten(self, symbol=None):
+        self.flattened.append(symbol)
+
+    def cancel_order(self, client_order_id):
+        pass
+
+
+class _Sink:
+    def on_closed(self, *a, **k):
+        pass
+
+    def book_realized(self, *a, **k):
+        pass
+
+
+class _Wal:
+    def append(self, *a, **k):
+        pass
+
+    def enqueue(self, *a, **k):
+        pass
+
+
+class _Loop:
+    tick_count = 1
+
+    class sender:
+        native_id = -1
+
+    @staticmethod
+    def hand_to_sender(payload):
+        pass
+
+
+def profile(fn):
+    seen, calls = set(), 0
+
+    def hook(frame, event, arg):
+        nonlocal calls
+        if event not in ("call", "c_call"):
+            return
+        calls += 1
+        if event == "call":
+            name = frame.f_globals.get("__name__")
+            if isinstance(name, str):
+                seen.add(name)
+
+    sys.setprofile(hook)
+    try:
+        fn()
+    finally:
+        sys.setprofile(None)
+    return seen, calls
+
+
+policy = StalenessPolicy.from_values(
+    {"price_stale_ms": 2000, "clock_skew_max_ms": 250,
+     "retry_backoff": {"attempts": 3, "initial_ms": 250, "multiplier": 2.0}}
+)
+ledger = ReservationLedger(_Wal())
+fills = daemon.FillPath(
+    reservations=ledger, balance=BALANCE, deployable_fraction=0.7,
+    tick_size={SYMBOL: TICK_SIZE},
+)
+# SS15's bound is the subject, so the scan is given the WORST CASE S7 allows:
+# five OPEN rows. A scan traced over one position could not tell an O(n) walk
+# from an O(1) read.
+rows = tuple(
+    PositionRow(trade_id="TRD-%d" % n, symbol=SYMBOL, strategy_id=STRATEGY,
+                size=QTY, margin=MARGIN, state=PositionState.OPEN,
+                stop_distance=STOP_TICKS)
+    for n in range(MAXPOS)
+)
+fills.picture.commit(positions=rows, margin_per_contract={SYMBOL: MARGIN},
+                     sum_reservations=0.0)
+stamped = [0]
+
+
+def clock():
+    stamped[0] += 1
+    return datetime.now(timezone.utc) + timedelta(seconds=stamped[0] * 10)
+
+
+watch = daemon.UncertaintyWatch(
+    FreshnessTracker(policy, clock=clock), fills, reconcile_window_s=1.0
+)
+watch.observe_price(SYMBOL, datetime.now(timezone.utc))
+scan_roots, scan_calls = profile(lambda: watch.scan_open_positions(1))
+
+venue = _Venue()
+exits = ProtectiveFlatten(
+    broker=venue, ledger=ledger, picture=fills.picture, strategy=_Sink(),
+    plane1=_Wal(), scoring=_Sink(), clock=time.time,
+)
+driver = daemon.UncertaintyDriver(watch, exits, _Loop())
+firing = daemon.UncertaintyFiring(
+    condition=daemon.UncertaintyCondition.UNARMABLE_FILL, key="cuf-trace",
+    symbol=SYMBOL, trade_id="", strategy_id=STRATEGY,
+    detail="ARM 5's traced send", tick=1,
+)
+send_roots, send_calls = profile(lambda: driver.send(firing))
+
+print(json.dumps({
+    "scan_roots": sorted(scan_roots), "scan_calls": scan_calls,
+    "detected": watch.detected["stale_open"],
+    "send_roots": sorted(send_roots), "send_calls": send_calls,
+    "sends": driver.sends, "flattened": list(venue.flattened),
+}))
+"""
+
+
+def _trace_new_code(  # pylint: disable=too-many-return-statements
     nix_home: Path,
 ) -> tuple[list[str], list[tuple[str, str]], str]:
     """ARM 5. The SCAN stays hot-path pure (I9); the SEND stays wire-free (I3).
 
-    In-process and assembled EXACTLY as the daemon assembles it — that is the
-    whole point, and it is `check_stop_maintenance` ARM 4's argument: a trace of
-    a path a test built differently is a trace of a different path.
+    Assembled EXACTLY as the daemon assembles it — that is the whole point, and
+    it is `check_stop_maintenance` ARM 4's argument: a trace of a path a test
+    built differently is a trace of a different path. Run in a FRESH
+    INTERPRETER; see `_TRACE_SOURCE` for the measurement that put it there.
     """
     evidence: list[str] = []
     findings: list[tuple[str, str]] = []
-    sys.path.insert(0, str(nix_home / "scripts"))
+    interpreter = nix_home / ".venv/bin/python"
+    if not interpreter.exists():
+        return evidence, findings, f"no interpreter at {interpreter}"
+    config = json.dumps(
+        {
+            "symbol": SYMBOL,
+            "strategy": STRATEGY,
+            "qty": QTY,
+            "margin": MARGIN,
+            "stop_ticks": STOP_TICKS,
+            "tick_size": TICK_SIZE,
+            "balance": BALANCE,
+            "max_positions": MAX_POSITIONS,
+        }
+    )
     try:
-        import limiterd as daemon  # pylint: disable=import-outside-toplevel
-        from nixrisk.flatten import (  # pylint: disable=import-outside-toplevel
-            ProtectiveFlatten,
+        proc = subprocess.run(  # nosec B603
+            [str(interpreter), "-c", _TRACE_SOURCE, config],
+            cwd=str(nix_home / "scripts"),
+            env={**os.environ, "PYTHONPATH": str(nix_home / "scripts")},
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=False,
         )
-        from nixrisk.freshness import (  # pylint: disable=import-outside-toplevel
-            FreshnessTracker,
-            StalenessPolicy,
+    except (OSError, subprocess.SubprocessError) as exc:
+        return evidence, findings, f"ARM 5's tracer could not run: {exc!r}"
+    if proc.returncode != 0:
+        return (
+            evidence,
+            findings,
+            (
+                f"ARM 5's tracer exited {proc.returncode} — §14's producers could "
+                f"not be assembled as the daemon assembles them: "
+                f"{proc.stderr.strip()[-700:]}"
+            ),
         )
-        from nixrisk.reservations import (  # pylint: disable=import-outside-toplevel
-            ReservationLedger,
-        )
-        from nixrisk.seam import (  # pylint: disable=import-outside-toplevel
-            PositionRow,
-            PositionState,
-        )
-    except ImportError as exc:
-        return evidence, findings, f"§14's producers do not import: {exc!r}"
-
-    class _Venue:
-        """A §2A broker that RECORDS. The exit path's far side."""
-
-        def __init__(self) -> None:
-            self.flattened: list[str | None] = []
-
-        def flatten(self, symbol: str | None = None) -> None:
-            """Recorded, never sent: this arm traces the CALL, not a venue."""
-            self.flattened.append(symbol)
-
-        def cancel_order(self, client_order_id: str) -> None:
-            """§3:173's onset verb. Present so the port shape matches the daemon's."""
-            _ = client_order_id
-
-    class _Sink:
-        """A §4 fan-out sink that records. The COMPLETION path is ARC D's."""
-
-        def on_closed(self, *_a: object, **_k: object) -> None:
-            """Recorded, not raised: this arm traces the FIRE, not the fan-out."""
-
-        def book_realized(self, *_a: object, **_k: object) -> None:
-            """Same."""
-
-    class _Wal:
-        """§9's Plane-1 port, recording. The WAL itself is `check_plane1_wal`'s."""
-
-        def append(self, *_a: object, **_k: object) -> None:
-            """Recorded."""
-
-        def enqueue(self, *_a: object, **_k: object) -> None:
-            """Recorded."""
-
-    class _Loop:
-        """The two verbs `UncertaintyDriver` reads off §5:322's loop."""
-
-        tick_count = 1
-
-        class sender:  # pylint: disable=invalid-name,too-few-public-methods
-            """§5:323's thread, as the driver reads its id."""
-
-            native_id = -1
-
-        @staticmethod
-        def hand_to_sender(_payload: object) -> None:
-            """§5:323's unbounded put. Recorded, never queued: ARM 1 drives the real one."""
-
     try:
-        policy = StalenessPolicy.from_values(
-            {"price_stale_ms": 2000, "clock_skew_max_ms": 250,
-             "retry_backoff": {"attempts": 3, "initial_ms": 250, "multiplier": 2.0}}
+        traced = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return (
+            evidence,
+            findings,
+            f"ARM 5's tracer produced no reading: {proc.stdout.strip()[-500:]!r}",
         )
-    except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
-        return evidence, findings, f"§6.4's policy does not build: {type(exc).__name__}: {exc}"
 
-    # §9 makes the Limiter the SOLE Plane-1 writer and the ledger requires the
-    # port rather than defaulting to a sink, so the recorder above is passed in.
-    # This arm traces a PATH's shape; the WAL itself is `check_plane1_wal`'s.
-    ledger = ReservationLedger(_Wal())
-    fills = daemon.FillPath(
-        reservations=ledger,
-        balance=BALANCE,
-        deployable_fraction=0.7,
-        tick_size={SYMBOL: TICK_SIZE},
-    )
-    # §15's bound is the subject, so the scan is given the WORST CASE §7 allows:
-    # five OPEN rows. A scan traced over one position could not tell an O(n) walk
-    # from an O(1) read.
-    rows = tuple(
-        PositionRow(
-            trade_id=f"TRD-{n}",
-            symbol=SYMBOL,
-            strategy_id=STRATEGY,
-            size=QTY,
-            margin=MARGIN,
-            state=PositionState.OPEN,
-            stop_distance=STOP_TICKS,
-        )
-        for n in range(MAX_POSITIONS)
-    )
-    fills.picture.commit(
-        positions=rows, margin_per_contract={SYMBOL: MARGIN}, sum_reservations=0.0
-    )
-    stamped = [0]
-
-    def _clock() -> Any:
-        from datetime import (  # pylint: disable=import-outside-toplevel
-            datetime as dt,
-        )
-        from datetime import (
-            timedelta,
-        )
-        stamped[0] += 1
-        return dt.now(UTC) + timedelta(seconds=stamped[0] * 10)
-
-    watch = daemon.UncertaintyWatch(
-        FreshnessTracker(policy, clock=_clock), fills, reconcile_window_s=1.0
-    )
-    from datetime import (  # pylint: disable=import-outside-toplevel
-        datetime as _dt,
-    )
-    watch.observe_price(SYMBOL, _dt.now(UTC))
-
-    roots, calls = _profile_roots(lambda: watch.scan_open_positions(1))
-    entered = _roots_of(roots)
+    entered = _roots_of(set(traced["scan_roots"]))
     unknown = sorted(entered - set(_SCAN_ALLOWED_ROOTS))
     if unknown:
         return (
@@ -1311,59 +1377,38 @@ def _trace_new_code(  # pylint: disable=too-many-locals,too-many-statements
                 "broken silently"
             ),
         )
-    if watch.detected["stale_open"] != MAX_POSITIONS:
+    if traced["detected"] != MAX_POSITIONS:
         return (
             evidence,
             findings,
             (
-                f"the traced scan detected {watch.detected['stale_open']} stale "
-                f"open position(s) over {MAX_POSITIONS} STALE §3 rows — the trace "
-                "did not cover the work it claims to have measured"
+                f"the traced scan detected {traced['detected']} stale open "
+                f"position(s) over {MAX_POSITIONS} STALE §3 rows — the trace did "
+                "not cover the work it claims to have measured"
             ),
         )
     evidence.append(
         f"ARM 5 (I9): the stale-open scan over §15's worst case "
         f"({MAX_POSITIONS} OPEN rows, all STALE, all detected) entered ONLY "
-        f"{sorted(entered)} in {calls} traced calls — every root in the measured "
-        "allow-set, no I/O root, no transport root"
+        f"{sorted(entered)} in {traced['scan_calls']} traced calls — every root "
+        "in the measured allow-set, no I/O root, no transport root"
     )
 
-    venue = _Venue()
-    exits = ProtectiveFlatten(
-        broker=venue,
-        ledger=ledger,
-        picture=fills.picture,
-        strategy=_Sink(),
-        plane1=_Wal(),
-        scoring=_Sink(),
-        clock=time.time,
-    )
-    driver = daemon.UncertaintyDriver(watch, exits, _Loop())
-    firing = daemon.UncertaintyFiring(
-        condition=daemon.UncertaintyCondition.UNARMABLE_FILL,
-        key="cuf-trace",
-        symbol=SYMBOL,
-        trade_id="",
-        strategy_id=STRATEGY,
-        detail="ARM 5's traced send",
-        tick=1,
-    )
-    send_roots, send_calls = _profile_roots(lambda: driver.send(firing))
-    if driver.sends != 1 or list(venue.flattened) != [SYMBOL]:
+    if traced["sends"] != 1 or traced["flattened"] != [SYMBOL]:
         return (
             evidence,
             findings,
             (
-                f"the traced send produced sends={driver.sends} and the broker "
-                f"recorded {list(venue.flattened)!r} — the trace is over a send "
-                "that did not happen, so its silence about transports proves "
-                "nothing (§17)"
+                f"the traced send produced sends={traced['sends']} and the broker "
+                f"recorded {traced['flattened']!r} — the trace is over a send that "
+                "did not happen, so its silence about transports proves nothing "
+                "(§17)"
             ),
         )
     banned = sorted(
         f"{root} ({why})"
         for root, why in _BANNED_ON_SEND.items()
-        if root in _roots_of(send_roots)
+        if root in _roots_of(set(traced["send_roots"]))
     )
     if banned:
         findings.append(
@@ -1383,8 +1428,8 @@ def _trace_new_code(  # pylint: disable=too-many-locals,too-many-statements
     else:
         evidence.append(
             f"ARM 5 (I3): the uncertainty send FIRED (broker flattened "
-            f"{list(venue.flattened)!r}) across {send_calls} traced calls and "
-            "entered no banned transport root"
+            f"{traced['flattened']!r}) across {traced['send_calls']} traced calls "
+            "and entered no banned transport root"
         )
     return evidence, findings, ""
 

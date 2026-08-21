@@ -8505,6 +8505,37 @@ Eight further `test_check_picture_atomicity` failures in that full pass are load
 3631-test run — that module passes 23/23 standalone on this tree, and its gate PASSES under
 `verify.py`.
 
+---
+## POST-WRITE-BACK RE-MEASURE — THE PREDICTION MISSED, AND THE MISS IS THE FINDING
+
+**Predicted `96 | 4 | 2 | 0`. First measured at `51622ec`: `95 | 4 | 3 | 0`.** The new gate PASSED
+standalone and came back **CANNOT_MEASURE under `verify.py`**, with its own sentence:
+
+```
+check_uncertainty_flatten  gate raised StalenessUsageError:
+  admit('price:ES') was handed FreshnessStamp, not a FreshnessStamp
+```
+
+`FreshnessStamp is not FreshnessStamp` is **two module objects for one file in one interpreter**.
+`verify.py` runs every check in a single process and several checks load their subject out of
+`ctx.nix_home` by explicit path rather than by name, so an `isinstance` across the two copies is
+False. That is **D3.224's *one tree per interpreter*** landing on a frozen value type — and the arm
+that tripped it was ARM 5, the only place this gate imported anything from its own subject.
+
+**Fixed by removing the class, not the instance.** ARM 5's tracer now runs in a **fresh interpreter**
+(`_TRACE_SOURCE`, a subprocess), so this gate shares no interpreter with its subject at all and
+§7.12 #5's caveat about one in-process import is gone rather than softened. The measurement that
+forced it is recorded at the site.
+
+**RE-MEASURED after the fix: `96 | 4 | 2 | 0`, `check_uncertainty_flatten [ok]` — the predicted
+tuple.** The four FAILs are the same four the baseline carried, all environmental or inherited
+(`check_ibgateway_service`, `check_monitor_tui`, `check_uncalled_entry_points`,
+`check_untracked_attribution` on the `.dmg`), and the two cannot-measures are the standing
+`check_ibgateway_config` / `check_observed_resource_claims` pair behind the unreachable port.
+
+**A gate that passes alone and fails in the suite is a gate that measured one tree and was asked
+about another. Standalone green is not the verdict; `verify.py`'s is.**
+
 ### RESIDUAL
 
 **I1 is NOT discharged; the count STAYS 11/12.** Only **ARC D** remains — flatten COMPLETIONS (the
