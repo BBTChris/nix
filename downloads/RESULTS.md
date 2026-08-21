@@ -101,3 +101,31 @@ and the FILL arm then reported a conversion that had happened. All four writers 
 
 **BADGE: Limiter STAYS RED · count STAYS 11/12 · no board redraw · I1 path-progress 5 of 6 wired
 (cancel · fill · reject · pending-timeout · onset). D3.442 restated: only protective flatten owed.**
+
+
+---
+
+## POST-WRITE-BACK RE-MEASURE at `58c9582`
+
+**`93 passed | 4 failed | 3 cannot measure | 0 skipped`, exit 1 — IDENTICAL to the baseline at
+`24da438`. PREDICTION MISSED, and the miss is the finding.**
+
+Predicted: `94|4|2|0`, on `check_arc_status_contract` moving CANNOT-MEASURE -> PASS because this arc
+tees its marker into its own log. **That was structurally unreachable, and the gate says so in its
+own source:** `_pick_log` excludes the RUNNING arc's log (`candidates = [p for p in logs if p.name
+!= own]`) because *"its conduct is not judgeable until it reaches close-out"* — while the
+arc-completion protocol puts the re-measure BEFORE the marker. **A marker written by arc N cannot be
+visible to arc N's own re-measure under any ordering; it can only appear in arc N+1's baseline.**
+Measured both ways here: baseline and re-measure both read `arc_053.log`, both CANNOT-MEASURE, across
+a commit that changed four files. That is the mechanism behind the 050 -> 051 -> 052 -> 053 chain,
+now recorded on **D3.464**. ARC 055's baseline should show it PASS against `arc_054.log`.
+
+**Everything this arc's own delta predicted DID hold.** No new check file -> `registered_check_count`
+stayed 100. `check_uncalled_entry_points` FAIL with rows unchanged (1210 vs 1203 judged, all 7 new
+ones CALLED; UNCALLED 171, GATE-ONLY 53 both sides). The other three fails are standing:
+`check_ibgateway_service` (gateway down), `check_monitor_tui` (stale pin),
+`check_untracked_attribution` (the `.dmg` — the operator's file, not this arc's to adopt or delete).
+**Clean set 11/12, no flip.** `check_limiter_daemon_dispatch` green WITH the onset arm;
+`check_flatten` and `check_halt` green and untouched.
+
+**Recorded forward-only. This is the figure ARC 054 closed on.**

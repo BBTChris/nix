@@ -8010,3 +8010,31 @@ convergence gate.
 
 **BADGE: Limiter STAYS RED. Count STAYS 11/12. No board redraw. I1 path-progress: 5 of 6 wired
 (cancel · fill · reject · pending-timeout · onset). D3.442 restated: only protective flatten owed.**
+
+### ARC 054 — POST-WRITE-BACK RE-MEASURE at `58c9582`
+
+**`93 passed | 4 failed | 3 cannot measure | 0 skipped`, exit 1 — IDENTICAL to the baseline at
+`24da438`. PREDICTION MISSED, and the miss is the finding.**
+
+Predicted before the run: `94|4|2|0`, on the strength of `check_arc_status_contract` moving
+CANNOT-MEASURE → PASS because this arc tees its marker into its own log. **That prediction was
+structurally unreachable and the gate says so in its own source.** `_pick_log` builds
+`candidates = [p for p in logs if p.name != own]`, where `own` is the log of the arc named in
+`arc_progress.txt`, and audits the newest of what remains — *"its conduct is not judgeable until it
+reaches close-out"*. The gate therefore **never audits the running arc's own log**, and the
+arc-completion protocol puts the re-measure BEFORE the marker. A marker written by arc N cannot be
+visible to arc N's own re-measure under ANY ordering; it can only appear in arc N+1's baseline.
+Measured in both directions here: the baseline and the re-measure **both read `arc_053.log`** and
+both returned CANNOT-MEASURE, across a commit that changed four files. This is the mechanism behind
+the 050 → 051 → 052 → 053 chain, and it is now recorded on D3.464.
+
+**Everything the arc's own delta predicted DID hold:** no new check file, so
+`registered_check_count` stayed 100 and `passed` did not move from this arc's work;
+`check_uncalled_entry_points` stayed FAIL with its rows unchanged (1210 entry points judged vs 1203,
+all seven new ones CALLED, UNCALLED 171 and GATE-ONLY 53 on both sides); the other three fails are
+the standing ones — `check_ibgateway_service` (gateway down), `check_monitor_tui` (stale pin),
+`check_untracked_attribution` (the `.dmg`, which is the operator's file and not this arc's to adopt
+or delete). Clean set **11/12**, no flip. `check_limiter_daemon_dispatch` is green **with** the onset
+arm, `check_flatten` and `check_halt` green and untouched.
+
+**Recorded forward-only. The figure above is the one this arc closed on.**
