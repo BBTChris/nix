@@ -156,3 +156,21 @@ constructs and never connects, so their departure would have signalled this arc'
 
 **Module 2 status: B12 — seam canonical + adapter constructed + first cross-seam gate. Event wiring
 (B12-2) is next, and its TASK 0 will now pass.**
+
+---
+
+## 8. POST-WRITE-BACK RE-MEASURE (forward-only, banked by its own commit)
+
+**At the merged tree `41d2d6f`: `101 | 4 | 2 | 0` — the prediction is met EXACTLY at the banked state.**
+
+| close-out (e) — the no-regression proof | result |
+|---|---|
+| Module 1's 14 invariant gates | **14 / 14 PASS** |
+| ARC 060's 3 cheap-set gates | **3 / 3 PASS** |
+| `check_broker_seam_wiring` | **PASS** (`[ok]` in the merged plan) |
+| frozen paths changed | **0 of 44** |
+| `git diff 49e09d0..HEAD -- scripts/nixrisk` | **0 files** |
+| broker files in the whole-arc diff | **`broker_order_ibkr.py` only** (the named canonical import) |
+
+The four FAILs are the same four and neither is this arc's subject; both cannot-measures are the
+gateway being unreachable, which this arc never touches by design.

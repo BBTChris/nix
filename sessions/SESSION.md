@@ -9061,3 +9061,13 @@ connects, so their departure would have signalled this arc's forbidden act.
 
 **BADGE: broker-order STAYS RED. Module 1 GREEN, unchanged.** Module 2 status: *B12 — seam canonical +
 adapter constructed + first cross-seam gate; event wiring (B12-2) next.*
+
+**POST-WRITE-BACK RE-MEASURE, at the merged tree `41d2d6f` (forward-only, banked by its own commit):**
+**`101 | 4 | 2 | 0` — THE PREDICTION IS MET EXACTLY at the BANKED state.** `check_broker_seam_wiring`
+is `[ok]` in the merged plan; the four FAILs are the same four (gateway ECONNREFUSED, `monitor_tui`'s
+ARM3 stale pin, the `uncalled` backlog, and the untracked `.dmg` + planning doc), and both
+cannot-measures are the gateway being unreachable — which this arc never touches by design.
+**CLOSE-OUT (e), the arc's most important item, at the merged tree: Module 1's invariant gates
+14/14 PASS, ARC 060's cheap-set gates 3/3 PASS, `check_broker_seam_wiring` PASS, 0 of 44 frozen paths
+changed, and `git diff 49e09d0..HEAD -- scripts/nixrisk` returns ZERO files.** The only broker file in
+the whole-arc diff is `broker_order_ibkr.py`, the named canonical-import change.
