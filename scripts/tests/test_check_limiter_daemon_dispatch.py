@@ -452,11 +452,23 @@ def test_PLANT_053B_a_daemon_whose_POLL_NEVER_RUNS_FAILS_naming_the_ZOMBIE(
     leaks. The daemon still HOLDS a poller, so `timeouts` is present and the
     gate must not read this as *this build does not poll*."""
     home = _population(tmp_path)
+    # ARC 058 / D3.477 DISCHARGED. The anchor was the WHOLE composed ingress
+    # line as ARC 053 wrote it, and ARC 055 then composed `stopwatch.before(...)`
+    # into that same expression — so the plant stopped mutating anything and the
+    # uniqueness guard in `_perturb` became the failing assertion (which is that
+    # guard doing its job). Re-pointed at the NARROWEST expression that models
+    # the defect: the poll's own `before` wrapper, unhooked from whatever wraps
+    # it. That expression is what §4's pending-timeout poll IS on the tick, and
+    # it survives another arc composing a sixth wrapper around it.
     _perturb(
         home,
         LIMITERD,
-        "        ingress=onset.before(booker.before(timeouts.before(_read_both))),",
-        "        ingress=onset.before(booker.before(_read_both)),  # PLANT 053B",
+        "timeouts.before(_read_both)",
+        # NO trailing comment: this expression sits INSIDE a multi-line call, so
+        # a `#` here comments out the closing parens and the plant becomes a
+        # SyntaxError — which the gate correctly reports as CANNOT_MEASURE, not
+        # as the defect. Measured while re-pointing this anchor.
+        "_read_both",
     )
     result = gate.run(Mode.VERIFY, _ctx(home))
     assert result.status is Status.FAIL_NEEDS_OPERATOR, result.detail

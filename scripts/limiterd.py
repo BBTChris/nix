@@ -142,6 +142,12 @@ from typing import Any, Final, cast
 
 import risk_config
 from nixrisk.calendar_seam import CacheState, FreshnessStamp
+
+# ARC 058 / I1 ARC D. §4's CLOSE, driven by the closing fill — IMPORTED AND
+# CALLED. The reconciling half C1 and C2 both stopped short of: they fire and
+# send, and until this arc nothing turned the flatten's own exec report into a
+# §12.10 `closed` row, a released open margin and a retired stop.
+from nixrisk.closing import ClosingFillHandler, FlattenInFlightBook
 from nixrisk.completions import (
     CompletionDispatcher,
     DispatchResult,
@@ -1020,6 +1026,105 @@ class OpenFeedback:
         return None
 
 
+# R0903 (too-few-public-methods): ONE public verb — the §4 fan-out this daemon
+# now has a channel for. A second method added to clear a threshold would widen
+# a surface whose narrowness is the point, exactly as `OpenFeedback` argues.
+# pylint: disable=too-few-public-methods
+class ClosedFeedback:
+    """ARC 058 / I1 ARC D. §4:203-206's `closed` OUTCOME PUSH — the exit half.
+
+    `OpenFeedback` above is the same object for the `open` outcome and this is
+    its mirror, written for the same reason and against the same quotation:
+    *"every outcome (sized / denied / pending / open / closed / rejected /
+    protective-flatten) is pushed to the originating strategy FSM"*. `closed` is
+    one of them, and until this arc this daemon's only implementation of §4's
+    `StrategyExitSink` was `UnwiredExitSinks.on_closed`, which RAISES.
+
+    IT IMPLEMENTS `flatten.StrategyExitSink` AND IS NOT ONE OF ITS CALLERS
+    ---------------------------------------------------------------------
+    `ProtectiveFlatten` keeps `UnwiredExitSinks` — its `_fan_out` runs only from
+    `reconcile_and_publish`, which needs the two ASYNC §2A query verbs this
+    daemon's stub venue does not have, so that path is still unreached and still
+    refuses loudly rather than absorbing. THIS sink is handed to the CLOSING-FILL
+    path (`nixrisk/closing.py`), which is the route the exit report actually
+    takes. Two sinks because there are two paths and only one of them exists.
+
+    **`hard_reset` is carried, not acted on, and that is the honest boundary.**
+    §4 hard-resets the owning FSM to flat on a protective close; the FSM is the
+    STRATEGY's (`nix_strategy_contract_v1.1.md`) and there is no bus in this
+    tree, so what the Limiter owes is the record, atomically written where a
+    consumer can read it. §4:208's one-in-flight lock is deliberately NOT touched
+    here: the entry order's lock was already released by the `open` outcome, and
+    a lock this strategy holds NOW belongs to a DIFFERENT order — releasing it on
+    a close would free a slot for an order still working at the venue.
+
+    NEVER RAISES, for `OpenFeedback.push`'s reason: this runs inside the tick and
+    an exception escaping it would kill the process holding every synthetic stop.
+    """
+
+    def __init__(self, loop: LimiterLoop, outbox: Path) -> None:
+        self._loop = loop
+        self._outbox = outbox
+        #: Every push, in order. The gate's evidence that the feedback carried
+        #: THIS trade's id and §4's verdict rather than a count of pushes.
+        self.pushed: list[dict[str, Any]] = []
+        self.failures: list[str] = []
+
+    def on_closed(
+        self, trade_id: str, strategy_id: str, reason: str, *, hard_reset: bool
+    ) -> None:
+        """§4 fan-out (a). Push `closed` for one trade. NEVER RAISES."""
+        try:
+            record = {
+                "schema": FEEDBACK_SCHEMA,
+                "outcome": "closed",
+                "trade_id": trade_id,
+                "strategy_id": strategy_id,
+                "closed_reason": reason,
+                "hard_reset": hard_reset,
+                #: §4's verdict spelled as the state the FSM is being reset TO,
+                #: so a consumer reads the transition rather than a boolean it
+                #: has to know the meaning of.
+                "fsm": "flat" if hard_reset else "unchanged",
+                "ts": time.time(),
+                "tick": self._loop.tick_count,
+                "reason": (
+                    f"{SITE}: §4:203-206 terminal outcome 'closed' — trade "
+                    f"{trade_id!r} is CLOSED ({reason}); §4 "
+                    f"{'hard-resets' if hard_reset else 'does NOT hard-reset'} "
+                    "the owning FSM to flat"
+                ),
+            }
+            safe = "".join(
+                ch if ch.isalnum() or ch in "-_." else "_" for ch in (trade_id or "-")
+            )
+            _write_json_atomically(self._outbox / f"{safe}.closed.json", record)
+            self.pushed.append(record)
+        except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
+            self.failures.append(
+                f"{SITE}: §4:203-206 CLOSED feedback for trade {trade_id!r} was "
+                f"NOT pushed: {type(exc).__name__}: {exc}. The position IS "
+                "closed and its capital IS released; the strategy was not told"
+            )
+
+    def record(self) -> dict[str, Any]:
+        """The out-of-process evidence block. ENUMERATED, never counted."""
+        return {
+            "pushed": [
+                {
+                    "trade_id": entry.get("trade_id"),
+                    "strategy_id": entry.get("strategy_id"),
+                    "closed_reason": entry.get("closed_reason"),
+                    "hard_reset": entry.get("hard_reset"),
+                    "fsm": entry.get("fsm"),
+                    "tick": entry.get("tick"),
+                }
+                for entry in self.pushed
+            ],
+            "failures": list(self.failures),
+        }
+
+
 # R0903 (too-few-public-methods): ONE public verb, the loop's per-item callback.
 # pylint: disable=too-few-public-methods
 class CompletionHandler:
@@ -1041,8 +1146,15 @@ class CompletionHandler:
         dispatcher: CompletionDispatcher,
         feedback: OpenFeedback | None = None,
         uncertainty: UncertaintyDriver | None = None,
+        closing: ClosingFillHandler | None = None,
     ) -> None:
         self._dispatcher = dispatcher
+        #: ARC 058 / I1 ARC D. OPTIONAL on the argument every collaborator here
+        #: is optional on: a build without it dispatches a CLOSING exec report
+        #: down the ENTRY path, which refuses it as an `UnapprovedFill` and
+        #: leaves it in §14's `unclassified` list — the exact ARC 058 / S1 state,
+        #: reported by `record()` as `closing: null` rather than as zero closes.
+        self._closing = closing
         #: ARC 057 / I1 ARC C2. OPTIONAL for `feedback`'s reason: every reader
         #: written against the ARC 046/047 constructor still builds this handler,
         #: and a build without it dispatches the fill and produces no §14
@@ -1059,6 +1171,12 @@ class CompletionHandler:
         #: because "never parsed" and "parsed and refused" are two readings and
         #: one counter over both would hide which (`completions.py` §7.12 #1).
         self.malformed: list[str] = []
+        #: ARC 058. CLOSES the close path itself refused — §3 declined the
+        #: commit, so the position is still OPEN here and the flatten is still
+        #: in flight. Kept OUT of `malformed` above for that list's own reason:
+        #: *a completion this process could not parse* and *a close §3 refused*
+        #: are two readings, and one counter over both would hide which.
+        self.closing_refusals: list[str] = []
 
     def handle(self, item: RawCompletion) -> None:
         """The loop's per-item callback for a completion. Dispatches, then unlinks."""
@@ -1076,6 +1194,37 @@ class CompletionHandler:
         except MalformedCompletion as exc:
             self._refuse(item, str(exc))
             return
+        # ARC 058 / I1 ARC D. THE CLOSING FILL IS ASKED FOR FIRST, AND THE ORDER
+        # IS THE WHOLE FIX. `CompletionDispatcher.dispatch` CLAIMS §4:214's dedup
+        # key before it runs the cascade, and the cascade refuses an exit report
+        # as an `UnapprovedFill` — so a close reaching the dispatcher first is a
+        # close whose key is spent and which can never be reconciled, and §14's
+        # classifier then records it as `unclassified`. Measured at S1 on a live
+        # daemon, which is why this branch is above and not below.
+        #
+        # `close()` returns `None` for anything that is not a close this process
+        # asked for, and `nixrisk/closing.py` derives that from §3/§4's own join
+        # and from what the daemon RECORDED SENDING — never from a field on the
+        # wire, because §2A:74-84's `on_fill` carries no role.
+        if self._closing is not None:
+            try:
+                if self._closing.close(completion) is not None:
+                    self._unlink(item)
+                    return
+            except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
+                # Contained for this file's standing reason. A close §3 REFUSED
+                # is already recorded on the handler's own `refusals` with the
+                # picture's sentence, and the completion is NOT then dispatched
+                # down the entry path: it is a close, it is named, and the
+                # protective flatten stays in flight for a later reconcile.
+                self.closing_refusals.append(
+                    f"{SITE}: §4's close of "
+                    f"{completion.client_order_id}/{completion.exec_id} in "
+                    f"{completion.symbol!r} was REFUSED: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                self._unlink(item)
+                return
         result = self._dispatcher.dispatch(completion)
         # ARC 057 / I1 ARC C2. §14's uncertainty classification, AFTER the
         # cascade and BEFORE the feedback push. The order is the safety
@@ -1192,6 +1341,8 @@ class CommandHandler:  # pylint: disable=too-many-instance-attributes
         prices: PriceRing | None = None,
         stopwatch: StopWatchDriver | None = None,
         uncertainty: UncertaintyDriver | None = None,
+        closing: ClosingFillHandler | None = None,
+        closed_feedback: ClosedFeedback | None = None,
     ) -> None:
         self._loop = loop
         self._outbox = outbox
@@ -1237,6 +1388,13 @@ class CommandHandler:  # pylint: disable=too-many-instance-attributes
         #: apart is why this arc exists.
         self._prices = prices
         self._stopwatch = stopwatch
+        #: ARC 058 / I1 ARC D. §4's close and its `closed` channel, both optional
+        #: on the argument every collaborator above is optional on: `closing:
+        #: null` says *this build cannot reconcile a closing fill* and is a
+        #: different fact from a build that reconciled nothing because nothing
+        #: closed. Those two are D3.481 and ARC 058 / S1 exactly.
+        self._closing = closing
+        self._closed_feedback = closed_feedback
 
     def handle(self, item: object) -> None:
         """The loop's per-item callback. Writes the reply, then unlinks the command."""
@@ -1675,6 +1833,19 @@ class CommandHandler:  # pylint: disable=too-many-instance-attributes
             "uncertainty": (
                 None if self._uncertainty is None else self._uncertainty.record()
             ),
+            # ARC 058 / I1 ARC D. §4's CLOSE as the RUNNING process reports it —
+            # every trade closed off a flatten's own exec report, with §3's
+            # published open margin AFTER the release and the stop each retired.
+            # `None` where absent for the reason every sibling here is `None`
+            # where absent: *this build cannot reconcile a closing fill* and
+            # *nothing closed* are two readings, and check contract rule 10 makes
+            # the difference between cannot-measure and pass.
+            "closing": (None if self._closing is None else self._closing.record()),
+            "closed_feedback": (
+                None
+                if self._closed_feedback is None
+                else self._closed_feedback.record()
+            ),
             "prices": (
                 None
                 if self._prices is None
@@ -2061,6 +2232,14 @@ class DirectoryStatusQuery:
         }
 
 
+# R0902 refused with a reason (INHERITED at ARC 058's greening pass, measured at
+# HEAD in a clean worktree): NINE attributes and every one is a fact a gate reads
+# out of the runtime record or a collaborator §4's resolution needs by name — the
+# outcomes book, the status query, D3.469's window, the poll/resolve/hold/refuse
+# counters and the last error. Folding them behind a sub-object would put the
+# measured facts one indirection away from the object that produced them, which
+# is the argument `loop.SenderThread` records against the same message.
+# pylint: disable=too-many-instance-attributes
 class PendingTimeoutPoller:
     """ARC 053. The per-tick hook that runs §4's pending-timeout resolution.
 
@@ -2434,6 +2613,18 @@ class UnwiredExitSinks:
     wire and CHECK-DEBT records as ARC C's (D3.453 / D3.372 / D3.469). A no-op
     stub would let that path run and report a close nobody was told about; this
     one stops it loudly at the boundary.
+
+    **ARC 058 / I1 ARC D DID NOT MAKE THIS OBSOLETE, AND THE DIFFERENCE MATTERS.**
+    This daemon now has a real §4 `closed` channel — `ClosedFeedback` below — and
+    it is handed to the CLOSING-FILL path (`nixrisk/closing.py`), which is the
+    route the exit report actually takes. The only caller of the two verbs here
+    is `ProtectiveFlatten._fan_out`, reached ONLY from `reconcile_and_publish`,
+    which awaits the two ASYNC §2A query verbs (`query_positions` /
+    `query_balance`) this daemon's stub venue does not have. That path is still
+    unreached, so this stub still refuses loudly rather than absorbing — and
+    `book_realized` has no Scoring process to reach on ANY path. Replacing this
+    with the real sink would claim a fan-out no reconcile in this process can
+    perform.
     """
 
     def on_closed(
@@ -2742,17 +2933,24 @@ class StopWatchDriver:  # pylint: disable=too-many-instance-attributes
     nobody declared is an unbounded stream of venue orders produced by a defect.
     """
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self,
         watch: StopWatch,
         exits: ProtectiveFlatten,
         loop: LimiterLoop,
         fills: FillPath,
+        in_flight: FlattenInFlightBook | None = None,
     ) -> None:
         self._watch = watch
         self._exits = exits
         self._loop = loop
         self._fills = fills
+        #: ARC 058 / I1 ARC D. Where a SENT flatten is recorded so the closing
+        #: fill can be matched back to it. OPTIONAL on the argument every
+        #: collaborator in this file is optional on: a build without it fires
+        #: and sends exactly as C1 shipped, and its closing fill is then
+        #: unattributable — the ARC 058 / S1 state, reported rather than absorbed.
+        self._in_flight = in_flight
         #: Firings handed across the §5:323 boundary by the hot loop.
         self.fires = 0
         #: Firings the SENDER THREAD actually fired a protective flatten for.
@@ -2836,6 +3034,18 @@ class StopWatchDriver:  # pylint: disable=too-many-instance-attributes
                 "close under (§3:159). NOT flattened; NOT re-queued"
             )
             return
+        # §4's protective close, named by the trigger that caused it, with the
+        # two numbers an operator needs to audit the decision without replaying
+        # the tick: where the stop was and what price took it out.
+        #
+        # ARC 058: bound to a name rather than passed inline, because the CLOSING
+        # fill's §12.10 row and the strategy's `closed` notify must carry THIS
+        # word (§6.1b:352 fixes the word the strategy receives) and deriving it a
+        # second time at the close would be the system choosing one fact twice.
+        reason = (
+            f"protective flatten (trigger={FlattenTrigger.SYNTHETIC_STOP.value}, "
+            f"level={payload.level}, price={payload.price})"
+        )
         action = self._exits.fire(
             FlattenTrigger.SYNTHETIC_STOP,
             symbol=payload.symbol,
@@ -2846,15 +3056,24 @@ class StopWatchDriver:  # pylint: disable=too-many-instance-attributes
                     strategy_id=origin.strategy_id,
                 ),
             ),
-            # §4's protective close, named by the trigger that caused it, with
-            # the two numbers an operator needs to audit the decision without
-            # replaying the tick: where the stop was and what price took it out.
-            reason=(
-                f"protective flatten (trigger={FlattenTrigger.SYNTHETIC_STOP.value}, "
-                f"level={payload.level}, price={payload.price})"
-            ),
+            reason=reason,
         )
         self.sends += 1
+        # ARC 058 / I1 ARC D. RECORDED AT THE SEND, on the far side of the
+        # `fire`, so the book holds only flattens the venue call really reached.
+        # The closing fill is the venue's ANSWER and an answer can only be
+        # matched against a question somebody recorded asking (§4:214 keys the
+        # exec report, not the flatten, so nothing on the wire joins the two).
+        if self._in_flight is not None:
+            self._in_flight.arm(
+                key=payload.client_order_id,
+                symbol=payload.symbol,
+                trade_id=origin.trade_id,
+                strategy_id=origin.strategy_id,
+                reason=reason,
+                trigger=action.trigger.value,
+                at=action.fired_ts,
+            )
         self.last_action = {
             "trigger": action.trigger.value,
             "symbol": action.symbol,
@@ -3213,9 +3432,7 @@ class UncertaintyWatch:  # pylint: disable=too-many-instance-attributes
         stamps the venue produced long ago. That second half needs the capture
         feed D3.473 owns; it is not silently claimed here.
         """
-        return self._tracker.observe(
-            FreshnessStamp(feed=PRICE_FEED, as_of=at), symbol
-        )
+        return self._tracker.observe(FreshnessStamp(feed=PRICE_FEED, as_of=at), symbol)
 
     # -- condition 1: the per-tick stale-open scan (HOT PATH) ----------------
 
@@ -3264,7 +3481,9 @@ class UncertaintyWatch:  # pylint: disable=too-many-instance-attributes
 
     # -- conditions 2 and 4: the refused fill dispatch -----------------------
 
-    def note_fill_dispatch(self, completion: SenderCompletion, result: Any, tick: int) -> int:
+    def note_fill_dispatch(
+        self, completion: SenderCompletion, result: Any, tick: int
+    ) -> int:
         """D3.372 and D3.475. Classify ONE refused §2A fill dispatch.
 
         Called from `CompletionHandler.handle` immediately after the dispatch,
@@ -3576,7 +3795,12 @@ class UncertaintyWatch:  # pylint: disable=too-many-instance-attributes
         }
 
 
-class UncertaintyDriver:
+class UncertaintyDriver:  # pylint: disable=too-many-instance-attributes
+    # R0902: NINE attributes — eight inherited (the watch, §4's executor, the
+    # loop, the fire/send counters, the refusals, the actions and the sending
+    # thread's id, every one read out of `record()` by a gate) plus ARC 058's ONE
+    # in-flight book, which is what lets a closing fill be matched back to the
+    # flatten this driver sent. Same refusal `StopWatchDriver` records above.
     """ARC 057 / I1 ARC C2. §14's uncertainty flatten, FIRED and SENT.
 
     TWO HALVES ON TWO THREADS, and the split is C1's, restated over a different
@@ -3614,9 +3838,16 @@ class UncertaintyDriver:
         watch: UncertaintyWatch,
         exits: ProtectiveFlatten,
         loop: LimiterLoop,
+        in_flight: FlattenInFlightBook | None = None,
     ) -> None:
         self._watch = watch
         self._exits = exits
+        #: ARC 058 / I1 ARC D. The SAME book `StopWatchDriver` arms — one book,
+        #: for the reason every collaborator in this file shares one: a closing
+        #: fill arrives against a SYMBOL, and a second book would let a fill sent
+        #: for a C1 breach be matched against a C2 intent, or neither be matched
+        #: at all. Optional on the same argument C1's is.
+        self._in_flight = in_flight
         self._loop = loop
         #: Firings handed across the §5:323 boundary by the hot loop.
         self.fires = 0
@@ -3739,19 +3970,21 @@ class UncertaintyDriver:
             )
             return
         trigger = _UNCERTAINTY_TRIGGER[payload.condition]
+        # §14's word, and it is the word the strategy receives and §9's record
+        # keeps. `reason` overrides `fire`'s derived string for `flatten.py`'s
+        # own stated reason: a caller with a spec-named reason passes it.
+        # ARC 058: bound to a name for `StopWatchDriver.send`'s reason — the
+        # closing fill's `closed` row and notify carry THIS word.
+        reason = (
+            f"protective flatten (reason={UNCERTAINTY_REASON}, "
+            f"trigger={trigger.value}, condition={payload.condition.value})"
+        )
         try:
             action = self._exits.fire(
                 trigger,
                 symbol=symbol,
                 targets=targets,
-                # §14's word, and it is the word the strategy receives and §9's
-                # record keeps. `reason` overrides `fire`'s derived string for
-                # `flatten.py`'s own stated reason: a caller with a spec-named
-                # reason passes it.
-                reason=(
-                    f"protective flatten (reason={UNCERTAINTY_REASON}, "
-                    f"trigger={trigger.value}, condition={payload.condition.value})"
-                ),
+                reason=reason,
             )
         except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
             # CONTAINED, NEVER RE-QUEUED. This runs on §5:323's sender thread and
@@ -3765,6 +3998,21 @@ class UncertaintyDriver:
             )
             return
         self.sends += 1
+        # ARC 058 / I1 ARC D. Recorded at the send, on the far side of the fire.
+        # `trade_id`/`strategy_id` ride through EMPTY where this process holds no
+        # join — §4's untargeted uncertainty branch — and `closing.py` attributes
+        # such a close by SYMBOL against §3's live rows, refusing rather than
+        # guessing when the symbol carries more than one.
+        if self._in_flight is not None and symbol is not None:
+            self._in_flight.arm(
+                key=payload.key,
+                symbol=symbol,
+                trade_id=payload.trade_id,
+                strategy_id=payload.strategy_id,
+                reason=reason,
+                trigger=action.trigger.value,
+                at=action.fired_ts,
+            )
         self.actions.append(
             {
                 "condition": payload.condition.value,
@@ -3919,6 +4167,8 @@ def _runtime_record(  # pylint: disable=too-many-arguments,too-many-positional-a
     prices: PriceRing | None = None,
     uncertainty: UncertaintyDriver | None = None,
     stopwatch: StopWatchDriver | None = None,
+    closing: ClosingFillHandler | None = None,
+    closed_feedback: ClosedFeedback | None = None,
 ) -> dict[str, Any]:
     """`limiter.runtime.json`'s content, at boot and again at clean stop.
 
@@ -4004,6 +4254,18 @@ def _runtime_record(  # pylint: disable=too-many-arguments,too-many-positional-a
         #: polls no prices reads as *nothing breached* when the truth is
         #: *nothing could breach*, and those two are exactly what D3.451 was.
         "stops": None if stopwatch is None else stopwatch.record(),
+        #: ARC 057 / I1 ARC C2 — ADDED BY ARC 058, AND THE ABSENCE WAS A DEFECT
+        #: RATHER THAN A CHOICE. This function has ACCEPTED an `uncertainty`
+        #: argument since ARC 057 and never read it, so `main()` passed §14's
+        #: four producers into both the boot record and the clean-stop record and
+        #: neither published them: an out-of-process reader opening
+        #: `limiter.runtime.json` could not tell *this build has no §14
+        #: producers* from *nothing was uncertain* — the exact pair every `None`
+        #: in this block exists to keep apart, and check contract rule 10's whole
+        #: subject. Found by pylint's `W0613 unused-argument` at ARC 058's
+        #: greening pass and confirmed INHERITED by running pylint at HEAD in a
+        #: clean worktree before a line of that arc existed.
+        "uncertainty": None if uncertainty is None else uncertainty.record(),
         #: The §5:322 ring the poll reads. Its `published` count is the
         #: NON-VACUITY of everything in `stops`: a trail that never moved
         #: against a ring that was never written measures an absent input, not
@@ -4026,6 +4288,22 @@ def _runtime_record(  # pylint: disable=too-many-arguments,too-many-positional-a
         #: says so, because *no ceiling* and *a ceiling of zero* are opposite
         #: facts and a missing key would read as neither.
         "signal_max_age_s": signal_max_age_s,
+        #: ARC 058 / I1 ARC D. §4's CLOSE as the RUNNING process reports it:
+        #: every trade this daemon closed off a flatten's own exec report, the
+        #: open margin §3 published AFTER each release, the stop each retired,
+        #: the closes it REFUSED by name, and the flattens still IN FLIGHT.
+        #: `None` rather than zeroed counters where the handler is absent, for
+        #: the reason every sibling above is `None`: a `closed: 0` published by a
+        #: process that cannot reconcile a closing fill reads as *nothing closed*
+        #: when the truth is *nothing could close* — the exact pair D3.481 and
+        #: ARC 058 / S1 measured, and check contract rule 10's whole subject.
+        "closing": None if closing is None else closing.record(),
+        #: §4:203-206's `closed` outcome pushes, beside `feedback`'s `open`
+        #: ones. Two blocks because they are two outcomes and one merged list
+        #: could not answer *was THIS trade's FSM hard-reset to flat*.
+        "closed_feedback": (
+            None if closed_feedback is None else closed_feedback.record()
+        ),
         "stopped_ts": stopped_ts,
     }
 
@@ -4048,7 +4326,10 @@ def _stop_record(  # pylint: disable=too-many-arguments,too-many-positional-argu
     prices: PriceRing | None = None,
     uncertainty: UncertaintyDriver | None = None,
     stopwatch: StopWatchDriver | None = None,
+    closing: ClosingFillHandler | None = None,
+    closed_feedback: ClosedFeedback | None = None,
     malformed: tuple[str, ...] = (),
+    closing_refusals: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """The clean-stop record: the boot shape plus what the run actually did."""
     record = _runtime_record(
@@ -4067,7 +4348,14 @@ def _stop_record(  # pylint: disable=too-many-arguments,too-many-positional-argu
         prices=prices,
         uncertainty=uncertainty,
         stopwatch=stopwatch,
+        closing=closing,
+        closed_feedback=closed_feedback,
     )
+    # ARC 058. Closes the CLOSE path itself refused — §3 declined the commit, so
+    # the position is still OPEN and the flatten is still in flight. Kept out of
+    # `completions_malformed` below for that list's own reason: *unparsable* and
+    # *parsed, recognised as a close, and refused* are two readings.
+    record["closing_refused"] = list(closing_refusals)
     # ARC 046. The completions the ingress read and the PARSE refused, so
     # "no exec report arrived" and "an exec report arrived unreadable" are two
     # readings rather than one absence (`nixrisk/completions.py` §7.12 #1).
@@ -4300,6 +4588,14 @@ def _install_signal_handlers(loop: LimiterLoop) -> None:
 # and the `except` below — which turns ANY boot failure into a loud exit 2 with
 # no runtime directory to write into — has to wrap all of them or it wraps a lie.
 # pylint: disable=too-many-locals
+# R0915 refused with a reason (INHERITED at ARC 058's greening pass, measured at
+# HEAD in a clean worktree at 52/50): this function IS the daemon's assembly, and
+# every statement over the threshold is one collaborator this process owns being
+# constructed and handed to §5:322's loop. Splitting it would move half the
+# wiring out of the one place `check_i1_convergence` reads it from — and *is the
+# required path composed into the tick* is precisely what that gate derives from
+# this function's body. A shorter `main` here would be a less measurable one.
+# pylint: disable=too-many-statements
 def main(argv: list[str] | None = None) -> int:
     """Boot, run, and write the documented final state. Returns the exit code.
 
@@ -4473,7 +4769,19 @@ def main(argv: list[str] | None = None) -> int:
         # ones exactly as D3.451 found them.
         prices = PriceRing()
         stop_watch = StopWatch(prices, fills.stops)
-        stopwatch = StopWatchDriver(stop_watch, exits, loop, fills)
+        # ARC 058 / I1 ARC D. THE ONE BOOK OF SENT-AND-UNRECONCILED FLATTENS.
+        #
+        # Shared by both producers for the reason every collaborator above is
+        # shared: a closing exec report names a SYMBOL, and two books would let a
+        # C1 breach's confirmation be matched against a C2 intent — or leave both
+        # unmatched, which is the ARC 058 / S1 state this arc exists to end.
+        # It is the DAEMON's record of what it sent, deliberately, rather than a
+        # read of `ProtectiveFlatten`'s private `_closed`/`_intents`: §5:323 puts
+        # the send on the sender thread and §5:322 drains the completion on the
+        # loop thread, so the two halves are genuinely two events and this is
+        # what joins them.
+        in_flight_flattens = FlattenInFlightBook()
+        stopwatch = StopWatchDriver(stop_watch, exits, loop, fills, in_flight_flattens)
         # ARC 057 / I1 ARC C2. §14's uncertainty producers, held by the PROCESS.
         #
         # `FreshnessTracker` is ARC 051's detector, CONSTRUCTED here and NOT
@@ -4511,7 +4819,9 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
         uncertainty_watch.attach_stop_watch(stop_watch)
-        uncertainty = UncertaintyDriver(uncertainty_watch, exits, loop)
+        uncertainty = UncertaintyDriver(
+            uncertainty_watch, exits, loop, in_flight_flattens
+        )
         timeouts = PendingTimeoutPoller(outcomes, status_query, uncertainty_watch)
     except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001
         print(
@@ -4543,7 +4853,31 @@ def main(argv: list[str] | None = None) -> int:
     # ARC 047. The §4:203-206 outcome push needs the loop (for §4:208's lock and
     # the tick number) and the outbox, so it is built here, after both exist.
     feedback = OpenFeedback(loop, outbox_dir)
-    completion_handler = CompletionHandler(dispatcher, feedback, uncertainty)
+    # ARC 058 / I1 ARC D. §4's CLOSE, held by the PROCESS.
+    #
+    # Nine collaborators and not one of them is new or edited: §3's picture book,
+    # §4's `StopBook`, C1's `StopWatch`, §3/§4's origin join, §4:214's dedup —
+    # THE SAME instance the entry dispatcher claims against, never a second, or a
+    # re-delivered closing fill would be a duplicate to one book and news to the
+    # other — §9's WAL, this arc's `ClosedFeedback` channel, the ONE in-flight
+    # book both producers arm, and §4's arbiter read through its PUBLIC
+    # `closed_record` accessor for the authoritative reason and FSM verdict.
+    # `nixrisk/closing.py` is a LIBRARY; the whole change is that something with
+    # a pid now owns it and the loop now calls it.
+    closed_feedback = ClosedFeedback(loop, outbox_dir)
+    closing = ClosingFillHandler(
+        picture=fills.picture,
+        stops=fills.stops,
+        stop_watch=stop_watch,
+        origins=fills.origins,
+        dedup=dispatcher.dedup,
+        strategy=closed_feedback,
+        plane1=wal,
+        in_flight=in_flight_flattens,
+        arbiter=exits,
+        clock=time.time,
+    )
+    completion_handler = CompletionHandler(dispatcher, feedback, uncertainty, closing)
 
     senders = ProtectiveSenders(stopwatch, uncertainty)
     loop.attach(
@@ -4606,6 +4940,8 @@ def main(argv: list[str] | None = None) -> int:
                 prices,
                 stopwatch,
                 uncertainty,
+                closing,
+                closed_feedback,
             ),
             completion_handler,
         ).handle,
@@ -4642,6 +4978,8 @@ def main(argv: list[str] | None = None) -> int:
             prices=prices,
             stopwatch=stopwatch,
             uncertainty=uncertainty,
+            closing=closing,
+            closed_feedback=closed_feedback,
         ),
     )
     _install_signal_handlers(loop)
@@ -4674,7 +5012,10 @@ def main(argv: list[str] | None = None) -> int:
             prices=prices,
             stopwatch=stopwatch,
             uncertainty=uncertainty,
+            closing=closing,
+            closed_feedback=closed_feedback,
             malformed=tuple(completion_handler.malformed),
+            closing_refusals=tuple(completion_handler.closing_refusals),
         ),
     )
     return 0

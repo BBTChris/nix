@@ -421,7 +421,18 @@ def test_the_control_passes_and_its_evidence_names_what_it_read(
     # from arithmetic here. Re-read rather than assumed: over the widened scope
     # the gate still reports 0 banned modules, 0 banned calls, and no new retry
     # shape; `completions.py` declares no order-port verb and sends nothing.
-    assert "arm(ii) imported 39 order-path module(s)" in evidence, evidence
+    # ARC 058 (I1 ARC D): 39 -> 40. `scripts/nixrisk/closing.py` is a NEW module
+    # under an anchor directory, so the gate's DERIVED scope widened by one and
+    # arm(ii) imports one module more. **Re-banked from the gate's OWN printed
+    # evidence on the merged tree, never from arithmetic here** — and the reason
+    # this number is banked at all is that a scope collapse and a scope that
+    # merely moved must be different readings. Re-read rather than assumed: over
+    # the widened scope the gate still reports the SAME 3 advisory sites and NO
+    # new banned module, banned call or retry shape. `closing.py` declares no
+    # order-port verb and sends nothing: §4's close it performs is a §3 commit,
+    # two stop-book forgets, a §12.10 row and a strategy notify — the venue was
+    # already reached by the flatten this module reconciles.
+    assert "arm(ii) imported 40 order-path module(s)" in evidence, evidence
 
 
 def test_the_reviewed_suppressions_are_the_two_known_fanouts_and_no_plant_is_pre_silenced(
