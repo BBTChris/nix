@@ -207,3 +207,21 @@ same instrument reporting the disagreement. ARC 059 has no series row — correc
 3. **Rule on the `.dmg` and `broker_order_margin_regime_delta.md`** — both hold
    `check_untracked_attribution` red and neither is mine to delete or adopt.
 4. **Note D3.485 before any wiring arc starts.** It is a fail-open trap with no error message.
+
+---
+
+## 8. POST-WRITE-BACK RE-MEASURE (forward-only, banked by its own commit)
+
+**At the merged tree `e47a3db`: `99 | 5 | 2 | 0`.** The prediction is met at the **banked** state, not
+merely at a working tree.
+
+| | value |
+|---|---|
+| Module 1 invariant gates at the merged tree | **14 / 14 PASS** |
+| Frozen paths changed | **0 of 43** |
+| `git diff --name-only ccc2a07 HEAD -- scripts/nixrisk scripts/limiterd.py scripts/broker risks/broker_order.config.json` | **0 files** |
+| The three new gates in the merged plan | `[ok]` · `[ok]` · `[ok]` |
+
+The five FAILs are the same five in the same order, and the two cannot-measures are the same gateway
+unreachability. **`check_arc_status_contract` is red on `arc_059.log` by construction and returns to
+PASS in ARC 061, which audits `arc_060.log`.**

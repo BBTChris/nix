@@ -8979,3 +8979,13 @@ row — correctly, it was a read-only recon.
 
 **BADGE: broker-order STAYS RED** (cheap set gated; B5 venue-gated; B12 outstanding). **Module 1 badge
 UNCHANGED (green).** Module 2 status: *audit begun, cheap set gated, capstone B12 outstanding.*
+
+**POST-WRITE-BACK RE-MEASURE, at the merged tree `e47a3db` (forward-only, recorded after the write-back
+and banked by its own commit):** **`99 | 5 | 2 | 0`.** The prediction stated before the run is met at the
+BANKED state, not merely at a working tree. The five FAILs are the same five, in the same order:
+`check_arc_status_contract` (its subject is `arc_059.log`, unfixable here, returns to PASS in ARC 061),
+`check_ibgateway_service`, `check_monitor_tui`, `check_uncalled_entry_points`, `check_untracked_attribution`.
+Both cannot-measures are the gateway being unreachable. **Module 1's invariant gates re-run at the merged
+tree: 14/14 PASS. Freeze re-proven at the commit: 0 of 43 paths changed, and `git diff --name-only
+ccc2a07 HEAD -- scripts/nixrisk scripts/limiterd.py scripts/broker risks/broker_order.config.json`
+returns ZERO files.** The three new gates are `[ok]` in the merged plan.
