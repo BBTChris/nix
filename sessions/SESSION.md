@@ -8746,3 +8746,141 @@ orphan, no unregistered check and no gate over a missing subject; claims exit 0;
 verify red is environmental or operator rather than an invariant failure.
 
 ⇒ **LIMITER BADGE RED → GREEN. MODULE 1 COMPLETE. Board: clean set 12/12, no open invariants.**
+
+---
+
+## ARC 059 — MODULE 2 (broker-order) OPENING RECON
+
+**TIER = RECON (read-only).** No code change, no invariant flip, no badge move. Module 1 GREEN 12/12,
+untouched. **Predecessor DERIVED, not assumed:** brief said `≈ ARC 058's write-back`;
+`git rev-parse HEAD` = **`13952451ef6ca55d70b3635487f9634c95fa2e3a`**. Deliverable:
+`downloads/broker_order_recon.md` — the charter for Module 2's ULTRAREVIEW.
+
+**Module 1 re-measured ONCE, undisturbed: `97 | 4 | 2 | 0`, exit 1.** The predicted tuple, met.
+
+### THE BRIEF'S PREMISE IS WRONG IN THE MODULE'S FAVOUR — AND THE ERROR HAS A SINGLE SOURCE
+
+broker-order is **not a scaffold**. `broker_order_ibkr.py` is 2361 lines over a real, installed
+`ib_async 2.1.0`; all nine §2A verbs carry real bodies; **zero** `NotImplementedError`, `TODO`,
+`pass  #` or `BrokerUnsupported` in the file. The word "scaffold" occurs **exactly once** — the class
+docstring at `broker_order_ibkr.py:344` — contradicted by the 2000 lines under it. That one stale
+line is where `SESSION.md:8739`'s "the broker is a STUB" comes from. What is TRUE in that sentence is
+the finding below, not the first half.
+
+### THE CAPSTONE, NAMED UP FRONT (memory #22) — THE SEAM IS NOT WIRED
+
+Verified directly, not inferred: `limiterd.py` (258 KB) imports **no broker module**; all 34
+`scripts/nixrisk/*` modules import **no broker module** (17 hits, every one a docstring citation);
+`broker_order_ibkr` is imported by **two test files and nothing else**. The Limiter declares its own
+shadow ports — `flatten.py:211 BrokerFlattenPort`, `fills.py:331 CancelPort`, `outcomes.py:177
+StatusQueryPort` — and `flatten.py:212-213` **asserts** that `broker_seam.BrokerOrderPort`
+"structurally satisfies" them. **Nothing proves that sentence.** A proxy stands where a property
+belongs (directive 1). Producer proven in isolation against a `FakeIB`; consumer proven in isolation
+against hand-rolled test brokers; the halves share only `Position`/`Balance` types and prose.
+**Twelve open Limiter debt rows resolve against this one missing transport layer.**
+
+### THE MODULE IS AT ARC-020 MATURITY WHILE ITS CONSUMER RAN 38 MORE ARCS
+
+`broker_order_ibkr.py` has not changed in **336 commits** (`git rev-list --count e7fb0b0..HEAD`).
+Every `scripts/broker/*.py` worktree blob is **byte-identical to its HEAD blob** — the `Aug 22 00:36`
+mtimes are touches, not edits, and an mtime reads as recency the module does not have.
+
+### GATE PRESSURE ON THE MODULE IS ESSENTIALLY ZERO
+
+Of 103 checks, **one** names a broker-order artifact for an order-side property
+(`check_broker_order_config`, `registry.json:27`) and its subject is a **config file**.
+`checks/gate_coverage_baseline.json` has `artifacts: {}` and **no broker path in `rows` or
+`exclusions`** — measured, not read off prose. What real proof exists lives in two *tests*, not gates.
+
+### THE REGISTER — B1..B13 (numbered B, not I, deliberately)
+
+Module 1's `I1..I12` are live and cited by number everywhere; a second `I4` would collide the way
+`SPEC-A<n>`/`CHECK-A<n>` did before ARC 028 forced the prefixes apart. **Architect ruling requested.**
+
+**MET+PROVEN at the producer (6):** B3 ack-never-fill (`place_order -> None`, zero returns; ack
+synthesised *first* so a fill can never precede it) · B4 idempotent fills by `(order_id, exec_id)` ·
+B8 query authority + never-auto-resend (structural, not policy) · B9 session transitions (single
+AST-proven emission site, two fail-closed rules) · B10 neutral evidence-gated reject taxonomy ·
+B11 the seam declares absence (**= SPEC-A3, PENDING v1.4**).
+**MET, instrument/gate owed (4):** B1 seam identity · B2 no vendor type crosses · B6 non-blocking
+send · B7 order/datafeed disjointness.
+**MET+PROVEN+GATED (1):** B13 config-as-data — the module's only gated surface.
+**NOT MET, venue-gated, correctly declared (1):** **B5 monotonic-by-source** — `venue_seq_ts` is
+written with `time.time()` (`:1472`, `:2218`) and **never compared**; `on_margin` **never fires**
+(GAP-3). Unsatisfiable on IBKR by venue fact, declared `ts_is_venue_sourced=False` rather than faked.
+**NOT MET — THE CAPSTONE (1): B12**, above.
+
+**The brief predicted "met-in-code, gate the proof" would recur because broker-order is thin. It
+recurs — but the module is THICK (5.3k lines) and unusually well-proven at the producer. What is
+missing is not proof of production; it is any proof that production reaches a consumer.**
+
+### A NEW FINDING, AND A DOCUMENTED DEFECT THAT PASSES ITS OWN TEST
+
+`_tombstones` (`broker_order_ibkr.py:482`) is written at `:811`, read at three sites, and **never
+popped, discarded or cleared** — `_clear_session_state` clears eleven structures and pointedly not
+this one (correct: a tombstone must survive the boundary). Its docstring claims it "is superseded the
+moment a consumer resolves the order"; **no supersession code exists and no public method releases
+one.** Bounded per boundary, unbounded across many. Unlike `_mirror_stale` it is **not** named
+in-file as open. Separately: `test_broker_order.py:3090` and `:3128` are `record()` calls that
+**pass unconditionally while documenting unrepaired defects** (F-A8-2 no ordering guard on `net_qty`;
+F-A8-1 `Balance` fields meaning different things per writer — "a confident lie" against §14). **An
+arc that greens the suite has not repaired them.**
+
+### THE MARGIN-REGIME DELTA'S CENTRAL CLAIM DOES NOT SURVIVE CONTACT WITH THE TREE
+
+The delta calls the regime blackout "the only genuinely new concept" and lists the normal-intraday
+reference as a piece to build. **The comparison is already written** — `nixrisk/blackout.py:888-915`:
+`:891` is M1's reference, `:894` the live figure, `:908-910`
+`ceiling = baseline.level * (1.0 + margin_elevated_pct)` is M2 + M5's band, `:896-905` absent ⇒
+blackout (citing check-contract §17) is M3's fail-closed. The knob exists at
+`risks/limiter.config.json:23`. Against the tree the new build reduces to: a real **producer** for
+`margin_per_contract` (D3.381), the onset **detector** (D3.470), and **§12A ratification** of
+`margin_elevated_pct`. **Do not ratify M1–M5 as worded** — it would book written code as new work.
+The delta itself asked for exactly this check (`:111`), and it fails it.
+Also: §2A spells the field `venue_seq_ts`; `grep -rn venue_seq_ts scripts/nixrisk/` returns **zero**
+— the Limiter spells it `venue_ts` and `source_seq`. A seam whose two sides spell its key
+differently is a defect waiting for the first integration arc.
+
+### PROPOSED SEQUENCE, HONESTLY SIZED
+
+**M2-A** register ratification + cheap instruments (B1's superset check, empty-roster vacuity guard,
+and a signature comparison — **none exists in the tree**) — SMALL, 1 arc.
+**M2-B** the §13-obj-11 stalled-socket re-measurement gate — SMALL-MEDIUM, **⚠ SPIKE FIRST** (the
+measurement lives in a docstring; automating full-send-buffer and vanished-peer is the unknown).
+**M2-C THE CAPSTONE** — the transport layer (D3.468 status writer, D3.446 completions writer, D3.449
+IOC remainder send, a production construction site). **LARGE, 3–5 arcs, MEASURED not estimated:**
+twelve Limiter rows resolve against it. **Module 1's I1 took a 6-arc capstone for the same shape of
+gap — do not brief this as one arc.**
+**M2-D** margin field-set producer + unified three-outcome margin-validity check (absent ⇒
+not-tradable / elevated ⇒ blackout / normal ⇒ size per §3) — MEDIUM, 2 arcs, re-word the delta first.
+**M2-E** bounded state + residual findings — MEDIUM, 1–2 arcs.
+**M2-F** Tradovate adapter; **B1 and B5 become provable for the first time at N=2** — venue-gated,
+Stage 1, not sizeable now.
+
+**Three spikes flagged:** the stalled-socket harness · **the transport shape** (`limiterd.py:2104-2111`
+argues for the directory on narrowest-surface grounds while D3.468's discharge says it becomes "an
+adapter rather than a directory reader" — **these point in opposite directions and want an architect
+ruling before M2-C is briefed**) · the instrument table D3.480 needs, which does not exist in `risks/`.
+
+### IBKR IS PAPER-ONLY PERMANENTLY, AND SIM-VALIDATION ALREADY DOES NOT DEPEND ON IT
+
+`dev_and_services_plan.md:97-98`, `:246-248`. Tradovate demo Stage 1-2, live Stage 3.
+**The no-live-session property is already held and must be protected, not built:** `StubBrokerOrder`
+implements all nine verbs with no vendor import and no socket; `seam_simulate.py` is fully offline;
+the real adapter is driven against a `FakeIB`. **All 36 broker tests ran green with no IBKR session**
+(`36 passed in 0.60s`, basetemp outside `~/nix`). Seam identity is **partly** testable offline today
+— add B1's superset check and vacuity guard and the *nominal* half becomes a real cross-vendor gate
+needing no venue; behavioural identity needs Tradovate.
+
+### THE HONEST PREDICTION
+
+M2-A/B/E are audit-shaped and will move the badge quickly, because the module is already well built.
+**They will also mislead if reported alone: greening eleven of thirteen while B12 stands means the
+module is proven to produce correctly into nothing. Module 2 must not be badged green on any set
+that excludes B12.**
+
+**READ-ONLY CONFIRMED:** no tracked code change; every `scripts/broker/*.py` blob byte-identical to
+HEAD. **Waypoint deviation disclosed:** total fixed at 8 at kickoff and never moved; the four
+parallel sub-agents ran as sub-steps 2.1–2.4 inside stage 2 rather than as four stages — had they
+been counted the denominator would have been 11. The never-moves rule is the stronger one, so the
+deviation is recorded rather than the denominator changed.

@@ -1,301 +1,165 @@
-# ARC 058 RESULTS — I1 ARC D (the finale): flatten completions + the convergence gate
+# ARC 059 RESULTS — MODULE 2 (broker-order) OPENING RECON
 
-**TIER = GREENING.** **I1 IS DISCHARGED. The clean set is 12/12.**
-Discharges **D3.481 · D3.477**. Opens **D3.482 · D3.483 · D3.484**. Ledger **417**, re-derived whole.
+**TIER = RECON (read-only).** No code change, no invariant flip, no badge move. **Module 1 GREEN
+12/12, untouched and re-measured: `97 | 4 | 2 | 0`** — the predicted tuple, met.
 
-**Predecessor DERIVED, not assumed:** the brief said `≈ ARC 057's write-back`; `git rev-parse HEAD` =
-**`9bc04d9`**. Everything below is frozen and diffed against **9bc04d9**.
+**Predecessor DERIVED, not assumed:** brief said `≈ ARC 058's write-back`; `git rev-parse HEAD` =
+**`13952451ef6ca55d70b3635487f9634c95fa2e3a`**.
 
-**Baseline MEASURED FIRST, before a line was written: `96 | 4 | 2 | 0`** — the predicted tuple, met.
-`check_arc_status_contract` **PASSES** auditing `arc_057.log`, as predicted (057 tee'd both lines).
+**Deliverable: `downloads/broker_order_recon.md`** — the charter for Module 2's ULTRAREVIEW.
+Method: four read-only sub-agents + direct verification by cc of every load-bearing claim.
+Claims cc did not re-measure are marked **UNVERIFIED** in the report.
 
 ---
 
-## THE HEADLINE
+## THE THREE HEADLINES
 
-**A flatten sent is IN FLIGHT until its closing fill comes back, and until this arc nothing reconciled
-one.** C1 (055) fires on a breached synthetic stop; C2 (057) fires on each of §14's four
-unprotectable conditions. Both *fire and send*. Neither closed the book.
+### 1. broker-order is NOT a scaffold — and the error has one source
 
-Reproduced on a live `limiterd` at S1 before a line was written — a reserve, an entry fill, a price
-through the stop, then the flatten's own exec report handed back through `completions/`:
+`broker_order_ibkr.py` is **2361 lines over a real, installed `ib_async 2.1.0`**. All nine §2A verbs
+have real bodies. **Zero** `NotImplementedError`, `TODO`, `pass  #`, `BrokerUnsupported` in the file.
+The word "scaffold" appears **exactly once** — the class docstring at `:344` — contradicted by the
+2000 lines beneath it. That single stale line is where "the broker is a STUB"
+(`SESSION.md:8739`) comes from. The true half of that sentence is headline 2.
 
-| owed by §12.10 / §4 / §3 | S1, BEFORE | S3, AFTER |
+### 2. THE CAPSTONE — the Limiter and broker-order are not wired to each other. At all.
+
+Verified directly, not inferred:
+- `limiterd.py` (258 KB, the daemon that went green) imports **no broker module**.
+- All 34 `scripts/nixrisk/*` modules import **no broker module** — 17 hits, every one a docstring.
+- `broker_order_ibkr` is imported by **two test files and nothing else**.
+- The Limiter declares its own shadow ports (`flatten.py:211`, `fills.py:331`, `outcomes.py:177`)
+  and `flatten.py:212-213` **asserts** `BrokerOrderPort` "structurally satisfies" them.
+  **Nothing proves that sentence** — a proxy where a property belongs (directive 1).
+
+Producer proven in isolation against a `FakeIB`. Consumer proven in isolation against hand-rolled
+test brokers. The two halves share only `Position`/`Balance` types and prose. **No instrument in the
+tree spans the seam. Twelve open Limiter debt rows resolve against this one missing transport.**
+
+Per memory #22 I am sizing it now rather than discovering it later: **B12 is a 3–5 arc build.
+Module 1's I1 took a 6-arc capstone for the same shape of gap.**
+
+### 3. The module is at ARC-020 maturity; gate pressure on it is ~zero
+
+`broker_order_ibkr.py` unchanged for **336 commits**. Every `scripts/broker/*.py` blob is
+**byte-identical to HEAD** (the `Aug 22` mtimes are touches, not edits). Of 103 checks, **one** names
+a broker-order artifact for an order-side property — and its subject is a **config file**.
+`gate_coverage_baseline.json` has `artifacts: {}` and **no broker path in `rows` or `exclusions`**.
+
+---
+
+## THE REGISTER — B1..B13
+
+**Numbered B, not I, deliberately.** Module 1's `I1..I12` are live and cited by number everywhere; a
+second `I4` collides the way `SPEC-A<n>`/`CHECK-A<n>` did before ARC 028 forced the prefixes apart.
+**Architect ruling requested** — the ULTRAREVIEW's arc titles will carry these numbers.
+
+| status | n | invariants |
 |---|---|---|
-| the §12.10 `closed` row | **absent** — WAL held `reservation_taken`, `reservation_released`, `protective_exit` | **written**, carrying `close_price=4997.0`, `exec_id`, `closing_order_id`, `symbol` |
-| the §3 position | **`state: "open"`** | **`state: "closed"`** |
-| the open margin | **`sum_open_margin` stuck at 1000.0** | **released to `0`** — the writer's own published Σ |
-| §4's synthetic stop | still armed at 4998.0 in `StopBook` | **`stops: []`** |
-| C1's fire-once mark (D3.481) | **`in_flight: ["entry-0001"]`** | **`in_flight: []`** |
-| §4:203-206's `closed` notify | **never sent** | `TRD-….closed.json`: `hard_reset=true`, **`fsm="flat"`**, reason carried from §4's arbiter |
+| MET+PROVEN at the producer | 6 | B3 ack-never-fill · B4 idempotent fills · B8 query authority/never-resend · B9 session transitions · B10 reject taxonomy · B11 seam declares absence (**= SPEC-A3, PENDING v1.4**) |
+| MET, instrument or gate owed | 4 | B1 seam identity · B2 no vendor type crosses · B6 non-blocking send · B7 order/datafeed disjointness |
+| MET+PROVEN+GATED | 1 | B13 config-as-data — the module's **only** gated surface |
+| NOT MET, venue-gated, correctly declared | 1 | **B5 monotonic-by-source** |
+| NOT MET — **THE CAPSTONE** | 1 | **B12 the seam is wired** |
 
-**And one finding nobody budgeted for.** The closing exec report was dispatched down the ENTRY path
-and refused as an `UnapprovedFill` — *"this Limiter holds no approved order under that id"* — then
-landed in §14's `unclassified` list, which `check_uncertainty_flatten` ARM 6 reads as CANNOT_MEASURE.
-**A flatten's own confirmation was poisoning the gate that owns flattens.** After the wiring,
-`unclassified` is `[]`.
+**B5 is the honest red and it is not a defect.** `venue_seq_ts` is written with `time.time()`
+(`:1472`, `:2218`) and **never compared**; `on_margin` **never fires** (GAP-3, `pushes_margin=False`).
+IBKR supplies no venue timestamp, so the adapter sets `ts_is_venue_sourced=False` and reports V27
+CANNOT-MEASURE **rather than falsely green**. Unsatisfiable on IBKR by venue fact. Provable only at
+Tradovate, whose user-sync websocket carries a real sequence.
 
----
-
-## PART 1 — `scripts/nixrisk/closing.py`, THE CLOSING-FILL HANDLER (named, +1 file)
-
-**§2A:74-84's `on_fill` carries no role**, and nothing on the wire ever will — the same gap `OrderRole`
-was minted for on the cancel side. So a close is **DERIVED from three facts this process already
-holds**, and a fill failing any of them is NOT adopted:
-
-1. it is a fill (`on_cancel`/`on_reject` are §3's release paths, `outcomes.py`'s, unchanged);
-2. its order is **not an approved ENTRY** in §3/§4's own join;
-3. **this process SENT a protective flatten for that symbol and it is still in flight** — the daemon's
-   own `FlattenInFlightBook`, armed at the send site on the far side of the `fire`.
-
-Fact 3 is the load-bearing one and it is deliberately the daemon's record rather than a read of
-`ProtectiveFlatten`'s private `_closed`/`_intents`: §5:323 puts the send on the sender thread and
-§5:322 drains the completion on the loop thread, so the two halves are genuinely two events and the
-book is what joins them. **A fill satisfying (1) and (2) but not (3) is left to the ordinary dispatch**,
-which refuses it by name — adopting it would be closing a position off a venue message nothing in this
-process asked for.
-
-**THE ORDER IS THE SAFETY PROPERTY.** §3 commit → stops forgotten → §12.10 row → §4's `closed` notify.
-The commit is FIRST and it is the authority: if `FinancialPictureBook.commit` refuses, the close is
-REFUSED WHOLE, the flatten STAYS ARMED, and nothing downstream runs — capital stays committed and the
-stop stays armed, which is the conservative error. The opposite order would tell a strategy it was flat
-while §3 still carried the position. Everything after the commit is ATTEMPTED AND RECORDED, never
-raised (`flatten._book`'s FC1 ruling, one module over).
-
-**THE `closed` ROW BOOKS NO REALIZED FIGURE, AND THAT IS MEASURED, NOT LAZY.** `flatten.py` records it
-at the site: `request_close` books a `protective_exit` row with `realizing=True`, `nixscore.ema.
-daily_advances` SUMS every realizing row in a pair's day, and the guard that stops a double
-(`_realized_booked`) lives inside `ProtectiveFlatten` and cannot see a row booked from here. So the
-terminal row is NON-REALIZING and carries a `realized_status` naming why. D3.220's wire is undamaged.
-
-**IDEMPOTENT ON TWO KEYS, because there are two ways to double-close.** The exec report, through the
-SAME `ExecReportDedup` the entry dispatcher claims against — never a second book, or a re-delivery
-would be a duplicate to one and news to the other. And the trade, whose §3 row is no longer LIVE.
-Measured: the same exec report re-delivered took `completions.duplicates` 0→1, left `closed` at 1,
-`picture.commits` at 3 and `sum_open_margin` at 0, with one `closed` push.
-
-**`limiterd.py` gains `ClosedFeedback`** — §4:203-206's `closed` outcome, the mirror of ARC 047's
-`OpenFeedback`. `UnwiredExitSinks` is KEPT and still RAISES: its only caller is
-`ProtectiveFlatten._fan_out`, reached only from `reconcile_and_publish`, which awaits the two ASYNC §2A
-query verbs this daemon's stub venue does not have. Two sinks because there are two paths and only one
-of them exists.
+**The brief predicted the "met-in-code, gate the proof" pattern would recur because broker-order is
+thin. It recurs — but the module is THICK (5.3k lines) and unusually well-proven at the producer.
+What is missing is not proof of production; it is any proof that production reaches a consumer.**
 
 ---
 
-## PART 2 — `check_i1_convergence`, AND ITS PASS IS I1's DISCHARGE (+1 file)
+## TWO FINDINGS THE AUDIT WOULD OTHERWISE INHERIT SILENTLY
 
-**The census this gate was opened against.** Every path in this tree has a gate that proves its
-CORRECTNESS, each scrupulously scoped to ONE property: `check_limiter_daemon_dispatch` (fill / cancel /
-reject / pending-timeout dispatch), `check_stop_maintenance` (§4:187-196's trail and the breach),
-`check_uncertainty_flatten` (§14's four producers and THAT family's completeness), `check_flatten` (the
-executor as a LIBRARY), `check_go_timeout`, `check_limiter_loop_alive`, `check_two_phase_entry`,
-`check_limiter_gate`. **Not one of them asks whether the SET is complete** — each is blind, by design,
-to a path that exists in a library and is reachable from no running process. A tree of green
-single-path gates and a daemon that invokes half of them look identical from every one of those gates.
-Doctrine C.9 respected rather than argued around.
+1. **`_tombstones` has no eviction path** (NEW). Written at `:811`, read at three sites, **never
+   popped or cleared**; `_clear_session_state` clears eleven structures and pointedly not this one
+   (correct — a tombstone must survive the boundary). Its docstring claims supersession by a
+   consumer; **no supersession code exists and no public method releases one.** Bounded per
+   boundary, unbounded across many. Unlike `_mirror_stale`, **not named in-file as open.**
+2. **Two documented defects pass their own test unconditionally.** `test_broker_order.py:3090`
+   (F-A8-2, no ordering guard on `net_qty`) and `:3128` (F-A8-1, `Balance` fields meaning different
+   things per writer — "a confident lie" against §14) are `record()` calls that always pass while
+   documenting unrepaired defects. **An arc that greens the suite has not repaired them.**
 
-**THE REQUIRED SET IS DERIVED FROM FIVE VOCABULARIES IN THE SUBJECT'S OWN SOURCE**, by AST, and this
-file holds no copy of any of them:
+---
 
-| family | vocabulary | ARC 058 members |
+## ⚠ THE MARGIN-REGIME DELTA FAILS ITS OWN TREE-CONFORMANCE CHECK
+
+The delta calls the regime blackout *"the only genuinely new concept"* and lists the normal-intraday
+reference as a piece to build. **The comparison is already written** — `nixrisk/blackout.py:888-915`:
+`:891` is M1's reference · `:894` the live figure · `:908-910`
+`ceiling = baseline.level * (1.0 + margin_elevated_pct)` is M2 + M5's tolerance band · `:896-905`
+absent ⇒ blackout, citing check-contract §17, is M3's fail-closed. The knob exists at
+`risks/limiter.config.json:23`.
+
+**Against the tree the new build reduces to three items, none of which is the comparison:** a real
+**producer** for `margin_per_contract` (D3.381) · the onset **detector** (D3.470) · **§12A
+ratification** of `margin_elevated_pct`.
+
+⇒ **Do not ratify M1–M5 as worded** — it would book already-written code as new work. The delta asked
+for exactly this check at `:111` and fails it. Its unification of D3.480 with itself is sound and
+should be kept: **one margin-validity check, three outcomes.**
+
+**Spelling mismatch, worth a row:** §2A spells the field `venue_seq_ts`;
+`grep -rn venue_seq_ts scripts/nixrisk/` returns **zero** — the Limiter spells it `venue_ts`
+(`survival.py:184`) and `source_seq` (`freshness.py:465-470`). D3.121 already records that its two
+guards *"cannot bind on the real wire"*.
+
+---
+
+## PROPOSED ULTRAREVIEW SEQUENCE (honest sizing)
+
+| arc | subject | size |
 |---|---|---|
-| `completion:<event>` | `completions.py`'s `SPEC_EVENTS` (§2A:74-84) | 8 |
-| `uncertainty:<condition>` | `limiterd.py`'s `UncertaintyCondition` (§14) | 4 |
-| `ingress:<name>` | classes declaring `before(self, inner)` **and** constructed in `main()` (§5:322's tick-wrapper contract) | 5 |
-| `handler:<param>` | `CompletionHandler.__init__`'s collaborators | 4 |
-| `sender:<name>` | `ProtectiveSenders.__init__` (§5:323's protective fan-out) | 2 |
+| **M2-A** | Register ratification + cheap instruments: B1's **superset check, empty-roster vacuity guard, and a signature/arity comparison — none exists in the tree today**; move B2/B6 proofs from tests to registered checks; re-measure suspected-stale D1.17 / D1.31 / D1.22 | SMALL, 1 arc |
+| **M2-B** | The §13-obj-11 stalled-socket re-measurement gate (the measurement lives in a **docstring**; §13 calls this objective *critical*) | SMALL-MED, **⚠ SPIKE FIRST** |
+| **M2-C** | **THE CAPSTONE** — the transport layer: D3.468 status writer, D3.446 completions writer, D3.449 IOC remainder send, a production construction site. Closes I1's entry half | **LARGE, 3–5 arcs** |
+| **M2-D** | Margin field-set producer + the unified three-outcome margin-validity check | MED, 2 arcs |
+| **M2-E** | Bounded state + residual findings (`_tombstones`, T8/T15, D1.29/D1.30) | MED, 1–2 arcs |
+| **M2-F** | Tradovate adapter — **B1 and B5 become provable for the first time at N=2** | venue-gated, Stage 1 |
 
-**23 paths.** Add a ninth §2A event, a fifth §14 condition, a sixth per-tick composer, a fifth
-completion collaborator or a third protective sender and `required` grows on the next run with no edit
-to the gate. **A required path it cannot classify is CANNOT_MEASURE NAMING IT, never PASS.**
-
-* **ARM 1** — the set, derived. Nothing is imported from the subject; the derivation is AST-only and
-  the drive is a subprocess, which is D3.224's *one tree per interpreter* taken as a rule rather than
-  as a caveat (the measurement ARC 057's re-measure paid for).
-* **ARM 2** — every path **DAEMON-INVOKED**, proven structurally: its owner is CONSTRUCTED in `main()`
-  and REACHES §5:322's loop through `attach(ingress=)`, `attach(handler=)` or `attach(sender_send=)`.
-  **A path present in a library and absent from that composition is the library-not-daemon state I1
-  forbids.**
-* **ARM 3** — every path **DRIVEN**, through a real `limiterd`'s own ingress: files in `inbox/`,
-  `completions/`, `status/`, `onset/` — never a direct handler call, because ARC 038's deepest finding
-  was that every Limiter invariant in this tree had been proven about a library a test constructed.
-* **ARM 4** — completeness: `driven == required == invoked`, both differences named.
-* **ARM 5** — non-vacuity: quiet start, `last_source` naming the ingress directory, and the protective
-  send proven to have run on §5:323's thread and not the loop's.
-
-**MEASURED: `invoked 23/23 · driven 23/23 · unservable 0`, exit 0.** Six `limiterd` processes — one
-main daemon and one per §14 producer, separate because the conditions are not independent inside one
-(a breach that closes the ES position removes the OPEN row `stale_open` is about, and a shared daemon
-would make the drive order decide the verdict).
-
-### BOUND FROM SIX SOURCE PLANTS, EVERY SUBJECT RESTORED BYTE-IDENTICALLY
-
-`git hash-object` compared before and after each: `limiterd.py` `aafb21c0e23a1c26`,
-`completions.py` `ea1c9db2495a0871`, `closing.py` `14ba00869a899fe6`.
-
-| plant | what it broke | exit | the sentence |
-|---|---|---|---|
-| **A1** | `closing` deleted from `main()`'s one `CompletionHandler(...)` call — library intact | **1** | LIBRARY-NOT-DAEMON *…`main()` hands it NOTHING* + NOT DRIVEN + the ARM 4 gap |
-| **A2** | `onset.before(...)` deleted from the tick composition | **1** | *LIBRARY-NOT-DAEMON: per-tick path 'onset' is not composed into `loop.attach(ingress=...)`* |
-| **A3** | `STALE_OPEN` deleted from `_UNCERTAINTY_TRIGGER` | **1** | *the condition is detectable and not actionable* |
-| **B** | a fifth `UncertaintyCondition` with no producer | **1** | LIBRARY-NOT-DAEMON naming `orphan_position` |
-| **B2** | the same member **plus** a trigger entry — a required path this instrument cannot reach | **2** | *UNCLASSIFIABLE REQUIRED PATH … it is not a pass* |
-| **C** | the closing path wired and reachable, made unexercisable | **1** | NOT DRIVEN naming it — and, correctly, **no** library-not-daemon finding |
-| — | plants removed | **0** | `invoked 23/23 · driven 23/23` |
-
-Plus the **rule-4 plant-both** and 14 further controls in `scripts/tests/test_check_i1_convergence.py`
-(15 passed), including a subject whose vocabularies are nothing like the real tree's — the gate must
-answer *that* subject's set, never a constant.
-
-### TWO DEFECTS THE PLANTS FOUND IN THE GATE ITSELF
-
-Both fixed at their sites, both regression-guarded in the test module.
-
-1. **PLANT A1 FIRST EXITED 2, NOT 1.** The drive's `Missed` propagated to `run`'s catch-all and came
-   back *cannot_measure: gate raised Missed* — taking the ARM 2 finding that named the path with it.
-   *A defect downgraded to CANNOT_MEASURE is a defect that never names itself* (`check_uncertainty_
-   flatten`'s ARC 057 / S4b ruling, met again here). A missed drive is now a NOT-DRIVEN **finding**
-   carrying the daemon's last published status.
-2. **PLANT A2 FIRST SHRANK THE REQUIRED SET, 23 → 22.** The ingress family was derived from
-   `loop.attach(ingress=...)` — the very composition it is compared against — so un-wiring a path
-   stopped it being required, and the library-not-daemon state made itself invisible. The vocabulary
-   is now the SHAPE (`def before(self, inner)` **and** constructed in `main()`), so un-wiring leaves
-   the path REQUIRED and NOT INVOKED, which is exactly what it is.
+**Three spikes flagged.** The stalled-socket harness · **the transport shape** — `limiterd.py:2104-2111`
+argues for the directory on *narrowest-surface* grounds while D3.468's discharge says it becomes
+*"an adapter rather than a directory reader"*; **these point in opposite directions and want an
+architect ruling before M2-C is briefed** · the instrument table D3.480 needs, absent from `risks/`.
 
 ---
 
-## PART 3 — THE GREENING CLOSE-OUT
+## IBKR PAPER-ONLY — AND SIM-VALIDATION ALREADY DOES NOT DEPEND ON IT
 
-### (A) FULL PYTEST — the whole suite, not a derived closure
+`dev_and_services_plan.md:97-98`, `:246-248`: IBKR permanently paper-only Stage 0; Tradovate demo
+Stage 1-2, **live from Stage 3** (micros), Stage 4 (minis); the two vendor cutovers are independent
+gates (R6). **The no-live-session property is already held and must be protected, not built:**
+`StubBrokerOrder` implements all nine verbs with no vendor import and no socket; `seam_simulate.py`
+is fully offline; the real adapter is driven against a `FakeIB`. **All 36 broker tests ran green with
+no IBKR session** (`36 passed in 0.60s`; basetemp outside `~/nix`).
 
-**`3632 passed | 9 failed | 3 skipped | 2 xfailed` in 2997 s (49:57)**, `--basetemp=/var/tmp/arc058_pt`
-OUTSIDE the tree.
-
-* **ONE failure was this arc's, and it is FIXED.** `test_check_order_path_bans` BANKS the order-path
-  module count and it moved **39 → 40**, because `nixrisk/closing.py` is a new module under an anchor
-  directory. Re-banked from the gate's OWN printed evidence, never from arithmetic — and re-read rather
-  than assumed: over the widened scope the gate reports the SAME 3 advisory sites and **no** new banned
-  module, banned call or retry shape. `closing.py` declares no order-port verb and sends nothing; the
-  venue was already reached by the flatten it reconciles. Re-verified 15/15, gate PASSES.
-* **EIGHT are INHERITED, and that is PROVEN rather than argued** — the whole of `test_realized_pnl.py`,
-  `test_flatten.py::test_the_R4_partition_covers_the_WHOLE_enum` and
-  `test_coldstart_reconcile.py::test_flatten_to_flat_REFUSES_a_shut_market`. They pass STANDALONE
-  (`88 passed`) and reproduce at HEAD `9bc04d9` in a CLEAN `git worktree` with a byte-identical
-  signature: `KeyError: <EventKind.CLOSED: 'closed'>` at `test_realized_pnl.py:586`, on a dict keyed by
-  `EventKind`. **That is TWO MODULE OBJECTS FOR ONE FILE IN ONE INTERPRETER** — D3.224's *one tree per
-  interpreter*, the class ARC 057's own re-measure paid for. **D3.484 opened.**
-* **D3.481 CLEARS** — `test_check_uncalled_entry_points::test_the_LIVE_BASELINE_accepts_EXACTLY_what_the_LIVE_TREE_measures`
-  is green. **D3.477 CLEARS** — `test_check_limiter_daemon_dispatch` is **26/26** with `test_PLANT_053B`
-  driving its plant again.
-
-### (B) FULL BINDING CENSUS
-
-**103 checks on disk, 103 registered, ZERO orphans in either direction, ZERO declared subjects missing
-from disk.** 98 of 103 carry a test module; 100 of 103 carry one that asserts a non-PASS verdict.
-The three that carry no can-fail control at all — `check_go_timeout`, `check_crucible_calendar`,
-`check_tmpfs_inode_headroom` — are **D3.483**, opened rather than passed over. None is this arc's.
-
-### (C) FULL `verify.py` AT THE MERGED TREE — `97 | 4 | 2 | 0`, THE PREDICTED TUPLE
-
-`check_i1_convergence` **[ok] under `verify.py`, not standalone** — which is the verdict that counts
-(ARC 057's lesson: *a gate that passes alone and fails in the suite measured one tree and was asked
-about another*). Every neighbouring invariant gate green: `check_stop_maintenance`,
-`check_uncertainty_flatten`, `check_limiter_daemon_dispatch`, `check_fill_handler`,
-`check_hot_path_purity`, `check_two_phase_entry`, `check_plane1_sole_writer`,
-`check_artifact_gate_coverage`, `check_derived_claims`. `check_arc_status_contract` **[ok]** auditing
-`arc_057.log`, as predicted.
-
-**EVERY REMAINING RED, DISPOSITIONED EXPLICITLY — NONE IS AN INVARIANT FAILURE:**
-
-| red | disposition |
-|---|---|
-| `check_ibgateway_service` | **ENVIRONMENTAL** — `127.0.0.1:4002` ECONNREFUSED. The gateway is down and needs the operator's tap. |
-| `check_ibgateway_config` *(cannot-measure)* | **ENVIRONMENTAL** — same unreachable port. Rule 10 working: a property whose subject is unavailable is not proven. |
-| `check_observed_resource_claims` *(cannot-measure)* | **ENVIRONMENTAL** — downstream of the same port. |
-| `check_monitor_tui` | **OPERATOR-DEPRECATED MON-1 (D3.113).** ARM3 stale pin over retired tooling. |
-| `check_untracked_attribution` | **OPERATOR'S ARTIFACT** — `downloads/Pinokio-8.0.40-arm64.dmg`, not this project's work. |
-| `check_uncalled_entry_points` | **INHERITED PUBLIC-SURFACE BACKLOG (D3.200/D3.203)**, where the ledger itself records that *an architect ruling is owed, not a code fix*. Not named by the brief and so stated explicitly: 54 unaccepted rows across `nixscore/store.py`, `publisher.py`, `supervision.py`, `drift_audit.py`, `recovery.py`, `fills.py` — **not one of them a risk-path safety property, and not one of them this arc's.** This arc SHRANK it: baseline 170 → 166 accepted, UNCALLED 170 → 167, unaccepted 55 → 54, high-water untouched. |
-
-### (D) CLAIMS HARNESS
-
-`check_derived_claims` **exit 0, 13/13** — 103 checks registered, 3645 tests collected, and
-`check_debt_open_items=417` with `derived:ledger_rows=417` agreeing with the ARC 058 series row. **417
-was read off the instrument, never typed:** it reported `DISAGREEMENT derived:ledger_rows=417,
-stated:series_table_latest_row=416` inside the same edit that staled it, exactly as at ARC 057.
+Seam identity is **partly** testable offline today: add B1's superset check + vacuity guard and the
+*nominal* half of §2A invariant 1 becomes a real cross-vendor gate needing no venue. Behavioural
+identity needs Tradovate. **B5 must not be scheduled against IBKR at all.**
 
 ---
 
-## FREEZE — ASSERTED WITH `git hash-object`, NOT CLAIMED
+## THE HONEST PREDICTION
 
-The diff is **exactly** the declared set: `scripts/limiterd.py`, the closing-fill handler
-`scripts/nixrisk/closing.py` (named), the convergence gate + its test, the D3.477 test-anchor fix,
-`docs/CHECK-DEBT.md` — plus `checks/registry.json` (the +1 registration the check contract requires),
-the `uncalled_entry_points_baseline.json` shrink the brief anticipated, `test_check_order_path_bans.py`
-(the re-banked count), and `scripts/tests/test_closing.py`.
-
-**BYTE-IDENTICAL to `9bc04d9`, all twenty:** `stopwatch.py` **`274f6aa7224fda5c`** — *the `forget`
-METHOD is unchanged and what moved is the CALL SITE* — `stops.py`, `flatten.py`, `fills.py`,
-`fill_seam.py`, `positions.py`, `execution.py`, `join.py`, `outcomes.py`, `reservations.py`,
-`completions.py`, `freshness.py`, `picture.py`, `seam.py`, `wal.py`, `projection.py`, `gate.py`,
-`sizing.py`, `ema.py`, `realized.py`.
-
-**WHAT MOVED INSIDE `limiterd.py` AND IS NAMED RATHER THAN LEFT TO BE FOUND.** The C2 producers'
-LOGIC is untouched: the only deletions are the two `reason=` strings bound to named locals (same text,
-because the close must carry §6.1b:352's word and deriving it twice would be the system choosing one
-fact twice), the two constructor signatures, the three construction sites, and **two inherited
-`ruff format` sites that were already red at HEAD**. `UnwiredExitSinks` is KEPT and still RAISES.
-
-**`uncalled_entry_points_baseline.json` MOVEMENT, named:** four accepted rows removed —
-`stops.py::StopBook.forget` (which HAD to go in the same commit, or wiring it would have become a
-*shipped code now CALLS it* regression), `positions.py::EntryOrderOrigins.origin_for_trade`, and the
-two inherited `seam.py::StopBookPort.breached/maintain` rows the gate had been asking to tighten. A
-SHRINK in every counter; the high-water is untouched.
-
-**A DEFECT THIS ARC FOUND IN ITS OWN FIRST ATTEMPT.** `closing.py` originally declared its own
-`StopBookPort` / `StopWatchPort` / `OriginPort` Protocols. `check_uncalled_entry_points` resolves a
-call to the DECLARED type of its receiver — so both `forget` verbs stayed UNCALLED through a module
-that calls them on every close, and **D3.481 would have read as unpaid while it was being paid.** The
-books are now typed concretely, which is `flatten.ProtectiveFlatten.__init__`'s own line (concrete for
-the Limiter's books, Protocol for the §4 fan-out sinks) and the only spelling that keeps the caller
-visible to the instrument that hunts for callers.
+M2-A/B/E are audit-shaped and will move the badge quickly, because the module is already well built.
+**They will also mislead if reported alone: greening eleven of thirteen while B12 stands means the
+module is proven to produce correctly into nothing. Module 2 must not be badged green on any set
+that excludes B12.**
 
 ---
 
-## RESIDUAL — WHAT A GREEN 12/12 DOES AND DOES **NOT** MEAN
+## OBLIGATIONS
 
-**It means:** given correct inputs, the daemon provably runs the COMPLETE risk machinery — it reserves,
-gates, fills, protects, trails, breaches, flattens, reconciles and releases, each proven and **none in
-a library-not-daemon state.**
-
-**It does NOT mean operationally live**, and these are later modules by correct decomposition, not gaps
-in I1:
-
-* **D3.473** — no real price-capture feed. The ring is command-fed; that is broker-datafeed's job.
-* **D3.470** — the daemon DISPATCHES onset; it does not DETECT it (`BlackoutEvaluator`/`HaltFlag`).
-* **D3.468** — the pending-timeout status directory has no producer.
-* **D3.476** — `nixalloc/sizing.py` carries no trail distance; the Allocator is not on the approval path.
-* **D3.480** — not-tradable deny-at-approval (D3.372's root) is separated, not built.
-* **The broker is a STUB.** Nothing in this tree reaches a venue.
-
----
-
-## BADGE VERDICT
-
-**PART 2's convergence gate PASSES under `verify.py` ⇒ I1 DISCHARGED ⇒ clean set = 12/12.**
-
-**PART 3's greening is CLEAN**: the full suite's only new red was this arc's and is fixed, the other
-eight are proven inherited; the binding census has no orphan, no unregistered check and no gate
-pointed at a subject that does not exist; the claims harness is exit 0; and **every remaining
-`verify.py` red is environmental or operator, not an invariant failure** — stated one by one above so
-the decision is auditable.
-
-⇒ **LIMITER BADGE RED → GREEN. MODULE 1 COMPLETE.**
-
-### THE BOARD, REDRAWN
-
-| | |
-|---|---|
-| clean set | **12 / 12** |
-| open invariants | **none** |
-| Limiter badge | **GREEN** |
-| Module 1 | **COMPLETE** |
+**READ-ONLY CONFIRMED** — no tracked code change; every `scripts/broker/*.py` worktree blob
+byte-identical to its HEAD blob. **Module 1 re-measured ONCE: `97 | 4 | 2 | 0`, exit 1.**
+**Push state: `origin/main == HEAD` before this arc — the green Module 1 was already pushed
+(0 unpushed commits). Memory #21's standing risk was NOT live at ARC 059's start.**
+**Waypoint deviation disclosed:** total fixed at 8 at kickoff, never moved; the four parallel
+sub-agents ran as sub-steps 2.1–2.4 inside stage 2 rather than as four stages (the denominator would
+have been 11). The never-moves-mid-run rule is the stronger one, so the deviation is recorded.
