@@ -8884,3 +8884,98 @@ HEAD. **Waypoint deviation disclosed:** total fixed at 8 at kickoff and never mo
 parallel sub-agents ran as sub-steps 2.1–2.4 inside stage 2 rather than as four stages — had they
 been counted the denominator would have been 11. The never-moves rule is the stronger one, so the
 deviation is recorded rather than the denominator changed.
+
+---
+
+## ARC 060 — MODULE 2 (broker-order) M2-A: the B-register ratified, the cheap set gated
+
+**Tier: INTERIOR. Predecessor `ccc2a07` (ARC 059's recon write-back), derived with `git rev-parse HEAD`, not assumed.**
+Module 1 FROZEN and untouched. broker-order badge STAYS RED.
+
+**BASELINE MEASURED FIRST, AND IT WAS NOT WHAT ARC 058 CLOSED AT.** `96 | 5 | 2 | 0`, against ARC 058's
+`97 | 4 | 2 | 0`. The single regression was attributed rather than guessed: `check_arc_status_contract`
+fails on `arc_059.log`, whose teardown line reads *"confirmed dead (none spawned…)"* and therefore never
+NAMES cc's own `arc_heartbeat` watchdog (D3.465's positive-identification arm). **It was predicted to stay
+red for all of ARC 060 and it did** — `_previous_arc_log()` excludes the RUNNING arc's log by name and
+audits the newest of what remains, so this arc's subject is 059's log, and the only way to green it here
+would be to edit banked evidence of a completed run (core directive 6 forbids it). It returns to PASS in
+ARC 061, which audits `arc_060.log`; this arc's duty was to write that log correctly.
+
+**PREDICTION STATED BEFORE THE RUN, MET EXACTLY: `99 | 5 | 2 | 0`.** +3 passed (the three new gates), five
+FAILs unchanged, two cannot-measures unchanged.
+
+**TASK 1 — `docs/MODULE2-REGISTER.md`, Module 2's ratified charter.** B1..B13 with spec citations, the
+status vocabulary, and the `B<n>`-not-`I<n>` naming ruling recorded with its reason (a second `I4` would
+collide with the Limiter's live `I4` exactly as `SPEC-A<n>`/`CHECK-A<n>` collided before ARC 028). It
+carries a dedicated section — *"the two rows no future arc may mistake for owed-now work"* — for **B5**
+(venue-gated: `venue_seq_ts` is `time.time()` and compared nowhere; unsatisfiable on IBKR, and "fixing" it
+there could only mean fabricating a venue timestamp, which is what B11 exists to prevent) and **B12** (the
+capstone; twelve Limiter rows wait on one missing transport). It states the binding badge rule: **Module 2
+may not be badged green on any set excluding B12 — a module proven to produce correctly INTO NOTHING is
+not green.**
+
+**TASKS 2–3 — three gates, built in parallel, each BOUND from demonstrated FAILs on the REAL tree.**
+`check_broker_seam_identity` (B1) closes the three holes ARC 059 named: the existing
+`check_structural_conformance` reports MISSING ONLY and is superset-blind, it has no empty-roster vacuity
+guard, and **no signature/arity comparison existed anywhere in the tree**. The new gate does exact set
+equality in both directions, derives each verb's parameter shape FROM THE PROTOCOL rather than from a typed
+list (D3.426), introspects the REAL `IBKRBrokerOrder`, and returns CANNOT_MEASURE naming any verb it cannot
+classify. **Scope fence stated in the gate and the register: B1 is discharged for the IBKR SIGNATURE, not
+for cross-vendor identity, which needs N=2 adapters (M2-F).** `check_no_vendor_type_leak` (B2) moves
+invariant 2 from a test to a registered instrument with a fail-closed three-valued taint walk — an
+undecidable return or emission is CANNOT_MEASURE naming it, never a quiet pass. `check_nonblocking_send`
+(B6) turns a measurement that **lived in a docstring and that nothing re-ran** into a live instrument
+(§13 objective 11, the one the spec calls *critical*): an AST arm plus a timed drive against a transport
+that never drains, worst cell 0.0003 s against a 0.5 s budget.
+
+**A PLANT OF MINE FAILED TO APPLY TWICE AND THE GATE WAS RIGHT BOTH TIMES.** Neutering B6's D1.22 caveat
+left the gate green; the honest reading was not "the arm is broken" but "check the plant" — the caveat is
+stated TWICE in the adapter, the second time split across lines, so a raw replace missed it. Rewritten to
+neuter both occurrences, the gate FAILS naming the missing fragment. Recorded because the first two runs
+looked exactly like a defect.
+
+**TASK 4 — the three broker-order debt rows re-measured, none carried forward unre-measured.**
+**D1.17 DISCHARGED** by a live drive of the real adapter on the same clientId=905 and the same sequence
+ARC 016 used: the ARC 016 sequence now emits ONE `on_session(DOWN)` where it measured TWO, and ZERO for a
+never-connected adapter where it measured ONE. The row's own provenance objection is answered rather than
+sidestepped — the surviving reason is `'transport disconnected'`, the UNREQUESTED first cause — and the
+control was driven (two REAL edges → two DOWNs), so this is a transition rule and not a mute.
+**D1.31 NARROWED a second time**: its trigger *when R2 lands* has now fired (35 `nixrisk` modules against
+ARC 028's 2) and every clause is met except the last — `pending_ack_timeout_ms` is consumed at
+`limiterd.py:348`, and **`fill_timeout_ms` has NO consumer in the Limiter at all**, so a Limiter-owned
+§12A knob is today consumed exclusively by broker-order. **D1.22 NARROWED a second time**: all three
+consumer obligations are now BUILT (pending-ack timeout, resolution by query, never-a-resend) and all three
+are UNREACHED — its residual is exactly B12, measured three ways.
+
+**THE FINDING THAT WAS NOT LOOKED FOR — D3.485.** My first D1.17 probe reported both DOWNs emitted and the
+suppression apparently dead. The adapter was innocent: putting both `scripts/` and `scripts/broker/` on
+`sys.path` loads the seam TWICE, as `broker_seam` AND `broker.broker_seam`, giving two `SessionState`
+classes for which `is` is FALSE — so an identity-gated guard cannot fire. **This is the exact trap a B12
+wiring arc walks into**, because wiring the Limiter to broker-order means choosing an import spelling, and
+choosing the other one degrades every `is` comparison across the seam in the FAIL-OPEN direction, silently.
+D3.224/D3.484's duplicate-module mechanism, reached through `sys.path` shape instead of a `sys.modules`
+purge. Also opened: **D3.486** (§2A invariant 2's one ratified exception, `on_ack.reason`, was carried by
+no ledger row — opened in the same arc that mechanically encoded it) and **D3.487** (the new B6 gate's
+evidence template contradicts its own detail on a FAIL; verdict and detail both correct, presentation not).
+
+**`check_uncalled_entry_points` DID MOVE, and the movement is a finding.** Two symbols were admitted
+to `checks/uncalled_entry_points_baseline.json` — `IBKRBrokerOrder.connect` and
+`IBKRBrokerOrder.disconnect`, bucket **`gate_only`**. They were previously CANNOT_RESOLVE, and
+`check_nonblocking_send` is the **first thing on the tree to construct the real adapter and call
+them**, which resolved them into the reported set. `gate_only` means *no call site in shipped code*,
+so §2A's connect/disconnect have **no production consumer** — B12 in miniature, surfaced by an
+instrument. Admitted rather than wired (wiring them IS B12) or deleted (they are §2A-required); they
+leave the baseline when the Limiter constructs an adapter, which is one of B12's acceptance signals.
+An earlier draft of this summary said the ratchet had not moved. It had; corrected here on measurement.
+
+**FREEZE PROVEN, NOT CLAIMED.** All 43 frozen paths byte-identical by `git hash-object` at close — every
+`scripts/nixrisk/*`, `scripts/limiterd.py`, every `scripts/broker/*`, `risks/broker_order.config.json` —
+**including across four plant-and-restore cycles** on `broker_seam.py` and `broker_order_ibkr.py`. Module
+1's invariant gates re-run **14/14 PASS**. This arc GATES broker-order; it does not modify it.
+
+**Ledger 417 → 419**, read off `derived:ledger_rows` after every edit landed, never typed; the per-module
+tally moved `broker-order 9 → 11` by the same instrument reporting the disagreement. ARC 059 has no series
+row — correctly, it was a read-only recon.
+
+**BADGE: broker-order STAYS RED** (cheap set gated; B5 venue-gated; B12 outstanding). **Module 1 badge
+UNCHANGED (green).** Module 2 status: *audit begun, cheap set gated, capstone B12 outstanding.*

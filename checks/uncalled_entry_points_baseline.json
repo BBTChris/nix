@@ -126,11 +126,19 @@
     },
     "scripts/broker/broker_order_ibkr.py": {
       "owner": "unassigned",
-      "reason": "The IBKR order adapter. Same shape as its datafeed sibling: the order path verbs are reached by tests and by the seam simulation, and no shipped consumer constructs the adapter.",
+      "reason": "The IBKR order adapter. Same shape as its datafeed sibling: the order path verbs are reached by tests and by the seam simulation, and no shipped consumer constructs the adapter. ARC 060 (M2-A) ADMITS connect/disconnect as GATE_ONLY, and the admission is itself B12 evidence rather than bookkeeping. They were previously CANNOT_RESOLVE - no resolvable receiver anywhere - and this arc's new checks/check_nonblocking_send.py became the FIRST thing on the tree to construct the real IBKRBrokerOrder and call them, which resolved them into the reported set. The bucket IS the finding: `gate_only` means NO CALL SITE IN SHIPPED CODE, so section 2A's connect/disconnect have no production consumer, exactly as B12 says of the whole seam. They are ADMITTED rather than wired or deleted because wiring them IS B12 (a 3-5 arc capstone) and deleting them would delete two section-2A-required verbs. They leave this baseline when the Limiter constructs an adapter, and that departure is one of B12's acceptance signals.",
       "symbols": {
         "IBKRBrokerOrder.capabilities": {
           "bucket": "uncalled",
           "admitted": "ARC 034"
+        },
+        "IBKRBrokerOrder.connect": {
+          "bucket": "gate_only",
+          "admitted": "ARC 060"
+        },
+        "IBKRBrokerOrder.disconnect": {
+          "bucket": "gate_only",
+          "admitted": "ARC 060"
         },
         "IBKRBrokerOrder.flatten_attempts": {
           "bucket": "uncalled",
