@@ -1,19 +1,23 @@
-# ARC 060 — MODULE 2 (broker-order) M2-A — RESULTS
+# ARC 061 — B12-1: THE SEAM FOUNDATION — RESULTS
 
-**Tier INTERIOR · predecessor `ccc2a07` (derived) · Module 1 FROZEN · broker-order badge STAYS RED**
+**Tier INTERIOR · Module 2's B12 CAPSTONE, arc 1 of ~4 · predecessor `49e09d0` (derived)**
+**broker-order STAYS RED · Module 1 GREEN, unchanged**
 
 ---
 
-## 0. HEADLINE
+## 0. WHY THIS ARC EXISTS AS A SEPARATE SLICE
 
-1. **The B1..B13 register is RATIFIED** as `docs/MODULE2-REGISTER.md` — Module 2's charter. Every
-   subsequent Module-2 arc binds to a B-number.
-2. **The cheap set is GATED.** B1 (IBKR-side signature conformance), B2 (no vendor type leak), B6
-   (non-blocking send) moved from test-only / docstring-only proofs to **registered `verify.py`
-   gates**, each bound from a demonstrated FAIL.
-3. **B12 and B5 are untouched and explicitly fenced off** so no future arc mistakes them for
-   owed-now work. **The badge stays RED.**
-4. **The arc modified NO subject.** 43 frozen paths byte-identical, proven with `git hash-object`.
+ARC 062's brief (B12-2, the event push) was read first and **stopped at its own TASK 0.** All three
+preconditions it required were absent, measured rather than inferred:
+
+| TASK 0 condition | measured |
+|---|---|
+| one canonical seam module object | **two** distinct objects; `DOWN is DOWN` **False** |
+| `limiterd` constructs the real adapter | AST over **36** modules: **zero** broker imports; every `IBKRBrokerOrder(` in **test files** |
+| `check_broker_seam_wiring` PASS | the file **did not exist** |
+
+B12-1 had never been banked. Wiring events onto that would have meant inventing a construction site
+inside the wrong arc. **This arc lays the foundation.**
 
 ---
 
@@ -21,207 +25,134 @@
 
 | | passed | failed | cannot-measure | skipped |
 |---|---|---|---|---|
-| ARC 058 closed | 97 | 4 | 2 | 0 |
-| **ARC 060 baseline (measured first)** | **96** | **5** | **2** | **0** |
-| **ARC 060 predicted** | **99** | **5** | **2** | **0** |
-| **ARC 060 measured at close** | **99** | **5** | **2** | **0** |
+| ARC 060 closed | 99 | 5 | 2 | 0 |
+| **ARC 061 baseline** | **100** | **4** | **2** | **0** |
+| **ARC 061 predicted** | **101** | **4** | **2** | **0** |
 
-**PREDICTION MET EXACTLY.** Stated before the run, after measuring the baseline.
-
-### The baseline was NOT 97|4|2|0, and the regression is attributed
-
-`check_arc_status_contract` FAILS on `scratchpad/arc_logs/arc_059.log`: its teardown line reads
-*"confirmed dead (none spawned — cc used one-shot…)"* and never NAMES cc's own `arc_heartbeat`
-watchdog, which is D3.465's positive-identification arm. ARC 058's log said *"no arc_heartbeat
-process owned by cc is alive; cc matched its own signature with `ps -eo pid,ppid,user,args`"* — and
-passed.
-
-**It was predicted to stay RED for all of ARC 060, and it did.** `_previous_arc_log()`
-(`check_arc_status_contract.py:470-524`) excludes the RUNNING arc's log **by name** and audits the
-newest of what remains — so this arc's subject is 059's log. Greening it here would mean editing
-banked evidence of a completed run, which core directive 6 forbids. **It returns to PASS in ARC 061**,
-which audits `arc_060.log`; this arc's duty was to write that log correctly.
-
-The other four FAILs are pre-existing: `check_ibgateway_service` (ECONNREFUSED, no gateway),
-`check_monitor_tui` (ARM3 stale pin), `check_uncalled_entry_points` (Module-1/nixscore surface,
-**unmoved by this arc**), `check_untracked_attribution`. Both cannot-measures are the gateway being
-down — correct under check-contract rule 10.
-
-**The `.dmg` and the guard, as instructed:** `downloads/Pinokio-8.0.40-arm64.dmg` (142 MB, in no
-commit, not a Nix artifact) holds `check_untracked_attribution` red **on its own**. Its second arm is
-`downloads/broker_order_margin_regime_delta.md`, untracked and not matching the anchored allowlist
-glob `downloads/arc_0*.md` — which is why the two arc briefs beside it are not flagged and it is.
-**Left untracked deliberately:** committing it is outside this arc's declared freeze diff, renaming it
-to match the glob would be laundering an artifact past an anchored allowlist, and the check stays red
-on the `.dmg` regardless. **Operator ruling owed on both.**
+**The baseline IMPROVED, and ARC 060 wrote down why in advance.** `check_arc_status_contract` now
+reads `[ok]` against `arc_060.log`. ARC 060 recorded: *"it returns to PASS in ARC 061, which audits
+arc_060.log; this arc's duty was to write that log correctly."* **A forward prediction closed by
+measurement.**
 
 ---
 
-## 2. TASK 1 — THE RATIFIED REGISTER
+## 2. D3.485 DISCHARGED — REPRODUCED WITH A CONTROL, THEN FIXED, THEN RE-MEASURED
 
-`docs/MODULE2-REGISTER.md`. B1..B13 with spec citations resolving against frozen v1.3, the status
-vocabulary, and:
+**The reproduction:** with both `scripts/` and `scripts/broker/` on `sys.path`, the seam loaded as
+**two** module objects, `SessionState` was two classes, `DOWN is DOWN` was **False**, and the ARC 016
+teardown sequence emitted **TWO** `on_session(DOWN)` events — **D1.17 reappearing with the adapter
+entirely innocent.**
 
-* **The naming ruling, with its reason.** `B<n>` not `I<n>`: a second `I4` would collide with the
-  Limiter's live `I4` in every document, exactly as `SPEC-A<n>`/`CHECK-A<n>` collided before ARC 028
-  forced the prefixes apart.
-* **A dedicated section for the two rows that read as red but are NOT owed-now work.**
-  **B5** is venue-gated — `venue_seq_ts` is written with `time.time()` and compared nowhere; the
-  adapter already declares it unmet, and the only way to "fix" it on IBKR is to fabricate a venue
-  timestamp, which is the failure B11 exists to prevent. Compounded by `on_margin` having no producer
-  and by the field being spelled three ways across the tree (`venue_seq_ts` / `venue_ts` /
-  `source_seq`, D3.121). **B12** is the capstone: `limiterd.py` and all of `scripts/nixrisk/` import
-  no broker module, and **twelve Limiter debt rows wait on one missing transport layer.**
-* **The binding badge rule:** *Module 2 may not be badged green on any set excluding B12 — a module
-  proven to produce correctly INTO NOTHING is not green.*
+**The control is the point:** the identical drive under **one** module object emitted **ONE** DOWN. So
+the defect is the **double load**, not the guard — the distinction the row was opened to preserve.
 
----
+**The fix** lives in `broker_order_ibkr.py` (the one module the production path reaches the seam
+through, so the frozen seam is untouched) and canonicalises in **both** directions, because either
+spelling can arrive first.
 
-## 3. TASKS 2–3 — THE THREE GATES
+**Re-measured across four `sys.path` shapes × both import orders** — adapter-first with both paths,
+package-seam-first, `scripts/` alone, `scripts/broker/` alone: **one module object, `DOWN is DOWN`
+TRUE, all eight §2A seam types single class objects, exactly one DOWN — every time.**
 
-| gate | invariant | what did not exist before |
-|---|---|---|
-| `check_broker_seam_identity` | **B1** §2A:103-104 | the existing `check_structural_conformance` reports **missing only** — superset-blind; it has **no vacuity guard**; and **no signature/arity comparison existed anywhere in the tree** |
-| `check_no_vendor_type_leak` | **B2** §2A:104-105 | the only proof was a **test**, not a registered gate |
-| `check_nonblocking_send` | **B6** §2A:107, §13 obj 11 (*critical*) | the measurement **lived in a docstring and nothing re-ran it** |
+### A second instrument agreed, and it was not looked for
 
-**B1** does exact set equality both directions, derives each verb's parameter shape **from the
-Protocol** rather than from a typed list (D3.426), introspects the **real** `IBKRBrokerOrder`, and
-returns CANNOT_MEASURE naming any verb it cannot classify. All nine port verbs and seven events match
-exactly on the real tree. **Scope fence, stated in the gate and the register: B1 is discharged for the
-IBKR SIGNATURE, not for cross-vendor identity — that needs N=2 adapters (M2-F).**
+The Limiter's first import spelling was the **package** one. `mypy` refused it outright:
 
-**B2** is a fail-closed three-valued taint walk: an undecidable return or emission is CANNOT_MEASURE
-naming it, never a quiet pass. It holds §2A's one ratified exception (`on_ack.reason`) to its
-justification — the allowance FAILS if the justification text is deleted, if `OrderEventSink.on_ack`
-stops declaring it, or if the annotation is widened.
+> *Source file found twice under different module names: `broker_order_ibkr` and `broker.broker_order_ibkr`*
 
-**B6** pairs an AST arm with a timed drive against a transport that never drains (worst cell 0.0003 s
-against a 0.5 s budget, ~150× the recon's measured worst). **Its ARM 4 fails if D1.22's honest-limit
-caveat is deleted**, so a green non-blocking gate can never be misread as proof of DELIVERY.
-
-### Binding — demonstrated FAILs on the REAL tree, restored byte-identical
-
-| plant | verdict | named |
-|---|---|---|
-| roster gains `ghost_verb` | FAIL | `MISSING verb 'ghost_verb'` on both Protocol and adapter |
-| adapter `cancel_order` gains a parameter | FAIL | `SIGNATURE MISMATCH`, **both** full signatures |
-| `ORDER_PORT_VERBS = ()` | FAIL | `VACUOUS` + every verb as a strict-superset EXTRA |
-| `import ib_async` in the seam | FAIL | `the SEAM imports the vendor SDK 'ib_async'`, line 2643 |
-| port verb `-> ib_async.Trade` | FAIL | `query_order_status`, `ib_async.Trade`, `RETURNS the vendor type` |
-| `time.sleep(0)` in `place_order` | FAIL | `sleep`, `place_order`, `§2A:107 invariant 5`, line 1027 |
-| D1.22 caveat neutered (both sites) | FAIL | `missing: the-finding ('zero bytes delivered to the peer')` |
-
-**Every plant restored byte-identical** (`git hash-object` before/after), and every gate returned to
-green after restore. 68 can-fail tests across the three suites pass.
-
-**One honest note.** Two of my caveat plants **failed to apply** and left the gate green. The correct
-reading was not "the arm is broken" but "check the plant": the caveat is stated **twice** in the
-adapter, the second time split across lines, so a raw string replace missed it. Neutering both
-occurrences makes the gate FAIL naming the fragment. **The gate was right both times.**
+That is **D3.485 restated by a static analyser.** `limiterd.py` therefore imports the broker library
+**flat** behind one named `sys.path` insert, so the tree carries **one module name**, and the adapter's
+preamble holds the invariant even for a consumer that picks the other spelling.
 
 ---
 
-## 4. TASK 4 — THE DEBT ROWS, RE-MEASURED (none carried forward unre-measured)
+## 3. THE CONSTRUCTION SITE — PROVEN ON A RUNNING PROCESS
 
-**D1.17 → DISCHARGED.** Driven on the real adapter, same clientId=905 and same sequence as ARC 016:
-the ARC 016 sequence now emits **1 DOWN where it measured 2**; a never-connected `disconnect()` emits
-**0 where it measured 1**. The row's provenance objection (*"§4 wants an unrequested drop
-distinguishable from a requested one"*) is **answered**: the surviving reason is `'transport
-disconnected'`, the unrequested first cause. **Control driven:** two real UP→DOWN edges still emit two
-DOWNs, so this is a transition rule and not a mute.
+`limiterd.main()` constructs `IBKRBrokerOrder` behind `BrokerOrderPort`. Measured on a live daemon:
 
-**D1.31 → NARROWED (2nd), NOT DISCHARGED.** Its trigger *when R2 lands* **has now fired** — 35
-`nixrisk` modules against ARC 028's 2. Single home ✓, no restatement ✓, broker-order reads them ✓.
-**What keeps it open is its own final clause, measured per knob:** `pending_ack_timeout_ms` IS consumed
-(`limiterd.py:348`); **`fill_timeout_ms` has NO consumer in `scripts/nixrisk/` or `limiterd.py`** — the
-only reader on the tree is `broker_order_config.py`, validating its own derived knob. A Limiter-owned
-§12A knob is today consumed exclusively by broker-order.
+```
+limiterd exit  : 0 (clean stop)
+broker_port    : {"class": "IBKRBrokerOrder", "constructed": true,
+                  "connected": false, "unrouted": {}}
+sockets to 4002: 0
+```
 
-**D1.22 → NARROWED (2nd), NOT DISCHARGED.** All three consumer obligations are now **implemented**:
-pending-ack timeout (`limiterd.py:348`), resolution by query (`outcomes.py:361`, `limiterd.py:2197`),
-never-a-resend (structurally banned, gated). **And all three are UNREACHED** — measured three ways:
-no Limiter file imports a broker module in either spelling; nothing in `scripts/broker/` writes the
-status directory `DirectoryStatusQuery` polls (D3.468); the real adapter has no production
-construction site. **Its residual is exactly B12.**
+`connected: false` is **structural, not a promise**: `ib=None` leaves the adapter no client to dial
+with. Before this arc, `limiterd.py` and all 35 `scripts/nixrisk/*.py` imported **no broker module**,
+and `flatten.py:212-213`'s *"structurally satisfies this narrower port"* was a claim with **no
+instrument behind it**. It is now proven by a gate that derives the verb set from the Protocol.
 
 ---
 
-## 5. THE FINDING NOBODY LOOKED FOR — D3.485
+## 4. NO REGRESSION — MEASURED ON BOTH TREES
 
-My first D1.17 probe showed **both DOWNs emitted** and the suppression apparently dead. **The adapter
-was innocent.** `broker_order_ibkr.py:194` imports the seam **flat**; putting both `scripts/` and
-`scripts/broker/` on `sys.path` loads the same file twice, as `broker_seam` and `broker.broker_seam` —
-**two `SessionState` classes, `DOWN is DOWN` FALSE** (measured: distinct class ids). `_publish_session`
-gates on `state is SessionState.DOWN`, so the guard cannot fire.
+An identical `register → reserve → go → on_fill` drive was run against a **clean worktree at
+`49e09d0`** and against this tree.
 
-**Why it is a B12 row.** Wiring the Limiter to broker-order **means choosing an import spelling**. Pick
-the other one from the adapter's and every `is` comparison across the §2A seam — session states, sides,
-order types, reject categories — degrades in the **fail-OPEN** direction with no error, no log and no
-test failure. This is D3.224/D3.484's duplicate-module mechanism reached through `sys.path` shape
-rather than a `sys.modules` purge.
-
-Also opened: **D3.486** (§2A invariant 2's one ratified exception was carried by **no ledger row** —
-opened in the same arc that encoded it) and **D3.487** (the B6 gate's evidence template contradicts its
-own detail on a FAIL; verdict and detail both correct, presentation not).
-
----
-
-## 6. FREEZE — PROVEN, NOT CLAIMED
-
-**43 frozen paths byte-identical** by `git hash-object` at close: every `scripts/nixrisk/*`,
-`scripts/limiterd.py`, every `scripts/broker/*`, `risks/broker_order.config.json` — **including across
-four plant-and-restore cycles**. **Module 1's invariant gates: 14/14 PASS.**
-**`check_uncalled_entry_points` DID move, and the movement is a finding rather than a cost.**
-Two symbols were admitted to `checks/uncalled_entry_points_baseline.json`:
-`IBKRBrokerOrder.connect` and `IBKRBrokerOrder.disconnect`, bucket **`gate_only`**, admitted
-ARC 060. They were previously CANNOT_RESOLVE — no resolvable receiver existed anywhere on the
-tree — and `check_nonblocking_send` became the **first thing on the tree to construct the real
-`IBKRBrokerOrder` and call them**, which resolved them into the reported set. **The bucket IS
-the finding:** `gate_only` means *no call site in shipped code*, so §2A's `connect`/`disconnect`
-have **no production consumer** — B12 in miniature, surfaced by an instrument rather than argued.
-They are ADMITTED rather than wired or deleted because wiring them **is** B12 and deleting them
-would delete two §2A-required verbs. **They leave the baseline when the Limiter constructs an
-adapter, and that departure is one of B12's acceptance signals.** The subject file is
-byte-identical; only the baseline moved.
-
-Diff is exactly what was declared: the register doc, three gates + three suites, `registry.json` (+3
-checks and their 4 derived resource claims, installed by `--optimize --commit`, not hand-edited), and
-`CHECK-DEBT.md`.
-
-**Ledger 417 → 419**, read off `derived:ledger_rows`, never typed; tally `broker-order 9 → 11` by the
-same instrument reporting the disagreement. ARC 059 has no series row — correctly, it was read-only.
-
----
-
-## 7. BADGE AND WHAT IS OWED NEXT
-
-**broker-order: RED.** Cheap set gated; **B5 venue-gated** (Tradovate, not before); **B12 outstanding**
-(3–5 arcs). **Module 1: GREEN, unchanged and untouched.**
-**Module 2 status: audit begun, cheap set gated, capstone B12 outstanding.**
-
-**Owed to the architect, ranked:**
-1. **Rule on B12's sizing** — it is the whole module. Twelve Limiter rows wait on it.
-2. **Ratify SPEC-A3 into v1.4** (B11's sixth invariant) and give `on_ack.reason` a numbered
-   amendment so D3.486 points at a ruling instead of a docstring.
-3. **Rule on the `.dmg` and `broker_order_margin_regime_delta.md`** — both hold
-   `check_untracked_attribution` red and neither is mine to delete or adopt.
-4. **Note D3.485 before any wiring arc starts.** It is a fail-open trap with no error message.
-
----
-
-## 8. POST-WRITE-BACK RE-MEASURE (forward-only, banked by its own commit)
-
-**At the merged tree `e47a3db`: `99 | 5 | 2 | 0`.** The prediction is met at the **banked** state, not
-merely at a working tree.
-
-| | value |
+| | result |
 |---|---|
-| Module 1 invariant gates at the merged tree | **14 / 14 PASS** |
-| Frozen paths changed | **0 of 43** |
-| `git diff --name-only ccc2a07 HEAD -- scripts/nixrisk scripts/limiterd.py scripts/broker risks/broker_order.config.json` | **0 files** |
-| The three new gates in the merged plan | `[ok]` · `[ok]` · `[ok]` |
+| `fills`, `reservations`, `flat` | **exactly equal** on both trees |
+| the fill | **delivered** on both; stop arm refused on both |
+| the uncertainty flatten | **byte-identical** `unarmable_fill` detail string on both |
+| Module 1's 14 invariant gates | **14 / 14 PASS** at the merged tree |
+| ARC 060's 3 cheap-set gates | **3 / 3 PASS** |
+| frozen paths | **0 of 44 changed** |
+| `limiterd.py` | **206 insertions, ZERO deletions** — purely additive |
 
-The five FAILs are the same five in the same order, and the two cannot-measures are the same gateway
-unreachability. **`check_arc_status_contract` is red on `arc_059.log` by construction and returns to
-PASS in ARC 061, which audits `arc_060.log`.**
+**An honest correction:** my comparison script first printed *"the only difference is `broker_port`"*.
+That was **false** — eleven keys differ. I inspected every one: all are wall-clock timestamps,
+runtime-directory paths, OS thread/process ids, or tick counters differing **by one** because the
+daemon ran a fraction longer. The corrected claim is narrower and stronger: **the construction changed
+no behaviour the daemon records.**
+
+---
+
+## 5. `check_broker_seam_wiring` — THE FIRST CROSS-SEAM GATE
+
+Proves: one seam module object · identity-safe seam types (**50**, derived by shape) · the construction
+site (by **calling** it) · port satisfaction (derived from the Protocol, D3.426) · **no live connect**.
+
+**BOUND from four plants, driven on the REAL tree and restored byte-identical:**
+
+| plant | verdict | what it named |
+|---|---|---|
+| **A** canonicalisation stripped | exit 1 | both module ids, all **50** split seam types, and `DEAD IDENTITY GUARD: … emitted 2 on_session(DOWN) … where §2A permits exactly 1` |
+| **B** construction site removed | exit 1 | `NO CONSTRUCTION SITE: scripts/limiterd.py exposes no callable construct_broker_order_port()` |
+| **C** a §2A verb renamed away | exit 1 | `UNSATISFIED VERB 'get_margin'` + `NOT A BrokerOrderPort` |
+| **D** a socket dial on the construction path | exit 1 | `LIVE CONNECT … socket.socket.connect(('127.0.0.1', 4002))` |
+
+Plants removed → exit 0. Two fail-open holes in the gate's **own first draft** were found by its suite
+and closed (a constructor returning `None` scored PASS; a stand-in with no `_ib` scored CANNOT_MEASURE
+instead of FAIL).
+
+---
+
+## 6. UNCALLED-RATCHET MOVEMENT — IT RE-FOUND A KNOWN GAP FROM A NEW DIRECTION
+
+**Added:** `scripts/limiterd.py::UnwiredOrderEventSink.on_margin` (`uncalled`, ARC 061).
+
+Measured per event: of the seven §2A sink events, **six have emitters in shipped code and `on_margin`
+has ZERO** — `on_ack` 2, `on_fill` 3, `on_cancel` 2, `on_balance` 1, **`on_margin` 0**, `on_position` 3,
+`on_session` 3. That is **D3.381 / the ARC 059 recon's GAP-3** (*"`on_margin` never fires at all — §2A's
+primary margin path has no producer"*), surfaced independently the moment a **complete**
+`OrderEventSink` first existed in production code. It leaves the baseline when a producer exists, not
+when B12-2 wires the sinks.
+
+**`IBKRBrokerOrder.connect`/`.disconnect` deliberately did NOT leave the `gate_only` bucket.** This arc
+constructs and never connects, so their departure would have signalled this arc's **forbidden act**.
+
+---
+
+## 7. RESIDUAL — EXPLICITLY NOT CLAIMED
+
+* **B12 is NOT discharged.** Events are not wired (B12-2), the directory poll is not replaced (B12-3),
+  and the end-to-end seam proof + discharging gate (B12-4) remain. **broker-order stays RED.**
+* **No live venue, ever, in this arc.** The adapter is unconnected; the cutover is M2-F. IBKR is
+  paper-only permanently.
+* **B5 venue-gated**; **D1.31 / D1.22** residuals continue to point at B12; **D3.486 / D3.487** standing.
+
+**Ledger 419 → 418** (one discharged, none opened), read off `derived:ledger_rows`; tally
+`broker-order 11 → 10` by the same instrument.
+
+**Module 2 status: B12 — seam canonical + adapter constructed + first cross-seam gate. Event wiring
+(B12-2) is next, and its TASK 0 will now pass.**

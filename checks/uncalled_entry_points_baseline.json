@@ -330,6 +330,16 @@
         }
       }
     },
+    "scripts/limiterd.py": {
+      "owner": "unassigned",
+      "reason": "ARC 061 (B12-1). `UnwiredOrderEventSink` is the placeholder \u00a72A sink the production construction site holds until B12-2 wires the Limiter's real handlers. It declares all SEVEN \u00a72A events because a partial sink is the trap `nixrisk/fills.py` already records (*'LimiterFillSink is NOT a complete OrderEventSink, and it must not be presented as one'*). SIX of the seven have emitters in shipped code and are therefore CALLED; `on_margin` has ZERO, and the reason is not that this method is dead -- it is that THE PRODUCER DOES NOT EXIST. That is CHECK-DEBT D3.381 / the ARC 059 recon's GAP-3: *on_margin never fires at all -- \u00a72A's PRIMARY margin path has no producer*. The ratchet re-found that gap independently, from a different direction, the moment a COMPLETE OrderEventSink first existed in production code, which is the instrument working rather than a cost. MEASURED, per event, at this arc: on_ack 2 emitters, on_fill 3, on_cancel 2, on_balance 1, on_margin 0, on_position 3, on_session 3. It leaves this baseline when broker-order grows an on_margin producer (the margin-regime work, D3.480 / D3.470), NOT when B12-2 wires the sinks -- B12-2 replaces this class entirely.",
+      "symbols": {
+        "UnwiredOrderEventSink.on_margin": {
+          "bucket": "uncalled",
+          "admitted": "ARC 061"
+        }
+      }
+    },
     "scripts/monitor.py": {
       "owner": "unassigned",
       "reason": "The deprecated MON-1 monitor TUI. check_monitor was retired forward by ARC 030 / 1.2 and the tooling is not being extended, so these entry points are dead surface on a module the operator ruled is kept tracked and unowned.",

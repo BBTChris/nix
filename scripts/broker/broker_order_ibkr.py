@@ -185,13 +185,88 @@ from __future__ import annotations
 import asyncio
 import itertools
 import logging
+import sys as _sys
 import time
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path as _Path
 from typing import Any
 
-from broker_order_config import BrokerOrderConfig, load_broker_order_config
-from broker_seam import (
+# ---------------------------------------------------------------------------
+# THE CANONICAL SEAM — CHECK-DEBT D3.485, ARC 061 (B12-1).
+#
+# THE DEFECT, measured in ARC 060 and reproduced at this arc's S1: this module
+# imports the seam by its FLAT name. A consumer that puts BOTH `scripts/` and
+# `scripts/broker/` on `sys.path` can therefore reach the same FILE under two
+# module names — `broker_seam` and `broker.broker_seam` — and Python builds TWO
+# module objects, with TWO `SessionState` classes, for which `is` is FALSE.
+#
+# WHY THAT IS A SAFETY DEFECT AND NOT AN UNTIDINESS: `_publish_session`'s
+# non-transition rule is an IDENTITY comparison (`state is SessionState.DOWN`).
+# Under the double load it silently cannot fire — MEASURED at S1: the ARC 016
+# sequence emitted TWO `on_session(DOWN)` events instead of one, which is D1.17
+# reappearing with the adapter entirely innocent. There is no exception, no log
+# line and no failing test. It fails OPEN, and every `is` comparison across the
+# seam — sides, order types, reject categories, session states — degrades the
+# same way. B12 wires this seam to the Limiter, so the trap had to be closed
+# BEFORE anything was wired through it, not after.
+#
+# THE FIX, and why it lives HERE. The seam is reached through this module on the
+# production path, so this is the one place that can canonicalise it without
+# editing the frozen seam itself. Two directions, because either name can arrive
+# first:
+#   * BEFORE the import — if the PACKAGE spelling is already loaded, bind the
+#     flat name to that same object so the `from broker_seam import ...` below
+#     resolves to it instead of building a second copy;
+#   * AFTER the import (see `_canonicalise_seam`, called at the end of this
+#     block) — register the package spelling as an alias of whatever this module
+#     ended up with, so a LATER `import broker.broker_seam` returns the same
+#     object rather than loading the file again.
+# The result is ONE module object for the seam under either `sys.path` shape and
+# in either import order, which is what `check_broker_seam_wiring` now measures.
+#
+# `sys.path` IS TOUCHED, AND THE PLACE IS NAMED (the brief asks for this): this
+# module's own directory is prepended if absent, because the flat imports below
+# require it and a consumer reaching this module as `broker.broker_order_ibkr`
+# (from `scripts/` alone) would otherwise fail on them. It is an insert of ONE
+# path — this file's own parent — and nothing else about the interpreter moves.
+# ---------------------------------------------------------------------------
+_SEAM_ALIASES: tuple[tuple[str, str], ...] = (
+    ("broker_seam", "broker.broker_seam"),
+    ("broker_order_config", "broker.broker_order_config"),
+)
+
+_BROKER_DIR = str(_Path(__file__).resolve().parent)
+if _BROKER_DIR not in _sys.path:
+    _sys.path.insert(0, _BROKER_DIR)
+
+for _flat_name, _pkg_name in _SEAM_ALIASES:
+    _loaded = _sys.modules.get(_flat_name) or _sys.modules.get(_pkg_name)
+    if _loaded is not None:
+        _sys.modules[_flat_name] = _loaded
+        _sys.modules[_pkg_name] = _loaded
+
+
+def _canonicalise_seam() -> None:
+    """Bind BOTH spellings of each seam module to ONE module object (D3.485).
+
+    Called immediately after the imports below. `setdefault` rather than
+    assignment: if a consumer has already bound the package spelling to this
+    same object the call is a no-op, and if it has bound it to a DIFFERENT
+    object that is a real divergence which `check_broker_seam_wiring` must
+    report rather than have this function quietly overwrite.
+    """
+    for flat_name, pkg_name in _SEAM_ALIASES:
+        module = _sys.modules.get(flat_name)
+        if module is not None:
+            _sys.modules.setdefault(pkg_name, module)
+
+
+from broker_order_config import (  # pylint: disable=wrong-import-position
+    BrokerOrderConfig,
+    load_broker_order_config,
+)
+from broker_seam import (  # pylint: disable=wrong-import-position
     AckStatus,
     Balance,
     BrokerCapabilities,
@@ -216,6 +291,8 @@ from broker_seam import (
     TimeInForce,
     ack_category_violation,
 )
+
+_canonicalise_seam()
 
 log = logging.getLogger("nix.broker_order.ibkr")
 

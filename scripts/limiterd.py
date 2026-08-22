@@ -209,8 +209,148 @@ from nixrisk.stopwatch import BreachFiring, PriceRing, PriceRingFull, StopWatch
 from nixrisk.wal import Plane1Wal, WalError
 from nixsentinel.heartbeat import DEFAULT_HEARTBEAT_NAME, HeartbeatPublisher
 
+# ---------------------------------------------------------------------------
+# ARC 061 (B12-1) — THE FIRST BROKER IMPORT IN THE LIMITER, and it is the whole
+# point of this arc. Until now `limiterd.py` and every `scripts/nixrisk/*.py`
+# imported NO broker module (measured by AST over 36 modules at this arc's S1),
+# so §2A's port was satisfied by nothing with a pid and `flatten.py`'s
+# "structurally satisfies this narrower port" was a claim with no instrument
+# behind it. CHECK-DEBT B12 / D3.352.
+#
+# THE PACKAGE SPELLING IS DELIBERATE. `limiterd.py` runs with `scripts/` as
+# `sys.path[0]`, and the adapter's own canonical-seam preamble (D3.485, ARC 061)
+# makes this spelling work without ALSO putting `scripts/broker/` on the path --
+# which is precisely the double-load `sys.path` shape that produced two
+# `SessionState` classes and a dead identity guard. Measured at S3 across four
+# `sys.path` shapes: ONE seam module object in every one.
+#
+# CONSTRUCTION ONLY. Nothing here connects, and B12-2 wires the events.
+# ---------------------------------------------------------------------------
+# `sys.path` IS TOUCHED HERE, AND THIS IS THE PLACE (the brief asks it be named).
+# `limiterd.py` runs with `scripts/` as `sys.path[0]`, and the broker library
+# imports its own siblings by their FLAT names, so `scripts/broker/` has to be
+# reachable for those to resolve. ONE path is inserted and nothing else about the
+# interpreter moves.
+#
+# THE FLAT SPELLING IS DELIBERATE AND IT IS THE SAME RULING AS D3.485. Reaching
+# the adapter as `broker.broker_order_ibkr` would give ONE FILE TWO MODULE NAMES
+# across this tree, which is the exact defect this arc exists to remove -- and it
+# is not a theoretical objection: `mypy` refused that arrangement outright,
+# *"Source file found twice under different module names: broker_order_ibkr and
+# broker.broker_order_ibkr"*, which is D3.485 restated by a static analyser. One
+# name, everywhere, is the invariant; the adapter's own canonical-seam preamble
+# then holds it even for a consumer that picks the other spelling.
+_BROKER_PATH = str(Path(__file__).resolve().parent / "broker")
+if _BROKER_PATH not in sys.path:
+    sys.path.insert(0, _BROKER_PATH)
+
+from broker_order_ibkr import (  # pylint: disable=wrong-import-position
+    IBKRBrokerOrder,
+)
+from broker_seam import (  # pylint: disable=wrong-import-position
+    Balance,
+    BrokerOrderPort,
+    ClientOrderId,
+    SessionState,
+    Symbol,
+)
+
 #: Named once so every refusal points at the same file (doctrine C.2).
 SITE: Final[str] = "scripts/limiterd.py"
+
+
+# The §2A event signatures below are the CONTRACT's, and their parameters are
+# deliberately unused: this sink's whole property is that it routes nowhere.
+# Renaming them to `_`-prefixed throwaways would hide which contract they
+# implement, which is the one thing a reader needs from this class.
+# pylint: disable=unused-argument
+class UnwiredOrderEventSink:
+    """A §2A `OrderEventSink` that RECEIVES EVERY EVENT AND ROUTES NONE.
+
+    **This class is a placeholder and it is named so it cannot be mistaken for
+    the real thing.** B12-1's job is to prove a real adapter can be CONSTRUCTED
+    by the process that owns the Limiter; wiring the adapter's events to the
+    Limiter's proven handlers is B12-2's, and this sink is the seam at which
+    that wiring lands.
+
+    WHY IT EXISTS AT ALL. `IBKRBrokerOrder` requires a sink at construction, so
+    a construction site cannot be stood up without one. The alternatives were
+    both worse: passing the Limiter's real handlers here would be doing B12-2's
+    work in B12-1 with none of B12-2's proof, and passing `None` would leave the
+    adapter holding a sink it would crash on the first time anything emitted.
+
+    WHY IT COUNTS, RATHER THAN LOGS AND FORGETS. `nixrisk/fills.py` records that
+    *"`LimiterFillSink` is NOT a complete `OrderEventSink`, and it must not be
+    presented as one"* -- the same trap one layer up. A sink that silently
+    swallowed events would make "the events are not wired" indistinguishable
+    from "no events happened", so every event is COUNTED and the counts are
+    readable. B12-2's acceptance test is that these counters stay at zero while
+    the Limiter's own handlers move.
+    """
+
+    def __init__(self) -> None:
+        self.unrouted: dict[str, int] = {}
+
+    def _count(self, event: str) -> None:
+        """Record that a §2A event arrived and was routed nowhere.
+
+        COUNTED, NOT LOGGED, and that is this file's own convention rather than
+        a preference: `limiterd.py` holds no logger anywhere — its evidence
+        channel is `limiter.runtime.json`, which an out-of-process reader opens.
+        A log line would put this fact somewhere no gate reads. The counts reach
+        the record through `_runtime_record`'s `broker_port.unrouted`.
+        """
+        self.unrouted[event] = self.unrouted.get(event, 0) + 1
+
+    def on_ack(self, *args: Any, **kwargs: Any) -> None:
+        """§2A `on_ack` — counted as UNROUTED. B12-2 wires it."""
+        self._count("on_ack")
+
+    def on_fill(self, *args: Any, **kwargs: Any) -> None:
+        """§2A `on_fill` — counted as UNROUTED. B12-2 wires it."""
+        self._count("on_fill")
+
+    def on_cancel(self, client_order_id: ClientOrderId, done_qty: int) -> None:
+        """§2A `on_cancel` — counted as UNROUTED. B12-2 wires it."""
+        self._count("on_cancel")
+
+    def on_balance(self, balance: Balance) -> None:
+        """§2A `on_balance` — counted as UNROUTED. B12-2 wires it."""
+        self._count("on_balance")
+
+    def on_margin(self, *args: Any, **kwargs: Any) -> None:
+        """§2A `on_margin` — counted as UNROUTED. B12-2 wires it."""
+        self._count("on_margin")
+
+    def on_position(self, symbol: Symbol, net_qty: int, avg_price: float) -> None:
+        """§2A `on_position` — counted as UNROUTED. B12-2 wires it."""
+        self._count("on_position")
+
+    def on_session(self, state: SessionState, reason: str | None = None) -> None:
+        """§2A `on_session` — counted as UNROUTED. B12-2 wires it."""
+        self._count("on_session")
+
+
+def construct_broker_order_port() -> tuple[BrokerOrderPort, UnwiredOrderEventSink]:
+    """Construct the REAL §2A adapter. **Constructs; never connects.**
+
+    ARC 061 (B12-1). Returns it typed as `BrokerOrderPort` so the call site
+    reads against the FROZEN §2A contract rather than against IBKR -- the
+    vendor name appears here and nowhere else in this file, which is what makes
+    the M2-F venue cutover a one-line change at one site.
+
+    `ib=None` IS THE NO-CONNECT GUARANTEE, and it is structural rather than a
+    promise: `IBKRBrokerOrder.__init__` stores it as *"injected; None means
+    caller must supply before connect()"*, so this process holds an adapter that
+    has no client to dial with. Nothing in this function opens a socket, and
+    `check_broker_seam_wiring` FAILS if the construction path ever reaches a
+    venue (its PLANT D). The gateway is down and IBKR is paper-only
+    permanently; the live cutover is M2-F.
+    """
+    sink = UnwiredOrderEventSink()
+    adapter: BrokerOrderPort = IBKRBrokerOrder(sink=sink, ib=None)
+    return adapter, sink
+
 
 #: The runtime directory's fixed layout. `HEARTBEAT_NAME` is IMPORTED rather
 #: than spelled, because the Sentinel opens that exact name and a second copy of
@@ -4148,6 +4288,46 @@ def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
         raise
 
 
+def _broker_port_record(
+    broker_port: BrokerOrderPort | None,
+    broker_sink: UnwiredOrderEventSink | None,
+) -> dict[str, Any] | None:
+    """§2A's broker-order port as the RUNNING process holds it. ARC 061 / B12-1.
+
+    A STEP of `_runtime_record`, NOT a second record and not a second authority:
+    it has one caller, it returns a fragment rather than a verdict, and nothing
+    else reads it. It is split out for the reason `broker_seam.py`'s
+    `_partition_divergences` was — the builder crossed the tree's
+    cognitive-complexity ceiling when this block was added (14 -> 16, measured),
+    and the two available answers were to decompose it or to raise the ceiling.
+    Raising a ceiling to admit code is doctrine B.4's forbidden direction, and
+    decomposition changes no field of the record on any input.
+
+    `None` rather than an empty object where the port is absent, for the reason
+    every sibling field is `None`: check contract rule 10 — a record claiming
+    `connected: false` published by a process that holds NO adapter would read
+    as *the venue is down* when the truth is *there is no seam at all*, and
+    those are opposite facts.
+
+    `unrouted` IS THE B12-2 ACCEPTANCE SIGNAL, and it is why the unwired sink
+    counts instead of discarding. While the events are unwired every §2A event
+    lands there, so a non-empty map means *the adapter emitted and the Limiter
+    did not hear it*. B12-2 wires the real handlers and its proof is that these
+    counters stay at ZERO while the Limiter's own records move; a sink that
+    silently swallowed events would make those two states indistinguishable.
+    """
+    if broker_port is None:
+        return None
+    return {
+        "class": type(broker_port).__name__,
+        "constructed": True,
+        # Structural rather than a promise: the adapter was built with no client
+        # to dial with, so it CANNOT have reached a venue.
+        "connected": False,
+        "unrouted": {} if broker_sink is None else dict(broker_sink.unrouted),
+    }
+
+
 # R0914: the locals ARE the collaborators this process holds, one per §-numbered
 # surface. A record builder with fewer would be a record with fewer facts in it.
 def _runtime_record(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
@@ -4169,6 +4349,8 @@ def _runtime_record(  # pylint: disable=too-many-arguments,too-many-positional-a
     stopwatch: StopWatchDriver | None = None,
     closing: ClosingFillHandler | None = None,
     closed_feedback: ClosedFeedback | None = None,
+    broker_port: BrokerOrderPort | None = None,
+    broker_sink: UnwiredOrderEventSink | None = None,
 ) -> dict[str, Any]:
     """`limiter.runtime.json`'s content, at boot and again at clean stop.
 
@@ -4304,6 +4486,7 @@ def _runtime_record(  # pylint: disable=too-many-arguments,too-many-positional-a
         "closed_feedback": (
             None if closed_feedback is None else closed_feedback.record()
         ),
+        "broker_port": _broker_port_record(broker_port, broker_sink),
         "stopped_ts": stopped_ts,
     }
 
@@ -4330,6 +4513,8 @@ def _stop_record(  # pylint: disable=too-many-arguments,too-many-positional-argu
     closed_feedback: ClosedFeedback | None = None,
     malformed: tuple[str, ...] = (),
     closing_refusals: tuple[str, ...] = (),
+    broker_port: BrokerOrderPort | None = None,
+    broker_sink: UnwiredOrderEventSink | None = None,
 ) -> dict[str, Any]:
     """The clean-stop record: the boot shape plus what the run actually did."""
     record = _runtime_record(
@@ -4350,6 +4535,8 @@ def _stop_record(  # pylint: disable=too-many-arguments,too-many-positional-argu
         stopwatch=stopwatch,
         closing=closing,
         closed_feedback=closed_feedback,
+        broker_port=broker_port,
+        broker_sink=broker_sink,
     )
     # ARC 058. Closes the CLOSE path itself refused — §3 declined the commit, so
     # the position is still OPEN and the flatten is still in flight. Kept out of
@@ -4673,6 +4860,21 @@ def main(argv: list[str] | None = None) -> int:
         # The ledger writes §12.10's reservation rows through the SAME
         # `Plane1Port` the booker holds — §9's sole-writer split, one process,
         # one WAL. A second writer would be the thing §9 forbids outright.
+        # ARC 061 (B12-1). §2A's broker-order port, CONSTRUCTED BY THE PROCESS
+        # THAT OWNS THE LIMITER -- the first time anything with a pid has held
+        # one. Before this arc `flatten.py`'s `BrokerFlattenPort` docstring said
+        # the frozen §2A port *"structurally satisfies this narrower port"* and
+        # nothing anywhere proved it; `check_broker_seam_wiring` now does,
+        # deriving the verb set from the Protocol rather than from a list.
+        #
+        # IT IS NOT WIRED AND IT IS NOT CONNECTED, and both are deliberate:
+        # the events go nowhere until B12-2 (the sink counts them so "unwired"
+        # stays distinguishable from "nothing happened"), and `ib=None` means
+        # this adapter has no client to dial with. B12 is NOT discharged here.
+        # The construction is REPORTED through `limiter.runtime.json`'s
+        # `broker_port` block rather than through a log line: this file holds no
+        # logger, and the record is the channel a gate can read.
+        broker_port, broker_sink = construct_broker_order_port()
         reservations = ReservationLedger(wal)
         outcomes = OrderOutcomes(
             reservations,
@@ -4980,6 +5182,8 @@ def main(argv: list[str] | None = None) -> int:
             uncertainty=uncertainty,
             closing=closing,
             closed_feedback=closed_feedback,
+            broker_port=broker_port,
+            broker_sink=broker_sink,
         ),
     )
     _install_signal_handlers(loop)
@@ -5016,6 +5220,8 @@ def main(argv: list[str] | None = None) -> int:
             closed_feedback=closed_feedback,
             malformed=tuple(completion_handler.malformed),
             closing_refusals=tuple(completion_handler.closing_refusals),
+            broker_port=broker_port,
+            broker_sink=broker_sink,
         ),
     )
     return 0
